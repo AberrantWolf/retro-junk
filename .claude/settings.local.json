@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(cargo build:*)",
-      "Bash(cargo run:*)"
+      "Bash(cargo run:*)",
+      "WebFetch(domain:www.nesdev.org)",
+      "WebSearch",
+      "WebFetch(domain:fceux.com)",
+      "Bash(cargo test:*)"
     ]
   }
 }

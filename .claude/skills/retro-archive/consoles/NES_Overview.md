@@ -15,10 +15,15 @@
 - **Typical ROM Sizes**: 16KB-512KB for most games
 - **Storage Technology**: ROM chips with optional battery-backed SRAM for saves
 
+## File Format Specifications
+- [iNES / NES 2.0 format](../formats/iNES.md) - Standard cartridge ROM format
+- [FDS format](../formats/FDS.md) - Famicom Disk System images
+
 ## Archival Storage
 ### Recommended Formats
-- **.nes**: Standard iNES format with 16-byte header
+- **.nes**: Standard iNES format with 16-byte header (see [iNES spec](../formats/iNES.md))
 - **.unf**: UNIF format for complex mappers and homebrew
+- **.fds**: Famicom Disk System images (see [FDS spec](../formats/FDS.md))
 - **Raw binary dumps**: For preservation without headers
 
 ### Best Practices
