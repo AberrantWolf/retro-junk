@@ -5,10 +5,10 @@
 //! - Headerless ROMs (.sfc)
 //! - LoROM, HiROM, ExHiROM, and SA-1 mappings
 
-use std::io::{Read, Seek};
+use retro_junk_lib::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for SNES/Super Famicom ROMs.
 #[derive(Debug, Default)]
@@ -21,27 +21,44 @@ impl SnesAnalyzer {
 }
 
 impl RomAnalyzer for SnesAnalyzer {
-    fn analyze<R: Read + Seek>(&self, _reader: R) -> Result<RomIdentification, AnalysisError> {
-        todo!("SNES ROM analysis not yet implemented")
+    fn analyze(
+        &self,
+        _reader: &mut dyn ReadSeek,
+        _options: &AnalysisOptions,
+    ) -> Result<RomIdentification, AnalysisError> {
+        Err(AnalysisError::other("SNES ROM analysis not yet implemented"))
     }
 
-    fn analyze_with_progress<R: Read + Seek>(
+    fn analyze_with_progress(
         &self,
-        _reader: R,
+        reader: &mut dyn ReadSeek,
+        options: &AnalysisOptions,
         _progress_tx: Sender<AnalysisProgress>,
     ) -> Result<RomIdentification, AnalysisError> {
-        todo!("SNES ROM analysis not yet implemented")
+        self.analyze(reader, options)
     }
 
     fn platform_name(&self) -> &'static str {
         "Super Nintendo Entertainment System"
     }
 
+    fn short_name(&self) -> &'static str {
+        "snes"
+    }
+
+    fn folder_names(&self) -> &'static [&'static str] {
+        &["snes", "sfc", "super famicom", "super nintendo"]
+    }
+
+    fn manufacturer(&self) -> &'static str {
+        "Nintendo"
+    }
+
     fn file_extensions(&self) -> &'static [&'static str] {
         &["sfc", "smc", "swc", "fig"]
     }
 
-    fn can_handle<R: Read + Seek>(&self, _reader: R) -> bool {
-        todo!("SNES ROM detection not yet implemented")
+    fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
+        false // Not yet implemented
     }
 }

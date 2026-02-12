@@ -6,10 +6,10 @@
 //! - PBP (EBOOT.PBP format)
 //! - DAX compressed images
 
-use std::io::{Read, Seek};
+use retro_junk_lib::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for PlayStation Portable disc images.
 #[derive(Debug, Default)]
@@ -22,27 +22,44 @@ impl PspAnalyzer {
 }
 
 impl RomAnalyzer for PspAnalyzer {
-    fn analyze<R: Read + Seek>(&self, _reader: R) -> Result<RomIdentification, AnalysisError> {
-        todo!("PSP disc analysis not yet implemented")
+    fn analyze(
+        &self,
+        _reader: &mut dyn ReadSeek,
+        _options: &AnalysisOptions,
+    ) -> Result<RomIdentification, AnalysisError> {
+        Err(AnalysisError::other("PSP disc analysis not yet implemented"))
     }
 
-    fn analyze_with_progress<R: Read + Seek>(
+    fn analyze_with_progress(
         &self,
-        _reader: R,
+        reader: &mut dyn ReadSeek,
+        options: &AnalysisOptions,
         _progress_tx: Sender<AnalysisProgress>,
     ) -> Result<RomIdentification, AnalysisError> {
-        todo!("PSP disc analysis not yet implemented")
+        self.analyze(reader, options)
     }
 
     fn platform_name(&self) -> &'static str {
         "Sony PlayStation Portable"
     }
 
+    fn short_name(&self) -> &'static str {
+        "psp"
+    }
+
+    fn folder_names(&self) -> &'static [&'static str] {
+        &["psp", "playstation portable"]
+    }
+
+    fn manufacturer(&self) -> &'static str {
+        "Sony"
+    }
+
     fn file_extensions(&self) -> &'static [&'static str] {
         &["iso", "cso", "pbp", "dax"]
     }
 
-    fn can_handle<R: Read + Seek>(&self, _reader: R) -> bool {
-        todo!("PSP disc detection not yet implemented")
+    fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
+        false // Not yet implemented
     }
 }

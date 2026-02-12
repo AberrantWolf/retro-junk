@@ -8,10 +8,10 @@
 //! - NKit images (.nkit.iso)
 //! - WIA images (.wia)
 
-use std::io::{Read, Seek};
+use retro_junk_lib::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for Nintendo Wii disc images.
 #[derive(Debug, Default)]
@@ -24,27 +24,44 @@ impl WiiAnalyzer {
 }
 
 impl RomAnalyzer for WiiAnalyzer {
-    fn analyze<R: Read + Seek>(&self, _reader: R) -> Result<RomIdentification, AnalysisError> {
-        todo!("Wii disc analysis not yet implemented")
+    fn analyze(
+        &self,
+        _reader: &mut dyn ReadSeek,
+        _options: &AnalysisOptions,
+    ) -> Result<RomIdentification, AnalysisError> {
+        Err(AnalysisError::other("Wii disc analysis not yet implemented"))
     }
 
-    fn analyze_with_progress<R: Read + Seek>(
+    fn analyze_with_progress(
         &self,
-        _reader: R,
+        reader: &mut dyn ReadSeek,
+        options: &AnalysisOptions,
         _progress_tx: Sender<AnalysisProgress>,
     ) -> Result<RomIdentification, AnalysisError> {
-        todo!("Wii disc analysis not yet implemented")
+        self.analyze(reader, options)
     }
 
     fn platform_name(&self) -> &'static str {
         "Nintendo Wii"
     }
 
+    fn short_name(&self) -> &'static str {
+        "wii"
+    }
+
+    fn folder_names(&self) -> &'static [&'static str] {
+        &["wii"]
+    }
+
+    fn manufacturer(&self) -> &'static str {
+        "Nintendo"
+    }
+
     fn file_extensions(&self) -> &'static [&'static str] {
         &["iso", "wbfs", "rvz", "ciso", "wia"]
     }
 
-    fn can_handle<R: Read + Seek>(&self, _reader: R) -> bool {
-        todo!("Wii disc detection not yet implemented")
+    fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
+        false // Not yet implemented
     }
 }

@@ -5,10 +5,10 @@
 //! - Little-endian ROMs (.n64)
 //! - Byte-swapped ROMs (.v64)
 
-use std::io::{Read, Seek};
+use retro_junk_lib::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for Nintendo 64 ROMs.
 #[derive(Debug, Default)]
@@ -21,27 +21,44 @@ impl N64Analyzer {
 }
 
 impl RomAnalyzer for N64Analyzer {
-    fn analyze<R: Read + Seek>(&self, _reader: R) -> Result<RomIdentification, AnalysisError> {
-        todo!("N64 ROM analysis not yet implemented")
+    fn analyze(
+        &self,
+        _reader: &mut dyn ReadSeek,
+        _options: &AnalysisOptions,
+    ) -> Result<RomIdentification, AnalysisError> {
+        Err(AnalysisError::other("N64 ROM analysis not yet implemented"))
     }
 
-    fn analyze_with_progress<R: Read + Seek>(
+    fn analyze_with_progress(
         &self,
-        _reader: R,
+        reader: &mut dyn ReadSeek,
+        options: &AnalysisOptions,
         _progress_tx: Sender<AnalysisProgress>,
     ) -> Result<RomIdentification, AnalysisError> {
-        todo!("N64 ROM analysis not yet implemented")
+        self.analyze(reader, options)
     }
 
     fn platform_name(&self) -> &'static str {
         "Nintendo 64"
     }
 
+    fn short_name(&self) -> &'static str {
+        "n64"
+    }
+
+    fn folder_names(&self) -> &'static [&'static str] {
+        &["n64", "nintendo 64", "nintendo64"]
+    }
+
+    fn manufacturer(&self) -> &'static str {
+        "Nintendo"
+    }
+
     fn file_extensions(&self) -> &'static [&'static str] {
         &["z64", "n64", "v64"]
     }
 
-    fn can_handle<R: Read + Seek>(&self, _reader: R) -> bool {
-        todo!("N64 ROM detection not yet implemented")
+    fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
+        false // Not yet implemented
     }
 }

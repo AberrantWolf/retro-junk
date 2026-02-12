@@ -4,10 +4,10 @@
 //! - VPK files
 //! - Game card dumps
 
-use std::io::{Read, Seek};
+use retro_junk_lib::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for PlayStation Vita ROMs.
 #[derive(Debug, Default)]
@@ -20,27 +20,44 @@ impl VitaAnalyzer {
 }
 
 impl RomAnalyzer for VitaAnalyzer {
-    fn analyze<R: Read + Seek>(&self, _reader: R) -> Result<RomIdentification, AnalysisError> {
-        todo!("PS Vita ROM analysis not yet implemented")
+    fn analyze(
+        &self,
+        _reader: &mut dyn ReadSeek,
+        _options: &AnalysisOptions,
+    ) -> Result<RomIdentification, AnalysisError> {
+        Err(AnalysisError::other("PS Vita ROM analysis not yet implemented"))
     }
 
-    fn analyze_with_progress<R: Read + Seek>(
+    fn analyze_with_progress(
         &self,
-        _reader: R,
+        reader: &mut dyn ReadSeek,
+        options: &AnalysisOptions,
         _progress_tx: Sender<AnalysisProgress>,
     ) -> Result<RomIdentification, AnalysisError> {
-        todo!("PS Vita ROM analysis not yet implemented")
+        self.analyze(reader, options)
     }
 
     fn platform_name(&self) -> &'static str {
         "Sony PlayStation Vita"
     }
 
+    fn short_name(&self) -> &'static str {
+        "vita"
+    }
+
+    fn folder_names(&self) -> &'static [&'static str] {
+        &["vita", "psvita", "ps vita", "playstation vita"]
+    }
+
+    fn manufacturer(&self) -> &'static str {
+        "Sony"
+    }
+
     fn file_extensions(&self) -> &'static [&'static str] {
         &["vpk"]
     }
 
-    fn can_handle<R: Read + Seek>(&self, _reader: R) -> bool {
-        todo!("PS Vita ROM detection not yet implemented")
+    fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
+        false // Not yet implemented
     }
 }

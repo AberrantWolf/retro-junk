@@ -4,10 +4,10 @@
 //! - Master System ROMs (.sms)
 //! - Mark III ROMs
 
-use std::io::{Read, Seek};
+use retro_junk_lib::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for Sega Master System ROMs.
 #[derive(Debug, Default)]
@@ -20,27 +20,44 @@ impl MasterSystemAnalyzer {
 }
 
 impl RomAnalyzer for MasterSystemAnalyzer {
-    fn analyze<R: Read + Seek>(&self, _reader: R) -> Result<RomIdentification, AnalysisError> {
-        todo!("Master System ROM analysis not yet implemented")
+    fn analyze(
+        &self,
+        _reader: &mut dyn ReadSeek,
+        _options: &AnalysisOptions,
+    ) -> Result<RomIdentification, AnalysisError> {
+        Err(AnalysisError::other("Master System ROM analysis not yet implemented"))
     }
 
-    fn analyze_with_progress<R: Read + Seek>(
+    fn analyze_with_progress(
         &self,
-        _reader: R,
+        reader: &mut dyn ReadSeek,
+        options: &AnalysisOptions,
         _progress_tx: Sender<AnalysisProgress>,
     ) -> Result<RomIdentification, AnalysisError> {
-        todo!("Master System ROM analysis not yet implemented")
+        self.analyze(reader, options)
     }
 
     fn platform_name(&self) -> &'static str {
         "Sega Master System"
     }
 
+    fn short_name(&self) -> &'static str {
+        "sms"
+    }
+
+    fn folder_names(&self) -> &'static [&'static str] {
+        &["sms", "master system", "mastersystem", "mark iii"]
+    }
+
+    fn manufacturer(&self) -> &'static str {
+        "Sega"
+    }
+
     fn file_extensions(&self) -> &'static [&'static str] {
         &["sms"]
     }
 
-    fn can_handle<R: Read + Seek>(&self, _reader: R) -> bool {
-        todo!("Master System ROM detection not yet implemented")
+    fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
+        false // Not yet implemented
     }
 }

@@ -5,10 +5,10 @@
 //! - ISO images
 //! - CHD compressed images
 
-use std::io::{Read, Seek};
+use retro_junk_lib::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for Sega CD / Mega CD disc images.
 #[derive(Debug, Default)]
@@ -21,27 +21,44 @@ impl SegaCdAnalyzer {
 }
 
 impl RomAnalyzer for SegaCdAnalyzer {
-    fn analyze<R: Read + Seek>(&self, _reader: R) -> Result<RomIdentification, AnalysisError> {
-        todo!("Sega CD disc analysis not yet implemented")
+    fn analyze(
+        &self,
+        _reader: &mut dyn ReadSeek,
+        _options: &AnalysisOptions,
+    ) -> Result<RomIdentification, AnalysisError> {
+        Err(AnalysisError::other("Sega CD disc analysis not yet implemented"))
     }
 
-    fn analyze_with_progress<R: Read + Seek>(
+    fn analyze_with_progress(
         &self,
-        _reader: R,
+        reader: &mut dyn ReadSeek,
+        options: &AnalysisOptions,
         _progress_tx: Sender<AnalysisProgress>,
     ) -> Result<RomIdentification, AnalysisError> {
-        todo!("Sega CD disc analysis not yet implemented")
+        self.analyze(reader, options)
     }
 
     fn platform_name(&self) -> &'static str {
         "Sega CD / Mega CD"
     }
 
+    fn short_name(&self) -> &'static str {
+        "segacd"
+    }
+
+    fn folder_names(&self) -> &'static [&'static str] {
+        &["segacd", "sega cd", "megacd", "mega cd"]
+    }
+
+    fn manufacturer(&self) -> &'static str {
+        "Sega"
+    }
+
     fn file_extensions(&self) -> &'static [&'static str] {
         &["bin", "cue", "iso", "chd"]
     }
 
-    fn can_handle<R: Read + Seek>(&self, _reader: R) -> bool {
-        todo!("Sega CD disc detection not yet implemented")
+    fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
+        false // Not yet implemented
     }
 }

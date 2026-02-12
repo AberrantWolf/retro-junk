@@ -5,10 +5,10 @@
 //! - DSi-enhanced ROMs
 //! - DSiWare
 
-use std::io::{Read, Seek};
+use retro_junk_lib::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for Nintendo DS ROMs.
 #[derive(Debug, Default)]
@@ -21,27 +21,44 @@ impl DsAnalyzer {
 }
 
 impl RomAnalyzer for DsAnalyzer {
-    fn analyze<R: Read + Seek>(&self, _reader: R) -> Result<RomIdentification, AnalysisError> {
-        todo!("DS ROM analysis not yet implemented")
+    fn analyze(
+        &self,
+        _reader: &mut dyn ReadSeek,
+        _options: &AnalysisOptions,
+    ) -> Result<RomIdentification, AnalysisError> {
+        Err(AnalysisError::other("DS ROM analysis not yet implemented"))
     }
 
-    fn analyze_with_progress<R: Read + Seek>(
+    fn analyze_with_progress(
         &self,
-        _reader: R,
+        reader: &mut dyn ReadSeek,
+        options: &AnalysisOptions,
         _progress_tx: Sender<AnalysisProgress>,
     ) -> Result<RomIdentification, AnalysisError> {
-        todo!("DS ROM analysis not yet implemented")
+        self.analyze(reader, options)
     }
 
     fn platform_name(&self) -> &'static str {
         "Nintendo DS"
     }
 
+    fn short_name(&self) -> &'static str {
+        "nds"
+    }
+
+    fn folder_names(&self) -> &'static [&'static str] {
+        &["nds", "ds", "nintendo ds"]
+    }
+
+    fn manufacturer(&self) -> &'static str {
+        "Nintendo"
+    }
+
     fn file_extensions(&self) -> &'static [&'static str] {
         &["nds", "dsi"]
     }
 
-    fn can_handle<R: Read + Seek>(&self, _reader: R) -> bool {
-        todo!("DS ROM detection not yet implemented")
+    fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
+        false // Not yet implemented
     }
 }
