@@ -690,13 +690,29 @@ fn analyze_unif(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> 
     Ok(NesRomInfo::Unif { revision })
 }
 
+/// Compute the expected file size for an iNES/NES 2.0 ROM from header fields.
+fn ines_expected_size(hdr: &INesHeader) -> u64 {
+    let header_size = 16u64;
+    let trainer_size = if hdr.has_trainer { 512u64 } else { 0 };
+    header_size + trainer_size + hdr.prg_rom_size as u64 + hdr.chr_rom_size as u64
+}
+
+/// Compute the expected file size for an FDS image.
+fn fds_expected_size(format: NesFormat, side_count: usize) -> u64 {
+    let header_size = match format {
+        NesFormat::FdsHeadered => 16u64,
+        _ => 0u64,
+    };
+    header_size + (side_count as u64 * FDS_SIDE_SIZE)
+}
+
 /// Convert parsed NES ROM info into a generic `RomIdentification`.
 fn to_identification(
     info: &NesRomInfo,
     file_size: u64,
 ) -> RomIdentification {
     let mut id = RomIdentification::new().with_platform("Nintendo Entertainment System");
-    id.size = Some(file_size);
+    id.file_size = Some(file_size);
 
     match info {
         NesRomInfo::INes(hdr) => {
@@ -769,6 +785,8 @@ fn to_identification(
                         .insert("misc_roms".into(), hdr.misc_roms.to_string());
                 }
             }
+
+            id.expected_size = Some(ines_expected_size(hdr));
         }
         NesRomInfo::Fds {
             format,
@@ -783,6 +801,7 @@ fn to_identification(
             id.extra
                 .insert("side_count".into(), sides.len().to_string());
             id.regions = vec![Region::Japan]; // FDS was Japan-only
+            id.expected_size = Some(fds_expected_size(*format, sides.len()));
 
             if let Some(first) = sides.first() {
                 if !first.game_name.is_empty() {
@@ -1033,6 +1052,10 @@ mod tests {
         assert_eq!(result.extra.get("chr_rom_size").unwrap(), "8 KB");
         assert_eq!(result.extra.get("mirroring").unwrap(), "Horizontal");
         assert_eq!(result.extra.get("format").unwrap(), "iNES");
+        // Expected: 16 header + 32KB PRG + 8KB CHR = 40976
+        assert_eq!(result.expected_size, Some(16 + 32768 + 8192));
+        // File only has the 16-byte header
+        assert_eq!(result.file_size, Some(16));
     }
 
     #[test]
@@ -1050,6 +1073,37 @@ mod tests {
         assert_eq!(result.extra.get("battery").unwrap(), "Yes");
         assert_eq!(result.extra.get("prg_rom_size").unwrap(), "256 KB");
         assert_eq!(result.extra.get("chr_rom_size").unwrap(), "128 KB");
+        // Expected: 16 + 256KB + 128KB = 393232
+        assert_eq!(result.expected_size, Some(16 + 262144 + 131072));
+    }
+
+    #[test]
+    fn test_ines_size_with_trainer() {
+        // Trainer bit set: flags6 bit 2
+        let data = make_ines_header(1, 1, 0x04, 0x00);
+        let mut cursor = Cursor::new(data);
+        let analyzer = NesAnalyzer::new();
+        let options = AnalysisOptions::default();
+        let result = analyzer.analyze(&mut cursor, &options).unwrap();
+        assert_eq!(result.extra.get("trainer").unwrap(), "Yes");
+        // Expected: 16 header + 512 trainer + 16KB PRG + 8KB CHR
+        assert_eq!(result.expected_size, Some(16 + 512 + 16384 + 8192));
+    }
+
+    #[test]
+    fn test_ines_exact_size_match() {
+        // Build a "complete" ROM: header + PRG data + CHR data
+        let mut data = make_ines_header(1, 1, 0x00, 0x00);
+        // 1 * 16KB PRG = 16384 bytes
+        data.extend(vec![0u8; 16384]);
+        // 1 * 8KB CHR = 8192 bytes
+        data.extend(vec![0u8; 8192]);
+
+        let mut cursor = Cursor::new(data);
+        let analyzer = NesAnalyzer::new();
+        let options = AnalysisOptions::default();
+        let result = analyzer.analyze(&mut cursor, &options).unwrap();
+        assert_eq!(result.file_size, result.expected_size);
     }
 
     #[test]

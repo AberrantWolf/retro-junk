@@ -31,8 +31,12 @@ pub struct RomIdentification {
     /// Expected checksums stored in the ROM itself (for self-verification)
     pub expected_checksums: Vec<ExpectedChecksum>,
 
-    /// Size of the ROM data in bytes
-    pub size: Option<u64>,
+    /// Actual file size on disk in bytes
+    pub file_size: Option<u64>,
+
+    /// Expected file size in bytes, derived from header/metadata.
+    /// Compare with `file_size` to detect truncated or padded dumps.
+    pub expected_size: Option<u64>,
 
     /// Platform/console identifier
     pub platform: Option<String>,

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use retro_junk_lib::{AnalysisContext, AnalysisOptions, RomAnalyzer};
+use retro_junk_lib::{AnalysisContext, AnalysisOptions, RomAnalyzer, RomIdentification};
 
 #[derive(Parser)]
 #[command(name = "retro-junk")]
@@ -242,17 +242,7 @@ fn analyze_folder(folder: &PathBuf, analyzer: &dyn RomAnalyzer, options: &Analys
 
         match analyzer.analyze(&mut file, options) {
             Ok(info) => {
-                print!("  {}: ", file_name);
-                if let Some(serial) = &info.serial_number {
-                    print!("Serial: {} ", serial);
-                }
-                if let Some(name) = &info.internal_name {
-                    print!("Name: {} ", name);
-                }
-                if info.serial_number.is_none() && info.internal_name.is_none() {
-                    print!("(no identifying info)");
-                }
-                println!();
+                print_analysis(file_name, &info);
             }
             Err(e) => {
                 println!("  {}: Analysis not implemented ({})", file_name, e);
@@ -264,6 +254,84 @@ fn analyze_folder(folder: &PathBuf, analyzer: &dyn RomAnalyzer, options: &Analys
         println!("  No ROM files found");
     }
     println!();
+}
+
+/// Format a byte size as a human-readable string.
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0 {
+        format!("{} MB", bytes / (1024 * 1024))
+    } else if bytes >= 1024 && bytes % 1024 == 0 {
+        format!("{} KB", bytes / 1024)
+    } else {
+        format!("{} bytes", bytes)
+    }
+}
+
+/// Describe the relationship between actual and expected file size.
+fn size_verdict(file_size: u64, expected_size: u64) -> String {
+    if file_size == expected_size {
+        "OK".into()
+    } else if file_size < expected_size {
+        let missing = expected_size - file_size;
+        format!("TRUNCATED (missing {})", format_bytes(missing))
+    } else {
+        let excess = file_size - expected_size;
+        format!("OVERSIZED (+{})", format_bytes(excess))
+    }
+}
+
+/// Print the analysis result for a single file.
+fn print_analysis(file_name: &str, info: &RomIdentification) {
+    println!("  {}:", file_name);
+
+    // Identity fields
+    if let Some(ref serial) = info.serial_number {
+        println!("    Serial:   {}", serial);
+    }
+    if let Some(ref name) = info.internal_name {
+        println!("    Name:     {}", name);
+    }
+    if let Some(ref maker) = info.maker_code {
+        println!("    Maker:    {}", maker);
+    }
+    if let Some(ref version) = info.version {
+        println!("    Version:  {}", version);
+    }
+
+    // Format (from extra, if present)
+    if let Some(format) = info.extra.get("format") {
+        print!("    Format:   {}", format);
+        if let Some(mapper) = info.extra.get("mapper") {
+            print!(", Mapper {}", mapper);
+            if let Some(mapper_name) = info.extra.get("mapper_name") {
+                print!(" ({})", mapper_name);
+            }
+        }
+        println!();
+    }
+
+    // Size information
+    match (info.file_size, info.expected_size) {
+        (Some(actual), Some(expected)) => {
+            let verdict = size_verdict(actual, expected);
+            println!(
+                "    Size:     {} on disk, {} expected [{}]",
+                format_bytes(actual),
+                format_bytes(expected),
+                verdict,
+            );
+        }
+        (Some(actual), None) => {
+            println!("    Size:     {}", format_bytes(actual));
+        }
+        _ => {}
+    }
+
+    // Regions
+    if !info.regions.is_empty() {
+        let region_str: Vec<_> = info.regions.iter().map(|r| r.name()).collect();
+        println!("    Region:   {}", region_str.join(", "));
+    }
 }
 
 /// Run the list command.
