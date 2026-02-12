@@ -1,0 +1,115 @@
+use std::io::{Read, Seek};
+use std::sync::mpsc::Sender;
+
+pub mod checksum;
+pub mod error;
+pub mod progress;
+pub mod region;
+
+pub use checksum::{ChecksumAlgorithm, ExpectedChecksum};
+pub use error::AnalysisError;
+pub use progress::AnalysisProgress;
+pub use region::Region;
+
+/// Information extracted from analyzing a ROM or disc image.
+#[derive(Debug, Clone, Default)]
+pub struct RomIdentification {
+    /// Serial number (e.g., "SLUS-00123" for PS1, "NUS-NSME-USA" for N64)
+    pub serial_number: Option<String>,
+
+    /// Internal name stored in the ROM header
+    pub internal_name: Option<String>,
+
+    /// Region(s) the ROM is intended for
+    pub regions: Vec<Region>,
+
+    /// Version or revision number
+    pub version: Option<String>,
+
+    /// Expected checksums stored in the ROM itself (for self-verification)
+    pub expected_checksums: Vec<ExpectedChecksum>,
+
+    /// Size of the ROM data in bytes
+    pub size: Option<u64>,
+
+    /// Platform/console identifier
+    pub platform: Option<String>,
+
+    /// Maker/publisher code
+    pub maker_code: Option<String>,
+
+    /// Additional platform-specific metadata
+    pub extra: std::collections::HashMap<String, String>,
+}
+
+impl RomIdentification {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_serial(mut self, serial: impl Into<String>) -> Self {
+        self.serial_number = Some(serial.into());
+        self
+    }
+
+    pub fn with_internal_name(mut self, name: impl Into<String>) -> Self {
+        self.internal_name = Some(name.into());
+        self
+    }
+
+    pub fn with_region(mut self, region: Region) -> Self {
+        self.regions.push(region);
+        self
+    }
+
+    pub fn with_platform(mut self, platform: impl Into<String>) -> Self {
+        self.platform = Some(platform.into());
+        self
+    }
+}
+
+/// Trait for analyzing ROM files and disc images.
+///
+/// Implementors should extract identifying information from the ROM header
+/// and any other metadata embedded in the file format.
+pub trait RomAnalyzer {
+    /// Analyze a ROM from a reader and extract identification information.
+    ///
+    /// # Arguments
+    /// * `reader` - A reader positioned at the start of the ROM data
+    ///
+    /// # Returns
+    /// * `Ok(RomIdentification)` - Successfully extracted identification info
+    /// * `Err(AnalysisError)` - Failed to analyze (invalid format, I/O error, etc.)
+    fn analyze<R: Read + Seek>(&self, reader: R) -> Result<RomIdentification, AnalysisError>;
+
+    /// Analyze a ROM with progress updates sent via channel.
+    ///
+    /// This is intended for GUI applications that need to display progress
+    /// during analysis of large disc images.
+    ///
+    /// # Arguments
+    /// * `reader` - A reader positioned at the start of the ROM data
+    /// * `progress_tx` - Channel sender for progress updates
+    ///
+    /// # Returns
+    /// * `Ok(RomIdentification)` - Successfully extracted identification info
+    /// * `Err(AnalysisError)` - Failed to analyze
+    fn analyze_with_progress<R: Read + Seek>(
+        &self,
+        reader: R,
+        progress_tx: Sender<AnalysisProgress>,
+    ) -> Result<RomIdentification, AnalysisError>;
+
+    /// Returns the name of the platform this analyzer handles.
+    fn platform_name(&self) -> &'static str;
+
+    /// Returns file extensions commonly associated with this platform.
+    fn file_extensions(&self) -> &'static [&'static str];
+
+    /// Check if the reader contains data this analyzer can handle.
+    ///
+    /// This performs a quick check (magic bytes, header validation) without
+    /// full analysis. Useful for auto-detection of ROM type.
+    fn can_handle<R: Read + Seek>(&self, reader: R) -> bool;
+}

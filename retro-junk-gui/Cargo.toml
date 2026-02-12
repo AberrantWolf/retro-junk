@@ -1,0 +1,15 @@
+[package]
+name = "retro-junk-gui"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "retro-junk-gui"
+path = "src/main.rs"
+
+[dependencies]
+retro-junk-lib.workspace = true
+retro-junk-nintendo.workspace = true
+retro-junk-sony.workspace = true
+retro-junk-sega.workspace = true
+retro-junk-microsoft.workspace = true

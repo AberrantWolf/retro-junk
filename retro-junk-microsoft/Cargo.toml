@@ -1,0 +1,8 @@
+[package]
+name = "retro-junk-microsoft"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+retro-junk-lib.workspace = true
+thiserror.workspace = true

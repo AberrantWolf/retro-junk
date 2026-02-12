@@ -1,0 +1,8 @@
+[package]
+name = "retro-junk-sega"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+retro-junk-lib.workspace = true
+thiserror.workspace = true
