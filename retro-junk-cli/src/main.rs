@@ -2,10 +2,13 @@
 //!
 //! Command-line interface for analyzing retro game ROMs and disc images.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use owo_colors::OwoColorize;
+use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::{AnalysisContext, AnalysisOptions, RomAnalyzer, RomIdentification};
 
@@ -118,7 +121,11 @@ fn run_analyze(
     if let Some(ref console_list) = consoles {
         for name in console_list {
             if ctx.get_by_short_name(name).is_none() {
-                eprintln!("Warning: Unknown console '{}', skipping", name);
+                eprintln!(
+                    "  {} Unknown console '{}', skipping",
+                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                    name,
+                );
             }
         }
     }
@@ -127,7 +134,11 @@ fn run_analyze(
     let entries = match fs::read_dir(&root_path) {
         Ok(entries) => entries,
         Err(e) => {
-            eprintln!("Error reading directory: {}", e);
+            eprintln!(
+                "{} Error reading directory: {}",
+                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                e,
+            );
             return;
         }
     };
@@ -174,8 +185,10 @@ fn run_analyze(
 
         for console in consoles_to_use {
             println!(
-                "Found {} folder: {}",
-                console.metadata.platform_name, folder_name
+                "{} {} folder: {}",
+                "Found".if_supports_color(Stdout, |t| t.bold()),
+                console.metadata.platform_name,
+                folder_name.if_supports_color(Stdout, |t| t.cyan()),
             );
 
             // Scan for ROM files in the folder
@@ -184,7 +197,11 @@ fn run_analyze(
     }
 
     if !found_any {
-        println!("No matching console folders found in {}", root_path.display());
+        println!(
+            "{}",
+            format!("No matching console folders found in {}", root_path.display())
+                .if_supports_color(Stdout, |t| t.dimmed()),
+        );
         println!();
         println!("Tip: Create folders named after consoles (e.g., 'snes', 'n64', 'ps1')");
         println!("     and place your ROM files inside them.");
@@ -204,7 +221,11 @@ fn analyze_folder(folder: &PathBuf, analyzer: &dyn RomAnalyzer, options: &Analys
     let entries = match fs::read_dir(folder) {
         Ok(entries) => entries,
         Err(e) => {
-            eprintln!("  Error reading folder: {}", e);
+            eprintln!(
+                "  {} Error reading folder: {}",
+                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                e,
+            );
             return;
         }
     };
@@ -235,7 +256,12 @@ fn analyze_folder(folder: &PathBuf, analyzer: &dyn RomAnalyzer, options: &Analys
         let mut file = match fs::File::open(&path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("  Error opening {}: {}", file_name, e);
+                eprintln!(
+                    "  {} Error opening {}: {}",
+                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                    file_name,
+                    e,
+                );
                 continue;
             }
         };
@@ -245,13 +271,21 @@ fn analyze_folder(folder: &PathBuf, analyzer: &dyn RomAnalyzer, options: &Analys
                 print_analysis(file_name, &info);
             }
             Err(e) => {
-                println!("  {}: Analysis not implemented ({})", file_name, e);
+                println!(
+                    "  {}: {} Analysis not implemented ({})",
+                    file_name,
+                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                    e,
+                );
             }
         }
     }
 
     if file_count == 0 {
-        println!("  No ROM files found");
+        println!(
+            "  {}",
+            "No ROM files found".if_supports_color(Stdout, |t| t.dimmed()),
+        );
     }
     println!();
 }
@@ -267,70 +301,319 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// Describe the relationship between actual and expected file size.
-fn size_verdict(file_size: u64, expected_size: u64) -> String {
+// -- Size verdict logic --
+
+enum SizeVerdict {
+    Ok,
+    Trimmed { missing: u64 },
+    Truncated { missing: u64 },
+    CopierHeader,
+    Oversized { excess: u64 },
+}
+
+fn is_power_of_two(n: u64) -> bool {
+    n > 0 && (n & (n - 1)) == 0
+}
+
+fn compute_size_verdict(file_size: u64, expected_size: u64) -> SizeVerdict {
     if file_size == expected_size {
-        "OK".into()
-    } else if file_size < expected_size {
+        return SizeVerdict::Ok;
+    }
+
+    if file_size < expected_size {
         let missing = expected_size - file_size;
-        format!("TRUNCATED (missing {})", format_bytes(missing))
+
+        // Likely trimmed: file still has most data AND file size is a power of 2
+        // OR the missing amount is a power-of-2 fraction of expected size
+        let has_most_data = file_size >= expected_size / 2;
+        let file_is_pow2 = is_power_of_two(file_size);
+        let missing_is_pow2_fraction =
+            is_power_of_two(missing) && is_power_of_two(expected_size) && missing < expected_size;
+
+        if has_most_data && (file_is_pow2 || missing_is_pow2_fraction) {
+            SizeVerdict::Trimmed { missing }
+        } else {
+            SizeVerdict::Truncated { missing }
+        }
     } else {
         let excess = file_size - expected_size;
-        format!("OVERSIZED (+{})", format_bytes(excess))
+        if excess == 512 {
+            SizeVerdict::CopierHeader
+        } else {
+            SizeVerdict::Oversized { excess }
+        }
     }
 }
 
+fn print_size_verdict(verdict: &SizeVerdict) -> String {
+    match verdict {
+        SizeVerdict::Ok => format!(
+            "{} {}",
+            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+            "OK".if_supports_color(Stdout, |t| t.green()),
+        ),
+        SizeVerdict::Trimmed { missing } => format!(
+            "{} {} (-{}, trailing data stripped)",
+            "\u{2702}".if_supports_color(Stdout, |t| t.yellow()),
+            "TRIMMED".if_supports_color(Stdout, |t| t.yellow()),
+            format_bytes(*missing),
+        ),
+        SizeVerdict::Truncated { missing } => format!(
+            "{} {} (missing {})",
+            "\u{2718}".if_supports_color(Stdout, |t| t.bright_red()),
+            "TRUNCATED".if_supports_color(Stdout, |t| t.bright_red()),
+            format_bytes(*missing),
+        ),
+        SizeVerdict::CopierHeader => format!(
+            "\u{1F4DD} {} (+512 bytes, likely copier header)",
+            "OVERSIZED".if_supports_color(Stdout, |t| t.yellow()),
+        ),
+        SizeVerdict::Oversized { excess } => format!(
+            "{} {} (+{})",
+            "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+            "OVERSIZED".if_supports_color(Stdout, |t| t.yellow()),
+            format_bytes(*excess),
+        ),
+    }
+}
+
+// -- Key prettification --
+
+/// Known acronyms that should stay uppercase when prettifying keys.
+const ACRONYMS: &[&str] = &[
+    "PRG", "CHR", "RAM", "ROM", "SRAM", "NVRAM", "SGB", "CGB", "TV", "ID",
+];
+
+/// Convert a snake_case key to Title Case, keeping known acronyms uppercase.
+fn prettify_key(key: &str) -> String {
+    key.split('_')
+        .filter(|s| !s.is_empty())
+        .map(|word| {
+            let upper = word.to_uppercase();
+            if ACRONYMS.contains(&upper.as_str()) {
+                upper
+            } else {
+                let mut chars = word.chars();
+                match chars.next() {
+                    Some(c) => {
+                        let mut s = c.to_uppercase().to_string();
+                        s.extend(chars);
+                        s
+                    }
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// -- Hardware keys (ordered) --
+
+/// Known hardware/technical extra keys, in display order.
+const HARDWARE_KEYS: &[&str] = &[
+    "mapping",
+    "speed",
+    "chipset",
+    "coprocessor",
+    "mirroring",
+    "cartridge_type",
+    "rom_size",
+    "prg_rom_size",
+    "chr_rom_size",
+    "sram_size",
+    "ram_size",
+    "prg_ram_size",
+    "prg_nvram_size",
+    "chr_ram_size",
+    "chr_nvram_size",
+    "expansion_ram",
+    "expansion_device",
+    "battery",
+    "trainer",
+    "sgb",
+    "console_type",
+    "tv_system",
+    "copier_header",
+    "checksum_complement_valid",
+];
+
 /// Print the analysis result for a single file.
 fn print_analysis(file_name: &str, info: &RomIdentification) {
-    println!("  {}:", file_name);
+    let mut shown_keys: HashSet<&str> = HashSet::new();
 
-    // Identity fields
+    println!(
+        "  {}:",
+        file_name.if_supports_color(Stdout, |t| t.bold()),
+    );
+
+    // (a) Identity fields
     if let Some(ref serial) = info.serial_number {
-        println!("    Serial:   {}", serial);
+        println!(
+            "    {}   {}",
+            "Serial:".if_supports_color(Stdout, |t| t.cyan()),
+            serial,
+        );
     }
     if let Some(ref name) = info.internal_name {
-        println!("    Name:     {}", name);
+        println!(
+            "    {}     {}",
+            "Name:".if_supports_color(Stdout, |t| t.cyan()),
+            name,
+        );
     }
     if let Some(ref maker) = info.maker_code {
-        println!("    Maker:    {}", maker);
+        println!(
+            "    {}    {}",
+            "Maker:".if_supports_color(Stdout, |t| t.cyan()),
+            maker,
+        );
     }
     if let Some(ref version) = info.version {
-        println!("    Version:  {}", version);
+        println!(
+            "    {}  {}",
+            "Version:".if_supports_color(Stdout, |t| t.cyan()),
+            version,
+        );
     }
 
-    // Format (from extra, if present)
+    // (b) Format line
     if let Some(format) = info.extra.get("format") {
-        print!("    Format:   {}", format);
+        shown_keys.insert("format");
+        print!(
+            "    {}   {}",
+            "Format:".if_supports_color(Stdout, |t| t.cyan()),
+            format,
+        );
         if let Some(mapper) = info.extra.get("mapper") {
+            shown_keys.insert("mapper");
             print!(", Mapper {}", mapper);
             if let Some(mapper_name) = info.extra.get("mapper_name") {
+                shown_keys.insert("mapper_name");
                 print!(" ({})", mapper_name);
             }
         }
         println!();
     }
 
-    // Size information
+    // (c) Hardware section
+    let hardware_present: Vec<&str> = HARDWARE_KEYS
+        .iter()
+        .filter(|k| info.extra.contains_key(**k))
+        .copied()
+        .collect();
+
+    if !hardware_present.is_empty() {
+        println!(
+            "    {}",
+            "Hardware:".if_supports_color(Stdout, |t| t.bright_magenta()),
+        );
+        for key in &hardware_present {
+            shown_keys.insert(key);
+            let value = &info.extra[*key];
+            println!(
+                "      {} {}",
+                format!("{}:", prettify_key(key))
+                    .if_supports_color(Stdout, |t| t.cyan()),
+                value,
+            );
+        }
+    }
+
+    // (d) Size verdict
     match (info.file_size, info.expected_size) {
         (Some(actual), Some(expected)) => {
-            let verdict = size_verdict(actual, expected);
+            let verdict = compute_size_verdict(actual, expected);
             println!(
-                "    Size:     {} on disk, {} expected [{}]",
+                "    {}     {} on disk, {} expected [{}]",
+                "Size:".if_supports_color(Stdout, |t| t.cyan()),
                 format_bytes(actual),
                 format_bytes(expected),
-                verdict,
+                print_size_verdict(&verdict),
             );
         }
         (Some(actual), None) => {
-            println!("    Size:     {}", format_bytes(actual));
+            println!(
+                "    {}     {}",
+                "Size:".if_supports_color(Stdout, |t| t.cyan()),
+                format_bytes(actual),
+            );
         }
         _ => {}
     }
 
-    // Regions
+    // (e) Checksums
+    let mut checksum_keys: Vec<_> = info
+        .extra
+        .keys()
+        .filter(|k| k.starts_with("checksum_status:"))
+        .collect();
+    checksum_keys.sort();
+    for key in &checksum_keys {
+        shown_keys.insert(key.as_str());
+        let name = &key["checksum_status:".len()..];
+        let status = &info.extra[key.as_str()];
+        let (emoji, colored_status) = if status.starts_with("OK") || status.starts_with("Valid") {
+            (
+                "\u{2714}",
+                format!("{}", status.if_supports_color(Stdout, |t| t.green())),
+            )
+        } else {
+            (
+                "\u{2718}",
+                format!("{}", status.if_supports_color(Stdout, |t| t.red())),
+            )
+        };
+        let is_ok = status.starts_with("OK") || status.starts_with("Valid");
+        if is_ok {
+            println!(
+                "    {} {}  {}",
+                emoji.if_supports_color(Stdout, |t| t.green()),
+                format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
+                colored_status,
+            );
+        } else {
+            println!(
+                "    {} {}  {}",
+                emoji.if_supports_color(Stdout, |t| t.red()),
+                format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
+                colored_status,
+            );
+        }
+    }
+
+    // (f) Region
     if !info.regions.is_empty() {
         let region_str: Vec<_> = info.regions.iter().map(|r| r.name()).collect();
-        println!("    Region:   {}", region_str.join(", "));
+        println!(
+            "    {}   {}",
+            "Region:".if_supports_color(Stdout, |t| t.cyan()),
+            region_str.join(", "),
+        );
+    }
+
+    // (g) Remaining extras
+    let mut remaining: Vec<_> = info
+        .extra
+        .keys()
+        .filter(|k| !shown_keys.contains(k.as_str()))
+        .collect();
+    remaining.sort();
+
+    if !remaining.is_empty() {
+        println!(
+            "    {}",
+            "Details:".if_supports_color(Stdout, |t| t.bright_magenta()),
+        );
+        for key in &remaining {
+            let value = &info.extra[key.as_str()];
+            println!(
+                "      {} {}",
+                format!("{}:", prettify_key(key))
+                    .if_supports_color(Stdout, |t| t.cyan()),
+                value,
+            );
+        }
     }
 }
 
@@ -347,14 +630,24 @@ fn run_list(ctx: &AnalysisContext) {
                 println!();
             }
             current_manufacturer = console.metadata.manufacturer;
-            println!("{}:", current_manufacturer);
+            println!(
+                "{}:",
+                current_manufacturer.if_supports_color(Stdout, |t| t.bold()),
+            );
         }
 
         let extensions = console.metadata.extensions.join(", ");
         let folders = console.metadata.folder_names.join(", ");
         println!(
             "  {} [{}]",
-            console.metadata.short_name, console.metadata.platform_name
+            console
+                .metadata
+                .short_name
+                .if_supports_color(Stdout, |t| t.bold()),
+            console
+                .metadata
+                .platform_name
+                .if_supports_color(Stdout, |t| t.cyan()),
         );
         println!("    Extensions: {}", extensions);
         println!("    Folder names: {}", folders);

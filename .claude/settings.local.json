@@ -6,7 +6,11 @@
       "WebFetch(domain:www.nesdev.org)",
       "WebSearch",
       "WebFetch(domain:fceux.com)",
-      "Bash(cargo test:*)"
+      "Bash(cargo test:*)",
+      "WebFetch(domain:gbdev.io)",
+      "WebFetch(domain:gbdev.gg8.se)",
+      "Bash(ls:*)",
+      "WebFetch(domain:docs.rs)"
     ]
   }
 }
