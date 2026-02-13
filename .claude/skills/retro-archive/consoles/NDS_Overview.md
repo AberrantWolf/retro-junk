@@ -31,6 +31,9 @@
 - Document DSi-enhanced features
 - Preserve homebrew and flash cart software
 
+## Format Documentation
+- [NDS ROM Format](/formats/NDS.md) - Header structure, checksums, game code, detection
+
 ## Emulation Storage
 ### Recommended Formats
 - **.nds**: Universal emulator compatibility
