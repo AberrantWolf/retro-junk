@@ -17,6 +17,9 @@
 - **Save Methods**: SRAM, EEPROM, or Flash memory
 - **Backwards Compatibility**: Plays Game Boy and Game Boy Color games
 
+## ROM Format
+See [GBA Format Reference](../formats/GBA.md) for full header layout, checksum algorithm, game code/region mapping, and save type detection.
+
 ## Archival Storage
 ### Recommended Formats
 - **.gba**: Standard Game Boy Advance ROM format

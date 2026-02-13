@@ -10,7 +10,9 @@
       "WebFetch(domain:gbdev.io)",
       "WebFetch(domain:gbdev.gg8.se)",
       "Bash(ls:*)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:problemkaputt.de)",
+      "WebFetch(domain:gbadev.net)"
     ]
   }
 }
