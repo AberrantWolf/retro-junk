@@ -18,6 +18,9 @@
 - **Digital Distribution**: Nintendo eShop downloads
 - **Backwards Compatibility**: Plays Nintendo DS games
 
+## Format Documentation
+- [3DS Format (NCSD/NCCH/CIA)](../formats/3DS.md)
+
 ## Archival Storage
 ### Recommended Formats
 - **.3ds / .cci**: Game card dumps

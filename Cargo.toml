@@ -25,3 +25,4 @@ retro-junk-microsoft = { path = "retro-junk-microsoft" }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 owo-colors = { version = "4", features = ["supports-colors"] }
+sha2 = "0.10"
