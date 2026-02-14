@@ -1,4 +1,7 @@
 # Nintendo 3DS ROM Formats
+
+Used by: [Nintendo 3DS](../consoles/3DS_Overview.md)
+
 ## File Extensions
 - `.3ds` / `.cci` — Game card dumps (NCSD/CCI format)
 - `.cia` — Custom Install Archive (eShop / installable format)

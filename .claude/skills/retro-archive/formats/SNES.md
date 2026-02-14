@@ -1,5 +1,7 @@
 # Super Nintendo Entertainment System (SNES) ROM Format
 
+Used by: [SNES / Super Famicom](../consoles/SNES_Overview.md)
+
 ## File Extensions
 - `.sfc` - Super Famicom ROMs (most common)
 - `.smc` - Super Magicom ROMs (common)

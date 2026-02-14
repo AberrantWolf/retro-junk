@@ -1,5 +1,3 @@
-# Switch_Overview.md
-
 # Nintendo Switch Data Storage Guide
 
 ## Console Overview
@@ -37,7 +35,7 @@
 - **Extracted folders**: For development and modding
 
 ### Considerations
-- Emulation still in early stages (Yuzu, Ryujinx)
+- Yuzu and Ryujinx were shut down in 2024 due to legal action; community forks exist but the emulation landscape is unstable
 - Requires system firmware files
 - Save data encryption complicates preservation
 - Performance varies significantly by title

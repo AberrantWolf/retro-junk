@@ -1,5 +1,3 @@
-# Dreamcast_Overview.md
-
 # Sega Dreamcast Data Storage Guide
 
 ## Console Overview

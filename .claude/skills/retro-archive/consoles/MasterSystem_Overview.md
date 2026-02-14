@@ -1,5 +1,3 @@
-# MasterSystem_Overview.md
-
 # Sega Master System Data Storage Guide
 
 ## Console Overview

@@ -1,5 +1,7 @@
 # Sega Master System ROM Format
 
+Used by: [Sega Master System](../consoles/MasterSystem_Overview.md)
+
 ## File Extensions
 - `.sms` - Sega Master System ROMs
 - `.gg` - Game Gear ROMs (same format)

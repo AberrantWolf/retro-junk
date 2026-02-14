@@ -1,5 +1,3 @@
-# SNES_SuperFamicom_Overview.md
-
 # Super Nintendo Entertainment System / Super Famicom Data Storage Guide
 
 ## Console Overview
@@ -43,7 +41,7 @@
 - Total library size: ~1.7GB (complete set)
 
 ## ROM Format Reference
-See [Saturn.md](../formats/Saturn.md) for detailed header format, checksum algorithms, and detection method.
+See [SNES.md](../formats/SNES.md) for detailed header format, checksum algorithms, and detection method.
 
 ## Digital Storage Considerations
 - **Space Requirements**: Moderate - fits easily on modern storage

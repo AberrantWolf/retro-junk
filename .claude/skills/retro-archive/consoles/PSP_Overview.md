@@ -1,5 +1,3 @@
-# PSP_Overview.md
-
 # Sony PlayStation Portable Data Storage Guide
 
 ## Console Overview

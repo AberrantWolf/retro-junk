@@ -1,5 +1,3 @@
-# NES_Famicom_Overview.md
-
 # Nintendo Entertainment System / Famicom Data Storage Guide
 
 ## Console Overview

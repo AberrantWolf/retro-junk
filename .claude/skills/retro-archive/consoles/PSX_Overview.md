@@ -1,5 +1,3 @@
-# PlayStation_PSX_Overview.md
-
 # Sony PlayStation (PSX) Data Storage Guide
 
 ## Console Overview

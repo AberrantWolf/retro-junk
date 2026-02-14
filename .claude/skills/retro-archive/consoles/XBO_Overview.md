@@ -1,5 +1,3 @@
-# XboxOne_Overview.md
-
 # Microsoft Xbox One Data Storage Guide
 
 ## Console Overview

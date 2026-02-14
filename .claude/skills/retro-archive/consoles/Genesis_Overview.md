@@ -1,5 +1,3 @@
-# Genesis_MegaDrive_Overview.md
-
 # Sega Genesis/Mega Drive Data Storage Guide
 
 ## Console Overview

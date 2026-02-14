@@ -1,5 +1,3 @@
-# PlayStation3_Overview.md
-
 # Sony PlayStation 3 Data Storage Guide
 
 ## Console Overview
@@ -36,7 +34,7 @@
 - **Folder structure**: For extracted game files
 
 ### Considerations
-- Emulation extremely limited (RPCS3 in development)
+- RPCS3 has achieved playable compatibility for a substantial portion of the library
 - Requires powerful hardware for playable performance
 - Complex Cell processor architecture
 - Save data encryption complicates preservation

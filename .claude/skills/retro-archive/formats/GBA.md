@@ -1,5 +1,7 @@
 # Game Boy Advance ROM Format
 
+Used by: [Game Boy Advance](../consoles/GBA_Overview.md)
+
 ## File Extensions
 - `.gba` - Standard GBA ROMs
 - `.mb` - Multiboot ROMs

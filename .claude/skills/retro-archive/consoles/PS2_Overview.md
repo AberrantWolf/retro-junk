@@ -1,5 +1,3 @@
-# PlayStation2_Overview.md
-
 # Sony PlayStation 2 Data Storage Guide
 
 ## Console Overview

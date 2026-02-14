@@ -1,5 +1,3 @@
-# XboxSeriesXS_Overview.md
-
 # Microsoft Xbox Series X/S Data Storage Guide
 
 ## Console Overview

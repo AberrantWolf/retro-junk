@@ -1,5 +1,3 @@
-# GameBoyColor_Overview.md
-
 # Nintendo Game Boy Color Data Storage Guide
 
 ## Console Overview
@@ -7,15 +5,15 @@
 - **Active Years**: 1998-2003
 - **Regional Variants**:
   - Multiple colors available (purple, red, blue, yellow, green, etc.)
-  - Infrared communication port for select games 【3】
+  - Infrared communication port for select games
   - Backwards compatible with original Game Boy games
 
 ## Storage Media
-- **Cartridge Capacity**: Up to 8MB maximum capacity 【4】
+- **Cartridge Capacity**: Up to 8MB maximum capacity
 - **Typical ROM Sizes**: 1MB-8MB for Color-only games
 - **Storage Technology**: ROM with enhanced Memory Bank Controllers
 - **Game Types**: 
-  - Color-enhanced (black cartridges): Full color on GBC, grayscale on GB 【5】【6】
+  - Color-enhanced (black cartridges): Full color on GBC, grayscale on GB
   - Color-only (clear cartridges): GBC exclusive games
 
 ## Archival Storage
@@ -41,7 +39,7 @@
 - Enhanced graphics and sound over original Game Boy
 - Real-time clock support in some games (Pokémon Gold/Silver)
 - Infrared features rarely emulated
-- Total library size: ~1.5GB (complete set) 【7】
+- Total library size: ~1.5GB (complete set)
 
 ## ROM Format Reference
 See [GameBoy.md](../formats/GameBoy.md) for detailed header format, checksum algorithms, and detection method. GB and GBC share the same header format at 0x0100-0x014F, differing only in the CGB flag byte at 0x0143.

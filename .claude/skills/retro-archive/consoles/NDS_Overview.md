@@ -1,5 +1,3 @@
-# NintendoDS_Overview.md
-
 # Nintendo DS Data Storage Guide
 
 ## Console Overview
@@ -12,9 +10,9 @@
   - Nintendo DSi XL (2009): Larger screens
 
 ## Storage Media
-- **Game Card Capacity**: 8MB to 512MB 【10】【11】
+- **Game Card Capacity**: 8MB to 512MB
 - **Typical Sizes**: 16MB-256MB for most games
-- **Storage Technology**: ROM with integrated flash memory for saves 【12】
+- **Storage Technology**: ROM with integrated flash memory for saves
 - **Save Storage**: Integrated EEPROM in game cards
 - **DSiWare**: Downloaded games stored on internal memory or SD card
 
@@ -32,7 +30,7 @@
 - Preserve homebrew and flash cart software
 
 ## Format Documentation
-- [NDS ROM Format](/formats/NDS.md) - Header structure, checksums, game code, detection
+- [NDS ROM Format](../formats/NDS.md) - Header structure, checksums, game code, detection
 
 ## Emulation Storage
 ### Recommended Formats

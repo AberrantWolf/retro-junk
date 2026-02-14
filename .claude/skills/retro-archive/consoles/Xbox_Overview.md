@@ -1,5 +1,3 @@
-# Xbox_Original_Overview.md
-
 # Microsoft Xbox (Original) Data Storage Guide
 
 ## Console Overview

@@ -1,5 +1,7 @@
 # Sony PlayStation 1 CD-ROM Format
 
+Used by: [Sony PlayStation](../consoles/PSX_Overview.md)
+
 ## File Extensions
 - `.bin/.cue` - Binary disc image with cue sheet
 - `.iso` - ISO 9660 disc image

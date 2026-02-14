@@ -1,5 +1,3 @@
-# PlayStation5_Overview.md
-
 # Sony PlayStation 5 Data Storage Guide
 
 ## Console Overview

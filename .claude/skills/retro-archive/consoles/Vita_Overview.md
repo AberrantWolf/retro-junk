@@ -1,5 +1,3 @@
-# PSVita_Overview.md
-
 # Sony PlayStation Vita Data Storage Guide
 
 ## Console Overview

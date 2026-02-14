@@ -1,5 +1,3 @@
-# Nintendo64_Overview.md
-
 # Nintendo 64 Data Storage Guide
 
 ## Console Overview

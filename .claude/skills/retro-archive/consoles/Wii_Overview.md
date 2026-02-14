@@ -1,5 +1,3 @@
-# Wii_Overview.md
-
 # Nintendo Wii Data Storage Guide
 
 ## Console Overview

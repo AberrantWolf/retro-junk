@@ -1,5 +1,3 @@
-# Nintendo3DS_Overview.md
-
 # Nintendo 3DS Data Storage Guide
 
 ## Console Overview
@@ -12,9 +10,9 @@
   - New Nintendo 3DS/XL (2014): Enhanced CPU, additional controls
 
 ## Storage Media
-- **Game Card Capacity**: 1GB, 2GB, or 4GB standard 【13】
-- **Maximum Capacity**: Up to 8GB possible 【14】
-- **Internal Storage**: SD card slot (up to 32GB SDHC) 【15】
+- **Game Card Capacity**: 1GB, 2GB, or 4GB standard
+- **Maximum Capacity**: Up to 8GB possible
+- **Internal Storage**: SD card slot (up to 32GB SDHC)
 - **Digital Distribution**: Nintendo eShop downloads
 - **Backwards Compatibility**: Plays Nintendo DS games
 
@@ -55,4 +53,4 @@
 - **Metadata**: Use scene databases with caution
 - **Legal Issues**: Current emulation development raises legal questions
 - **Future-Proofing**: Preservation efforts ongoing in homebrew community
-- **SD Card Limits**: 32GB maximum for official support, 300 title digital limit 【16】
+- **SD Card Limits**: 32GB maximum for official support, 300 title digital limit

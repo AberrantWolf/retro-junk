@@ -1,5 +1,7 @@
 # Nintendo GameCube Disc Format
 
+Used by: [Nintendo GameCube](../consoles/GameCube_Overview.md)
+
 ## File Extensions
 - `.iso` - Standard disc image
 - `.gcm` - GameCube disc image (1.4GB exactly)

@@ -1,5 +1,7 @@
 # Sega Megadrive / Genesis ROM Format
 
+Used by: [Sega Genesis / Megadrive](../consoles/Genesis_Overview.md)
+
 ## File Extensions
 - `.md` - Megadrive ROMs
 - `.gen` - Genesis ROMs

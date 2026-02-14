@@ -1,5 +1,3 @@
-# GameBoy_Original_Overview.md
-
 # Nintendo Game Boy Data Storage Guide
 
 ## Console Overview
@@ -12,8 +10,8 @@
   - Various colors and special editions
 
 ## Storage Media
-- **Cartridge Capacity**: 32KB initial limit, up to 1MB with Memory Bank Controllers 【0】
-- **Typical ROM Sizes**: 32KB-1MB (8 Mbit maximum) 【1】
+- **Cartridge Capacity**: 32KB initial limit, up to 1MB with Memory Bank Controllers
+- **Typical ROM Sizes**: 32KB-1MB (8 Mbit maximum)
 - **Storage Technology**: ROM chips with Memory Bank Controllers (MBC1-MBC5)
 - **Save Storage**: Battery-backed SRAM (8KB typical)
 
@@ -40,7 +38,7 @@
 - Simple 8-bit architecture ensures perfect emulation
 - Battery saves stored as separate .sav files
 - Super Game Boy features require specific emulator support
-- Total library size: ~800MB (complete set) 【2】
+- Total library size: ~800MB (complete set)
 
 ## ROM Format Reference
 See [GameBoy.md](../formats/GameBoy.md) for detailed header format, checksum algorithms, and detection method. GB and GBC share the same header format at 0x0100-0x014F.

@@ -1,5 +1,7 @@
 # Game Boy / Game Boy Color ROM Format
 
+Used by: [Game Boy](../consoles/GB_Overview.md), [Game Boy Color](../consoles/GBC_Overview.md)
+
 ## File Extensions
 - `.gb` - Game Boy ROMs
 - `.gbc` - Game Boy Color ROMs

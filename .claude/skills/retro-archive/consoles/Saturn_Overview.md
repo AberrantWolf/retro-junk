@@ -1,5 +1,3 @@
-# Saturn_Overview.md
-
 # Sega Saturn Data Storage Guide
 
 ## Console Overview

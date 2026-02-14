@@ -1,5 +1,3 @@
-# Xbox360_Overview.md
-
 # Microsoft Xbox 360 Data Storage Guide
 
 ## Console Overview

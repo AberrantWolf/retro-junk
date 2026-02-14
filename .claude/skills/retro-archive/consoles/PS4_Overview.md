@@ -1,5 +1,3 @@
-# PlayStation4_Overview.md
-
 # Sony PlayStation 4 Data Storage Guide
 
 ## Console Overview

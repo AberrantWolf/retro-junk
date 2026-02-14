@@ -1,5 +1,3 @@
-# GameBoyAdvance_Overview.md
-
 # Nintendo Game Boy Advance Data Storage Guide
 
 ## Console Overview
@@ -7,7 +5,7 @@
 - **Active Years**: 2001-2010
 - **Regional Variants**:
   - Game Boy Advance (2001): Original horizontal design
-  - Game Boy Advance SP (2003): Clamshell design with backlight 【8】
+  - Game Boy Advance SP (2003): Clamshell design with frontlight (AGS-001) / backlight (AGS-101)
   - Game Boy Micro (2005): Ultra-compact design, no GB/GBC compatibility
 
 ## Storage Media
@@ -44,7 +42,7 @@ See [GBA Format Reference](../formats/GBA.md) for full header layout, checksum a
 - Save data stored in separate files
 - Real-time clock support in some games
 - Link cable features require special emulator setup
-- Total library size: ~24GB (complete set) 【9】
+- Total library size: ~24GB (complete set)
 
 ## Digital Storage Considerations
 - **Space Requirements**: Moderate - fits on standard USB drive

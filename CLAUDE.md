@@ -2,6 +2,11 @@
 
 Rust workspace for analyzing retro game ROM files and disc images. Identifies format, extracts header metadata, and validates file integrity.
 
+**IMPORTANT:** When learning about consoles and file formats, always document where information was learned. It is important to cache knowledge, as well as to give credit where that knowledge came from originally.
+
+- The correct location for documenting file formats is: `.claude/skills/retro-archive/formats/`
+- The correct location for documenting game system and archival information is: `.claude/skills/retro-archive/consoles/`
+
 ## Build & Test
 
 ```bash

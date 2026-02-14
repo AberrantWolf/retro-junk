@@ -1,5 +1,7 @@
 # Nintendo DS ROM Format
 
+Used by: [Nintendo DS](../consoles/NDS_Overview.md)
+
 ## File Extensions
 - `.nds` - Standard NDS ROMs
 - `.dsi` - DSi-enhanced or DSi-only ROMs
