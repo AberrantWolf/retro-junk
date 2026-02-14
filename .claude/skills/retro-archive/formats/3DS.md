@@ -1,5 +1,4 @@
 # Nintendo 3DS ROM Formats
-
 ## File Extensions
 - `.3ds` / `.cci` — Game card dumps (NCSD/CCI format)
 - `.cia` — Custom Install Archive (eShop / installable format)
@@ -253,3 +252,11 @@ The ExeFS `icon` file uses **SMDH format** (magic `"SMDH"`, 0x36C0 bytes):
 ## Maker Codes
 
 Same 2-character ASCII licensee table as NDS/GBA.
+
+## Sources
+
+- [3dbrew NCCH Format](https://www.3dbrew.org/wiki/NCCH)
+- [3dbrew File Formats Category](https://www.3dbrew.org/wiki/Category:File_formats)
+- [RetroReversing 3DS File Formats](https://www.retroreversing.com/3DSFileFormats)
+- [Alternative 3DS Formats](https://frds.github.io/3DSFileFormats)
+

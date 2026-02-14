@@ -42,6 +42,9 @@
 - Network features require special setup
 - Total library size: ~8TB+ uncompressed
 
+## ROM Format Reference
+See [PS2.md](../formats/PS2.md) for detailed header format, checksum algorithms, and detection method.
+
 ## Digital Storage Considerations
 - **Space Requirements**: Very high - multi-TB storage needed
 - **Backup Strategy**: Critical due to large collection size

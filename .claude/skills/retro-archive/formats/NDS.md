@@ -223,3 +223,8 @@ Same 2-character ASCII licensee code table as GBA. Common codes:
 | 52 | Activision |
 | 69 | EA |
 | 78 | THQ |
+
+## Source
+
+- [GBATEK DS Cartridge Header](https://problemkaputt.de/gbatek-ds-cartridge-header.htm)
+- [RetroReversing DS File Formats](https://www.retroreversing.com/DSFileFormats)

@@ -42,6 +42,9 @@
 - Progressive scan and widescreen patches available
 - Total library size: ~570GB uncompressed, ~300GB with RVZ
 
+## ROM Format Reference
+See [PSX.md](../formats/PSX.md) for detailed header format, checksum algorithms, and detection method.
+
 ## Digital Storage Considerations
 - **Space Requirements**: High - requires substantial storage
 - **Backup Strategy**: Essential due to large file sizes

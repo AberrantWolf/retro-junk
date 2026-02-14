@@ -41,6 +41,9 @@
 - Some games require specific emulator settings
 - Total library size: ~5.5GB (complete international set)
 
+## ROM Format Reference
+See [N64.md](../formats/N64.md) for detailed header format, checksum algorithms, and detection method.
+
 ## Digital Storage Considerations
 - **Space Requirements**: Moderate - manageable on modern storage
 - **Backup Strategy**: Multiple backups recommended

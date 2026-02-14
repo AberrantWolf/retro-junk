@@ -116,3 +116,10 @@ Formula: `32768 << code` bytes.
 - If old licensee code (0x014B) is 0x33, use the 2-character ASCII new licensee code at 0x0144-0x0145
 - Otherwise, use the old licensee code byte directly
 - CGB-era games typically use the new licensee code system
+
+## Sources
+
+- [Cartridge Header (GBdev)](https://gbdev.gg8.se/wiki/articles/The_Cartridge_Header)
+- [Pan Docs Cartridge Header](https://gbdev.io/pandocs/The_Cartridge_Header.html)
+- [ROM Header Info](https://gbdev.gg8.se/wiki/articles/Gameboy_ROM_Header_Info)
+

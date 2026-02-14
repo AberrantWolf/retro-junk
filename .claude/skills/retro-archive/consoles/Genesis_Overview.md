@@ -42,6 +42,9 @@
 - 32X games need special emulator support
 - Total library size: ~500MB (cartridge games only)
 
+## ROM Format Reference
+See [Megadrive_Genesis.md](../formats/Megadrive_Genesis.md) for detailed header format, checksum algorithms, and detection method.
+
 ## Digital Storage Considerations
 - **Space Requirements**: Low - manageable collection size
 - **Backup Strategy**: Easy to preserve completely

@@ -112,3 +112,8 @@ The 2-character ASCII maker code at 0xB0 uses the same licensee code table as Ga
 | 52 | Activision |
 | 69 | EA |
 | 78 | THQ |
+
+## Sources
+
+- [GBATEK Cartridge Header](http://problemkaputt.de/gbatek-gba-cartridge-header.htm)
+- [GBATEK GitHub Mirror](https://mgba-emu.github.io/gbatek/)

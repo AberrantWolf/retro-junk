@@ -42,6 +42,9 @@
 - MSU-1 games need accompanying audio files
 - Total library size: ~1.7GB (complete set)
 
+## ROM Format Reference
+See [Saturn.md](../formats/Saturn.md) for detailed header format, checksum algorithms, and detection method.
+
 ## Digital Storage Considerations
 - **Space Requirements**: Moderate - fits easily on modern storage
 - **Backup Strategy**: Regular backups recommended

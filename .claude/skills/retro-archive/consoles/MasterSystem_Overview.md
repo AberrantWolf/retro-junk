@@ -41,6 +41,9 @@
 - Save data stored separately when present
 - Total library size: ~50MB (complete set)
 
+## ROM Format Reference
+See [MasterSystem.md](../formats/MasterSystem.md) for detailed header format, checksum algorithms, and detection method.
+
 ## Digital Storage Considerations
 - **Space Requirements**: Minimal - entire library very small
 - **Backup Strategy**: Easy to backup completely

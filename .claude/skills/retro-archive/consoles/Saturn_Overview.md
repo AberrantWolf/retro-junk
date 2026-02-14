@@ -42,6 +42,9 @@
 - BIOS files required for emulation
 - Total library size: ~400GB uncompressed
 
+## ROM Format Reference
+See [Saturn.md](../formats/Saturn.md) for detailed header format, checksum algorithms, and detection method.
+
 ## Digital Storage Considerations
 - **Space Requirements**: Moderate to high
 - **Backup Strategy**: Important for rare game preservation

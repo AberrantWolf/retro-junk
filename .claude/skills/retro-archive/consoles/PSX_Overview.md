@@ -42,6 +42,9 @@
 - Multi-disc games need disc swapping support
 - Total library size: ~400GB uncompressed
 
+## ROM Format Reference
+See [PSX.md](../formats/PSX.md) for detailed header format, checksum algorithms, and detection method.
+
 ## Digital Storage Considerations
 - **Space Requirements**: Moderate to high
 - **Backup Strategy**: Important for disc preservation
