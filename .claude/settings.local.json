@@ -19,7 +19,12 @@
       "WebFetch(domain:melonds.kuribo64.net)",
       "WebFetch(domain:raw.githubusercontent.com)",
       "WebFetch(domain:corgids.wordpress.com)",
-      "WebFetch(domain:www.3dbrew.org)"
+      "WebFetch(domain:www.3dbrew.org)",
+      "WebFetch(domain:n64brew.dev)",
+      "WebFetch(domain:n64dev.org)",
+      "WebFetch(domain:www.neperos.com)",
+      "Bash(gh api:*)",
+      "WebFetch(domain:pypi.org)"
     ]
   }
 }
