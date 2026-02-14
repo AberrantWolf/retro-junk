@@ -24,7 +24,10 @@
       "WebFetch(domain:n64dev.org)",
       "WebFetch(domain:www.neperos.com)",
       "Bash(gh api:*)",
-      "WebFetch(domain:pypi.org)"
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:wiki.redump.org)",
+      "WebFetch(domain:redump.org)",
+      "WebFetch(domain:www.screenscraper.fr)"
     ]
   }
 }

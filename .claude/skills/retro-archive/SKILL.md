@@ -23,6 +23,11 @@ Notable Sources:
 * NoIntro
   * DAT files can be found [here](https://github.com/libretro-mirrors/nointro-db/tree/master)
   * Some consoles have multiple DAT files (regular games, and digital games and DLC are separate)
+* Redump (redump.org)
+  * Covers disc-based systems (CD, DVD, GD-ROM, Blu-ray) — see [formats/Redump.md](formats/Redump.md)
+  * DAT files downloadable directly from `http://redump.org/datfile/<system>/` (no login required)
+  * Uses Logiqx XML format with per-track CRC32, MD5, and SHA1 checksums
+  * Standard for verifying BIN/CUE disc images
 
 ## More Information
 
