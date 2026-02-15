@@ -4,10 +4,10 @@
 //! - Master System ROMs (.sms)
 //! - Mark III ROMs
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_core::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for Sega Master System ROMs.
 #[derive(Debug, Default)]
@@ -59,5 +59,9 @@ impl RomAnalyzer for MasterSystemAnalyzer {
 
     fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
         false // Not yet implemented
+    }
+
+    fn dat_name(&self) -> Option<&'static str> {
+        Some("Sega - Master System - Mark III")
     }
 }

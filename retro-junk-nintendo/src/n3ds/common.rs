@@ -4,11 +4,11 @@
 //! detection, title ID formatting, media type names, content type decoding,
 //! origin heuristics, and SHA-256 verification.
 
-use retro_junk_lib::Region;
+use retro_junk_core::Region;
 use sha2::{Digest, Sha256};
 use std::io::SeekFrom;
 
-use retro_junk_lib::{AnalysisError, ReadSeek};
+use retro_junk_core::{AnalysisError, ReadSeek};
 
 // ---------------------------------------------------------------------------
 // Byte reading helpers

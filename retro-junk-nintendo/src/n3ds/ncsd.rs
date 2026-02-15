@@ -1,9 +1,9 @@
 //! NCSD (CCI) header parsing and analysis for Nintendo 3DS game card dumps.
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
-use retro_junk_lib::{
+use retro_junk_core::{
     AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, RomIdentification,
 };
 
@@ -657,7 +657,7 @@ mod tests {
         assert_eq!(result.maker_code.as_deref(), Some("Nintendo"));
         assert_eq!(
             result.regions,
-            vec![retro_junk_lib::Region::Usa]
+            vec![retro_junk_core::Region::Usa]
         );
         assert_eq!(result.extra.get("format").unwrap(), "CCI (NCSD)");
         assert_eq!(result.extra.get("product_code").unwrap(), "CTR-P-ABCE");

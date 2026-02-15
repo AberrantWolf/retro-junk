@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-retro-junk-lib.workspace = true
+retro-junk-core.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
 crc32fast.workspace = true

@@ -4,11 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-retro-junk-lib.workspace = true
 thiserror.workspace = true
 quick-xml.workspace = true
-crc32fast.workspace = true
-sha1.workspace = true
 reqwest.workspace = true
 dirs.workspace = true
 serde.workspace = true

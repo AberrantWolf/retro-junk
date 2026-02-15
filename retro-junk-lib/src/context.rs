@@ -1,27 +1,8 @@
-//! Analysis context and options for ROM analysis.
+//! Analysis context for ROM analysis.
 
 use std::path::Path;
 
-use crate::RomAnalyzer;
-
-/// Options that control how ROM analysis is performed.
-#[derive(Debug, Clone, Default)]
-pub struct AnalysisOptions {
-    /// Quick mode: read as little data as possible.
-    /// Useful for network shares or slow storage.
-    pub quick: bool,
-}
-
-impl AnalysisOptions {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn quick(mut self, quick: bool) -> Self {
-        self.quick = quick;
-        self
-    }
-}
+use retro_junk_core::RomAnalyzer;
 
 /// Metadata about a registered console.
 #[derive(Debug, Clone)]

@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 /// Errors that can occur during DAT file operations.
 #[derive(Debug, thiserror::Error)]
 pub enum DatError {
@@ -15,17 +13,11 @@ pub enum DatError {
     #[error("Invalid DAT file: {0}")]
     InvalidDat(String),
 
-    #[error("Unknown system: {0}")]
-    UnknownSystem(String),
-
     #[error("Cache error: {0}")]
     Cache(String),
 
     #[error("Download failed: {0}")]
     Download(String),
-
-    #[error("Rename conflict: multiple files map to {target:?}")]
-    RenameConflict { target: PathBuf },
 
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),

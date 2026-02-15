@@ -1,7 +1,15 @@
 use std::collections::HashMap;
 
 use crate::dat::{DatFile, DatGame};
-use crate::hasher::FileHashes;
+
+/// Hash results for a file.
+#[derive(Debug, Clone)]
+pub struct FileHashes {
+    pub crc32: String,
+    pub sha1: Option<String>,
+    /// Size of the data that was hashed (after header stripping)
+    pub data_size: u64,
+}
 
 /// How a match was determined.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,34 +54,6 @@ fn normalize_serial(serial: &str) -> String {
     serial.to_uppercase().replace(' ', "")
 }
 
-/// Extract the core game code from a serial number.
-///
-/// Different sources use different serial formats for the same game:
-/// - ROM headers (analyzers): `NUS-NSME-USA` (prefix-code-region)
-/// - LibRetro DATs: `NSME` (just the 4-char game code)
-/// - Some DATs: `T-48073-00` (Sega product codes, left as-is)
-///
-/// This function extracts the inner game code from common prefixed formats:
-/// - `NUS-XXXX-YYY` → `XXXX` (N64)
-/// - `SNS-XX-YYY` → `SNS-XX-YYY` (SNES — kept as-is, variable length)
-/// - `DMG-XXXX-YYY` → `XXXX` (Game Boy)
-/// - `AGB-XXXX-YYY` → `XXXX` (GBA)
-/// - `NTR-XXXX-YYY` → `XXXX` (NDS)
-///
-/// Returns None if the serial doesn't match a known prefixed pattern.
-fn extract_game_code(serial: &str) -> Option<&str> {
-    let parts: Vec<&str> = serial.split('-').collect();
-    if parts.len() >= 3 {
-        match parts[0] {
-            "NUS" | "DMG" | "CGB" | "AGB" | "NTR" => {
-                // Second segment is the game code
-                return Some(parts[1]);
-            }
-            _ => {}
-        }
-    }
-    None
-}
 
 impl DatIndex {
     /// Build an index from a parsed DAT file.
@@ -143,8 +123,12 @@ impl DatIndex {
     ///
     /// Handles the format gap between analyzers and DATs:
     /// - Analyzer may produce `NUS-NSME-USA`, DAT may have `NSME`
-    /// - Tries exact match first, then extracts core game code and retries
-    pub fn match_by_serial(&self, serial: &str) -> Option<MatchResult> {
+    /// - Tries exact match first, then tries with the pre-extracted game code
+    ///
+    /// The `game_code` parameter is the platform-specific extracted code
+    /// (e.g., `NSME` from `NUS-NSME-USA`), provided by the analyzer's
+    /// `extract_dat_game_code()` method.
+    pub fn match_by_serial(&self, serial: &str, game_code: Option<&str>) -> Option<MatchResult> {
         let norm = normalize_serial(serial);
 
         // Try exact match first
@@ -156,9 +140,10 @@ impl DatIndex {
             });
         }
 
-        // Try extracting the core game code (e.g., NUS-NSME-USA → NSME)
-        if let Some(code) = extract_game_code(&norm) {
-            if let Some(&(gi, ri)) = self.by_serial.get(code) {
+        // Try with the pre-extracted game code
+        if let Some(code) = game_code {
+            let norm_code = normalize_serial(code);
+            if let Some(&(gi, ri)) = self.by_serial.get(&norm_code) {
                 return Some(MatchResult {
                     game_index: gi,
                     rom_index: ri,
@@ -262,7 +247,7 @@ mod tests {
     fn test_match_by_serial_exact() {
         let index = DatIndex::from_dat(make_test_dat());
         // Exact match: DAT has "SNS-ZL-USA", query "SNS-ZL-USA"
-        let result = index.match_by_serial("SNS-ZL-USA").unwrap();
+        let result = index.match_by_serial("SNS-ZL-USA", None).unwrap();
         assert_eq!(result.game_index, 3);
         assert_eq!(result.method, MatchMethod::Serial);
     }
@@ -271,7 +256,7 @@ mod tests {
     fn test_match_by_serial_short_code() {
         let index = DatIndex::from_dat(make_test_dat());
         // DAT has short code "NSME", query with short code "NSME"
-        let result = index.match_by_serial("NSME").unwrap();
+        let result = index.match_by_serial("NSME", None).unwrap();
         assert_eq!(result.game_index, 1);
         assert_eq!(result.method, MatchMethod::Serial);
     }
@@ -279,8 +264,9 @@ mod tests {
     #[test]
     fn test_match_by_serial_long_to_short() {
         // Analyzer produces NUS-NSME-USA, DAT has NSME — should still match
+        // via pre-extracted game code
         let index = DatIndex::from_dat(make_test_dat());
-        let result = index.match_by_serial("NUS-NSME-USA").unwrap();
+        let result = index.match_by_serial("NUS-NSME-USA", Some("NSME")).unwrap();
         assert_eq!(result.game_index, 1);
         assert_eq!(index.games[result.game_index].name, "Super Mario 64 (USA)");
     }
@@ -289,13 +275,13 @@ mod tests {
     fn test_serial_distinguishes_regions() {
         let index = DatIndex::from_dat(make_test_dat());
 
-        // Analyzer produces NUS-NSME-USA → extracts NSME → matches DAT's NSME
-        let usa = index.match_by_serial("NUS-NSME-USA").unwrap();
+        // Analyzer produces NUS-NSME-USA, extracts NSME → matches DAT's NSME
+        let usa = index.match_by_serial("NUS-NSME-USA", Some("NSME")).unwrap();
         assert_eq!(usa.game_index, 1);
         assert_eq!(index.games[usa.game_index].name, "Super Mario 64 (USA)");
 
-        // Analyzer produces NUS-NSMJ-JPN → extracts NSMJ → matches DAT's NSMJ
-        let jpn = index.match_by_serial("NUS-NSMJ-JPN").unwrap();
+        // Analyzer produces NUS-NSMJ-JPN, extracts NSMJ → matches DAT's NSMJ
+        let jpn = index.match_by_serial("NUS-NSMJ-JPN", Some("NSMJ")).unwrap();
         assert_eq!(jpn.game_index, 2);
         assert_eq!(index.games[jpn.game_index].name, "Super Mario 64 (Japan)");
     }
@@ -330,7 +316,7 @@ mod tests {
             data_size: 999,
         };
         assert!(index.match_by_hash(999, &hashes).is_none());
-        assert!(index.match_by_serial("UNKNOWN").is_none());
+        assert!(index.match_by_serial("UNKNOWN", None).is_none());
     }
 
     #[test]

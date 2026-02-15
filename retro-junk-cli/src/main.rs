@@ -12,8 +12,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
-use retro_junk_dat::{
-    self, execute_renames, format_match_method, plan_renames, RenameOptions, RenameProgress,
+use retro_junk_lib::rename::{
+    execute_renames, format_match_method, plan_renames, RenameOptions, RenamePlan, RenameProgress,
 };
 use retro_junk_lib::{AnalysisContext, AnalysisOptions, RomAnalyzer, RomIdentification};
 
@@ -110,7 +110,7 @@ fn main() {
         Commands::Cache { action } => match action {
             CacheAction::List => run_cache_list(),
             CacheAction::Clear => run_cache_clear(),
-            CacheAction::Fetch { systems } => run_cache_fetch(systems),
+            CacheAction::Fetch { systems } => run_cache_fetch(&ctx, systems),
         },
     }
 }
@@ -765,10 +765,8 @@ fn run_rename(
         }
 
         for console in consoles_to_use {
-            let short_name = console.metadata.short_name;
-
-            // Check if this system has a DAT mapping
-            if retro_junk_dat::systems::find_system(short_name).is_none() {
+            // Check if this system has DAT support via the analyzer trait
+            if console.analyzer.dat_name().is_none() {
                 eprintln!(
                     "  {} Skipping \"{}\" — no DAT support yet",
                     "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
@@ -834,7 +832,6 @@ fn run_rename(
 
             match plan_renames(
                 &path,
-                short_name,
                 console.analyzer.as_ref(),
                 &rename_options,
                 &progress_callback,
@@ -876,7 +873,7 @@ fn run_rename(
                         total_already_correct += plan.already_correct.len();
                         total_unmatched += plan.unmatched.len();
                         total_conflicts.extend(
-                            plan.conflicts.iter().map(|(_, msg)| msg.clone()),
+                            plan.conflicts.iter().map(|(_, msg): &(PathBuf, String)| msg.clone()),
                         );
                     }
                 }
@@ -901,8 +898,14 @@ fn run_rename(
         );
         println!();
         println!("Supported systems for rename:");
-        for name in retro_junk_dat::systems::supported_short_names() {
-            println!("  {}", name);
+        for console in ctx.consoles() {
+            if let Some(dat_name) = console.analyzer.dat_name() {
+                println!(
+                    "  {} [{}]",
+                    console.metadata.short_name,
+                    dat_name,
+                );
+            }
         }
         return;
     }
@@ -950,7 +953,7 @@ fn run_rename(
 }
 
 /// Print the rename plan for a single console.
-fn print_rename_plan(plan: &retro_junk_dat::RenamePlan) {
+fn print_rename_plan(plan: &RenamePlan) {
     // Renames
     for rename in &plan.renames {
         let source_name = rename
@@ -1043,7 +1046,7 @@ fn run_list(ctx: &AnalysisContext) {
 
         let extensions = console.metadata.extensions.join(", ");
         let folders = console.metadata.folder_names.join(", ");
-        let has_dat = retro_junk_dat::systems::find_system(console.metadata.short_name).is_some();
+        let has_dat = console.analyzer.dat_name().is_some();
 
         println!(
             "  {} [{}]{}",
@@ -1141,24 +1144,53 @@ fn run_cache_clear() {
 }
 
 /// Fetch DAT files for specified systems.
-fn run_cache_fetch(systems: Vec<String>) {
-    let to_fetch: Vec<String> = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
-        retro_junk_dat::systems::supported_short_names()
-            .into_iter()
-            .map(|s| s.to_string())
+fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
+    let to_fetch: Vec<(String, String)> = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
+        ctx.consoles()
+            .filter_map(|c| {
+                c.analyzer
+                    .dat_name()
+                    .map(|dat_name| (c.metadata.short_name.to_string(), dat_name.to_string()))
+            })
             .collect()
     } else {
         systems
+            .into_iter()
+            .filter_map(|short_name| {
+                let console = ctx.get_by_short_name(&short_name);
+                match console {
+                    Some(c) => match c.analyzer.dat_name() {
+                        Some(dat_name) => Some((short_name, dat_name.to_string())),
+                        None => {
+                            eprintln!(
+                                "  {} No DAT support for '{}'",
+                                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                                short_name,
+                            );
+                            None
+                        }
+                    },
+                    None => {
+                        eprintln!(
+                            "  {} Unknown system '{}'",
+                            "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                            short_name,
+                        );
+                        None
+                    }
+                }
+            })
+            .collect()
     };
 
-    for short_name in &to_fetch {
+    for (short_name, dat_name) in &to_fetch {
         print!(
             "  Fetching {}... ",
             short_name.if_supports_color(Stdout, |t| t.bold()),
         );
         std::io::stdout().flush().unwrap();
 
-        match retro_junk_dat::cache::fetch(short_name) {
+        match retro_junk_dat::cache::fetch(short_name, dat_name) {
             Ok(path) => {
                 let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 println!(

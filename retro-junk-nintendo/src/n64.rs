@@ -8,14 +8,14 @@
 //! Detects CIC variant from boot code and uses the correct checksum algorithm
 //! for CIC-6101/6102, 6103, 6105, and 6106.
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::n64::{N64Format, detect_n64_format, normalize_to_big_endian};
+use crate::n64_byteorder::{N64Format, detect_n64_format, normalize_to_big_endian};
 #[cfg(test)]
-use retro_junk_lib::n64::MAGIC_Z64;
-use retro_junk_lib::{
+use crate::n64_byteorder::MAGIC_Z64;
+use retro_junk_core::{
     AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
     RomAnalyzer, RomIdentification,
 };
@@ -500,6 +500,38 @@ impl RomAnalyzer for N64Analyzer {
         let _ = reader.seek(SeekFrom::Start(0));
 
         detect_n64_format(&magic).is_some()
+    }
+
+    fn dat_name(&self) -> Option<&'static str> {
+        Some("Nintendo - Nintendo 64")
+    }
+
+    fn dat_chunk_normalizer(
+        &self,
+        reader: &mut dyn ReadSeek,
+        header_offset: u64,
+    ) -> Result<Option<Box<dyn FnMut(&mut [u8])>>, AnalysisError> {
+        reader.seek(SeekFrom::Start(header_offset))?;
+        let mut magic = [0u8; 4];
+        reader.read_exact(&mut magic)?;
+        reader.seek(SeekFrom::Start(header_offset))?;
+
+        match detect_n64_format(&magic) {
+            Some(N64Format::Z64) | None => Ok(None),
+            Some(fmt) => Ok(Some(Box::new(move |buf: &mut [u8]| {
+                normalize_to_big_endian(buf, fmt);
+            }))),
+        }
+    }
+
+    fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
+        // NUS-XXXX-YYY → XXXX
+        let parts: Vec<&str> = serial.split('-').collect();
+        if parts.len() >= 3 && parts[0] == "NUS" {
+            Some(parts[1].to_string())
+        } else {
+            None
+        }
     }
 }
 

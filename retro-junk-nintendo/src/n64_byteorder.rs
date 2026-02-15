@@ -1,8 +1,7 @@
-//! Shared N64 byte-order detection and normalization.
+//! N64 byte-order detection and normalization.
 //!
 //! N64 ROMs exist in three byte orderings. This module provides the canonical
-//! implementation for detecting and normalizing byte order, shared between
-//! the ROM analyzer (`retro-junk-nintendo`) and the DAT hasher (`retro-junk-dat`).
+//! implementation for detecting and normalizing byte order.
 
 /// N64 ROM byte-order format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

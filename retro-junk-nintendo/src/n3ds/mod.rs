@@ -17,10 +17,10 @@ mod common;
 mod ncch;
 pub(crate) mod ncsd;
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
-use retro_junk_lib::{
+use retro_junk_core::{
     AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
 };
 
@@ -188,7 +188,7 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    use retro_junk_lib::{AnalysisOptions, Region, RomAnalyzer};
+    use retro_junk_core::{AnalysisOptions, Region, RomAnalyzer};
 
     /// Minimal CCI for can_handle / format detection tests.
     fn make_cci_minimal() -> Vec<u8> {

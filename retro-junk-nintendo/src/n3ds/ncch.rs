@@ -1,6 +1,6 @@
 //! NCCH partition header parsing for Nintendo 3DS.
 
-use retro_junk_lib::{AnalysisError, ReadSeek};
+use retro_junk_core::{AnalysisError, ReadSeek};
 use std::io::SeekFrom;
 
 use super::common::{read_ascii, read_u32_le, read_u64_le};

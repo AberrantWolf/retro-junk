@@ -13,6 +13,7 @@
 //! - Nintendo DS
 //! - Nintendo 3DS
 
+pub(crate) mod n64_byteorder;
 pub mod nes;
 pub mod snes;
 pub mod n64;

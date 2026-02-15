@@ -4,10 +4,10 @@
 //! - WUD images (.wud)
 //! - WUX compressed images (.wux)
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_core::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for Nintendo Wii U disc images.
 #[derive(Debug, Default)]

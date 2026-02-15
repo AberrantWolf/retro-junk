@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::dat::{self, DatFile};
 use crate::error::DatError;
-use crate::systems;
 
 const GITHUB_MIRROR_BASE: &str =
     "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/";
@@ -22,6 +21,9 @@ pub struct CachedDat {
     pub downloaded: String,
     pub dat_version: String,
     pub file_size: u64,
+    /// NoIntro DAT name (e.g., "Nintendo - Nintendo 64")
+    #[serde(default)]
+    pub dat_name: String,
 }
 
 /// Metadata file tracking all cached DATs.
@@ -93,19 +95,19 @@ fn dat_file_path(short_name: &str) -> Result<PathBuf, DatError> {
     Ok(cache_dir()?.join(format!("{short_name}.dat")))
 }
 
-/// Construct the download URL for a system's DAT file.
-fn download_url(system: &systems::SystemMapping) -> String {
+/// Construct the download URL for a DAT file.
+fn download_url(dat_name: &str) -> String {
     // GitHub mirror uses the DAT name as the filename with .dat extension
-    let encoded = system.dat_name.replace(' ', "%20");
+    let encoded = dat_name.replace(' ', "%20");
     format!("{GITHUB_MIRROR_BASE}{encoded}.dat")
 }
 
 /// Download and cache a DAT file for a system.
-pub fn fetch(short_name: &str) -> Result<PathBuf, DatError> {
-    let system = systems::find_system(short_name)
-        .ok_or_else(|| DatError::UnknownSystem(short_name.to_string()))?;
-
-    let url = download_url(system);
+///
+/// `short_name` is used as the cache key. `dat_name` is the NoIntro DAT name
+/// used to construct the download URL (e.g., "Nintendo - Nintendo 64").
+pub fn fetch(short_name: &str, dat_name: &str) -> Result<PathBuf, DatError> {
+    let url = download_url(dat_name);
     let dat_path = dat_file_path(short_name)?;
 
     // Ensure cache directory exists
@@ -143,6 +145,7 @@ pub fn fetch(short_name: &str) -> Result<PathBuf, DatError> {
             downloaded: chrono_now(),
             dat_version: dat.version.clone(),
             file_size: bytes.len() as u64,
+            dat_name: dat_name.to_string(),
         },
     );
     save_meta(&meta)?;
@@ -152,10 +155,13 @@ pub fn fetch(short_name: &str) -> Result<PathBuf, DatError> {
 
 /// Load a DAT file, either from a custom directory or from the cache.
 /// If not cached and no custom dir is provided, downloads it automatically.
-pub fn load_dat(short_name: &str, dat_dir: Option<&Path>) -> Result<DatFile, DatError> {
+///
+/// `short_name` is used as the cache key. `dat_name` is the NoIntro DAT name
+/// used for downloading and for matching files in custom directories.
+pub fn load_dat(short_name: &str, dat_name: &str, dat_dir: Option<&Path>) -> Result<DatFile, DatError> {
     if let Some(dir) = dat_dir {
         // Try to find a matching DAT in the custom directory
-        let path = find_dat_in_dir(short_name, dir)?;
+        let path = find_dat_in_dir(short_name, dat_name, dir)?;
         return dat::parse_dat_file(&path);
     }
 
@@ -166,22 +172,18 @@ pub fn load_dat(short_name: &str, dat_dir: Option<&Path>) -> Result<DatFile, Dat
     }
 
     // Download and cache
-    let path = fetch(short_name)?;
+    let path = fetch(short_name, dat_name)?;
     dat::parse_dat_file(&path)
 }
 
 /// Find a DAT file in a user-provided directory.
 /// Looks for `{short_name}.dat` or matches by DAT name in the file.
-fn find_dat_in_dir(short_name: &str, dir: &Path) -> Result<PathBuf, DatError> {
+fn find_dat_in_dir(short_name: &str, dat_name: &str, dir: &Path) -> Result<PathBuf, DatError> {
     // Try direct match: short_name.dat
     let direct = dir.join(format!("{short_name}.dat"));
     if direct.exists() {
         return Ok(direct);
     }
-
-    // Try matching by NoIntro DAT name
-    let system = systems::find_system(short_name)
-        .ok_or_else(|| DatError::UnknownSystem(short_name.to_string()))?;
 
     // Look for files containing the DAT name
     if let Ok(entries) = fs::read_dir(dir) {
@@ -193,8 +195,8 @@ fn find_dat_in_dir(short_name: &str, dir: &Path) -> Result<PathBuf, DatError> {
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
                 // Check if the filename contains the NoIntro system name
-                if name.contains(system.dat_name)
-                    || system.dat_name.contains(name)
+                if name.contains(dat_name)
+                    || dat_name.contains(name)
                 {
                     return Ok(path);
                 }
@@ -214,10 +216,11 @@ pub fn list() -> Result<Vec<CacheEntry>, DatError> {
     let mut entries = Vec::new();
 
     for (short_name, cached) in &meta.dats {
-        let system = systems::find_system(short_name);
-        let dat_name = system
-            .map(|s| s.dat_name.to_string())
-            .unwrap_or_else(|| short_name.clone());
+        let dat_name = if cached.dat_name.is_empty() {
+            short_name.clone()
+        } else {
+            cached.dat_name.clone()
+        };
 
         entries.push(CacheEntry {
             short_name: short_name.clone(),

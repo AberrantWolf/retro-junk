@@ -21,20 +21,47 @@ cargo run -p retro-junk-cli -- analyze --root /path/to/roms
 ## Architecture
 
 **Workspace crates:**
-- `retro-junk-lib` — core types and `RomAnalyzer` trait
+- `retro-junk-core` — bottom-level types and traits (`RomAnalyzer`, `ReadSeek`, `RomIdentification`, `AnalysisError`, `Region`, `AnalysisOptions`)
 - `retro-junk-nintendo` — NES, SNES, N64, GameCube, Wii, Wii U, GB, GBA, DS, 3DS
 - `retro-junk-sony` — PS1, PS2, PS3, PSP, Vita
 - `retro-junk-sega` — SG-1000, Master System, Genesis, Sega CD, 32X, Saturn, Dreamcast, Game Gear
 - `retro-junk-microsoft` — Xbox, Xbox 360
+- `retro-junk-dat` — DAT file parsing and caching ONLY (no console-specific logic)
+- `retro-junk-lib` — glue layer: hasher, rename/matching, `AnalysisContext`. Re-exports `retro-junk-core` types for convenience.
 - `retro-junk-cli` — CLI frontend (clap)
 - `retro-junk-gui` — GUI frontend (stub)
 
-**Key types in `retro-junk-lib`:**
-- `RomAnalyzer` trait — central abstraction; each console implements this
+**Dependency graph:**
+```
+retro-junk-core          (types, traits)
+       |
+  +----+----+----+
+  |    |    |    |
+ nintendo sega sony microsoft   (analyzers, DAT trait impls)
+  |    |    |    |
+  +----+----+----+
+       |         |
+  retro-junk-dat |   (parsing + caching)
+       |         |
+  retro-junk-lib     (glue: hasher, rename, AnalysisContext)
+       |
+  CLI / GUI          (thin presentation)
+```
+
+**Key types:**
+- `RomAnalyzer` trait (in `retro-junk-core`) — central abstraction; each console implements this, including DAT-related methods
 - `RomIdentification` — output struct returned by analyzers (builder pattern)
-- `AnalysisContext` — registry of all analyzers; used by CLI to dispatch
+- `AnalysisContext` (in `retro-junk-lib`) — registry of all analyzers; used by CLI/GUI to dispatch
 - `AnalysisError` — error enum using `thiserror`
 - `ReadSeek` — trait alias for `Read + Seek` used as the reader parameter
+
+**DAT support via trait methods on `RomAnalyzer`:**
+- `dat_name()` — returns the NoIntro DAT name (e.g., `"Nintendo - Nintendo 64"`)
+- `dat_header_size()` — bytes to skip before hashing (e.g., 16 for iNES header)
+- `dat_chunk_normalizer()` — optional closure for byte-order normalization (e.g., N64 format detection)
+- `extract_dat_game_code()` — extracts short game code from full serial (e.g., `NUS-NSME-USA` → `NSME`)
+
+Platform crates own ALL console-specific knowledge. No console-specific code exists in `retro-junk-core`, `retro-junk-dat`, or `retro-junk-lib`.
 
 ## Implementing a New Analyzer
 
@@ -46,40 +73,20 @@ Use `retro-junk-nintendo/src/nes.rs` as the reference implementation.
    - `can_handle()` — detect via magic bytes, return bool
    - `platform_name()`, `short_name()`, `folder_names()`, `manufacturer()`, `file_extensions()` — return `&'static str` / `&'static [&'static str]`
    - `analyze_with_progress()` — delegate to `analyze()` for small ROMs
+   - Optionally override DAT methods: `dat_name()`, `dat_header_size()`, `dat_chunk_normalizer()`, `extract_dat_game_code()`
 3. Re-export from the platform crate's `lib.rs`
 4. Register in `retro-junk-cli/src/main.rs` `create_context()`
 
 ## Shared Code Principles
 
 - **One implementation per algorithm.** Hashing, checksum, and byte-order normalization must have
-  exactly one canonical implementation. Currently these live in `retro-junk-lib` (e.g.,
-  `retro-junk-lib::n64` for N64 byte-order detection and normalization). Both analyzers and DAT
-  matching import from there.
+  exactly one canonical implementation. N64 byte-order code lives in `retro-junk-nintendo/src/n64_byteorder.rs`.
+  The hasher in `retro-junk-lib` uses analyzer trait methods to delegate platform-specific logic.
 - **Serial format normalization** lives in `retro-junk-dat/src/matcher.rs` — the single place that
   bridges analyzer serial output (e.g., `NUS-NSME-USA`) to DAT serial lookup (e.g., `NSME`).
+  Game code extraction is done by `analyzer.extract_dat_game_code()` and passed to the matcher.
 - **DAT source:** LibRetro enhanced DATs from `libretro/libretro-database` (not `libretro-mirrors/nointro-db`).
   These are a strict superset of standard No-Intro DATs with serial, region, and release date fields.
-
-## Planned Restructuring
-
-The current architecture puts all DAT-related logic (parsing, caching, matching, renaming) in
-`retro-junk-dat`, with CLI commands implemented directly in `retro-junk-cli`. This means a future
-GUI would have to reimplement the command orchestration logic.
-
-**Target architecture:**
-- `retro-junk-core` (rename current `retro-junk-lib`) — bottom-level crate with core types, traits
-  (`RomAnalyzer`, `ReadSeek`, `RomIdentification`, `AnalysisError`, `Region`), and shared
-  platform-specific utilities (N64 byte-order, etc.)
-- `retro-junk-nintendo/sega/sony/microsoft` — analyzer implementations, depend on `core`
-- `retro-junk-dat` — DAT file parsing and caching ONLY, depend on `core`
-- `retro-junk-lib` (new glue layer) — matching, renaming, analysis orchestration, `AnalysisContext`,
-  progress reporting. Depends on `core`, `dat`, and all platform crates. This is where "doing things"
-  lives.
-- `retro-junk-cli` / `retro-junk-gui` — thin presentation layers over `lib`
-
-**Why:** Platform-specific logic (like N64 byte-order normalization) must not be duplicated across
-crates. The glue layer gives both CLI and GUI access to the same matching/renaming/analysis logic
-without reimplementation.
 
 ## Conventions
 

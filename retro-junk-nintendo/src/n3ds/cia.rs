@@ -1,9 +1,9 @@
 //! CIA format parsing and analysis for Nintendo 3DS eShop/installable archives.
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
-use retro_junk_lib::{
+use retro_junk_core::{
     AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, RomIdentification,
 };
 
@@ -534,7 +534,7 @@ mod tests {
         let options = AnalysisOptions::default();
         let result = analyze_cia(&mut Cursor::new(cia), file_size, &options).unwrap();
 
-        assert_eq!(result.regions, vec![retro_junk_lib::Region::Japan]);
+        assert_eq!(result.regions, vec![retro_junk_core::Region::Japan]);
     }
 
     #[test]

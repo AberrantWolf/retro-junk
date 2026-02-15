@@ -8,11 +8,11 @@
 //! SNES ROMs have no magic bytes. Detection uses a heuristic scoring system
 //! that evaluates candidate header locations and picks the best match.
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{
+use retro_junk_core::{
     AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
     RomAnalyzer, RomIdentification,
 };
@@ -1001,6 +1001,23 @@ impl RomAnalyzer for SnesAnalyzer {
         }
 
         detect_mapping(reader, file_size).is_ok()
+    }
+
+    fn dat_name(&self) -> Option<&'static str> {
+        Some("Nintendo - Super Nintendo Entertainment System")
+    }
+
+    fn dat_header_size(
+        &self,
+        _reader: &mut dyn ReadSeek,
+        file_size: u64,
+    ) -> Result<u64, AnalysisError> {
+        // SNES copier headers: if file_size % 1024 == 512, skip 512 bytes
+        if file_size % 1024 == 512 {
+            Ok(512)
+        } else {
+            Ok(0)
+        }
     }
 }
 

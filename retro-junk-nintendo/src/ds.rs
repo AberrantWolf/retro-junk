@@ -9,11 +9,11 @@
 //! uses the 156-byte Nintendo logo at 0xC0 (identical to GBA) and the logo
 //! checksum 0xCF56 at 0x15C. The header CRC-16 covers bytes 0x000–0x15D.
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{
+use retro_junk_core::{
     AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
     RomAnalyzer, RomIdentification,
 };
@@ -685,6 +685,20 @@ impl RomAnalyzer for DsAnalyzer {
         let _ = reader.seek(SeekFrom::Start(0));
 
         logo_checksum == EXPECTED_LOGO_CHECKSUM
+    }
+
+    fn dat_name(&self) -> Option<&'static str> {
+        Some("Nintendo - Nintendo DS")
+    }
+
+    fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
+        // NTR-XXXX-YYY → XXXX
+        let parts: Vec<&str> = serial.split('-').collect();
+        if parts.len() >= 3 && parts[0] == "NTR" {
+            Some(parts[1].to_string())
+        } else {
+            None
+        }
     }
 }
 

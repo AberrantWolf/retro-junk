@@ -2,13 +2,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use retro_junk_lib::{AnalysisOptions, RomAnalyzer};
+use retro_junk_core::{AnalysisOptions, RomAnalyzer};
+use retro_junk_dat::cache;
+use retro_junk_dat::error::DatError;
+use retro_junk_dat::matcher::{DatIndex, MatchMethod, MatchResult};
 
-use crate::cache;
-use crate::error::DatError;
 use crate::hasher;
-use crate::matcher::{DatIndex, MatchMethod, MatchResult};
-use crate::systems;
 
 /// A planned rename action.
 #[derive(Debug, Clone)]
@@ -86,21 +85,21 @@ pub struct RenamePlan {
 /// Plan renames for a single console folder.
 ///
 /// Uses the analyzer to extract serial/name from each file, then matches
-/// against the DAT index. Falls back to hashing for small files when
-/// serial/name matching fails (unless `hash_mode` is set, in which case
-/// all files are hashed).
+/// against the DAT index. Falls back to hashing when serial/name matching
+/// fails (unless `hash_mode` is set, in which case all files are hashed).
 pub fn plan_renames(
     folder: &Path,
-    short_name: &str,
     analyzer: &dyn RomAnalyzer,
     options: &RenameOptions,
     progress: &dyn Fn(RenameProgress),
 ) -> Result<RenamePlan, DatError> {
-    let system = systems::find_system(short_name)
-        .ok_or_else(|| DatError::UnknownSystem(short_name.to_string()))?;
+    let dat_name = analyzer.dat_name()
+        .ok_or_else(|| DatError::cache(format!(
+            "No DAT support for platform '{}'", analyzer.platform_name()
+        )))?;
 
     // Load DAT
-    let dat = cache::load_dat(short_name, options.dat_dir.as_deref())?;
+    let dat = cache::load_dat(analyzer.short_name(), dat_name, options.dat_dir.as_deref())?;
     let index = DatIndex::from_dat(dat);
 
     // Collect ROM files
@@ -130,7 +129,7 @@ pub fn plan_renames(
     files.sort();
 
     progress(RenameProgress::ScanningConsole {
-        short_name: short_name.to_string(),
+        short_name: analyzer.short_name().to_string(),
         file_count: files.len(),
     });
 
@@ -155,7 +154,7 @@ pub fn plan_renames(
 
         let match_result = if options.hash_mode {
             // Hash mode: hash is authoritative, but also check serial for discrepancies
-            let hash_result = match_by_hash(file_path, &index, system, progress)?;
+            let hash_result = match_by_hash(file_path, &index, analyzer, progress)?;
             let serial_result = match_by_serial(file_path, analyzer, &analysis_options, &index);
 
             // Report discrepancy if both matched but to different games
@@ -176,7 +175,7 @@ pub fn plan_renames(
             if serial_result.is_some() {
                 serial_result
             } else {
-                match_by_hash(file_path, &index, system, progress)?
+                match_by_hash(file_path, &index, analyzer, progress)?
             }
         };
 
@@ -256,14 +255,15 @@ fn match_by_serial(
     let mut file = fs::File::open(file_path).ok()?;
     let info = analyzer.analyze(&mut file, analysis_options).ok()?;
     let serial = info.serial_number.as_ref()?;
-    index.match_by_serial(serial)
+    let game_code = analyzer.extract_dat_game_code(serial);
+    index.match_by_serial(serial, game_code.as_deref())
 }
 
 /// Match a file by computing its CRC32 hash (with SHA1 fallback).
 fn match_by_hash(
     file_path: &Path,
     index: &DatIndex,
-    system: &systems::SystemMapping,
+    analyzer: &dyn RomAnalyzer,
     progress: &dyn Fn(RenameProgress),
 ) -> Result<Option<MatchResult>, DatError> {
     let mut file = fs::File::open(file_path)?;
@@ -275,8 +275,7 @@ fn match_by_hash(
 
     let hashes = hasher::compute_crc32_with_progress(
         &mut file,
-        &system.header,
-        &system.byte_order,
+        analyzer,
         &|done, total| {
             progress(RenameProgress::Hashing {
                 file_name: file_name.clone(),
@@ -294,8 +293,7 @@ fn match_by_hash(
     // Only do this if we have size candidates (to avoid pointless rehashing)
     if index.candidates_by_size(hashes.data_size).is_some() {
         let mut file = fs::File::open(file_path)?;
-        let full_hashes =
-            hasher::compute_crc32_sha1(&mut file, &system.header, &system.byte_order)?;
+        let full_hashes = hasher::compute_crc32_sha1(&mut file, analyzer)?;
         if let Some(result) = index.match_by_hash(full_hashes.data_size, &full_hashes) {
             return Ok(Some(result));
         }

@@ -7,10 +7,10 @@
 //! - PBP (PlayStation Portable eboot format)
 //! - ECM compressed images
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_core::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for PlayStation disc images.
 #[derive(Debug, Default)]

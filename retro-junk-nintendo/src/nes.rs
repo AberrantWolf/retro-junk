@@ -6,11 +6,11 @@
 //! - UNIF format (.unf) - detection only
 //! - FDS format (.fds) - basic header parsing
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{
+use retro_junk_core::{
     AnalysisError, AnalysisOptions, AnalysisProgress, Region, RomAnalyzer, RomIdentification,
 };
 
@@ -975,6 +975,26 @@ impl RomAnalyzer for NesAnalyzer {
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
         detect_format(reader).is_ok()
+    }
+
+    fn dat_name(&self) -> Option<&'static str> {
+        Some("Nintendo - Nintendo Entertainment System")
+    }
+
+    fn dat_header_size(
+        &self,
+        reader: &mut dyn ReadSeek,
+        _file_size: u64,
+    ) -> Result<u64, AnalysisError> {
+        // Detect iNES/NES 2.0 magic; if present, strip the 16-byte header
+        let mut magic = [0u8; 4];
+        reader.seek(SeekFrom::Start(0))?;
+        if reader.read_exact(&mut magic).is_ok() && magic == INES_MAGIC {
+            reader.seek(SeekFrom::Start(0))?;
+            return Ok(16);
+        }
+        reader.seek(SeekFrom::Start(0))?;
+        Ok(0)
     }
 }
 

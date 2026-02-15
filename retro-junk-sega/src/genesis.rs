@@ -4,11 +4,11 @@
 //! - Genesis/Mega Drive ROMs (.md, .gen, .bin)
 //! - Interleaved ROMs (.smd)
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{
+use retro_junk_core::{
     AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
     RomAnalyzer, RomIdentification,
 };
@@ -333,6 +333,10 @@ impl RomAnalyzer for GenesisAnalyzer {
         // Always rewind on failure too
         let _ = reader.seek(SeekFrom::Start(0));
         result.unwrap_or(false)
+    }
+
+    fn dat_name(&self) -> Option<&'static str> {
+        Some("Sega - Mega Drive - Genesis")
     }
 }
 

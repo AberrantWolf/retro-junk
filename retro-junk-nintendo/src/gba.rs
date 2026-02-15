@@ -8,11 +8,11 @@
 //! uses the 156-byte compressed Nintendo logo at 0x04 and the fixed value
 //! 0x96 at 0xB2. The complement checksum covers bytes 0xA0–0xBC.
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{
+use retro_junk_core::{
     AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
     RomAnalyzer, RomIdentification,
 };
@@ -464,6 +464,20 @@ impl RomAnalyzer for GbaAnalyzer {
         let _ = reader.seek(SeekFrom::Start(0));
 
         fixed[0] == FIXED_VALUE
+    }
+
+    fn dat_name(&self) -> Option<&'static str> {
+        Some("Nintendo - Game Boy Advance")
+    }
+
+    fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
+        // AGB-XXXX-YYY → XXXX
+        let parts: Vec<&str> = serial.split('-').collect();
+        if parts.len() >= 3 && parts[0] == "AGB" {
+            Some(parts[1].to_string())
+        } else {
+            None
+        }
     }
 }
 

@@ -1,8 +1,7 @@
 [package]
-name = "retro-junk-sony"
+name = "retro-junk-core"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-retro-junk-core.workspace = true
 thiserror.workspace = true

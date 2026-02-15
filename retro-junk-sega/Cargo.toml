@@ -4,5 +4,5 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-retro-junk-lib.workspace = true
+retro-junk-core.workspace = true
 thiserror.workspace = true

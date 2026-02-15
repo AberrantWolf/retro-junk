@@ -4,10 +4,10 @@
 //! - SG-1000 ROMs (.sg)
 //! - SC-3000 software
 
-use retro_junk_lib::ReadSeek;
+use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_lib::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_core::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
 
 /// Analyzer for Sega SG-1000 ROMs.
 #[derive(Debug, Default)]

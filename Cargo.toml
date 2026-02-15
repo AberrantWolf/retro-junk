@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "retro-junk-cli",
     "retro-junk-gui",
+    "retro-junk-core",
     "retro-junk-lib",
     "retro-junk-dat",
     "retro-junk-nintendo",
@@ -18,6 +19,7 @@ license = "MIT"
 repository = "https://github.com/example/retro-junk"
 
 [workspace.dependencies]
+retro-junk-core = { path = "retro-junk-core" }
 retro-junk-lib = { path = "retro-junk-lib" }
 retro-junk-nintendo = { path = "retro-junk-nintendo" }
 retro-junk-sony = { path = "retro-junk-sony" }
