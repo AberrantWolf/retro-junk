@@ -177,6 +177,14 @@ impl RomAnalyzer for N3dsAnalyzer {
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
         detect_format(reader).ok().flatten().is_some()
     }
+
+    fn dat_name(&self) -> Option<&'static str> {
+        Some("Nintendo - Nintendo 3DS")
+    }
+
+    fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
+        Some(serial.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
