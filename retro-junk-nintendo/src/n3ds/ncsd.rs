@@ -176,8 +176,10 @@ pub(crate) fn analyze_cci(
         let minor = (ncsd.title_version >> 4) & 0x3F;
         let micro = ncsd.title_version & 0xF;
         id.version = Some(format!("v{}.{}.{}", major, minor, micro));
-        id.extra
-            .insert("title_version_raw".into(), format!("{}", ncsd.title_version));
+        id.extra.insert(
+            "title_version_raw".into(),
+            format!("{}", ncsd.title_version),
+        );
     } else {
         id.version = Some("v0".into());
     }
@@ -235,7 +237,8 @@ pub(crate) fn analyze_cci(
     // Card type
     match ncsd.media_type {
         1 => {
-            id.extra.insert("card_type".into(), "Card1 (external save)".into());
+            id.extra
+                .insert("card_type".into(), "Card1 (external save)".into());
         }
         2 => {
             id.extra
@@ -367,10 +370,8 @@ pub(crate) fn analyze_cci(
             let hash_size = 0x400u64.min(ncch.exheader_size as u64);
             match verify_sha256(reader, exheader_offset, hash_size, &ncch.exheader_hash)? {
                 HashResult::Ok => {
-                    id.extra.insert(
-                        "checksum_status:ExHeader SHA-256".into(),
-                        "OK".into(),
-                    );
+                    id.extra
+                        .insert("checksum_status:ExHeader SHA-256".into(), "OK".into());
                     id.expected_checksums.push(
                         ExpectedChecksum::new(
                             ChecksumAlgorithm::Sha256,
@@ -478,7 +479,8 @@ pub(crate) fn analyze_cci(
     } else if !ncch.no_crypto && !options.quick {
         id.extra.insert(
             "checksum_note".into(),
-            "Content is encrypted; SHA-256 hashes cannot be verified without decryption keys".into(),
+            "Content is encrypted; SHA-256 hashes cannot be verified without decryption keys"
+                .into(),
         );
     }
 
@@ -655,10 +657,7 @@ mod tests {
         assert_eq!(result.platform.as_deref(), Some("Nintendo 3DS"));
         assert_eq!(result.serial_number.as_deref(), Some("CTR-P-ABCE"));
         assert_eq!(result.maker_code.as_deref(), Some("Nintendo"));
-        assert_eq!(
-            result.regions,
-            vec![retro_junk_core::Region::Usa]
-        );
+        assert_eq!(result.regions, vec![retro_junk_core::Region::Usa]);
         assert_eq!(result.extra.get("format").unwrap(), "CCI (NCSD)");
         assert_eq!(result.extra.get("product_code").unwrap(), "CTR-P-ABCE");
         assert_eq!(result.extra.get("media_type").unwrap(), "Card1");
@@ -671,7 +670,10 @@ mod tests {
         let options = AnalysisOptions::default();
         let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
-        assert_eq!(result.extra.get("origin").unwrap(), "Game card dump (likely)");
+        assert_eq!(
+            result.extra.get("origin").unwrap(),
+            "Game card dump (likely)"
+        );
     }
 
     #[test]
@@ -748,11 +750,18 @@ mod tests {
         let options = AnalysisOptions { quick: true };
         let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
-        assert!(result.extra.get("checksum_status:ExHeader SHA-256").is_none());
-        assert!(result
-            .extra
-            .get("checksum_status:ExeFS Superblock SHA-256")
-            .is_none());
+        assert!(
+            result
+                .extra
+                .get("checksum_status:ExHeader SHA-256")
+                .is_none()
+        );
+        assert!(
+            result
+                .extra
+                .get("checksum_status:ExeFS Superblock SHA-256")
+                .is_none()
+        );
     }
 
     #[test]
@@ -773,10 +782,7 @@ mod tests {
         let options = AnalysisOptions::default();
         let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
-        assert_eq!(
-            result.extra.get("title_id").unwrap(),
-            "0004000000ABCDEF"
-        );
+        assert_eq!(result.extra.get("title_id").unwrap(), "0004000000ABCDEF");
     }
 
     #[test]
@@ -818,7 +824,7 @@ mod tests {
                 (0, 0),
                 (0x200, 0x20),
             ],
-            media_type: 1,       // Card1
+            media_type: 1, // Card1
             media_platform: 1,
             writable_address: 0xFFFFFFFF,
             title_version: 0,
@@ -845,7 +851,7 @@ mod tests {
                 (0, 0),
                 (0, 0),
             ],
-            media_type: 0,       // Inner Device
+            media_type: 0, // Inner Device
             media_platform: 1,
             writable_address: 0,
             title_version: 0,
@@ -910,7 +916,10 @@ mod tests {
 
         assert_eq!(result.file_size, Some(file_size));
         assert_eq!(result.expected_size, Some(file_size)); // OK
-        assert_eq!(result.extra.get("dump_status").unwrap(), "Partially trimmed");
+        assert_eq!(
+            result.extra.get("dump_status").unwrap(),
+            "Partially trimmed"
+        );
     }
 
     #[test]

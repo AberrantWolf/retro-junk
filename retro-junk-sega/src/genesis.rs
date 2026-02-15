@@ -55,9 +55,16 @@ pub struct GenesisHeader {
 
 /// Read a fixed-size ASCII string from a buffer slice, trimming trailing spaces and nulls.
 fn read_ascii(buf: &[u8]) -> String {
-    let s: String = buf.iter().map(|&b| {
-        if b >= 0x20 && b < 0x7F { b as char } else { ' ' }
-    }).collect();
+    let s: String = buf
+        .iter()
+        .map(|&b| {
+            if b >= 0x20 && b < 0x7F {
+                b as char
+            } else {
+                ' '
+            }
+        })
+        .collect();
     s.trim().to_string()
 }
 
@@ -408,7 +415,13 @@ mod tests {
 
     #[test]
     fn test_can_handle_valid() {
-        let rom = make_genesis_rom("SEGA MEGA DRIVE", "TEST GAME", "TEST GAME", "GM 00001009-00", "JUE");
+        let rom = make_genesis_rom(
+            "SEGA MEGA DRIVE",
+            "TEST GAME",
+            "TEST GAME",
+            "GM 00001009-00",
+            "JUE",
+        );
         let analyzer = GenesisAnalyzer::new();
         assert!(analyzer.can_handle(&mut Cursor::new(rom)));
     }
@@ -443,8 +456,14 @@ mod tests {
         assert_eq!(result.internal_name.as_deref(), Some("SONIC THE HEDGEHOG"));
         assert_eq!(result.serial_number.as_deref(), Some("GM 00001009-00"));
         assert_eq!(result.extra.get("system_type").unwrap(), "SEGA MEGA DRIVE");
-        assert_eq!(result.extra.get("overseas_title").unwrap(), "SONIC THE HEDGEHOG");
-        assert_eq!(result.platform.as_deref(), Some("Sega Genesis / Mega Drive"));
+        assert_eq!(
+            result.extra.get("overseas_title").unwrap(),
+            "SONIC THE HEDGEHOG"
+        );
+        assert_eq!(
+            result.platform.as_deref(),
+            Some("Sega Genesis / Mega Drive")
+        );
     }
 
     #[test]
@@ -492,7 +511,10 @@ mod tests {
         let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
         let status = result.extra.get("checksum_status:rom").unwrap();
-        assert!(status.starts_with("Invalid"), "expected Invalid, got: {status}");
+        assert!(
+            status.starts_with("Invalid"),
+            "expected Invalid, got: {status}"
+        );
     }
 
     #[test]

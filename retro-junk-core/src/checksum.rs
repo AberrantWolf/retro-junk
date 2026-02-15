@@ -58,9 +58,6 @@ impl ExpectedChecksum {
 
     /// Returns the checksum value as a hex string.
     pub fn hex_value(&self) -> String {
-        self.value
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect()
+        self.value.iter().map(|b| format!("{:02x}", b)).collect()
     }
 }

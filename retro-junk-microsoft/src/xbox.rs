@@ -7,7 +7,9 @@
 use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_core::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_core::{
+    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+};
 
 /// Analyzer for original Xbox disc images.
 #[derive(Debug, Default)]
@@ -25,7 +27,9 @@ impl RomAnalyzer for XboxAnalyzer {
         _reader: &mut dyn ReadSeek,
         _options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        Err(AnalysisError::other("Xbox disc analysis not yet implemented"))
+        Err(AnalysisError::other(
+            "Xbox disc analysis not yet implemented",
+        ))
     }
 
     fn analyze_with_progress(

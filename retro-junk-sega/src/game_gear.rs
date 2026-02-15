@@ -6,7 +6,9 @@
 use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
-use retro_junk_core::{AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification};
+use retro_junk_core::{
+    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+};
 
 /// Analyzer for Sega Game Gear ROMs.
 #[derive(Debug, Default)]
@@ -24,7 +26,9 @@ impl RomAnalyzer for GameGearAnalyzer {
         _reader: &mut dyn ReadSeek,
         _options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        Err(AnalysisError::other("Game Gear ROM analysis not yet implemented"))
+        Err(AnalysisError::other(
+            "Game Gear ROM analysis not yet implemented",
+        ))
     }
 
     fn analyze_with_progress(

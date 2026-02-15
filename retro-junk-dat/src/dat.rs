@@ -154,15 +154,15 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     }
 
     if dat.name.is_empty() && dat.games.is_empty() {
-        return Err(DatError::invalid_dat("No header or games found in XML DAT file"));
+        return Err(DatError::invalid_dat(
+            "No header or games found in XML DAT file",
+        ));
     }
 
     Ok(dat)
 }
 
-fn parse_xml_rom_attributes(
-    e: &quick_xml::events::BytesStart<'_>,
-) -> Result<DatRom, DatError> {
+fn parse_xml_rom_attributes(e: &quick_xml::events::BytesStart<'_>) -> Result<DatRom, DatError> {
     let mut rom = DatRom {
         name: String::new(),
         size: 0,
@@ -556,10 +556,7 @@ game (
         let game0 = &dat.games[0];
         assert_eq!(game0.name, "'89 Dennou Kyuusei Uranai (Japan)");
         assert_eq!(game0.roms.len(), 1);
-        assert_eq!(
-            game0.roms[0].name,
-            "'89 Dennou Kyuusei Uranai (Japan).nes"
-        );
+        assert_eq!(game0.roms[0].name, "'89 Dennou Kyuusei Uranai (Japan).nes");
         assert_eq!(game0.roms[0].size, 262144);
         assert_eq!(game0.roms[0].crc, "ba58ed29");
         assert_eq!(
@@ -584,17 +581,18 @@ game (
 
     #[test]
     fn test_tokenize_quoted_rom() {
-        let tokens = tokenize_rom_line(
-            r#"name "Game (USA, Europe).sfc" size 524288 crc ABCD1234"#,
+        let tokens = tokenize_rom_line(r#"name "Game (USA, Europe).sfc" size 524288 crc ABCD1234"#);
+        assert_eq!(
+            tokens,
+            vec![
+                "name",
+                "Game (USA, Europe).sfc",
+                "size",
+                "524288",
+                "crc",
+                "ABCD1234",
+            ]
         );
-        assert_eq!(tokens, vec![
-            "name",
-            "Game (USA, Europe).sfc",
-            "size",
-            "524288",
-            "crc",
-            "ABCD1234",
-        ]);
     }
 
     #[test]

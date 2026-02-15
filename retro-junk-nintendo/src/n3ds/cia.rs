@@ -94,9 +94,9 @@ pub(crate) fn parse_cia_tmd(
     reader.seek(SeekFrom::Start(tmd_header_offset))?;
 
     let mut tmd_buf = [0u8; 0xC4];
-    reader.read_exact(&mut tmd_buf).map_err(|_| {
-        AnalysisError::corrupted_header("TMD header truncated")
-    })?;
+    reader
+        .read_exact(&mut tmd_buf)
+        .map_err(|_| AnalysisError::corrupted_header("TMD header truncated"))?;
 
     let title_id = read_u64_be(&tmd_buf, 0x4C);
     let title_version = read_u16_be(&tmd_buf, 0x9C);
@@ -124,10 +124,7 @@ fn parse_cia_ticket_title_id(
     let sig_type = read_u32_be(&sig_type_buf, 0);
 
     let sig_block_size = signature_block_size(sig_type).ok_or_else(|| {
-        AnalysisError::invalid_format(format!(
-            "Unknown Ticket signature type: 0x{:08X}",
-            sig_type
-        ))
+        AnalysisError::invalid_format(format!("Unknown Ticket signature type: 0x{:08X}", sig_type))
     })?;
 
     let ticket_data_offset = ticket_offset + sig_block_size as u64;
@@ -184,11 +181,13 @@ pub(crate) fn analyze_cia(
 
     // Expected size from CIA sections
     let content_offset = cia_content_offset(&cia);
-    let expected_size = content_offset + cia.content_size + if cia.meta_size > 0 {
-        align64(cia.meta_size as u64)
-    } else {
-        0
-    };
+    let expected_size = content_offset
+        + cia.content_size
+        + if cia.meta_size > 0 {
+            align64(cia.meta_size as u64)
+        } else {
+            0
+        };
     // CIA files may have trailing alignment; accept anything >= content end
     let content_end = content_offset + cia.content_size;
     if file_size >= content_end {
@@ -235,10 +234,8 @@ pub(crate) fn analyze_cia(
     let ticket_offset = cia_ticket_offset(&cia);
     if let Ok(ticket_tid) = parse_cia_ticket_title_id(reader, ticket_offset) {
         if ticket_tid != tmd_info.title_id && ticket_tid != 0 {
-            id.extra.insert(
-                "ticket_title_id".into(),
-                format_title_id(ticket_tid),
-            );
+            id.extra
+                .insert("ticket_title_id".into(), format_title_id(ticket_tid));
         }
     }
 
@@ -325,10 +322,8 @@ pub(crate) fn analyze_cia(
                 let hash_size = 0x400u64.min(ncch.exheader_size as u64);
                 match verify_sha256(reader, exheader_offset, hash_size, &ncch.exheader_hash)? {
                     HashResult::Ok => {
-                        id.extra.insert(
-                            "checksum_status:ExHeader SHA-256".into(),
-                            "OK".into(),
-                        );
+                        id.extra
+                            .insert("checksum_status:ExHeader SHA-256".into(), "OK".into());
                         id.expected_checksums.push(
                             ExpectedChecksum::new(
                                 ChecksumAlgorithm::Sha256,
@@ -399,7 +394,7 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    use super::super::{NCCH_MAGIC, MEDIA_UNIT};
+    use super::super::{MEDIA_UNIT, NCCH_MAGIC};
 
     /// Build a minimal synthetic CIA file.
     fn make_cia() -> Vec<u8> {
@@ -510,10 +505,7 @@ mod tests {
         let options = AnalysisOptions::default();
         let result = analyze_cia(&mut Cursor::new(cia), file_size, &options).unwrap();
 
-        assert_eq!(
-            result.extra.get("title_id").unwrap(),
-            "0004000000ABCDEF"
-        );
+        assert_eq!(result.extra.get("title_id").unwrap(), "0004000000ABCDEF");
         assert_eq!(result.extra.get("title_type").unwrap(), "Application");
     }
 

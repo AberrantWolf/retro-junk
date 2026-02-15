@@ -54,7 +54,6 @@ fn normalize_serial(serial: &str) -> String {
     serial.to_uppercase().replace(' ', "")
 }
 
-
 impl DatIndex {
     /// Build an index from a parsed DAT file.
     pub fn from_dat(dat: DatFile) -> Self {
@@ -88,11 +87,7 @@ impl DatIndex {
     }
 
     /// Match by hash (CRC32, optionally SHA1).
-    pub fn match_by_hash(
-        &self,
-        size: u64,
-        hashes: &FileHashes,
-    ) -> Option<MatchResult> {
+    pub fn match_by_hash(&self, size: u64, hashes: &FileHashes) -> Option<MatchResult> {
         // Try CRC32 first
         if let Some(&(gi, ri)) = self.by_crc32.get(&hashes.crc32) {
             // Verify size matches

@@ -13,7 +13,7 @@ use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::rename::{
-    execute_renames, format_match_method, plan_renames, RenameOptions, RenamePlan, RenameProgress,
+    RenameOptions, RenamePlan, RenameProgress, execute_renames, format_match_method, plan_renames,
 };
 use retro_junk_lib::{AnalysisContext, AnalysisOptions, RomAnalyzer, RomIdentification};
 
@@ -501,10 +501,7 @@ const HARDWARE_KEYS: &[&str] = &[
 fn print_analysis(file_name: &str, info: &RomIdentification) {
     let mut shown_keys: HashSet<&str> = HashSet::new();
 
-    println!(
-        "  {}:",
-        file_name.if_supports_color(Stdout, |t| t.bold()),
-    );
+    println!("  {}:", file_name.if_supports_color(Stdout, |t| t.bold()),);
 
     // (a) Identity fields
     if let Some(ref serial) = info.serial_number {
@@ -795,9 +792,7 @@ fn run_rename(
             );
 
             let progress_callback = |progress: RenameProgress| match progress {
-                RenameProgress::ScanningConsole {
-                    file_count, ..
-                } => {
+                RenameProgress::ScanningConsole { file_count, .. } => {
                     pb.set_message(format!("Found {file_count} ROM files"));
                     pb.tick();
                 }
@@ -842,10 +837,7 @@ fn run_rename(
 
                     if !dry_run && !plan.renames.is_empty() {
                         // Prompt for confirmation
-                        print!(
-                            "\n  Proceed with {} renames? [y/N] ",
-                            plan.renames.len(),
-                        );
+                        print!("\n  Proceed with {} renames? [y/N] ", plan.renames.len(),);
                         std::io::stdout().flush().unwrap();
 
                         let mut input = String::new();
@@ -864,16 +856,15 @@ fn run_rename(
                                 summary.renamed,
                             );
                         } else {
-                            println!(
-                                "  {}",
-                                "Skipped".if_supports_color(Stdout, |t| t.dimmed()),
-                            );
+                            println!("  {}", "Skipped".if_supports_color(Stdout, |t| t.dimmed()),);
                         }
                     } else {
                         total_already_correct += plan.already_correct.len();
                         total_unmatched += plan.unmatched.len();
                         total_conflicts.extend(
-                            plan.conflicts.iter().map(|(_, msg): &(PathBuf, String)| msg.clone()),
+                            plan.conflicts
+                                .iter()
+                                .map(|(_, msg): &(PathBuf, String)| msg.clone()),
                         );
                     }
                 }
@@ -893,28 +884,20 @@ fn run_rename(
     if !found_any {
         println!(
             "{}",
-            "No console folders with DAT support found."
-                .if_supports_color(Stdout, |t| t.dimmed()),
+            "No console folders with DAT support found.".if_supports_color(Stdout, |t| t.dimmed()),
         );
         println!();
         println!("Supported systems for rename:");
         for console in ctx.consoles() {
             if let Some(dat_name) = console.analyzer.dat_name() {
-                println!(
-                    "  {} [{}]",
-                    console.metadata.short_name,
-                    dat_name,
-                );
+                println!("  {} [{}]", console.metadata.short_name, dat_name,);
             }
         }
         return;
     }
 
     // Print overall summary
-    println!(
-        "{}",
-        "Summary:".if_supports_color(Stdout, |t| t.bold()),
-    );
+    println!("{}", "Summary:".if_supports_color(Stdout, |t| t.bold()),);
     if total_renamed > 0 {
         println!(
             "  {} {} files renamed",
@@ -975,8 +958,7 @@ fn print_rename_plan(plan: &RenamePlan) {
             source_name.if_supports_color(Stdout, |t| t.dimmed()),
             "\u{2192}".if_supports_color(Stdout, |t| t.green()),
             target_name.if_supports_color(Stdout, |t| t.bold()),
-            format!("[{method_str}]")
-                .if_supports_color(Stdout, |t| t.dimmed()),
+            format!("[{method_str}]").if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
 
@@ -1010,11 +992,7 @@ fn print_rename_plan(plan: &RenamePlan) {
 
     // Discrepancies (--hash mode: serial and hash matched different games)
     for d in &plan.discrepancies {
-        let file_name = d
-            .file
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
+        let file_name = d.file.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         println!(
             "  {} {} serial=\"{}\" hash=\"{}\"",
             "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
@@ -1059,10 +1037,7 @@ fn run_list(ctx: &AnalysisContext) {
                 .platform_name
                 .if_supports_color(Stdout, |t| t.cyan()),
             if has_dat {
-                format!(
-                    " {}",
-                    "(DAT)".if_supports_color(Stdout, |t| t.green())
-                )
+                format!(" {}", "(DAT)".if_supports_color(Stdout, |t| t.green()))
             } else {
                 String::new()
             },
@@ -1096,12 +1071,8 @@ fn run_cache_list() {
                 total_size += entry.file_size;
                 println!(
                     "  {} [{}]",
-                    entry
-                        .short_name
-                        .if_supports_color(Stdout, |t| t.bold()),
-                    entry
-                        .dat_name
-                        .if_supports_color(Stdout, |t| t.cyan()),
+                    entry.short_name.if_supports_color(Stdout, |t| t.bold()),
+                    entry.dat_name.if_supports_color(Stdout, |t| t.cyan()),
                 );
                 println!(
                     "    Size: {}, Downloaded: {}, Version: {}",
@@ -1111,7 +1082,11 @@ fn run_cache_list() {
                 );
             }
             println!();
-            println!("Total: {} files, {}", entries.len(), format_bytes(total_size));
+            println!(
+                "Total: {} files, {}",
+                entries.len(),
+                format_bytes(total_size)
+            );
         }
         Err(e) => {
             eprintln!(
@@ -1145,43 +1120,44 @@ fn run_cache_clear() {
 
 /// Fetch DAT files for specified systems.
 fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
-    let to_fetch: Vec<(String, String)> = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
-        ctx.consoles()
-            .filter_map(|c| {
-                c.analyzer
-                    .dat_name()
-                    .map(|dat_name| (c.metadata.short_name.to_string(), dat_name.to_string()))
-            })
-            .collect()
-    } else {
-        systems
-            .into_iter()
-            .filter_map(|short_name| {
-                let console = ctx.get_by_short_name(&short_name);
-                match console {
-                    Some(c) => match c.analyzer.dat_name() {
-                        Some(dat_name) => Some((short_name, dat_name.to_string())),
+    let to_fetch: Vec<(String, String)> =
+        if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
+            ctx.consoles()
+                .filter_map(|c| {
+                    c.analyzer
+                        .dat_name()
+                        .map(|dat_name| (c.metadata.short_name.to_string(), dat_name.to_string()))
+                })
+                .collect()
+        } else {
+            systems
+                .into_iter()
+                .filter_map(|short_name| {
+                    let console = ctx.get_by_short_name(&short_name);
+                    match console {
+                        Some(c) => match c.analyzer.dat_name() {
+                            Some(dat_name) => Some((short_name, dat_name.to_string())),
+                            None => {
+                                eprintln!(
+                                    "  {} No DAT support for '{}'",
+                                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                                    short_name,
+                                );
+                                None
+                            }
+                        },
                         None => {
                             eprintln!(
-                                "  {} No DAT support for '{}'",
+                                "  {} Unknown system '{}'",
                                 "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                                 short_name,
                             );
                             None
                         }
-                    },
-                    None => {
-                        eprintln!(
-                            "  {} Unknown system '{}'",
-                            "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                            short_name,
-                        );
-                        None
                     }
-                }
-            })
-            .collect()
-    };
+                })
+                .collect()
+        };
 
     for (short_name, dat_name) in &to_fetch {
         print!(

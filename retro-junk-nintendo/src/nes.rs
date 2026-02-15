@@ -249,9 +249,7 @@ fn parse_ines_header(header: &[u8; 16]) -> Result<INesHeader, AnalysisError> {
         let mapper_msb = header[8] & 0x0F;
         let submapper = (header[8] >> 4) & 0x0F;
 
-        let mapper = mapper_lo as u16
-            | ((mapper_hi as u16) << 4)
-            | ((mapper_msb as u16) << 8);
+        let mapper = mapper_lo as u16 | ((mapper_hi as u16) << 4) | ((mapper_msb as u16) << 8);
 
         let prg_rom_msb = header[9] & 0x0F;
         let chr_rom_msb = (header[9] >> 4) & 0x0F;
@@ -280,13 +278,7 @@ fn parse_ines_header(header: &[u8; 16]) -> Result<INesHeader, AnalysisError> {
         let chr_ram_shift = header[11] & 0x0F;
         let chr_nvram_shift = (header[11] >> 4) & 0x0F;
 
-        let shift_to_size = |s: u8| -> u32 {
-            if s == 0 {
-                0
-            } else {
-                64 << s
-            }
-        };
+        let shift_to_size = |s: u8| -> u32 { if s == 0 { 0 } else { 64 << s } };
 
         let timing = header[12] & 0x03;
         let tv_system = match timing {
@@ -359,7 +351,9 @@ fn parse_ines_header(header: &[u8; 16]) -> Result<INesHeader, AnalysisError> {
 /// followed by the "*NINTENDO-HVC*" verification string.
 fn parse_fds_disk_info(data: &[u8]) -> Result<FdsDiskInfo, AnalysisError> {
     if data.len() < 56 {
-        return Err(AnalysisError::corrupted_header("FDS disk info block too short"));
+        return Err(AnalysisError::corrupted_header(
+            "FDS disk info block too short",
+        ));
     }
 
     if data[0] != 0x01 {
@@ -430,10 +424,7 @@ fn parse_bcd_date(year: u8, month: u8, day: u8) -> Option<(u8, u8, u8)> {
 /// Format a BCD date as a human-readable string.
 fn format_bcd_date(year: u8, month: u8, day: u8) -> String {
     // BCD bytes: e.g. 0x86 means 1986, 0x01 means January
-    format!(
-        "19{:02x}-{:02x}-{:02x}",
-        year, month, day
-    )
+    format!("19{:02x}-{:02x}-{:02x}", year, month, day)
 }
 
 /// Look up a human-readable name for common NES mapper numbers.
@@ -599,22 +590,22 @@ fn analyze_fds(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> {
     reader.seek(SeekFrom::Start(0))?;
 
     let mut magic = [0u8; 4];
-    reader.read_exact(&mut magic).map_err(|_| {
-        AnalysisError::TooSmall {
+    reader
+        .read_exact(&mut magic)
+        .map_err(|_| AnalysisError::TooSmall {
             expected: 4,
             actual: 0,
-        }
-    })?;
+        })?;
 
     let (format, data_offset, disk_count_from_header) = if magic == FDS_HEADER_MAGIC {
         // fwNES-headered FDS: 16-byte header, byte 4 = number of disk sides
         let mut rest = [0u8; 12];
-        reader.read_exact(&mut rest).map_err(|_| {
-            AnalysisError::TooSmall {
+        reader
+            .read_exact(&mut rest)
+            .map_err(|_| AnalysisError::TooSmall {
                 expected: 16,
                 actual: 4,
-            }
-        })?;
+            })?;
         let count = rest[0]; // byte 4 of the full 16-byte header
         (NesFormat::FdsHeadered, 16u64, Some(count))
     } else {
@@ -632,7 +623,9 @@ fn analyze_fds(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> {
     };
 
     if side_count == 0 {
-        return Err(AnalysisError::invalid_format("FDS image contains no disk sides"));
+        return Err(AnalysisError::invalid_format(
+            "FDS image contains no disk sides",
+        ));
     }
 
     // Parse disk info from each side
@@ -657,11 +650,7 @@ fn analyze_fds(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> {
         (side_count as u8 + 1) / 2
     } else {
         // Derive from max disk_number seen
-        sides
-            .iter()
-            .map(|s| s.disk_number + 1)
-            .max()
-            .unwrap_or(1)
+        sides.iter().map(|s| s.disk_number + 1).max().unwrap_or(1)
     };
 
     Ok(NesRomInfo::Fds {
@@ -673,12 +662,12 @@ fn analyze_fds(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> {
 
 fn analyze_unif(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> {
     let mut header = [0u8; 8];
-    reader.read_exact(&mut header).map_err(|_| {
-        AnalysisError::TooSmall {
+    reader
+        .read_exact(&mut header)
+        .map_err(|_| AnalysisError::TooSmall {
             expected: 8,
             actual: 0,
-        }
-    })?;
+        })?;
 
     if header[0..4] != UNIF_MAGIC {
         return Err(AnalysisError::invalid_format("Not a UNIF file"));
@@ -707,19 +696,14 @@ fn fds_expected_size(format: NesFormat, side_count: usize) -> u64 {
 }
 
 /// Convert parsed NES ROM info into a generic `RomIdentification`.
-fn to_identification(
-    info: &NesRomInfo,
-    file_size: u64,
-) -> RomIdentification {
+fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
     let mut id = RomIdentification::new().with_platform("Nintendo Entertainment System");
     id.file_size = Some(file_size);
 
     match info {
         NesRomInfo::INes(hdr) => {
-            id.extra
-                .insert("format".into(), hdr.format.name().into());
-            id.extra
-                .insert("mapper".into(), hdr.mapper.to_string());
+            id.extra.insert("format".into(), hdr.format.name().into());
+            id.extra.insert("mapper".into(), hdr.mapper.to_string());
             if let Some(name) = mapper_name(hdr.mapper) {
                 id.extra.insert("mapper_name".into(), name.into());
             }
@@ -728,18 +712,18 @@ fn to_identification(
                     id.extra.insert("submapper".into(), sub.to_string());
                 }
             }
-            id.extra.insert(
-                "mirroring".into(),
-                hdr.mirroring.name().into(),
-            );
+            id.extra
+                .insert("mirroring".into(), hdr.mirroring.name().into());
             id.extra
                 .insert("prg_rom_size".into(), format_size(hdr.prg_rom_size));
-            id.extra
-                .insert("chr_rom_size".into(), if hdr.chr_rom_size > 0 {
+            id.extra.insert(
+                "chr_rom_size".into(),
+                if hdr.chr_rom_size > 0 {
                     format_size(hdr.chr_rom_size)
                 } else {
                     "CHR RAM".into()
-                });
+                },
+            );
             if hdr.has_battery {
                 id.extra.insert("battery".into(), "Yes".into());
             }
@@ -794,10 +778,8 @@ fn to_identification(
             sides,
         } => {
             id.platform = Some("Famicom Disk System".into());
-            id.extra
-                .insert("format".into(), format.name().into());
-            id.extra
-                .insert("disk_count".into(), disk_count.to_string());
+            id.extra.insert("format".into(), format.name().into());
+            id.extra.insert("disk_count".into(), disk_count.to_string());
             id.extra
                 .insert("side_count".into(), sides.len().to_string());
             id.regions = vec![Region::Japan]; // FDS was Japan-only
@@ -808,10 +790,7 @@ fn to_identification(
                     id.internal_name = Some(first.game_name.clone());
                 }
                 if let Some(name) = fds_manufacturer_name(first.manufacturer_code) {
-                    id.maker_code = Some(format!(
-                        "0x{:02X} ({})",
-                        first.manufacturer_code, name
-                    ));
+                    id.maker_code = Some(format!("0x{:02X} ({})", first.manufacturer_code, name));
                 } else {
                     id.maker_code = Some(format!("0x{:02X}", first.manufacturer_code));
                 }
@@ -819,20 +798,16 @@ fn to_identification(
                     id.version = Some(format!("Rev. {}", first.revision));
                 }
                 if let Some((y, m, d)) = first.manufacturing_date {
-                    id.extra.insert(
-                        "manufacturing_date".into(),
-                        format_bcd_date(y, m, d),
-                    );
+                    id.extra
+                        .insert("manufacturing_date".into(), format_bcd_date(y, m, d));
                 }
                 if let Some((y, m, d)) = first.rewrite_date {
                     id.extra
                         .insert("rewrite_date".into(), format_bcd_date(y, m, d));
                 }
                 if first.rewrite_count > 0 {
-                    id.extra.insert(
-                        "rewrite_count".into(),
-                        first.rewrite_count.to_string(),
-                    );
+                    id.extra
+                        .insert("rewrite_count".into(), first.rewrite_count.to_string());
                 }
             }
         }
@@ -1004,12 +979,7 @@ mod tests {
     use std::io::Cursor;
 
     /// Build a minimal valid iNES 1.0 header.
-    fn make_ines_header(
-        prg_banks: u8,
-        chr_banks: u8,
-        flags6: u8,
-        flags7: u8,
-    ) -> Vec<u8> {
+    fn make_ines_header(prg_banks: u8, chr_banks: u8, flags6: u8, flags7: u8) -> Vec<u8> {
         let mut h = vec![0u8; 16];
         h[0..4].copy_from_slice(&INES_MAGIC);
         h[4] = prg_banks;

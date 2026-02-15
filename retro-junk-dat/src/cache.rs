@@ -47,13 +47,15 @@ pub struct CacheEntry {
 
 /// Get the cache directory for retro-junk DAT files.
 pub fn cache_dir() -> Result<PathBuf, DatError> {
-    let base = dirs::cache_dir().ok_or_else(|| DatError::cache("Could not determine cache directory"))?;
+    let base =
+        dirs::cache_dir().ok_or_else(|| DatError::cache("Could not determine cache directory"))?;
     Ok(base.join("retro-junk").join("dats"))
 }
 
 /// Get the path to the meta.json file.
 fn meta_path() -> Result<PathBuf, DatError> {
-    let base = dirs::cache_dir().ok_or_else(|| DatError::cache("Could not determine cache directory"))?;
+    let base =
+        dirs::cache_dir().ok_or_else(|| DatError::cache("Could not determine cache directory"))?;
     Ok(base.join("retro-junk").join("meta.json"))
 }
 
@@ -158,7 +160,11 @@ pub fn fetch(short_name: &str, dat_name: &str) -> Result<PathBuf, DatError> {
 ///
 /// `short_name` is used as the cache key. `dat_name` is the NoIntro DAT name
 /// used for downloading and for matching files in custom directories.
-pub fn load_dat(short_name: &str, dat_name: &str, dat_dir: Option<&Path>) -> Result<DatFile, DatError> {
+pub fn load_dat(
+    short_name: &str,
+    dat_name: &str,
+    dat_dir: Option<&Path>,
+) -> Result<DatFile, DatError> {
     if let Some(dir) = dat_dir {
         // Try to find a matching DAT in the custom directory
         let path = find_dat_in_dir(short_name, dat_name, dir)?;
@@ -190,14 +196,9 @@ fn find_dat_in_dir(short_name: &str, dat_name: &str, dir: &Path) -> Result<PathB
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("dat") {
-                let name = path
-                    .file_stem()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let name = path.file_stem().and_then(|n| n.to_str()).unwrap_or("");
                 // Check if the filename contains the NoIntro system name
-                if name.contains(dat_name)
-                    || dat_name.contains(name)
-                {
+                if name.contains(dat_name) || dat_name.contains(name) {
                     return Ok(path);
                 }
             }

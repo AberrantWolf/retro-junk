@@ -2,7 +2,7 @@ use std::io::SeekFrom;
 
 use sha1::Digest;
 
-use retro_junk_core::{RomAnalyzer, ReadSeek};
+use retro_junk_core::{ReadSeek, RomAnalyzer};
 use retro_junk_dat::error::DatError;
 pub use retro_junk_dat::matcher::FileHashes;
 

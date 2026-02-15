@@ -19,10 +19,13 @@ fn main() {
     let (tx, rx) = mpsc::channel::<AnalysisProgress>();
 
     // Example of how progress updates would be sent/received
-    tx.send(AnalysisProgress::started(Some(1024 * 1024))).unwrap();
+    tx.send(AnalysisProgress::started(Some(1024 * 1024)))
+        .unwrap();
     tx.send(AnalysisProgress::phase("Reading header")).unwrap();
-    tx.send(AnalysisProgress::reading(512, Some(1024 * 1024))).unwrap();
-    tx.send(AnalysisProgress::found("Serial: SLUS-00123")).unwrap();
+    tx.send(AnalysisProgress::reading(512, Some(1024 * 1024)))
+        .unwrap();
+    tx.send(AnalysisProgress::found("Serial: SLUS-00123"))
+        .unwrap();
     tx.send(AnalysisProgress::Completed).unwrap();
 
     println!();
@@ -30,16 +33,26 @@ fn main() {
     while let Ok(progress) = rx.try_recv() {
         match progress {
             AnalysisProgress::Started { total_bytes } => {
-                println!("  Started: {} bytes", total_bytes.map_or("unknown".to_string(), |b| b.to_string()));
+                println!(
+                    "  Started: {} bytes",
+                    total_bytes.map_or("unknown".to_string(), |b| b.to_string())
+                );
             }
-            AnalysisProgress::Phase { name, current, total } => {
+            AnalysisProgress::Phase {
+                name,
+                current,
+                total,
+            } => {
                 if let (Some(c), Some(t)) = (current, total) {
                     println!("  Phase {}/{}: {}", c, t, name);
                 } else {
                     println!("  Phase: {}", name);
                 }
             }
-            AnalysisProgress::Reading { bytes_read, total_bytes } => {
+            AnalysisProgress::Reading {
+                bytes_read,
+                total_bytes,
+            } => {
                 if let Some(total) = total_bytes {
                     let pct = (bytes_read as f64 / total as f64) * 100.0;
                     println!("  Reading: {}/{} bytes ({:.1}%)", bytes_read, total, pct);

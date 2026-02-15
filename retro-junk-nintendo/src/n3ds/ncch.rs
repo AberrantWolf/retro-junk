@@ -3,8 +3,8 @@
 use retro_junk_core::{AnalysisError, ReadSeek};
 use std::io::SeekFrom;
 
-use super::common::{read_ascii, read_u32_le, read_u64_le};
 use super::NCCH_MAGIC;
+use super::common::{read_ascii, read_u32_le, read_u64_le};
 
 // ---------------------------------------------------------------------------
 // NCCH header

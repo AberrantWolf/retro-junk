@@ -19,7 +19,12 @@ pub(crate) fn read_u16_le(buf: &[u8], offset: usize) -> u16 {
 }
 
 pub(crate) fn read_u32_le(buf: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]])
+    u32::from_le_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+    ])
 }
 
 pub(crate) fn read_u64_le(buf: &[u8], offset: usize) -> u64 {
@@ -40,7 +45,12 @@ pub(crate) fn read_u16_be(buf: &[u8], offset: usize) -> u16 {
 }
 
 pub(crate) fn read_u32_be(buf: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes([buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]])
+    u32::from_be_bytes([
+        buf[offset],
+        buf[offset + 1],
+        buf[offset + 2],
+        buf[offset + 3],
+    ])
 }
 
 pub(crate) fn read_u64_be(buf: &[u8], offset: usize) -> u64 {
@@ -437,50 +447,20 @@ mod tests {
 
     #[test]
     fn test_region_from_product_code() {
-        assert_eq!(
-            region_from_product_code("CTR-P-ABCE"),
-            vec![Region::Usa]
-        );
-        assert_eq!(
-            region_from_product_code("CTR-P-ABCJ"),
-            vec![Region::Japan]
-        );
-        assert_eq!(
-            region_from_product_code("CTR-P-ABCP"),
-            vec![Region::Europe]
-        );
-        assert_eq!(
-            region_from_product_code("CTR-P-ABCK"),
-            vec![Region::Korea]
-        );
-        assert_eq!(
-            region_from_product_code("CTR-P-ABCA"),
-            vec![Region::World]
-        );
+        assert_eq!(region_from_product_code("CTR-P-ABCE"), vec![Region::Usa]);
+        assert_eq!(region_from_product_code("CTR-P-ABCJ"), vec![Region::Japan]);
+        assert_eq!(region_from_product_code("CTR-P-ABCP"), vec![Region::Europe]);
+        assert_eq!(region_from_product_code("CTR-P-ABCK"), vec![Region::Korea]);
+        assert_eq!(region_from_product_code("CTR-P-ABCA"), vec![Region::World]);
     }
 
     #[test]
     fn test_region_european_variants() {
-        assert_eq!(
-            region_from_product_code("CTR-P-ABCD"),
-            vec![Region::Europe]
-        );
-        assert_eq!(
-            region_from_product_code("CTR-P-ABCF"),
-            vec![Region::Europe]
-        );
-        assert_eq!(
-            region_from_product_code("CTR-P-ABCS"),
-            vec![Region::Europe]
-        );
-        assert_eq!(
-            region_from_product_code("CTR-P-ABCI"),
-            vec![Region::Europe]
-        );
-        assert_eq!(
-            region_from_product_code("CTR-P-ABCU"),
-            vec![Region::Europe]
-        );
+        assert_eq!(region_from_product_code("CTR-P-ABCD"), vec![Region::Europe]);
+        assert_eq!(region_from_product_code("CTR-P-ABCF"), vec![Region::Europe]);
+        assert_eq!(region_from_product_code("CTR-P-ABCS"), vec![Region::Europe]);
+        assert_eq!(region_from_product_code("CTR-P-ABCI"), vec![Region::Europe]);
+        assert_eq!(region_from_product_code("CTR-P-ABCU"), vec![Region::Europe]);
     }
 
     #[test]
