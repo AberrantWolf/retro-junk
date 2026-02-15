@@ -12,9 +12,9 @@ use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
-use crate::n64_byteorder::{N64Format, detect_n64_format, normalize_to_big_endian};
 #[cfg(test)]
 use crate::n64_byteorder::MAGIC_Z64;
+use crate::n64_byteorder::{N64Format, detect_n64_format, normalize_to_big_endian};
 use retro_junk_core::{
     AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
     RomAnalyzer, RomIdentification,
@@ -161,7 +161,13 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<N64Header, AnalysisError> {
 
     let title: String = buf[0x20..0x34]
         .iter()
-        .map(|&b| if b >= 0x20 && b < 0x7F { b as char } else { ' ' })
+        .map(|&b| {
+            if b >= 0x20 && b < 0x7F {
+                b as char
+            } else {
+                ' '
+            }
+        })
         .collect::<String>()
         .trim()
         .to_string();
@@ -262,10 +268,7 @@ fn compute_n64_crc(
 
     // Final combination differs by CIC variant
     let (crc1, crc2) = match cic {
-        CicVariant::Cic6103 => (
-            (t6 ^ t4).wrapping_add(t3),
-            (t5 ^ t2).wrapping_add(t1),
-        ),
+        CicVariant::Cic6103 => ((t6 ^ t4).wrapping_add(t3), (t5 ^ t2).wrapping_add(t1)),
         CicVariant::Cic6106 => (
             (t6.wrapping_mul(t4)).wrapping_add(t3),
             (t5.wrapping_mul(t2)).wrapping_add(t1),
@@ -320,7 +323,10 @@ fn build_serial(header: &N64Header, region: &Region) -> Option<String> {
 
     Some(format!(
         "NUS-{}{}{}{}-{}",
-        cat as char, id0 as char, id1 as char, dest as char,
+        cat as char,
+        id0 as char,
+        id1 as char,
+        dest as char,
         region_suffix(region)
     ))
 }
@@ -368,8 +374,7 @@ fn to_identification(
             format!("0x{:02X}", header.category_code)
         },
     );
-    id.extra
-        .insert("cic".into(), header.cic.name().into());
+    id.extra.insert("cic".into(), header.cic.name().into());
 
     // Expected checksums (from header)
     let mut crc_bytes = Vec::with_capacity(8);
@@ -651,10 +656,7 @@ mod tests {
         }
 
         let (crc1, crc2) = match cic {
-            CicVariant::Cic6103 => (
-                (t6 ^ t4).wrapping_add(t3),
-                (t5 ^ t2).wrapping_add(t1),
-            ),
+            CicVariant::Cic6103 => ((t6 ^ t4).wrapping_add(t3), (t5 ^ t2).wrapping_add(t1)),
             CicVariant::Cic6106 => (
                 (t6.wrapping_mul(t4)).wrapping_add(t3),
                 (t5.wrapping_mul(t2)).wrapping_add(t1),
@@ -848,10 +850,7 @@ mod tests {
         let result = analyzer
             .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
             .unwrap();
-        assert_eq!(
-            result.extra.get("checksum_status:N64 CRC").unwrap(),
-            "OK"
-        );
+        assert_eq!(result.extra.get("checksum_status:N64 CRC").unwrap(), "OK");
     }
 
     #[test]
@@ -869,7 +868,11 @@ mod tests {
             "Expected CRC1 MISMATCH, got: {}",
             status
         );
-        assert!(!status.contains("CRC2 MISMATCH"), "Should not have CRC2 mismatch: {}", status);
+        assert!(
+            !status.contains("CRC2 MISMATCH"),
+            "Should not have CRC2 mismatch: {}",
+            status
+        );
     }
 
     #[test]
@@ -887,7 +890,11 @@ mod tests {
             "Expected CRC2 MISMATCH, got: {}",
             status
         );
-        assert!(!status.contains("CRC1 MISMATCH"), "Should not have CRC1 mismatch: {}", status);
+        assert!(
+            !status.contains("CRC1 MISMATCH"),
+            "Should not have CRC1 mismatch: {}",
+            status
+        );
     }
 
     #[test]
@@ -955,10 +962,7 @@ mod tests {
         assert_eq!(result.internal_name.as_deref(), Some("SUPER MARIO 64"));
         assert_eq!(result.serial_number.as_deref(), Some("NUS-NSME-USA"));
         assert_eq!(result.extra.get("format").unwrap(), "v64 (byte-swapped)");
-        assert_eq!(
-            result.extra.get("checksum_status:N64 CRC").unwrap(),
-            "OK"
-        );
+        assert_eq!(result.extra.get("checksum_status:N64 CRC").unwrap(), "OK");
     }
 
     #[test]
@@ -973,10 +977,7 @@ mod tests {
         assert_eq!(result.internal_name.as_deref(), Some("SUPER MARIO 64"));
         assert_eq!(result.serial_number.as_deref(), Some("NUS-NSME-USA"));
         assert_eq!(result.extra.get("format").unwrap(), "n64 (little-endian)");
-        assert_eq!(
-            result.extra.get("checksum_status:N64 CRC").unwrap(),
-            "OK"
-        );
+        assert_eq!(result.extra.get("checksum_status:N64 CRC").unwrap(), "OK");
     }
 
     // -- CIC-variant CRC tests --
@@ -989,7 +990,8 @@ mod tests {
         // The ROM has Unknown CIC (fake boot code), so the analyzer will use
         // the Unknown/6102 seed. Instead, test the compute function directly.
         let mut cursor = Cursor::new(&rom);
-        let (crc1, crc2) = compute_n64_crc(&mut cursor, RomFormat::Z64, CicVariant::Cic6103).unwrap();
+        let (crc1, crc2) =
+            compute_n64_crc(&mut cursor, RomFormat::Z64, CicVariant::Cic6103).unwrap();
         let header_crc1 = u32::from_be_bytes([rom[0x10], rom[0x11], rom[0x12], rom[0x13]]);
         let header_crc2 = u32::from_be_bytes([rom[0x14], rom[0x15], rom[0x16], rom[0x17]]);
         assert_eq!(crc1, header_crc1, "CRC1 mismatch for CIC-6103");
@@ -1000,7 +1002,8 @@ mod tests {
     fn test_crc_ok_cic6105() {
         let rom = make_n64_rom_with_cic(CicVariant::Cic6105);
         let mut cursor = Cursor::new(&rom);
-        let (crc1, crc2) = compute_n64_crc(&mut cursor, RomFormat::Z64, CicVariant::Cic6105).unwrap();
+        let (crc1, crc2) =
+            compute_n64_crc(&mut cursor, RomFormat::Z64, CicVariant::Cic6105).unwrap();
         let header_crc1 = u32::from_be_bytes([rom[0x10], rom[0x11], rom[0x12], rom[0x13]]);
         let header_crc2 = u32::from_be_bytes([rom[0x14], rom[0x15], rom[0x16], rom[0x17]]);
         assert_eq!(crc1, header_crc1, "CRC1 mismatch for CIC-6105");
@@ -1011,7 +1014,8 @@ mod tests {
     fn test_crc_ok_cic6106() {
         let rom = make_n64_rom_with_cic(CicVariant::Cic6106);
         let mut cursor = Cursor::new(&rom);
-        let (crc1, crc2) = compute_n64_crc(&mut cursor, RomFormat::Z64, CicVariant::Cic6106).unwrap();
+        let (crc1, crc2) =
+            compute_n64_crc(&mut cursor, RomFormat::Z64, CicVariant::Cic6106).unwrap();
         let header_crc1 = u32::from_be_bytes([rom[0x10], rom[0x11], rom[0x12], rom[0x13]]);
         let header_crc2 = u32::from_be_bytes([rom[0x14], rom[0x15], rom[0x16], rom[0x17]]);
         assert_eq!(crc1, header_crc1, "CRC1 mismatch for CIC-6106");
@@ -1022,9 +1026,22 @@ mod tests {
     fn test_different_cic_seeds_produce_different_crcs() {
         let rom_6102 = make_n64_rom_with_cic(CicVariant::Cic6102);
         let rom_6103 = make_n64_rom_with_cic(CicVariant::Cic6103);
-        let crc1_6102 = u32::from_be_bytes([rom_6102[0x10], rom_6102[0x11], rom_6102[0x12], rom_6102[0x13]]);
-        let crc1_6103 = u32::from_be_bytes([rom_6103[0x10], rom_6103[0x11], rom_6103[0x12], rom_6103[0x13]]);
-        assert_ne!(crc1_6102, crc1_6103, "Different CIC seeds should produce different CRCs");
+        let crc1_6102 = u32::from_be_bytes([
+            rom_6102[0x10],
+            rom_6102[0x11],
+            rom_6102[0x12],
+            rom_6102[0x13],
+        ]);
+        let crc1_6103 = u32::from_be_bytes([
+            rom_6103[0x10],
+            rom_6103[0x11],
+            rom_6103[0x12],
+            rom_6103[0x13],
+        ]);
+        assert_ne!(
+            crc1_6102, crc1_6103,
+            "Different CIC seeds should produce different CRCs"
+        );
     }
 
     // -- Title trimming --
@@ -1122,10 +1139,26 @@ mod tests {
             .analyze(&mut Cursor::new(data), &AnalysisOptions::default())
             .unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("DE, AD, BE, EF"), "Error should include actual bytes: {}", msg);
-        assert!(msg.contains("z64=[80,37,12,40]"), "Error should include z64 magic: {}", msg);
-        assert!(msg.contains("v64=[37,80,40,12]"), "Error should include v64 magic: {}", msg);
-        assert!(msg.contains("n64=[40,12,37,80]"), "Error should include n64 magic: {}", msg);
+        assert!(
+            msg.contains("DE, AD, BE, EF"),
+            "Error should include actual bytes: {}",
+            msg
+        );
+        assert!(
+            msg.contains("z64=[80,37,12,40]"),
+            "Error should include z64 magic: {}",
+            msg
+        );
+        assert!(
+            msg.contains("v64=[37,80,40,12]"),
+            "Error should include v64 magic: {}",
+            msg
+        );
+        assert!(
+            msg.contains("n64=[40,12,37,80]"),
+            "Error should include n64 magic: {}",
+            msg
+        );
     }
 
     #[test]

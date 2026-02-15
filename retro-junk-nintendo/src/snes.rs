@@ -43,11 +43,11 @@ const OFF_COUNTRY: usize = 0x29;
 const OFF_DEVELOPER_ID: usize = 0x2A;
 const OFF_VERSION: usize = 0x2B;
 const OFF_COMPLEMENT: usize = 0x2C; // 2 bytes, little-endian
-const OFF_CHECKSUM: usize = 0x2E;   // 2 bytes, little-endian
+const OFF_CHECKSUM: usize = 0x2E; // 2 bytes, little-endian
 
 /// Extended header fields (at base + 0x00..0x0F, valid when developer_id == 0x33).
 const OFF_EXT_MAKER_CODE: usize = 0x00; // 2 bytes ASCII
-const OFF_EXT_GAME_CODE: usize = 0x02;  // 4 bytes ASCII
+const OFF_EXT_GAME_CODE: usize = 0x02; // 4 bytes ASCII
 const OFF_EXT_EXPANSION_RAM: usize = 0x0D;
 const OFF_EXT_SPECIAL_VERSION: usize = 0x0E;
 const OFF_EXT_CARTRIDGE_SUBTYPE: usize = 0x0F;
@@ -261,23 +261,38 @@ fn score_header_at(reader: &mut dyn ReadSeek, offset: u64) -> i32 {
 fn is_known_chipset(rom_type: u8) -> bool {
     matches!(
         rom_type,
-        0x00 | 0x01 | 0x02 | 0x03 | 0x04 | 0x05 | 0x06 |
-        0x13 | 0x14 | 0x15 | 0x16 |
-        0x23 | 0x25 | 0x26 |
-        0x33 | 0x34 | 0x35 | 0x36 |
-        0x43 | 0x45 |
-        0x55 |
-        0xE3 | 0xE5 |
-        0xF3 | 0xF5 | 0xF6 | 0xF9
+        0x00 | 0x01
+            | 0x02
+            | 0x03
+            | 0x04
+            | 0x05
+            | 0x06
+            | 0x13
+            | 0x14
+            | 0x15
+            | 0x16
+            | 0x23
+            | 0x25
+            | 0x26
+            | 0x33
+            | 0x34
+            | 0x35
+            | 0x36
+            | 0x43
+            | 0x45
+            | 0x55
+            | 0xE3
+            | 0xE5
+            | 0xF3
+            | 0xF5
+            | 0xF6
+            | 0xF9
     )
 }
 
 /// Detect the mapping mode by trying all candidate header locations and scoring them.
 /// Returns `(file_offset_of_header_base, has_copier_header)`.
-fn detect_mapping(
-    reader: &mut dyn ReadSeek,
-    file_size: u64,
-) -> Result<(u64, bool), AnalysisError> {
+fn detect_mapping(reader: &mut dyn ReadSeek, file_size: u64) -> Result<(u64, bool), AnalysisError> {
     let has_copier = detect_copier_header(file_size);
     let copier_offset = if has_copier { COPIER_HEADER_SIZE } else { 0 };
     let rom_size = file_size - copier_offset;
@@ -793,8 +808,7 @@ fn to_identification(
     file_size: u64,
     computed_checksum: Option<u16>,
 ) -> RomIdentification {
-    let mut id = RomIdentification::new()
-        .with_platform("Super Nintendo Entertainment System");
+    let mut id = RomIdentification::new().with_platform("Super Nintendo Entertainment System");
 
     // Internal name
     if !header.title.is_empty() {
@@ -854,23 +868,28 @@ fn to_identification(
         "SFC (headerless)"
     };
     id.extra.insert("format".into(), format_name.into());
-    id.extra.insert("mapping".into(), header.mapping.name().into());
+    id.extra
+        .insert("mapping".into(), header.mapping.name().into());
     id.extra.insert("speed".into(), header.speed.name().into());
-    id.extra.insert("chipset".into(), chipset_name(header.rom_type).into());
+    id.extra
+        .insert("chipset".into(), chipset_name(header.rom_type).into());
 
     if let Some(copro) = coprocessor_name(header.rom_type) {
         id.extra.insert("coprocessor".into(), copro.into());
     }
 
     if header.rom_size > 0 {
-        id.extra.insert("rom_size".into(), format_size(header.rom_size));
+        id.extra
+            .insert("rom_size".into(), format_size(header.rom_size));
     }
 
     if header.ram_size > 0 {
-        id.extra.insert("sram_size".into(), format_size(header.ram_size));
+        id.extra
+            .insert("sram_size".into(), format_size(header.ram_size));
     }
 
-    id.extra.insert("country".into(), country_name(header.country).into());
+    id.extra
+        .insert("country".into(), country_name(header.country).into());
 
     if header.has_copier_header {
         id.extra.insert("copier_header".into(), "Yes".into());
@@ -886,10 +905,8 @@ fn to_identification(
     // Computed checksum status
     if let Some(computed) = computed_checksum {
         if computed == header.checksum {
-            id.extra.insert(
-                "checksum_status:SNES Internal".into(),
-                "OK".into(),
-            );
+            id.extra
+                .insert("checksum_status:SNES Internal".into(), "OK".into());
         } else {
             id.extra.insert(
                 "checksum_status:SNES Internal".into(),
@@ -909,7 +926,8 @@ fn to_identification(
         id.extra.insert("game_code".into(), game_code.clone());
     }
     if let Some(exp_ram) = header.expansion_ram_size {
-        id.extra.insert("expansion_ram".into(), format_size(exp_ram));
+        id.extra
+            .insert("expansion_ram".into(), format_size(exp_ram));
     }
 
     id
@@ -1018,6 +1036,10 @@ impl RomAnalyzer for SnesAnalyzer {
         } else {
             Ok(0)
         }
+    }
+
+    fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
+        Some(serial.to_string())
     }
 }
 
@@ -1247,10 +1269,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.internal_name.as_deref(), Some("TEST ROM"));
-        assert_eq!(
-            result.extra.get("format").unwrap(),
-            "SMC (copier header)"
-        );
+        assert_eq!(result.extra.get("format").unwrap(), "SMC (copier header)");
         assert_eq!(result.extra.get("copier_header").unwrap(), "Yes");
     }
 
@@ -1328,10 +1347,7 @@ mod tests {
         let options = AnalysisOptions::default();
         let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-        let status = result
-            .extra
-            .get("checksum_status:SNES Internal")
-            .unwrap();
+        let status = result.extra.get("checksum_status:SNES Internal").unwrap();
         assert!(status.starts_with("MISMATCH"));
     }
 
@@ -1340,7 +1356,8 @@ mod tests {
         let rom = make_snes_rom();
         let base = LOROM_HEADER_BASE as usize;
 
-        let complement = u16::from_le_bytes([rom[base + OFF_COMPLEMENT], rom[base + OFF_COMPLEMENT + 1]]);
+        let complement =
+            u16::from_le_bytes([rom[base + OFF_COMPLEMENT], rom[base + OFF_COMPLEMENT + 1]]);
         let checksum = u16::from_le_bytes([rom[base + OFF_CHECKSUM], rom[base + OFF_CHECKSUM + 1]]);
         assert_eq!(checksum.wrapping_add(complement), 0xFFFF);
     }
@@ -1467,14 +1484,8 @@ mod tests {
     fn test_scoring_prefers_correct_mapping() {
         // For a LoROM, the LoROM offset should score higher than HiROM offset
         let rom = make_snes_rom();
-        let lo_score = score_header_at(
-            &mut Cursor::new(&rom),
-            LOROM_HEADER_BASE,
-        );
-        let hi_score = score_header_at(
-            &mut Cursor::new(&rom),
-            HIROM_HEADER_BASE,
-        );
+        let lo_score = score_header_at(&mut Cursor::new(&rom), LOROM_HEADER_BASE);
+        let hi_score = score_header_at(&mut Cursor::new(&rom), HIROM_HEADER_BASE);
         assert!(
             lo_score > hi_score,
             "LoROM score ({}) should be higher than HiROM score ({})",
@@ -1494,7 +1505,8 @@ mod tests {
     #[test]
     fn test_detect_mapping_lorom() {
         let rom = make_snes_rom();
-        let (offset, has_copier) = detect_mapping(&mut Cursor::new(&rom), rom.len() as u64).unwrap();
+        let (offset, has_copier) =
+            detect_mapping(&mut Cursor::new(&rom), rom.len() as u64).unwrap();
         assert_eq!(offset, LOROM_HEADER_BASE);
         assert!(!has_copier);
     }
@@ -1502,7 +1514,8 @@ mod tests {
     #[test]
     fn test_detect_mapping_hirom() {
         let rom = make_snes_hirom();
-        let (offset, has_copier) = detect_mapping(&mut Cursor::new(&rom), rom.len() as u64).unwrap();
+        let (offset, has_copier) =
+            detect_mapping(&mut Cursor::new(&rom), rom.len() as u64).unwrap();
         assert_eq!(offset, HIROM_HEADER_BASE);
         assert!(!has_copier);
     }
@@ -1511,9 +1524,11 @@ mod tests {
     fn test_detect_mapping_with_copier() {
         let rom = make_snes_rom();
         let rom_with_copier = add_copier_header(&rom);
-        let (offset, has_copier) =
-            detect_mapping(&mut Cursor::new(&rom_with_copier), rom_with_copier.len() as u64)
-                .unwrap();
+        let (offset, has_copier) = detect_mapping(
+            &mut Cursor::new(&rom_with_copier),
+            rom_with_copier.len() as u64,
+        )
+        .unwrap();
         assert_eq!(offset, COPIER_HEADER_SIZE + LOROM_HEADER_BASE);
         assert!(has_copier);
     }

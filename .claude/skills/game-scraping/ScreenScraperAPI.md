@@ -101,7 +101,7 @@ This is the main endpoint for identifying a ROM and getting game data.
 | `gameid`      | No       | Force search by ScreenScraper game ID (skips ROM)|
 
 *At least one hash (CRC, MD5, or SHA1) should be provided. Sending all three plus file size
-gives the best matching accuracy.
+gives the best matching accuracy.*
 
 ### Example Request
 

@@ -31,10 +31,9 @@ const HEADER_START: u64 = 0x0100;
 /// Nintendo logo (48 bytes at 0x0104). Used for format detection.
 /// The boot ROM compares this against its internal copy.
 const NINTENDO_LOGO: [u8; 48] = [
-    0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B, 0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00,
-    0x0D, 0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E, 0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD,
-    0xD9, 0x99, 0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC, 0xDD, 0xDC, 0x99, 0x9F, 0xBB,
-    0xB9, 0x33, 0x3E,
+    0xCE, 0xED, 0x66, 0x66, 0xCC, 0x0D, 0x00, 0x0B, 0x03, 0x73, 0x00, 0x83, 0x00, 0x0C, 0x00, 0x0D,
+    0x00, 0x08, 0x11, 0x1F, 0x88, 0x89, 0x00, 0x0E, 0xDC, 0xCC, 0x6E, 0xE6, 0xDD, 0xDD, 0xD9, 0x99,
+    0xBB, 0xBB, 0x67, 0x63, 0x6E, 0x0E, 0xEC, 0xCC, 0xDD, 0xDC, 0x99, 0x9F, 0xBB, 0xB9, 0x33, 0x3E,
 ];
 
 // ---------------------------------------------------------------------------
@@ -716,9 +715,10 @@ impl RomAnalyzer for GameBoyAnalyzer {
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
-        // DMG-XXXX-YYY or CGB-XXXX-YYY → XXXX
+        // DMG-XXXX-YYY or CGB-XXXX-YYY → XXXX (YYYY is optional)
         let parts: Vec<&str> = serial.split('-').collect();
-        if parts.len() >= 3 && (parts[0] == "DMG" || parts[0] == "CGB") {
+        if parts.len() >= 2 && (parts[0] == "DMG" || parts[0] == "CGB") {
+            println!("gb/c serial: {}", serial);
             Some(parts[1].to_string())
         } else {
             None
@@ -908,28 +908,28 @@ mod tests {
 
     #[test]
     fn test_rom_size_lookup() {
-        assert_eq!(rom_size(0x00), Some(32 * 1024));      // 32 KB
-        assert_eq!(rom_size(0x01), Some(64 * 1024));      // 64 KB
-        assert_eq!(rom_size(0x02), Some(128 * 1024));     // 128 KB
-        assert_eq!(rom_size(0x03), Some(256 * 1024));     // 256 KB
-        assert_eq!(rom_size(0x04), Some(512 * 1024));     // 512 KB
-        assert_eq!(rom_size(0x05), Some(1024 * 1024));    // 1 MB
+        assert_eq!(rom_size(0x00), Some(32 * 1024)); // 32 KB
+        assert_eq!(rom_size(0x01), Some(64 * 1024)); // 64 KB
+        assert_eq!(rom_size(0x02), Some(128 * 1024)); // 128 KB
+        assert_eq!(rom_size(0x03), Some(256 * 1024)); // 256 KB
+        assert_eq!(rom_size(0x04), Some(512 * 1024)); // 512 KB
+        assert_eq!(rom_size(0x05), Some(1024 * 1024)); // 1 MB
         assert_eq!(rom_size(0x06), Some(2 * 1024 * 1024)); // 2 MB
         assert_eq!(rom_size(0x07), Some(4 * 1024 * 1024)); // 4 MB
         assert_eq!(rom_size(0x08), Some(8 * 1024 * 1024)); // 8 MB
-        assert_eq!(rom_size(0x09), None);                   // Invalid
-        assert_eq!(rom_size(0xFF), None);                   // Invalid
+        assert_eq!(rom_size(0x09), None); // Invalid
+        assert_eq!(rom_size(0xFF), None); // Invalid
     }
 
     #[test]
     fn test_ram_size_lookup() {
         assert_eq!(ram_size(0x00), Some(0));
-        assert_eq!(ram_size(0x01), Some(0));        // Unused
+        assert_eq!(ram_size(0x01), Some(0)); // Unused
         assert_eq!(ram_size(0x02), Some(8 * 1024)); // 8 KB
         assert_eq!(ram_size(0x03), Some(32 * 1024)); // 32 KB
         assert_eq!(ram_size(0x04), Some(128 * 1024)); // 128 KB
         assert_eq!(ram_size(0x05), Some(64 * 1024)); // 64 KB
-        assert_eq!(ram_size(0x06), None);             // Invalid
+        assert_eq!(ram_size(0x06), None); // Invalid
     }
 
     #[test]
@@ -951,7 +951,11 @@ mod tests {
         let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
         let status = result.extra.get("checksum_status:GB Header").unwrap();
-        assert!(status.starts_with("MISMATCH"), "Expected MISMATCH, got: {}", status);
+        assert!(
+            status.starts_with("MISMATCH"),
+            "Expected MISMATCH, got: {}",
+            status
+        );
     }
 
     #[test]
@@ -974,7 +978,11 @@ mod tests {
         let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
         let status = result.extra.get("checksum_status:GB Global").unwrap();
-        assert!(status.starts_with("MISMATCH"), "Expected MISMATCH, got: {}", status);
+        assert!(
+            status.starts_with("MISMATCH"),
+            "Expected MISMATCH, got: {}",
+            status
+        );
     }
 
     #[test]
@@ -1035,8 +1043,8 @@ mod tests {
         let options = AnalysisOptions::default();
         let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-        assert_eq!(result.file_size, Some(0x8000));        // 32 KB actual
-        assert_eq!(result.expected_size, Some(0x10000));    // 64 KB expected
+        assert_eq!(result.file_size, Some(0x8000)); // 32 KB actual
+        assert_eq!(result.expected_size, Some(0x10000)); // 64 KB expected
     }
 
     #[test]
@@ -1059,7 +1067,10 @@ mod tests {
         let options = AnalysisOptions::default();
         let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-        assert_eq!(result.extra.get("cartridge_type").unwrap(), "MBC1+RAM+BATTERY");
+        assert_eq!(
+            result.extra.get("cartridge_type").unwrap(),
+            "MBC1+RAM+BATTERY"
+        );
         assert_eq!(result.extra.get("ram_size").unwrap(), "32 KB");
     }
 

@@ -26,11 +26,22 @@ pub struct RenameAction {
 #[derive(Debug, Clone)]
 pub enum RenameProgress {
     /// Starting to scan a console folder
-    ScanningConsole { short_name: String, file_count: usize },
+    ScanningConsole {
+        short_name: String,
+        file_count: usize,
+    },
     /// Analyzing/matching a file
-    MatchingFile { file_name: String, file_index: usize, total: usize },
+    MatchingFile {
+        file_name: String,
+        file_index: usize,
+        total: usize,
+    },
     /// Hashing a file (with --hash)
-    Hashing { file_name: String, bytes_done: u64, bytes_total: u64 },
+    Hashing {
+        file_name: String,
+        bytes_done: u64,
+        bytes_total: u64,
+    },
     /// Finished all consoles
     Done,
 }
@@ -93,10 +104,12 @@ pub fn plan_renames(
     options: &RenameOptions,
     progress: &dyn Fn(RenameProgress),
 ) -> Result<RenamePlan, DatError> {
-    let dat_name = analyzer.dat_name()
-        .ok_or_else(|| DatError::cache(format!(
-            "No DAT support for platform '{}'", analyzer.platform_name()
-        )))?;
+    let dat_name = analyzer.dat_name().ok_or_else(|| {
+        DatError::cache(format!(
+            "No DAT support for platform '{}'",
+            analyzer.platform_name()
+        ))
+    })?;
 
     // Load DAT
     let dat = cache::load_dat(analyzer.short_name(), dat_name, options.dat_dir.as_deref())?;
@@ -219,7 +232,12 @@ pub fn plan_renames(
                     target.file_name().unwrap_or_default(),
                     indices
                         .iter()
-                        .map(|&i| renames[i].source.file_name().unwrap_or_default().to_string_lossy().to_string())
+                        .map(|&i| renames[i]
+                            .source
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string())
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
@@ -273,17 +291,13 @@ fn match_by_hash(
         .unwrap_or("?")
         .to_string();
 
-    let hashes = hasher::compute_crc32_with_progress(
-        &mut file,
-        analyzer,
-        &|done, total| {
-            progress(RenameProgress::Hashing {
-                file_name: file_name.clone(),
-                bytes_done: done,
-                bytes_total: total,
-            });
-        },
-    )?;
+    let hashes = hasher::compute_crc32_with_progress(&mut file, analyzer, &|done, total| {
+        progress(RenameProgress::Hashing {
+            file_name: file_name.clone(),
+            bytes_done: done,
+            bytes_total: total,
+        });
+    })?;
 
     if let Some(result) = index.match_by_hash(hashes.data_size, &hashes) {
         return Ok(Some(result));

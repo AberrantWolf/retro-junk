@@ -692,9 +692,9 @@ impl RomAnalyzer for DsAnalyzer {
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
-        // NTR-XXXX-YYY → XXXX
+        // NTR-XXXX → XXXX
         let parts: Vec<&str> = serial.split('-').collect();
-        if parts.len() >= 3 && parts[0] == "NTR" {
+        if parts.len() >= 2 && parts[0] == "NTR" {
             Some(parts[1].to_string())
         } else {
             None
