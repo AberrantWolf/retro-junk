@@ -329,6 +329,57 @@ fn dat_name_to_screenscraper_id(dat_name: &str) -> Option<u32> {
    - Returns rich metadata: description, box art, screenshots, videos, release dates, etc.
 4. **Merge results** — combine DAT verification status with ScreenScraper metadata.
 
+## DAT File Format (ClrMamePro)
+
+Some DAT sources use the ClrMamePro text format instead of Logiqx XML. Our parser supports both
+formats and auto-detects based on the first non-whitespace byte (`<` = XML, otherwise ClrMamePro).
+
+**LibRetro's enhanced No-Intro DATs use this format** and are the preferred source — they include
+`serial`, `region`, and release date fields that raw No-Intro DATs lack. See
+[LibRetroDB](LibRetroDB.md) for details.
+
+### Header Block
+
+```
+clrmamepro (
+	name "Nintendo - Nintendo Entertainment System"
+	description "Nintendo - Nintendo Entertainment System"
+	version 20240101-000000
+)
+```
+
+### Game Block
+
+Standard No-Intro:
+```
+game (
+	name "Game Title (Region)"
+	description "Game Title (Region)"
+	rom ( name "Game Title (Region).ext" size 12345 crc AABBCCDD md5 0123456789abcdef0123456789abcdef sha1 0123456789abcdef0123456789abcdef01234567 )
+)
+```
+
+LibRetro enhanced (extra fields):
+```
+game (
+	name "Game Title (Region)"
+	region "USA"
+	serial "ABCD"
+	releaseyear "1998"
+	releasemonth "12"
+	releaseday "15"
+	rom ( name "Game Title (Region).ext" size 12345 crc AABBCCDD md5 ... sha1 ... serial "ABCD" )
+)
+```
+
+### Key Syntax Rules
+
+- **Key-value pairs**: `key value` or `key "quoted value"` (quotes required if value contains spaces)
+- **Block delimiters**: `blocktype (` opens, `)` on its own line closes
+- **ROM entries**: Inline inside `rom ( ... )` with tokenized key-value pairs
+- **Checksums**: Hex values, typically uppercase in ClrMamePro format (our parser normalizes to lowercase)
+- **Serial duplication**: In LibRetro DATs, `serial` appears at both game level and inside `rom ()` — they are identical; the game-level serial is authoritative
+
 ## Related Tools
 
 ROM managers that consume DAT files include **CLR-MAME-PRO**, **RomVault**, and **Romulus**.

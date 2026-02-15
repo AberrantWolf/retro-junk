@@ -7,3 +7,4 @@ edition.workspace = true
 retro-junk-lib.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
+crc32fast.workspace = true

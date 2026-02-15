@@ -4,6 +4,7 @@ members = [
     "retro-junk-cli",
     "retro-junk-gui",
     "retro-junk-lib",
+    "retro-junk-dat",
     "retro-junk-nintendo",
     "retro-junk-sony",
     "retro-junk-sega",
@@ -22,7 +23,16 @@ retro-junk-nintendo = { path = "retro-junk-nintendo" }
 retro-junk-sony = { path = "retro-junk-sony" }
 retro-junk-sega = { path = "retro-junk-sega" }
 retro-junk-microsoft = { path = "retro-junk-microsoft" }
+retro-junk-dat = { path = "retro-junk-dat" }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 owo-colors = { version = "4", features = ["supports-colors"] }
 sha2 = "0.10"
+quick-xml = "0.37"
+crc32fast = "1.4"
+sha1 = "0.10"
+reqwest = { version = "0.12", features = ["blocking"] }
+dirs = "6"
+indicatif = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

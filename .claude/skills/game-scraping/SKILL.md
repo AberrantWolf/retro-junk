@@ -11,6 +11,11 @@ metadata/media using multiple sources:
 1. **ScreenScraper.fr API** — A community-driven retro game database with rich metadata and media.
 2. **No-Intro DAT files** — Curated catalogs of verified cartridge/ROM-chip dumps.
 3. **Redump DAT files** — Curated catalogs of verified optical disc dumps (CD/DVD/GD-ROM/Blu-ray).
+4. **LibRetro enhanced DATs** — Enhanced No-Intro DATs with serial, region, and release date fields.
+   **This is the correct and only DAT source for retro-junk** (downloaded from
+   `libretro/libretro-database`, NOT `libretro-mirrors/nointro-db`). Preferred over raw No-Intro
+   DATs because they are a strict superset with serial fields needed for serial-based matching. See
+   [LibRetroDB](LibRetroDB.md) for details.
 
 ## Architecture Notes
 - ScreenScraper is a **live web API** (REST-like, GET requests, returns XML or JSON).
@@ -74,3 +79,4 @@ metadata/media using multiple sources:
 
 - For details on using the screenscraper.fr API, see [ScreenScraper API](ScreenScraperAPI.md)
 - For details on reading No-Intro DAT files, see [NoIntro DAT](NoIntroDAT.md)
+- For details on LibRetro enhanced DATs, see [LibRetroDB](LibRetroDB.md)

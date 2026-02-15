@@ -4,6 +4,7 @@ use std::sync::mpsc::Sender;
 pub mod checksum;
 pub mod context;
 pub mod error;
+pub mod n64;
 pub mod progress;
 pub mod region;
 

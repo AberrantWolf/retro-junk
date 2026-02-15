@@ -12,6 +12,9 @@ use retro_junk_lib::ReadSeek;
 use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
+use retro_junk_lib::n64::{N64Format, detect_n64_format, normalize_to_big_endian};
+#[cfg(test)]
+use retro_junk_lib::n64::MAGIC_Z64;
 use retro_junk_lib::{
     AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
     RomAnalyzer, RomIdentification,
@@ -26,10 +29,6 @@ const BOOT_CODE_START: u64 = 0x40;
 const BOOT_CODE_END: u64 = 0x1000;
 const BOOT_CODE_SIZE: usize = (BOOT_CODE_END - BOOT_CODE_START) as usize; // 4032 bytes
 const MIN_CRC_SIZE: u64 = 0x101000;
-
-const MAGIC_Z64: [u8; 4] = [0x80, 0x37, 0x12, 0x40];
-const MAGIC_V64: [u8; 4] = [0x37, 0x80, 0x40, 0x12];
-const MAGIC_N64: [u8; 4] = [0x40, 0x12, 0x37, 0x80];
 
 const CRC_START: u64 = 0x1000;
 const CRC_END: u64 = 0x101000;
@@ -77,7 +76,7 @@ impl CicVariant {
 /// (bytes 0x40-0x1000) and matching against known values.
 /// Boot code must already be normalized to big-endian.
 fn detect_cic(boot_code: &[u8]) -> CicVariant {
-    let crc = crc32_ieee(boot_code);
+    let crc = crc32fast::hash(boot_code);
     match crc {
         0x6170A4A1 => CicVariant::Cic6101,
         0x90BB6CB5 => CicVariant::Cic6102,
@@ -88,40 +87,18 @@ fn detect_cic(boot_code: &[u8]) -> CicVariant {
     }
 }
 
-/// Compute CRC32-IEEE (the standard CRC32 used by zlib, gzip, etc.).
-fn crc32_ieee(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFFFFFF;
-    for &byte in data {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            if crc & 1 != 0 {
-                crc = (crc >> 1) ^ 0xEDB88320;
-            } else {
-                crc >>= 1;
-            }
-        }
-    }
-    !crc
-}
-
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RomFormat {
-    Z64,
-    V64,
-    N64,
-}
+/// Local alias — maps the shared `N64Format` to context-appropriate display names.
+type RomFormat = N64Format;
 
-impl RomFormat {
-    fn name(&self) -> &'static str {
-        match self {
-            RomFormat::Z64 => "z64 (big-endian)",
-            RomFormat::V64 => "v64 (byte-swapped)",
-            RomFormat::N64 => "n64 (little-endian)",
-        }
+fn rom_format_name(format: RomFormat) -> &'static str {
+    match format {
+        N64Format::Z64 => "z64 (big-endian)",
+        N64Format::V64 => "v64 (byte-swapped)",
+        N64Format::N64 => "n64 (little-endian)",
     }
 }
 
@@ -139,39 +116,6 @@ struct N64Header {
     game_id: [u8; 2],
     destination_code: u8,
     rom_version: u8,
-}
-
-// ---------------------------------------------------------------------------
-// Format detection and normalization
-// ---------------------------------------------------------------------------
-
-fn detect_format(magic: &[u8]) -> Option<RomFormat> {
-    if magic.len() < 4 {
-        return None;
-    }
-    match [magic[0], magic[1], magic[2], magic[3]] {
-        MAGIC_Z64 => Some(RomFormat::Z64),
-        MAGIC_V64 => Some(RomFormat::V64),
-        MAGIC_N64 => Some(RomFormat::N64),
-        _ => None,
-    }
-}
-
-fn normalize_to_big_endian(data: &mut [u8], format: RomFormat) {
-    match format {
-        RomFormat::Z64 => {}
-        RomFormat::V64 => {
-            for i in (0..data.len() - 1).step_by(2) {
-                data.swap(i, i + 1);
-            }
-        }
-        RomFormat::N64 => {
-            for i in (0..data.len().saturating_sub(3)).step_by(4) {
-                data.swap(i, i + 3);
-                data.swap(i + 1, i + 2);
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +140,7 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<N64Header, AnalysisError> {
         }
     })?;
 
-    let format = detect_format(&buf).ok_or_else(|| {
+    let format = detect_n64_format(&buf).ok_or_else(|| {
         AnalysisError::invalid_format(format!(
             "unrecognized N64 magic bytes: [{:02X}, {:02X}, {:02X}, {:02X}] \
              (expected z64=[80,37,12,40], v64=[37,80,40,12], n64=[40,12,37,80])",
@@ -409,7 +353,7 @@ fn to_identification(
     id.file_size = Some(file_size);
 
     id.extra
-        .insert("format".into(), header.format.name().into());
+        .insert("format".into(), rom_format_name(header.format).into());
     id.extra.insert(
         "boot_address".into(),
         format!("0x{:08X}", header.boot_address),
@@ -555,7 +499,7 @@ impl RomAnalyzer for N64Analyzer {
         }
         let _ = reader.seek(SeekFrom::Start(0));
 
-        detect_format(&magic).is_some()
+        detect_n64_format(&magic).is_some()
     }
 }
 
@@ -714,7 +658,7 @@ mod tests {
     #[test]
     fn test_crc32_ieee() {
         // Known test vector: CRC32 of "123456789" = 0xCBF43926
-        assert_eq!(crc32_ieee(b"123456789"), 0xCBF43926);
+        assert_eq!(crc32fast::hash(b"123456789"), 0xCBF43926);
     }
 
     // -- CIC detection --

@@ -49,6 +49,38 @@ Use `retro-junk-nintendo/src/nes.rs` as the reference implementation.
 3. Re-export from the platform crate's `lib.rs`
 4. Register in `retro-junk-cli/src/main.rs` `create_context()`
 
+## Shared Code Principles
+
+- **One implementation per algorithm.** Hashing, checksum, and byte-order normalization must have
+  exactly one canonical implementation. Currently these live in `retro-junk-lib` (e.g.,
+  `retro-junk-lib::n64` for N64 byte-order detection and normalization). Both analyzers and DAT
+  matching import from there.
+- **Serial format normalization** lives in `retro-junk-dat/src/matcher.rs` — the single place that
+  bridges analyzer serial output (e.g., `NUS-NSME-USA`) to DAT serial lookup (e.g., `NSME`).
+- **DAT source:** LibRetro enhanced DATs from `libretro/libretro-database` (not `libretro-mirrors/nointro-db`).
+  These are a strict superset of standard No-Intro DATs with serial, region, and release date fields.
+
+## Planned Restructuring
+
+The current architecture puts all DAT-related logic (parsing, caching, matching, renaming) in
+`retro-junk-dat`, with CLI commands implemented directly in `retro-junk-cli`. This means a future
+GUI would have to reimplement the command orchestration logic.
+
+**Target architecture:**
+- `retro-junk-core` (rename current `retro-junk-lib`) — bottom-level crate with core types, traits
+  (`RomAnalyzer`, `ReadSeek`, `RomIdentification`, `AnalysisError`, `Region`), and shared
+  platform-specific utilities (N64 byte-order, etc.)
+- `retro-junk-nintendo/sega/sony/microsoft` — analyzer implementations, depend on `core`
+- `retro-junk-dat` — DAT file parsing and caching ONLY, depend on `core`
+- `retro-junk-lib` (new glue layer) — matching, renaming, analysis orchestration, `AnalysisContext`,
+  progress reporting. Depends on `core`, `dat`, and all platform crates. This is where "doing things"
+  lives.
+- `retro-junk-cli` / `retro-junk-gui` — thin presentation layers over `lib`
+
+**Why:** Platform-specific logic (like N64 byte-order normalization) must not be duplicated across
+crates. The glue layer gives both CLI and GUI access to the same matching/renaming/analysis logic
+without reimplementation.
+
 ## Conventions
 
 - **Builder pattern** on `RomIdentification`: chain `.with_serial()`, `.with_internal_name()`, `.with_region()`, `.with_platform()`; set other fields directly
