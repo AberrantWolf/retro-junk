@@ -7,6 +7,7 @@ use crate::dat::{DatFile, DatGame};
 pub struct FileHashes {
     pub crc32: String,
     pub sha1: Option<String>,
+    pub md5: Option<String>,
     /// Size of the data that was hashed (after header stripping)
     pub data_size: u64,
 }
@@ -231,6 +232,7 @@ mod tests {
         let hashes = FileHashes {
             crc32: "b19ed489".into(),
             sha1: None,
+            md5: None,
             data_size: 524288,
         };
         let result = index.match_by_hash(524288, &hashes).unwrap();
@@ -288,6 +290,7 @@ mod tests {
         let usa_hashes = FileHashes {
             crc32: "635a2bff".into(),
             sha1: None,
+            md5: None,
             data_size: 8388608,
         };
         let usa = index.match_by_hash(8388608, &usa_hashes).unwrap();
@@ -296,6 +299,7 @@ mod tests {
         let jpn_hashes = FileHashes {
             crc32: "4eab3152".into(),
             sha1: None,
+            md5: None,
             data_size: 8388608,
         };
         let jpn = index.match_by_hash(8388608, &jpn_hashes).unwrap();
@@ -308,6 +312,7 @@ mod tests {
         let hashes = FileHashes {
             crc32: "00000000".into(),
             sha1: None,
+            md5: None,
             data_size: 999,
         };
         assert!(index.match_by_hash(999, &hashes).is_none());
@@ -321,6 +326,7 @@ mod tests {
         let hashes = FileHashes {
             crc32: "b19ed489".into(),
             sha1: None,
+            md5: None,
             data_size: 524288,
         };
         assert!(index.match_by_hash(999, &hashes).is_none());

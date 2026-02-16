@@ -65,10 +65,67 @@ enum Commands {
         dat_dir: Option<PathBuf>,
     },
 
+    /// Scrape game metadata and media from ScreenScraper.fr
+    Scrape {
+        /// Console short names to scrape (e.g., nes,snes,n64)
+        #[arg(short, long, value_delimiter = ',')]
+        consoles: Option<Vec<String>>,
+
+        /// Media types to download (e.g., covers,screenshots,videos,marquees)
+        #[arg(long, value_delimiter = ',')]
+        media_types: Option<Vec<String>>,
+
+        /// Directory for metadata files (default: <root>-metadata)
+        #[arg(long)]
+        metadata_dir: Option<PathBuf>,
+
+        /// Directory for media files (default: <root>-media)
+        #[arg(long)]
+        media_dir: Option<PathBuf>,
+
+        /// Frontend to generate metadata for
+        #[arg(long, default_value = "esde")]
+        frontend: String,
+
+        /// Preferred region for names/media (e.g., us, eu, jp)
+        #[arg(long, default_value = "us")]
+        region: String,
+
+        /// Preferred language for descriptions (e.g., en, fr, match)
+        #[arg(long, default_value = "en")]
+        language: String,
+
+        /// Fallback language when --language match has no data for the matched language
+        #[arg(long, default_value = "en")]
+        language_fallback: String,
+
+        /// Hash all files even when serial/filename should suffice
+        #[arg(long)]
+        force_full_hash: bool,
+
+        /// Show what would be scraped without downloading
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        /// Skip games that already have metadata
+        #[arg(long)]
+        skip_existing: bool,
+
+        /// Disable scrape log file
+        #[arg(long)]
+        no_log: bool,
+    },
+
     /// Manage cached DAT files
     Cache {
         #[command(subcommand)]
         action: CacheAction,
+    },
+
+    /// Manage ScreenScraper credentials configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
     },
 }
 
@@ -86,6 +143,21 @@ enum CacheAction {
         #[arg(value_delimiter = ',')]
         systems: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum ConfigAction {
+    /// Show current credentials and their sources
+    Show,
+
+    /// Interactively set up credentials
+    Setup,
+
+    /// Test credentials against the ScreenScraper API
+    Test,
+
+    /// Print the config file path
+    Path,
 }
 
 fn main() {
@@ -107,10 +179,47 @@ fn main() {
         } => {
             run_rename(&ctx, dry_run, hash, consoles, cli.root, dat_dir);
         }
+        Commands::Scrape {
+            consoles,
+            media_types,
+            metadata_dir,
+            media_dir,
+            frontend,
+            region,
+            language,
+            language_fallback,
+            force_full_hash,
+            dry_run,
+            skip_existing,
+            no_log,
+        } => {
+            run_scrape(
+                &ctx,
+                consoles,
+                media_types,
+                metadata_dir,
+                media_dir,
+                frontend,
+                region,
+                language,
+                language_fallback,
+                force_full_hash,
+                dry_run,
+                skip_existing,
+                no_log,
+                cli.root,
+            );
+        }
         Commands::Cache { action } => match action {
             CacheAction::List => run_cache_list(),
             CacheAction::Clear => run_cache_clear(),
             CacheAction::Fetch { systems } => run_cache_fetch(&ctx, systems),
+        },
+        Commands::Config { action } => match action {
+            ConfigAction::Show => run_config_show(),
+            ConfigAction::Setup => run_config_setup(),
+            ConfigAction::Test => run_config_test(),
+            ConfigAction::Path => run_config_path(),
         },
     }
 }
@@ -1003,6 +1112,369 @@ fn print_rename_plan(plan: &RenamePlan) {
     }
 }
 
+/// Run the scrape command.
+#[allow(clippy::too_many_arguments)]
+fn run_scrape(
+    ctx: &AnalysisContext,
+    consoles: Option<Vec<String>>,
+    media_types: Option<Vec<String>>,
+    metadata_dir: Option<PathBuf>,
+    media_dir: Option<PathBuf>,
+    _frontend: String,
+    region: String,
+    language: String,
+    language_fallback: String,
+    force_full_hash: bool,
+    dry_run: bool,
+    skip_existing: bool,
+    no_log: bool,
+    root: Option<PathBuf>,
+) {
+    let root_path =
+        root.unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
+
+    // Build scrape options
+    let mut options = retro_junk_scraper::ScrapeOptions::new(root_path.clone());
+    options.region = region;
+    options.language = language;
+    options.language_fallback = language_fallback;
+    options.force_hash = force_full_hash;
+    options.dry_run = dry_run;
+    options.skip_existing = skip_existing;
+    options.no_log = no_log;
+
+    if let Some(mdir) = metadata_dir {
+        options.metadata_dir = mdir;
+    }
+    if let Some(mdir) = media_dir {
+        options.media_dir = mdir;
+    }
+    if let Some(ref types) = media_types {
+        options.media_selection = retro_junk_scraper::MediaSelection::from_names(types);
+    }
+
+    println!(
+        "Scraping ROMs in: {}",
+        root_path.display().if_supports_color(Stdout, |t| t.cyan()),
+    );
+    if dry_run {
+        println!(
+            "{}",
+            "Dry run: no files will be downloaded".if_supports_color(Stdout, |t| t.dimmed()),
+        );
+    }
+    println!(
+        "Metadata: {}",
+        options.metadata_dir.display().if_supports_color(Stdout, |t| t.dimmed()),
+    );
+    println!(
+        "Media:    {}",
+        options.media_dir.display().if_supports_color(Stdout, |t| t.dimmed()),
+    );
+    println!();
+
+    // Load credentials
+    let creds = match retro_junk_scraper::Credentials::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "{} Failed to load ScreenScraper credentials: {}",
+                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                e,
+            );
+            eprintln!();
+            eprintln!("Set credentials via environment variables:");
+            eprintln!("  SCREENSCRAPER_DEVID, SCREENSCRAPER_DEVPASSWORD");
+            eprintln!("  SCREENSCRAPER_SSID, SCREENSCRAPER_SSPASSWORD (optional)");
+            eprintln!();
+            eprintln!("Or create ~/.config/retro-junk/credentials.toml");
+            return;
+        }
+    };
+
+    // Create a tokio runtime for async operations
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+
+    rt.block_on(async {
+        // Validate credentials
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_chars("/-\\|"),
+        );
+        pb.set_message("Connecting to ScreenScraper...");
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+        let (client, user_info) = match retro_junk_scraper::ScreenScraperClient::new(creds).await {
+            Ok(result) => result,
+            Err(e) => {
+                pb.finish_and_clear();
+                eprintln!(
+                    "{} Failed to connect to ScreenScraper: {}",
+                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                    e,
+                );
+                return;
+            }
+        };
+        pb.finish_and_clear();
+
+        println!(
+            "{} Connected to ScreenScraper (requests today: {}/{}, max threads: {})",
+            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+            user_info.requests_today(),
+            user_info.max_requests_per_day(),
+            user_info.max_threads(),
+        );
+        println!();
+
+        // Scan root directory for console folders
+        let entries = match fs::read_dir(&root_path) {
+            Ok(entries) => entries,
+            Err(e) => {
+                eprintln!(
+                    "{} Error reading directory: {}",
+                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                    e,
+                );
+                return;
+            }
+        };
+
+        let esde = retro_junk_frontend::esde::EsDeFrontend::new();
+        let mut total_games = 0usize;
+        let mut total_media = 0usize;
+        let mut total_errors = 0usize;
+        let mut total_unidentified = 0usize;
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            let folder_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name,
+                None => continue,
+            };
+
+            let matching_consoles = ctx.find_by_folder(folder_name);
+            if matching_consoles.is_empty() {
+                continue;
+            }
+
+            // Filter by requested consoles
+            let consoles_to_use: Vec<_> = if let Some(ref filter) = consoles {
+                matching_consoles
+                    .into_iter()
+                    .filter(|c| {
+                        filter
+                            .iter()
+                            .any(|f| f.eq_ignore_ascii_case(c.metadata.short_name))
+                    })
+                    .collect()
+            } else {
+                matching_consoles
+            };
+
+            if consoles_to_use.is_empty() {
+                continue;
+            }
+
+            for console in consoles_to_use {
+                let short_name = console.metadata.short_name;
+
+                // Check if this system has a ScreenScraper ID
+                if retro_junk_scraper::screenscraper_system_id(short_name).is_none() {
+                    eprintln!(
+                        "  {} Skipping \"{}\" — no ScreenScraper system ID",
+                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                        folder_name,
+                    );
+                    continue;
+                }
+
+                println!(
+                    "{} {}",
+                    console
+                        .metadata
+                        .platform_name
+                        .if_supports_color(Stdout, |t| t.bold()),
+                    format!("({})", folder_name).if_supports_color(Stdout, |t| t.dimmed()),
+                );
+
+                let pb = ProgressBar::new_spinner();
+                pb.set_style(
+                    ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+                        .unwrap()
+                        .tick_chars("/-\\|"),
+                );
+                pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+                let progress_callback = |progress: retro_junk_scraper::ScrapeProgress| {
+                    match progress {
+                        retro_junk_scraper::ScrapeProgress::Scanning => {
+                            pb.set_message("Scanning for ROM files...");
+                        }
+                        retro_junk_scraper::ScrapeProgress::LookingUp { ref file, index, total } => {
+                            pb.set_message(format!("[{}/{}] Looking up {}", index + 1, total, file));
+                        }
+                        retro_junk_scraper::ScrapeProgress::Downloading { ref media_type, ref file } => {
+                            pb.set_message(format!("Downloading {} for {}", media_type, file));
+                        }
+                        retro_junk_scraper::ScrapeProgress::Skipped { ref file, ref reason } => {
+                            pb.set_message(format!("Skipped {}: {}", file, reason));
+                        }
+                        retro_junk_scraper::ScrapeProgress::Done => {
+                            pb.finish_and_clear();
+                        }
+                    }
+                };
+
+                match retro_junk_scraper::scrape_folder(
+                    &client,
+                    &path,
+                    console.analyzer.as_ref(),
+                    &options,
+                    &progress_callback,
+                )
+                .await
+                {
+                    Ok(result) => {
+                        pb.finish_and_clear();
+
+                        let summary = result.log.summary();
+                        total_games += summary.total_success + summary.total_partial;
+                        total_media += summary.media_downloaded;
+                        total_errors += summary.total_errors;
+                        total_unidentified += summary.total_unidentified;
+
+                        // Print per-system summary
+                        if summary.total_success > 0 {
+                            println!(
+                                "  {} {} games scraped (serial: {}, filename: {}, hash: {})",
+                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                summary.total_success,
+                                summary.by_serial,
+                                summary.by_filename,
+                                summary.by_hash,
+                            );
+                        }
+                        if summary.media_downloaded > 0 {
+                            println!(
+                                "  {} {} media files downloaded",
+                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                summary.media_downloaded,
+                            );
+                        }
+                        if summary.total_unidentified > 0 {
+                            println!(
+                                "  {} {} unidentified",
+                                "?".if_supports_color(Stdout, |t| t.yellow()),
+                                summary.total_unidentified,
+                            );
+                        }
+                        if summary.total_errors > 0 {
+                            println!(
+                                "  {} {} errors",
+                                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                                summary.total_errors,
+                            );
+                        }
+
+                        // Write metadata
+                        if !result.games.is_empty() && !dry_run {
+                            let system_metadata_dir = options.metadata_dir.join(short_name);
+                            let system_media_dir = options.media_dir.join(short_name);
+
+                            use retro_junk_frontend::Frontend;
+                            if let Err(e) = esde.write_metadata(
+                                &result.games,
+                                &path,
+                                &system_metadata_dir,
+                                &system_media_dir,
+                            ) {
+                                eprintln!(
+                                    "  {} Error writing metadata: {}",
+                                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                                    e,
+                                );
+                            } else {
+                                println!(
+                                    "  {} gamelist.xml written to {}",
+                                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                    system_metadata_dir.display(),
+                                );
+                            }
+                        }
+
+                        // Write scrape log
+                        if !no_log && !dry_run {
+                            let log_path = options.metadata_dir.join(format!(
+                                "scrape-log-{}-{}.txt",
+                                short_name,
+                                chrono::Local::now().format("%Y%m%d-%H%M%S"),
+                            ));
+                            if let Err(e) = std::fs::create_dir_all(&options.metadata_dir) {
+                                eprintln!("Warning: could not create metadata dir: {}", e);
+                            } else if let Err(e) = result.log.write_to_file(&log_path) {
+                                eprintln!("Warning: could not write scrape log: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        pb.finish_and_clear();
+                        eprintln!(
+                            "  {} Error: {}",
+                            "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                            e,
+                        );
+                        total_errors += 1;
+                    }
+                }
+                println!();
+            }
+        }
+
+        // Print overall summary
+        if total_games > 0 || total_errors > 0 || total_unidentified > 0 {
+            println!("{}", "Summary:".if_supports_color(Stdout, |t| t.bold()));
+            if total_games > 0 {
+                println!(
+                    "  {} {} games scraped, {} media files",
+                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                    total_games,
+                    total_media,
+                );
+            }
+            if total_unidentified > 0 {
+                println!(
+                    "  {} {} unidentified",
+                    "?".if_supports_color(Stdout, |t| t.yellow()),
+                    total_unidentified,
+                );
+            }
+            if total_errors > 0 {
+                println!(
+                    "  {} {} errors",
+                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                    total_errors,
+                );
+            }
+
+            // Show remaining quota
+            if let Some(quota) = client.current_quota().await {
+                println!(
+                    "  Quota: {}/{} requests used today",
+                    quota.requests_today(),
+                    quota.max_requests_per_day(),
+                );
+            }
+        }
+    });
+}
+
 /// Run the list command.
 fn run_list(ctx: &AnalysisContext) {
     println!("Supported consoles:");
@@ -1182,6 +1654,314 @@ fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
                     e,
                 );
             }
+        }
+    }
+}
+
+// -- Config subcommands --
+
+/// Mask a string, showing only the first 2 characters.
+fn mask_value(s: &str) -> String {
+    if s.len() <= 2 {
+        "****".to_string()
+    } else {
+        format!("{}****", &s[..2])
+    }
+}
+
+/// Show current credentials and their sources.
+fn run_config_show() {
+    use retro_junk_scraper::CredentialSource;
+
+    let path = retro_junk_scraper::config_path();
+    let sources = retro_junk_scraper::credential_sources();
+
+    println!(
+        "{}",
+        "ScreenScraper Configuration".if_supports_color(Stdout, |t| t.bold()),
+    );
+    println!();
+
+    // Config file status
+    match &path {
+        Some(p) if p.exists() => {
+            println!(
+                "  Config file: {} {}",
+                p.display().if_supports_color(Stdout, |t| t.cyan()),
+                "(exists)".if_supports_color(Stdout, |t| t.green()),
+            );
+        }
+        Some(p) => {
+            println!(
+                "  Config file: {} {}",
+                p.display().if_supports_color(Stdout, |t| t.cyan()),
+                "(not found)".if_supports_color(Stdout, |t| t.dimmed()),
+            );
+        }
+        None => {
+            println!(
+                "  Config file: {}",
+                "could not determine path".if_supports_color(Stdout, |t| t.red()),
+            );
+        }
+    }
+    println!();
+
+    // Resolve values per-field (Credentials::load() would fail if required fields are missing)
+    let creds = retro_junk_scraper::Credentials::load().ok();
+
+    let get_value =
+        |source: &CredentialSource, from_creds: Option<String>, is_secret: bool| -> Option<String> {
+            match source {
+                CredentialSource::Missing => None,
+                CredentialSource::Default => Some("retro-junk".to_string()),
+                CredentialSource::EnvVar(var) => {
+                    let v = std::env::var(var).ok()?;
+                    Some(if is_secret { mask_value(&v) } else { v })
+                }
+                CredentialSource::ConfigFile => {
+                    from_creds.map(|v| if is_secret { mask_value(&v) } else { v })
+                }
+            }
+        };
+
+    let fields: &[(&str, &CredentialSource, Option<String>)] = &[
+        (
+            "dev_id",
+            &sources.dev_id,
+            get_value(&sources.dev_id, creds.as_ref().map(|c| c.dev_id.clone()), false),
+        ),
+        (
+            "dev_password",
+            &sources.dev_password,
+            get_value(
+                &sources.dev_password,
+                creds.as_ref().map(|c| c.dev_password.clone()),
+                true,
+            ),
+        ),
+        (
+            "soft_name",
+            &sources.soft_name,
+            get_value(
+                &sources.soft_name,
+                creds.as_ref().map(|c| c.soft_name.clone()),
+                false,
+            ),
+        ),
+        (
+            "user_id",
+            &sources.user_id,
+            get_value(
+                &sources.user_id,
+                creds.as_ref().and_then(|c| c.user_id.clone()),
+                false,
+            ),
+        ),
+        (
+            "user_password",
+            &sources.user_password,
+            get_value(
+                &sources.user_password,
+                creds.as_ref().and_then(|c| c.user_password.clone()),
+                true,
+            ),
+        ),
+    ];
+
+    for (name, source, value) in fields {
+        let source_str = format!("({})", source);
+        match value {
+            Some(v) => {
+                println!(
+                    "  {} {} {}",
+                    format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
+                    v,
+                    source_str.if_supports_color(Stdout, |t| t.dimmed()),
+                );
+            }
+            None => {
+                println!(
+                    "  {} {} {}",
+                    format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
+                    "not set".if_supports_color(Stdout, |t| t.yellow()),
+                    source_str.if_supports_color(Stdout, |t| t.dimmed()),
+                );
+            }
+        }
+    }
+}
+
+/// Interactively set up credentials.
+fn run_config_setup() {
+    println!(
+        "{}",
+        "ScreenScraper Credential Setup".if_supports_color(Stdout, |t| t.bold()),
+    );
+    println!();
+
+    // Load existing config as defaults
+    let existing = retro_junk_scraper::Credentials::load().ok();
+
+    let read_line = |prompt: &str, default: Option<&str>, required: bool| -> Option<String> {
+        loop {
+            if let Some(def) = default {
+                print!("  {} [{}]: ", prompt, def);
+            } else {
+                print!("  {}: ", prompt);
+            }
+            std::io::stdout().flush().unwrap();
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).unwrap();
+            let trimmed = input.trim().to_string();
+
+            if trimmed.is_empty() {
+                if let Some(def) = default {
+                    return Some(def.to_string());
+                }
+                if required {
+                    println!(
+                        "    {}",
+                        "This field is required.".if_supports_color(Stdout, |t| t.yellow()),
+                    );
+                    continue;
+                }
+                return None;
+            }
+            return Some(trimmed);
+        }
+    };
+
+    println!(
+        "  {}",
+        "Developer credentials (required):".if_supports_color(Stdout, |t| t.dimmed()),
+    );
+    let dev_id = read_line(
+        "dev_id",
+        existing.as_ref().map(|c| c.dev_id.as_str()),
+        true,
+    )
+    .unwrap();
+    let dev_password = read_line(
+        "dev_password",
+        existing.as_ref().map(|c| c.dev_password.as_str()),
+        true,
+    )
+    .unwrap();
+
+    println!();
+    println!(
+        "  {}",
+        "User credentials (optional, press Enter to skip):".if_supports_color(Stdout, |t| t.dimmed()),
+    );
+    let user_id = read_line(
+        "user_id",
+        existing.as_ref().and_then(|c| c.user_id.as_deref()),
+        false,
+    );
+    let user_password = read_line(
+        "user_password",
+        existing
+            .as_ref()
+            .and_then(|c| c.user_password.as_deref()),
+        false,
+    );
+
+    let creds = retro_junk_scraper::Credentials {
+        dev_id,
+        dev_password,
+        soft_name: existing
+            .map(|c| c.soft_name)
+            .unwrap_or_else(|| "retro-junk".to_string()),
+        user_id,
+        user_password,
+    };
+
+    match retro_junk_scraper::save_to_file(&creds) {
+        Ok(path) => {
+            println!();
+            println!(
+                "{} Credentials saved to {}",
+                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                path.display().if_supports_color(Stdout, |t| t.cyan()),
+            );
+        }
+        Err(e) => {
+            eprintln!();
+            eprintln!(
+                "{} Failed to save credentials: {}",
+                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                e,
+            );
+        }
+    }
+}
+
+/// Test credentials against the ScreenScraper API.
+fn run_config_test() {
+    let creds = match retro_junk_scraper::Credentials::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!(
+                "{} Failed to load credentials: {}",
+                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                e,
+            );
+            eprintln!();
+            eprintln!("Run 'retro-junk config setup' to configure credentials.");
+            return;
+        }
+    };
+
+    println!("Testing credentials against ScreenScraper API...");
+
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+
+    rt.block_on(async {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_chars("/-\\|"),
+        );
+        pb.set_message("Connecting...");
+        pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+        match retro_junk_scraper::ScreenScraperClient::new(creds).await {
+            Ok((_client, user_info)) => {
+                pb.finish_and_clear();
+                println!(
+                    "{} Credentials are valid!",
+                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                );
+                println!();
+                println!(
+                    "  Requests today: {}/{}",
+                    user_info.requests_today(),
+                    user_info.max_requests_per_day(),
+                );
+                println!("  Max threads:    {}", user_info.max_threads());
+            }
+            Err(e) => {
+                pb.finish_and_clear();
+                eprintln!(
+                    "{} Credential validation failed: {}",
+                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                    e,
+                );
+            }
+        }
+    });
+}
+
+/// Print the config file path.
+fn run_config_path() {
+    match retro_junk_scraper::config_path() {
+        Some(path) => println!("{}", path.display()),
+        None => {
+            eprintln!("Could not determine config directory");
+            std::process::exit(1);
         }
     }
 }

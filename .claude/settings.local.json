@@ -32,7 +32,8 @@
       "WebFetch(domain:docs.libretro.com)",
       "Bash(curl:*)",
       "Bash(done)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(cargo doc:*)"
     ]
   }
 }
