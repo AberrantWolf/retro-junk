@@ -9,8 +9,8 @@ use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
-    RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum,
+    Platform, Region, RomAnalyzer, RomIdentification,
 };
 
 /// Magic bytes at offset 0x0100 — the system type field always starts with "SEGA".
@@ -309,20 +309,8 @@ impl RomAnalyzer for GenesisAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Sega Genesis / Mega Drive"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "genesis"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["genesis", "megadrive", "mega drive", "md"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Sega"
+    fn platform(&self) -> Platform {
+        Platform::Genesis
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

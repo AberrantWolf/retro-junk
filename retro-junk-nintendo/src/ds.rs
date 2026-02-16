@@ -14,8 +14,8 @@ use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
-    RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum,
+    Platform, Region, RomAnalyzer, RomIdentification,
 };
 
 // ---------------------------------------------------------------------------
@@ -630,20 +630,8 @@ impl RomAnalyzer for DsAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Nintendo DS"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "nds"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["nds", "ds", "nintendo ds"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Nintendo"
+    fn platform(&self) -> Platform {
+        Platform::Ds
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

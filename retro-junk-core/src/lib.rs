@@ -3,11 +3,13 @@ use std::sync::mpsc::Sender;
 
 pub mod checksum;
 pub mod error;
+pub mod platform;
 pub mod progress;
 pub mod region;
 
 pub use checksum::{ChecksumAlgorithm, ExpectedChecksum};
 pub use error::AnalysisError;
+pub use platform::{Platform, PlatformParseError};
 pub use progress::AnalysisProgress;
 pub use region::Region;
 
@@ -135,18 +137,29 @@ pub trait RomAnalyzer: Send + Sync {
         progress_tx: Sender<AnalysisProgress>,
     ) -> Result<RomIdentification, AnalysisError>;
 
-    /// Returns the name of the platform this analyzer handles.
-    fn platform_name(&self) -> &'static str;
+    /// Returns the platform this analyzer handles.
+    fn platform(&self) -> Platform;
+
+    /// Returns the full name of the platform this analyzer handles.
+    fn platform_name(&self) -> &'static str {
+        self.platform().display_name()
+    }
 
     /// Returns the short name used for CLI and folder matching.
-    fn short_name(&self) -> &'static str;
+    fn short_name(&self) -> &'static str {
+        self.platform().short_name()
+    }
 
     /// Returns alternative folder names that should match this console.
     /// These are checked case-insensitively.
-    fn folder_names(&self) -> &'static [&'static str];
+    fn folder_names(&self) -> &'static [&'static str] {
+        self.platform().aliases()
+    }
 
     /// Returns the manufacturer of this console.
-    fn manufacturer(&self) -> &'static str;
+    fn manufacturer(&self) -> &'static str {
+        self.platform().manufacturer()
+    }
 
     /// Returns file extensions commonly associated with this platform.
     fn file_extensions(&self) -> &'static [&'static str];
@@ -159,13 +172,7 @@ pub trait RomAnalyzer: Send + Sync {
 
     /// Check if this analyzer matches a folder name (case-insensitive).
     fn matches_folder(&self, folder_name: &str) -> bool {
-        let folder_lower = folder_name.to_lowercase();
-        if self.short_name().to_lowercase() == folder_lower {
-            return true;
-        }
-        self.folder_names()
-            .iter()
-            .any(|name| name.to_lowercase() == folder_lower)
+        folder_name.parse::<Platform>().ok() == Some(self.platform())
     }
 
     // -- DAT support methods (override in platform analyzers) --

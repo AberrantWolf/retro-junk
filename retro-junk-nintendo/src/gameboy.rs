@@ -14,8 +14,8 @@ use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
-    RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum,
+    Platform, Region, RomAnalyzer, RomIdentification,
 };
 
 // ---------------------------------------------------------------------------
@@ -664,20 +664,8 @@ impl RomAnalyzer for GameBoyAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Game Boy / Game Boy Color"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "gb"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["gb", "gbc", "gameboy", "game boy"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Nintendo"
+    fn platform(&self) -> Platform {
+        Platform::GameBoy
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

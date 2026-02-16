@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use retro_junk_core::Platform;
+
 use crate::client::ScreenScraperClient;
 use crate::error::ScrapeError;
 use crate::systems;
@@ -49,8 +51,8 @@ pub struct RomInfo {
     pub md5: Option<String>,
     /// SHA1 hash (lowercase hex, computed if needed)
     pub sha1: Option<String>,
-    /// Short name of the console (e.g., "n64")
-    pub short_name: String,
+    /// Platform identifier
+    pub platform: Platform,
 }
 
 /// Look up a game using the tiered strategy.
@@ -82,7 +84,7 @@ pub async fn lookup_game(
             }
             Err(e) => return Err(e),
         }
-    } else if systems::expects_serial(&rom_info.short_name) {
+    } else if systems::expects_serial(rom_info.platform) {
         warnings.push(format!(
             "Expected serial not found in ROM header for {}",
             rom_info.filename
@@ -109,7 +111,7 @@ pub async fn lookup_game(
 
     // Tier 3: Hash match (conditional)
     let should_hash =
-        !systems::expects_serial(&rom_info.short_name) || force_hash;
+        !systems::expects_serial(rom_info.platform) || force_hash;
 
     if should_hash {
         if let (Some(crc), Some(md5), Some(sha1)) =

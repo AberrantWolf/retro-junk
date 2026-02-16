@@ -10,7 +10,7 @@ use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
 };
 
 /// Analyzer for Sega Saturn disc images.
@@ -43,20 +43,8 @@ impl RomAnalyzer for SaturnAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Sega Saturn"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "saturn"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["saturn", "sega saturn"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Sega"
+    fn platform(&self) -> Platform {
+        Platform::Saturn
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

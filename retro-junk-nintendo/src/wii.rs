@@ -12,7 +12,7 @@ use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
 };
 
 /// Analyzer for Nintendo Wii disc images.
@@ -45,20 +45,8 @@ impl RomAnalyzer for WiiAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Nintendo Wii"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "wii"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["wii"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Nintendo"
+    fn platform(&self) -> Platform {
+        Platform::Wii
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

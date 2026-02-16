@@ -14,8 +14,8 @@ use std::sync::mpsc::Sender;
 
 use crate::n64_byteorder::{N64Format, detect_n64_format, normalize_to_big_endian};
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
-    RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum,
+    Platform, Region, RomAnalyzer, RomIdentification,
 };
 
 // ---------------------------------------------------------------------------
@@ -463,20 +463,8 @@ impl RomAnalyzer for N64Analyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Nintendo 64"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "n64"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["n64", "nintendo 64", "nintendo64"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Nintendo"
+    fn platform(&self) -> Platform {
+        Platform::N64
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

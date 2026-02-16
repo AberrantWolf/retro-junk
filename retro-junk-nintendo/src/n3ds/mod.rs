@@ -21,7 +21,7 @@ use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
 };
 
 use common::{read_u16_le, read_u32_le, read_u64_le};
@@ -154,20 +154,8 @@ impl RomAnalyzer for N3dsAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Nintendo 3DS"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "3ds"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["3ds", "nintendo 3ds", "n3ds"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Nintendo"
+    fn platform(&self) -> Platform {
+        Platform::N3ds
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

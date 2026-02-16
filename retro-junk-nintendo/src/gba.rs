@@ -13,8 +13,8 @@ use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum, Region,
-    RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum,
+    Platform, Region, RomAnalyzer, RomIdentification,
 };
 
 // ---------------------------------------------------------------------------
@@ -410,20 +410,8 @@ impl RomAnalyzer for GbaAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Game Boy Advance"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "gba"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["gba", "game boy advance", "gameboy advance"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Nintendo"
+    fn platform(&self) -> Platform {
+        Platform::Gba
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

@@ -1,46 +1,43 @@
-use retro_junk_core::Region;
+use retro_junk_core::{Platform, Region};
 
-/// Map retro-junk short names to ScreenScraper system IDs.
+/// Map a `Platform` to its ScreenScraper system ID.
 ///
 /// System IDs are ScreenScraper-specific and live here rather than on
 /// the `RomAnalyzer` trait, as they're a third-party API detail.
-pub fn screenscraper_system_id(short_name: &str) -> Option<u32> {
-    match short_name {
+pub fn screenscraper_system_id(platform: Platform) -> Option<u32> {
+    match platform {
         // Nintendo
-        "nes" => Some(3),
-        "snes" => Some(4),
-        "n64" => Some(14),
-        "gc" => Some(13),
-        "wii" => Some(16),
-        "wiiu" => Some(18),
-        "gb" => Some(9),
-        "gbc" => Some(10),
-        "gba" => Some(12),
-        "ds" => Some(15),
-        "3ds" => Some(17),
+        Platform::Nes => Some(3),
+        Platform::Snes => Some(4),
+        Platform::N64 => Some(14),
+        Platform::GameCube => Some(13),
+        Platform::Wii => Some(16),
+        Platform::WiiU => Some(18),
+        Platform::GameBoy => Some(9),
+        Platform::Gba => Some(12),
+        Platform::Ds => Some(15),
+        Platform::N3ds => Some(17),
 
         // Sony
-        "ps1" => Some(57),
-        "ps2" => Some(58),
-        "ps3" => Some(59),
-        "psp" => Some(61),
-        "vita" => Some(62),
+        Platform::Ps1 => Some(57),
+        Platform::Ps2 => Some(58),
+        Platform::Ps3 => Some(59),
+        Platform::Psp => Some(61),
+        Platform::Vita => Some(62),
 
         // Sega
-        "sg1000" => Some(109),
-        "sms" => Some(2),
-        "genesis" => Some(1),
-        "segacd" => Some(20),
-        "32x" => Some(19),
-        "saturn" => Some(22),
-        "dreamcast" => Some(23),
-        "gg" => Some(21),
+        Platform::Sg1000 => Some(109),
+        Platform::MasterSystem => Some(2),
+        Platform::Genesis => Some(1),
+        Platform::SegaCd => Some(20),
+        Platform::Sega32x => Some(19),
+        Platform::Saturn => Some(22),
+        Platform::Dreamcast => Some(23),
+        Platform::GameGear => Some(21),
 
         // Microsoft
-        "xbox" => Some(32),
-        "xbox360" => Some(33),
-
-        _ => None,
+        Platform::Xbox => Some(32),
+        Platform::Xbox360 => Some(33),
     }
 }
 
@@ -49,26 +46,27 @@ pub fn screenscraper_system_id(short_name: &str) -> Option<u32> {
 /// Consoles that return true are expected to have serials extractable
 /// from ROM headers. If analysis fails to find a serial for these,
 /// it's worth logging an error rather than silently falling back.
-pub fn expects_serial(short_name: &str) -> bool {
+pub fn expects_serial(platform: Platform) -> bool {
     matches!(
-        short_name,
-        "n64" | "gba"
-            | "ds"
-            | "3ds"
-            | "gc"
-            | "wii"
-            | "wiiu"
-            | "ps1"
-            | "ps2"
-            | "ps3"
-            | "psp"
-            | "vita"
-            | "segacd"
-            | "saturn"
-            | "dreamcast"
-            | "32x"
-            | "xbox"
-            | "xbox360"
+        platform,
+        Platform::N64
+            | Platform::Gba
+            | Platform::Ds
+            | Platform::N3ds
+            | Platform::GameCube
+            | Platform::Wii
+            | Platform::WiiU
+            | Platform::Ps1
+            | Platform::Ps2
+            | Platform::Ps3
+            | Platform::Psp
+            | Platform::Vita
+            | Platform::SegaCd
+            | Platform::Saturn
+            | Platform::Dreamcast
+            | Platform::Sega32x
+            | Platform::Xbox
+            | Platform::Xbox360
     )
 }
 

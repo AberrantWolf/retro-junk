@@ -103,8 +103,9 @@ pub async fn scrape_folder(
     options: &ScrapeOptions,
     progress: &dyn Fn(ScrapeProgress),
 ) -> Result<ScrapeResult, ScrapeError> {
-    let short_name = analyzer.short_name();
-    let system_id = systems::screenscraper_system_id(short_name)
+    let platform = analyzer.platform();
+    let short_name = platform.short_name();
+    let system_id = systems::screenscraper_system_id(platform)
         .ok_or_else(|| ScrapeError::Config(format!("No ScreenScraper system ID for '{}'", short_name)))?;
 
     let extensions: std::collections::HashSet<String> = analyzer
@@ -196,7 +197,7 @@ pub async fn scrape_folder(
         };
 
         // Compute hashes if needed (for non-serial consoles or force_hash)
-        let (crc32, md5, sha1) = if !systems::expects_serial(short_name) || options.force_hash {
+        let (crc32, md5, sha1) = if !systems::expects_serial(platform) || options.force_hash {
             match std::fs::File::open(rom_path) {
                 Ok(mut f) => match retro_junk_lib::hasher::compute_all_hashes(&mut f, analyzer) {
                     Ok(hashes) => (
@@ -225,13 +226,13 @@ pub async fn scrape_folder(
             crc32,
             md5,
             sha1,
-            short_name: short_name.to_string(),
+            platform,
         };
 
         if options.dry_run {
             let method = if serial.is_some() {
                 "serial"
-            } else if !systems::expects_serial(short_name) {
+            } else if !systems::expects_serial(platform) {
                 "hash"
             } else {
                 "filename"

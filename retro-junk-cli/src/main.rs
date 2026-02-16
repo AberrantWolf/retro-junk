@@ -15,7 +15,7 @@ use owo_colors::Stream::Stdout;
 use retro_junk_lib::rename::{
     RenameOptions, RenamePlan, RenameProgress, execute_renames, format_match_method, plan_renames,
 };
-use retro_junk_lib::{AnalysisContext, AnalysisOptions, RomAnalyzer, RomIdentification};
+use retro_junk_lib::{AnalysisContext, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
 
 #[derive(Parser)]
 #[command(name = "retro-junk")]
@@ -32,9 +32,9 @@ struct Cli {
 /// Common arguments for commands that process ROM files.
 #[derive(Args, Clone)]
 struct RomFilterArgs {
-    /// Console short names (e.g., snes,n64,ps1)
+    /// Console names or aliases (e.g., snes,n64,ps1,gc,gg)
     #[arg(short, long, value_delimiter = ',')]
-    consoles: Option<Vec<String>>,
+    consoles: Option<Vec<Platform>>,
 
     /// Maximum number of ROMs to process per console
     #[arg(short, long)]
@@ -277,7 +277,7 @@ fn create_context() -> AnalysisContext {
 fn run_analyze(
     ctx: &AnalysisContext,
     quick: bool,
-    consoles: Option<Vec<String>>,
+    consoles: Option<Vec<Platform>>,
     limit: Option<usize>,
     root: Option<PathBuf>,
 ) {
@@ -294,19 +294,6 @@ fn run_analyze(
     println!();
 
     let options = AnalysisOptions::new().quick(quick);
-
-    // If specific consoles were requested, validate them
-    if let Some(ref console_list) = consoles {
-        for name in console_list {
-            if ctx.get_by_short_name(name).is_none() {
-                eprintln!(
-                    "  {} Unknown console '{}', skipping",
-                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                    name,
-                );
-            }
-        }
-    }
 
     // Read the root directory
     let entries = match fs::read_dir(&root_path) {
@@ -345,11 +332,7 @@ fn run_analyze(
         let consoles_to_use: Vec<_> = if let Some(ref filter) = consoles {
             matching_consoles
                 .into_iter()
-                .filter(|c| {
-                    filter
-                        .iter()
-                        .any(|f| f.eq_ignore_ascii_case(c.metadata.short_name))
-                })
+                .filter(|c| filter.contains(&c.metadata.platform))
                 .collect()
         } else {
             matching_consoles
@@ -804,7 +787,7 @@ fn run_rename(
     ctx: &AnalysisContext,
     dry_run: bool,
     hash_mode: bool,
-    consoles: Option<Vec<String>>,
+    consoles: Option<Vec<Platform>>,
     limit: Option<usize>,
     root: Option<PathBuf>,
     dat_dir: Option<PathBuf>,
@@ -883,11 +866,7 @@ fn run_rename(
         let consoles_to_use: Vec<_> = if let Some(ref filter) = consoles {
             matching_consoles
                 .into_iter()
-                .filter(|c| {
-                    filter
-                        .iter()
-                        .any(|f| f.eq_ignore_ascii_case(c.metadata.short_name))
-                })
+                .filter(|c| filter.contains(&c.metadata.platform))
                 .collect()
         } else {
             matching_consoles
@@ -1143,7 +1122,7 @@ fn print_rename_plan(plan: &RenamePlan) {
 #[allow(clippy::too_many_arguments)]
 fn run_scrape(
     ctx: &AnalysisContext,
-    consoles: Option<Vec<String>>,
+    consoles: Option<Vec<Platform>>,
     limit: Option<usize>,
     media_types: Option<Vec<String>>,
     metadata_dir: Option<PathBuf>,
@@ -1303,11 +1282,7 @@ fn run_scrape(
             let consoles_to_use: Vec<_> = if let Some(ref filter) = consoles {
                 matching_consoles
                     .into_iter()
-                    .filter(|c| {
-                        filter
-                            .iter()
-                            .any(|f| f.eq_ignore_ascii_case(c.metadata.short_name))
-                    })
+                    .filter(|c| filter.contains(&c.metadata.platform))
                     .collect()
             } else {
                 matching_consoles
@@ -1318,10 +1293,11 @@ fn run_scrape(
             }
 
             for console in consoles_to_use {
-                let short_name = console.metadata.short_name;
+                let platform = console.metadata.platform;
+                let short_name = platform.short_name();
 
                 // Check if this system has a ScreenScraper ID
-                if retro_junk_scraper::screenscraper_system_id(short_name).is_none() {
+                if retro_junk_scraper::screenscraper_system_id(platform).is_none() {
                     eprintln!(
                         "  {} Skipping \"{}\" — no ScreenScraper system ID",
                         "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),

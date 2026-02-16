@@ -11,7 +11,7 @@ use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
 };
 
 /// Analyzer for Nintendo GameCube disc images.
@@ -44,20 +44,8 @@ impl RomAnalyzer for GameCubeAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Nintendo GameCube"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "gamecube"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["gamecube", "gcn", "gc", "ngc"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Nintendo"
+    fn platform(&self) -> Platform {
+        Platform::GameCube
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

@@ -8,7 +8,7 @@ use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
 };
 
 /// Analyzer for Sega SG-1000 ROMs.
@@ -41,20 +41,8 @@ impl RomAnalyzer for Sg1000Analyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Sega SG-1000"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "sg1000"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["sg1000", "sg-1000", "sc3000", "sc-3000"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Sega"
+    fn platform(&self) -> Platform {
+        Platform::Sg1000
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

@@ -10,7 +10,7 @@ use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
 };
 
 /// Analyzer for PlayStation 2 disc images.
@@ -43,20 +43,8 @@ impl RomAnalyzer for Ps2Analyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Sony PlayStation 2"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "ps2"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["ps2", "playstation2", "playstation 2"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Sony"
+    fn platform(&self) -> Platform {
+        Platform::Ps2
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

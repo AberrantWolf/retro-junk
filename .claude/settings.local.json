@@ -35,7 +35,8 @@
       "Bash(find:*)",
       "Bash(cargo doc:*)",
       "Bash(grep:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(cargo check:*)"
     ]
   }
 }

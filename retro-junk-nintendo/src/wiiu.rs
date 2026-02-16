@@ -8,7 +8,7 @@ use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
 };
 
 /// Analyzer for Nintendo Wii U disc images.
@@ -41,20 +41,8 @@ impl RomAnalyzer for WiiUAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Nintendo Wii U"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "wiiu"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["wiiu", "wii u"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Nintendo"
+    fn platform(&self) -> Platform {
+        Platform::WiiU
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

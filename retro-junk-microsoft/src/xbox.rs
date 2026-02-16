@@ -8,7 +8,7 @@ use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
 };
 
 /// Analyzer for original Xbox disc images.
@@ -41,20 +41,8 @@ impl RomAnalyzer for XboxAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Microsoft Xbox"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "xbox"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["xbox", "xbox1", "ogxbox"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Microsoft"
+    fn platform(&self) -> Platform {
+        Platform::Xbox
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

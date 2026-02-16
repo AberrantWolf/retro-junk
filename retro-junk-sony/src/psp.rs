@@ -10,7 +10,7 @@ use retro_junk_core::ReadSeek;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
 };
 
 /// Analyzer for PlayStation Portable disc images.
@@ -43,20 +43,8 @@ impl RomAnalyzer for PspAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Sony PlayStation Portable"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "psp"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["psp", "playstation portable"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Sony"
+    fn platform(&self) -> Platform {
+        Platform::Psp
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

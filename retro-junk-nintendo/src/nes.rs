@@ -11,7 +11,8 @@ use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, Region, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, Region, RomAnalyzer,
+    RomIdentification,
 };
 
 /// The 4-byte magic at the start of every iNES / NES 2.0 file.
@@ -928,20 +929,8 @@ impl RomAnalyzer for NesAnalyzer {
         self.analyze(reader, options)
     }
 
-    fn platform_name(&self) -> &'static str {
-        "Nintendo Entertainment System"
-    }
-
-    fn short_name(&self) -> &'static str {
-        "nes"
-    }
-
-    fn folder_names(&self) -> &'static [&'static str] {
-        &["nes", "famicom", "fc"]
-    }
-
-    fn manufacturer(&self) -> &'static str {
-        "Nintendo"
+    fn platform(&self) -> Platform {
+        Platform::Nes
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {

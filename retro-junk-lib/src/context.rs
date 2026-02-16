@@ -2,11 +2,13 @@
 
 use std::path::Path;
 
-use retro_junk_core::RomAnalyzer;
+use retro_junk_core::{Platform, RomAnalyzer};
 
 /// Metadata about a registered console.
 #[derive(Debug, Clone)]
 pub struct Console {
+    /// Platform identifier
+    pub platform: Platform,
     /// Short name (e.g., "snes", "n64")
     pub short_name: &'static str,
     /// Full platform name
@@ -23,6 +25,7 @@ impl Console {
     /// Create console metadata from an analyzer.
     pub fn from_analyzer<A: RomAnalyzer>(analyzer: &A) -> Self {
         Self {
+            platform: analyzer.platform(),
             short_name: analyzer.short_name(),
             platform_name: analyzer.platform_name(),
             manufacturer: analyzer.manufacturer(),
@@ -81,12 +84,20 @@ impl AnalysisContext {
         self.consoles.iter()
     }
 
-    /// Get a console by short name.
-    pub fn get_by_short_name(&self, short_name: &str) -> Option<&RegisteredConsole> {
-        let short_lower = short_name.to_lowercase();
+    /// Get a console by its `Platform` enum variant.
+    pub fn get_by_platform(&self, platform: Platform) -> Option<&RegisteredConsole> {
         self.consoles
             .iter()
-            .find(|c| c.metadata.short_name.to_lowercase() == short_lower)
+            .find(|c| c.metadata.platform == platform)
+    }
+
+    /// Get a console by short name or alias.
+    pub fn get_by_short_name(&self, short_name: &str) -> Option<&RegisteredConsole> {
+        if let Ok(platform) = short_name.parse::<Platform>() {
+            self.get_by_platform(platform)
+        } else {
+            None
+        }
     }
 
     /// Find consoles that match a folder name.
