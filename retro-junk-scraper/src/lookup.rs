@@ -61,6 +61,10 @@ pub struct RomInfo {
 /// 2. Filename match — using NoIntro filename + system ID + file size
 /// 3. Hash match (conditional) — only for consoles without expected serials,
 ///    or if force_hash is true
+///
+/// Each tier validates that the returned game belongs to the expected platform.
+/// If a result comes back for the wrong platform (e.g., a serial collision),
+/// it's treated as a failed lookup and the next tier is tried.
 pub async fn lookup_game(
     client: &ScreenScraperClient,
     system_id: u32,
@@ -73,11 +77,18 @@ pub async fn lookup_game(
     if let Some(ref serial) = rom_info.serial {
         match try_serial_lookup(client, system_id, serial).await {
             Ok(game) => {
-                return Ok(LookupResult {
-                    game,
-                    method: LookupMethod::Serial,
-                    warnings,
-                });
+                if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
+                    warnings.push(format!(
+                        "Serial '{}' matched wrong platform: {}; skipping to next lookup method",
+                        serial, warning,
+                    ));
+                } else {
+                    return Ok(LookupResult {
+                        game,
+                        method: LookupMethod::Serial,
+                        warnings,
+                    });
+                }
             }
             Err(ScrapeError::NotFound) => {
                 warnings.push(format!("Serial '{}' not found in ScreenScraper", serial));
@@ -94,11 +105,18 @@ pub async fn lookup_game(
     // Tier 2: Filename match
     match try_filename_lookup(client, system_id, &rom_info.filename, rom_info.file_size).await {
         Ok(game) => {
-            return Ok(LookupResult {
-                game,
-                method: LookupMethod::Filename,
-                warnings,
-            });
+            if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
+                warnings.push(format!(
+                    "Filename '{}' matched wrong platform: {}; skipping to next lookup method",
+                    rom_info.filename, warning,
+                ));
+            } else {
+                return Ok(LookupResult {
+                    game,
+                    method: LookupMethod::Filename,
+                    warnings,
+                });
+            }
         }
         Err(ScrapeError::NotFound) => {
             warnings.push(format!(
@@ -119,11 +137,18 @@ pub async fn lookup_game(
         {
             match try_hash_lookup(client, system_id, crc, md5, sha1, &rom_info.filename, rom_info.file_size).await {
                 Ok(game) => {
-                    return Ok(LookupResult {
-                        game,
-                        method: LookupMethod::Hash,
-                        warnings,
-                    });
+                    if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
+                        warnings.push(format!(
+                            "Hash matched wrong platform: {}; no more lookup methods available",
+                            warning,
+                        ));
+                    } else {
+                        return Ok(LookupResult {
+                            game,
+                            method: LookupMethod::Hash,
+                            warnings,
+                        });
+                    }
                 }
                 Err(ScrapeError::NotFound) => {
                     warnings.push("Hash not found in ScreenScraper".to_string());
@@ -134,6 +159,34 @@ pub async fn lookup_game(
     }
 
     Err(ScrapeError::NotFound)
+}
+
+/// Check if the returned game's platform matches the expected system ID.
+///
+/// Returns `None` if the platform matches (or can't be determined), or a
+/// descriptive message if there's a mismatch. Serial numbers can collide
+/// across platforms, so this catches cases where e.g. an N64 serial happens
+/// to match a SNES game.
+fn check_platform_mismatch(
+    game: &GameInfo,
+    expected_system_id: u32,
+    expected_platform: Platform,
+) -> Option<String> {
+    let systeme = game.systeme.as_ref()?;
+    let id_str = systeme.id.as_ref()?;
+    let returned_id = id_str.parse::<u32>().ok()?;
+
+    if returned_id != expected_system_id {
+        Some(format!(
+            "expected {} (system {}) but got '{}' (system {})",
+            expected_platform.display_name(),
+            expected_system_id,
+            systeme.text,
+            returned_id,
+        ))
+    } else {
+        None
+    }
 }
 
 async fn try_serial_lookup(
