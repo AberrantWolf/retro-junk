@@ -35,6 +35,8 @@ pub struct ScrapeOptions {
     pub skip_existing: bool,
     /// Disable scrape log file
     pub no_log: bool,
+    /// Maximum number of ROMs to process per console
+    pub limit: Option<usize>,
 }
 
 impl ScrapeOptions {
@@ -61,6 +63,7 @@ impl ScrapeOptions {
             force_hash: false,
             skip_existing: false,
             no_log: false,
+            limit: None,
         }
     }
 }
@@ -130,6 +133,9 @@ pub async fn scrape_folder(
         }
     }
     rom_files.sort();
+    if let Some(max) = options.limit {
+        rom_files.truncate(max);
+    }
 
     let total = rom_files.len();
     let mut games = Vec::new();

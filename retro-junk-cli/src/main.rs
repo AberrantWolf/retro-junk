@@ -7,7 +7,7 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
@@ -29,6 +29,18 @@ struct Cli {
     command: Commands,
 }
 
+/// Common arguments for commands that process ROM files.
+#[derive(Args, Clone)]
+struct RomFilterArgs {
+    /// Console short names (e.g., snes,n64,ps1)
+    #[arg(short, long, value_delimiter = ',')]
+    consoles: Option<Vec<String>>,
+
+    /// Maximum number of ROMs to process per console
+    #[arg(short, long)]
+    limit: Option<usize>,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Analyze ROMs in a directory structure
@@ -37,10 +49,8 @@ enum Commands {
         #[arg(short, long)]
         quick: bool,
 
-        /// Console short names to analyze (e.g., snes, n64, ps1)
-        /// If not specified, all matching console folders will be analyzed
-        #[arg(short, long, value_delimiter = ',')]
-        consoles: Option<Vec<String>>,
+        #[command(flatten)]
+        roms: RomFilterArgs,
     },
 
     /// List all supported consoles
@@ -56,9 +66,8 @@ enum Commands {
         #[arg(long)]
         hash: bool,
 
-        /// Console short names to rename (e.g., snes,n64)
-        #[arg(short, long, value_delimiter = ',')]
-        consoles: Option<Vec<String>>,
+        #[command(flatten)]
+        roms: RomFilterArgs,
 
         /// Use DAT files from this directory instead of the cache
         #[arg(long)]
@@ -67,9 +76,8 @@ enum Commands {
 
     /// Scrape game metadata and media from ScreenScraper.fr
     Scrape {
-        /// Console short names to scrape (e.g., nes,snes,n64)
-        #[arg(short, long, value_delimiter = ',')]
-        consoles: Option<Vec<String>>,
+        #[command(flatten)]
+        roms: RomFilterArgs,
 
         /// Media types to download (e.g., covers,screenshots,videos,marquees)
         #[arg(long, value_delimiter = ',')]
@@ -165,8 +173,8 @@ fn main() {
     let ctx = create_context();
 
     match cli.command {
-        Commands::Analyze { quick, consoles } => {
-            run_analyze(&ctx, quick, consoles, cli.root);
+        Commands::Analyze { quick, roms } => {
+            run_analyze(&ctx, quick, roms.consoles, roms.limit, cli.root);
         }
         Commands::List => {
             run_list(&ctx);
@@ -174,13 +182,13 @@ fn main() {
         Commands::Rename {
             dry_run,
             hash,
-            consoles,
+            roms,
             dat_dir,
         } => {
-            run_rename(&ctx, dry_run, hash, consoles, cli.root, dat_dir);
+            run_rename(&ctx, dry_run, hash, roms.consoles, roms.limit, cli.root, dat_dir);
         }
         Commands::Scrape {
-            consoles,
+            roms,
             media_types,
             metadata_dir,
             media_dir,
@@ -195,7 +203,8 @@ fn main() {
         } => {
             run_scrape(
                 &ctx,
-                consoles,
+                roms.consoles,
+                roms.limit,
                 media_types,
                 metadata_dir,
                 media_dir,
@@ -269,6 +278,7 @@ fn run_analyze(
     ctx: &AnalysisContext,
     quick: bool,
     consoles: Option<Vec<String>>,
+    limit: Option<usize>,
     root: Option<PathBuf>,
 ) {
     let root_path =
@@ -277,6 +287,9 @@ fn run_analyze(
     println!("Analyzing ROMs in: {}", root_path.display());
     if quick {
         println!("Quick mode enabled");
+    }
+    if let Some(n) = limit {
+        println!("Limit: {} ROMs per console", n);
     }
     println!();
 
@@ -357,7 +370,7 @@ fn run_analyze(
             );
 
             // Scan for ROM files in the folder
-            analyze_folder(&path, console.analyzer.as_ref(), &options);
+            analyze_folder(&path, console.analyzer.as_ref(), &options, limit);
         }
     }
 
@@ -379,7 +392,12 @@ fn run_analyze(
 }
 
 /// Analyze all ROM files in a folder.
-fn analyze_folder(folder: &PathBuf, analyzer: &dyn RomAnalyzer, options: &AnalysisOptions) {
+fn analyze_folder(
+    folder: &PathBuf,
+    analyzer: &dyn RomAnalyzer,
+    options: &AnalysisOptions,
+    limit: Option<usize>,
+) {
     let extensions: std::collections::HashSet<_> = analyzer
         .file_extensions()
         .iter()
@@ -398,30 +416,31 @@ fn analyze_folder(folder: &PathBuf, analyzer: &dyn RomAnalyzer, options: &Analys
         }
     };
 
-    let mut file_count = 0;
-
+    let mut files: Vec<PathBuf> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_file() {
             continue;
         }
-
-        // Check extension
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| e.to_lowercase())
             .unwrap_or_default();
-
-        if !extensions.contains(&ext) {
-            continue;
+        if extensions.contains(&ext) {
+            files.push(path);
         }
+    }
+    files.sort();
+    if let Some(max) = limit {
+        files.truncate(max);
+    }
 
-        file_count += 1;
+    for path in &files {
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
         // Try to analyze the file
-        let mut file = match fs::File::open(&path) {
+        let mut file = match fs::File::open(path) {
             Ok(f) => f,
             Err(e) => {
                 eprintln!(
@@ -449,7 +468,7 @@ fn analyze_folder(folder: &PathBuf, analyzer: &dyn RomAnalyzer, options: &Analys
         }
     }
 
-    if file_count == 0 {
+    if files.is_empty() {
         println!(
             "  {}",
             "No ROM files found".if_supports_color(Stdout, |t| t.dimmed()),
@@ -786,6 +805,7 @@ fn run_rename(
     dry_run: bool,
     hash_mode: bool,
     consoles: Option<Vec<String>>,
+    limit: Option<usize>,
     root: Option<PathBuf>,
     dat_dir: Option<PathBuf>,
 ) {
@@ -795,6 +815,7 @@ fn run_rename(
     let rename_options = RenameOptions {
         hash_mode,
         dat_dir,
+        limit,
         ..Default::default()
     };
 
@@ -812,6 +833,12 @@ fn run_rename(
         println!(
             "{}",
             "Dry run: no files will be renamed".if_supports_color(Stdout, |t| t.dimmed()),
+        );
+    }
+    if let Some(n) = limit {
+        println!(
+            "{}",
+            format!("Limit: {} ROMs per console", n).if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
     println!();
@@ -1117,6 +1144,7 @@ fn print_rename_plan(plan: &RenamePlan) {
 fn run_scrape(
     ctx: &AnalysisContext,
     consoles: Option<Vec<String>>,
+    limit: Option<usize>,
     media_types: Option<Vec<String>>,
     metadata_dir: Option<PathBuf>,
     media_dir: Option<PathBuf>,
@@ -1142,6 +1170,7 @@ fn run_scrape(
     options.dry_run = dry_run;
     options.skip_existing = skip_existing;
     options.no_log = no_log;
+    options.limit = limit;
 
     if let Some(mdir) = metadata_dir {
         options.metadata_dir = mdir;
@@ -1161,6 +1190,12 @@ fn run_scrape(
         println!(
             "{}",
             "Dry run: no files will be downloaded".if_supports_color(Stdout, |t| t.dimmed()),
+        );
+    }
+    if let Some(n) = limit {
+        println!(
+            "{}",
+            format!("Limit: {} ROMs per console", n).if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
     println!(

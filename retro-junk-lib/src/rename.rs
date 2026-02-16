@@ -53,6 +53,8 @@ pub struct RenameOptions {
     pub hash_mode: bool,
     /// Custom DAT directory (instead of cache)
     pub dat_dir: Option<PathBuf>,
+    /// Maximum number of ROMs to process
+    pub limit: Option<usize>,
 }
 
 impl Default for RenameOptions {
@@ -60,6 +62,7 @@ impl Default for RenameOptions {
         Self {
             hash_mode: false,
             dat_dir: None,
+            limit: None,
         }
     }
 }
@@ -140,6 +143,9 @@ pub fn plan_renames(
         }
     }
     files.sort();
+    if let Some(max) = options.limit {
+        files.truncate(max);
+    }
 
     progress(RenameProgress::ScanningConsole {
         short_name: analyzer.short_name().to_string(),
