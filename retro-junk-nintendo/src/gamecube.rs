@@ -68,3 +68,7 @@ impl RomAnalyzer for GameCubeAnalyzer {
         false // Not yet implemented
     }
 }
+
+#[cfg(test)]
+#[path = "tests/gamecube_tests.rs"]
+mod tests;

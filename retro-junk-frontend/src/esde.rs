@@ -174,11 +174,12 @@ fn write_media_tag(
 ) {
     if let Some(media_path) = game.media.get(&media_type) {
         // Try to make a relative path from the ROM directory
-        let display_path = if let Ok(rel) = media_path.strip_prefix(rom_dir.parent().unwrap_or(rom_dir)) {
-            format!("./{}", rel.display())
-        } else {
-            media_path.display().to_string()
-        };
+        let display_path =
+            if let Ok(rel) = media_path.strip_prefix(rom_dir.parent().unwrap_or(rom_dir)) {
+                format!("./{}", rel.display())
+            } else {
+                media_path.display().to_string()
+            };
         write_tag(xml, tag, &display_path);
     }
 }
@@ -204,18 +205,5 @@ fn format_esde_date(date: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_esde_date() {
-        assert_eq!(format_esde_date("1996-06-23"), "19960623T000000");
-        assert_eq!(format_esde_date("19960623"), "19960623T000000");
-    }
-
-    #[test]
-    fn test_escape_xml() {
-        assert_eq!(escape_xml("Tom & Jerry"), "Tom &amp; Jerry");
-        assert_eq!(escape_xml("a < b"), "a &lt; b");
-    }
-}
+#[path = "tests/esde_tests.rs"]
+mod tests;

@@ -33,7 +33,9 @@
       "Bash(curl:*)",
       "Bash(done)",
       "Bash(find:*)",
-      "Bash(cargo doc:*)"
+      "Bash(cargo doc:*)",
+      "Bash(grep:*)",
+      "Bash(wc:*)"
     ]
   }
 }
