@@ -369,7 +369,7 @@ fn test_both_crc_mismatch() {
 fn test_quick_mode_skips_crc() {
     let rom = make_n64_rom();
     let analyzer = N64Analyzer::new();
-    let options = AnalysisOptions { quick: true };
+    let options = AnalysisOptions { quick: true, ..Default::default() };
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     let status = result.extra.get("checksum_status:N64 CRC").unwrap();
     assert!(
@@ -618,6 +618,17 @@ fn test_too_small_file() {
     let analyzer = N64Analyzer::new();
     let result = analyzer.analyze(&mut Cursor::new(data), &AnalysisOptions::default());
     assert!(result.is_err());
+}
+
+// -- extract_scraper_serial (delegates to extract_dat_game_code) --
+
+#[test]
+fn test_extract_scraper_serial_delegates_to_dat() {
+    let analyzer = N64Analyzer::new();
+    assert_eq!(
+        analyzer.extract_scraper_serial("NUS-NSME-USA"),
+        Some("NSME".to_string()),
+    );
 }
 
 // -- normalize_to_big_endian unit tests --

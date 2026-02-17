@@ -233,7 +233,7 @@ fn test_header_checksum_mismatch() {
 fn test_quick_mode_skips_secure_area() {
     let rom = make_nds_rom();
     let analyzer = DsAnalyzer::new();
-    let options = AnalysisOptions { quick: true };
+    let options = AnalysisOptions { quick: true, ..Default::default() };
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     // Quick mode doesn't detect secure area state
@@ -413,7 +413,7 @@ fn test_actually_truncated_rom() {
     // File is 64 KB but claims to need 128 KB
 
     let analyzer = DsAnalyzer::new();
-    let options = AnalysisOptions { quick: true };
+    let options = AnalysisOptions { quick: true, ..Default::default() };
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.file_size, Some(0x10000));
     assert_eq!(result.expected_size, Some(0x20000)); // shows TRUNCATED

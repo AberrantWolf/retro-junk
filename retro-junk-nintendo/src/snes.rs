@@ -819,7 +819,8 @@ fn to_identification(
     if let Some(ref game_code) = header.game_code {
         // Prepend SHVC- to game code so that we don't overlap with NDS/3DS
         // on accident, which get shortened to 4-letter codes
-        id.serial_number = Some(format!("SHVC-{}", game_code.clone()));
+        // id.serial_number = Some(format!("SHVC-{}", game_code.clone()));
+        id.serial_number = Some(game_code.clone());
     }
 
     // Version

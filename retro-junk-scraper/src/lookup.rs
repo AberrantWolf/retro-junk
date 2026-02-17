@@ -41,6 +41,8 @@ pub struct LookupResult {
 pub struct RomInfo {
     /// Serial number from ROM header analysis (if any)
     pub serial: Option<String>,
+    /// Serial adapted for ScreenScraper lookups (from `extract_scraper_serial()`)
+    pub scraper_serial: Option<String>,
     /// ROM filename with extension
     pub filename: String,
     /// ROM file size in bytes
@@ -73,27 +75,30 @@ pub async fn lookup_game(
 ) -> Result<LookupResult, ScrapeError> {
     let mut warnings = Vec::new();
 
-    // Tier 1: Serial match
-    if let Some(ref serial) = rom_info.serial {
-        match try_serial_lookup(client, system_id, serial).await {
-            Ok(game) => {
-                if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
-                    warnings.push(format!(
-                        "Serial '{}' matched wrong platform: {}; skipping to next lookup method",
-                        serial, warning,
-                    ));
-                } else {
-                    return Ok(LookupResult {
-                        game,
-                        method: LookupMethod::Serial,
-                        warnings,
-                    });
+    // Tier 1: Serial match — try scraper serial first, then raw serial
+    let attempts = serial_attempts(&rom_info.serial, &rom_info.scraper_serial);
+    if !attempts.is_empty() {
+        for attempt in &attempts {
+            match try_serial_lookup(client, system_id, attempt).await {
+                Ok(game) => {
+                    if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
+                        warnings.push(format!(
+                            "Serial '{}' matched wrong platform: {}; skipping to next lookup method",
+                            attempt, warning,
+                        ));
+                    } else {
+                        return Ok(LookupResult {
+                            game,
+                            method: LookupMethod::Serial,
+                            warnings,
+                        });
+                    }
                 }
+                Err(ScrapeError::NotFound) => {
+                    warnings.push(format!("Serial '{}' not found in ScreenScraper", attempt));
+                }
+                Err(e) => return Err(e),
             }
-            Err(ScrapeError::NotFound) => {
-                warnings.push(format!("Serial '{}' not found in ScreenScraper", serial));
-            }
-            Err(e) => return Err(e),
         }
     } else if systems::expects_serial(rom_info.platform) {
         warnings.push(format!(
@@ -219,6 +224,27 @@ async fn try_filename_lookup(
     Ok(resp.response.jeu)
 }
 
+/// Build a deduped list of serial strings to try, scraper serial first.
+///
+/// Returns an empty list if neither serial is available.
+fn serial_attempts(serial: &Option<String>, scraper_serial: &Option<String>) -> Vec<String> {
+    let mut attempts = Vec::new();
+
+    // Scraper serial first (adapted form)
+    if let Some(ss) = scraper_serial {
+        attempts.push(ss.clone());
+    }
+
+    // Raw serial as fallback (if different from scraper serial)
+    if let Some(s) = serial {
+        if !attempts.iter().any(|a| a == s) {
+            attempts.push(s.clone());
+        }
+    }
+
+    attempts
+}
+
 async fn try_hash_lookup(
     client: &ScreenScraperClient,
     system_id: u32,
@@ -239,4 +265,41 @@ async fn try_hash_lookup(
 
     let resp = client.lookup_game(params).await?;
     Ok(resp.response.jeu)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_serial_attempts_both_different() {
+        let serial = Some("NUS-NSME-USA".to_string());
+        let scraper = Some("NSME".to_string());
+        let attempts = serial_attempts(&serial, &scraper);
+        assert_eq!(attempts, vec!["NSME", "NUS-NSME-USA"]);
+    }
+
+    #[test]
+    fn test_serial_attempts_same_value() {
+        let serial = Some("SLUS-01234".to_string());
+        let scraper = Some("SLUS-01234".to_string());
+        let attempts = serial_attempts(&serial, &scraper);
+        assert_eq!(attempts, vec!["SLUS-01234"]);
+    }
+
+    #[test]
+    fn test_serial_attempts_no_scraper_serial() {
+        let serial = Some("NUS-NSME-USA".to_string());
+        let scraper = None;
+        let attempts = serial_attempts(&serial, &scraper);
+        assert_eq!(attempts, vec!["NUS-NSME-USA"]);
+    }
+
+    #[test]
+    fn test_serial_attempts_no_serial_at_all() {
+        let serial: Option<String> = None;
+        let scraper: Option<String> = None;
+        let attempts = serial_attempts(&serial, &scraper);
+        assert!(attempts.is_empty());
+    }
 }

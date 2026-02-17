@@ -61,6 +61,9 @@ retro-junk-core          (types, traits)
 - `dat_chunk_normalizer()` — optional closure for byte-order normalization (e.g., N64 format detection)
 - `extract_dat_game_code()` — extracts short game code from full serial (e.g., `NUS-NSME-USA` → `NSME`)
 
+**Scraper support via trait methods on `RomAnalyzer`:**
+- `extract_scraper_serial()` — adapts serial for ScreenScraper API lookups; defaults to `extract_dat_game_code()`, override per-console when ScreenScraper needs a different format
+
 Platform crates own ALL console-specific knowledge. No console-specific code exists in `retro-junk-core`, `retro-junk-dat`, or `retro-junk-lib`.
 
 ## Implementing a New Analyzer
@@ -74,6 +77,7 @@ Use `retro-junk-nintendo/src/nes.rs` as the reference implementation.
    - `platform_name()`, `short_name()`, `folder_names()`, `manufacturer()`, `file_extensions()` — return `&'static str` / `&'static [&'static str]`
    - `analyze_with_progress()` — delegate to `analyze()` for small ROMs
    - Optionally override DAT methods: `dat_name()`, `dat_header_size()`, `dat_chunk_normalizer()`, `extract_dat_game_code()`
+   - Optionally override scraper methods: `extract_scraper_serial()` (defaults to `extract_dat_game_code()`)
 3. Re-export from the platform crate's `lib.rs`
 4. Register in `retro-junk-cli/src/main.rs` `create_context()`
 

@@ -1,4 +1,5 @@
 use std::io::{Read, Seek};
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 pub mod checksum;
@@ -19,6 +20,10 @@ pub struct AnalysisOptions {
     /// Quick mode: read as little data as possible.
     /// Useful for network shares or slow storage.
     pub quick: bool,
+
+    /// Path to the file being analyzed. Used by disc-based analyzers
+    /// (e.g., CUE sheets) to resolve relative file references.
+    pub file_path: Option<PathBuf>,
 }
 
 impl AnalysisOptions {
@@ -28,6 +33,11 @@ impl AnalysisOptions {
 
     pub fn quick(mut self, quick: bool) -> Self {
         self.quick = quick;
+        self
+    }
+
+    pub fn file_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.file_path = Some(path.into());
         self
     }
 }
@@ -226,5 +236,19 @@ pub trait RomAnalyzer: Send + Sync {
     /// expected pattern.
     fn extract_dat_game_code(&self, _serial: &str) -> Option<String> {
         None
+    }
+
+    // -- Scraper support methods (override in platform analyzers) --
+
+    /// Extract a serial number adapted for ScreenScraper API lookups.
+    ///
+    /// ScreenScraper may need a different serial format than NoIntro DATs.
+    /// By default this delegates to `extract_dat_game_code()`, which works
+    /// for most platforms. Override per-console when ScreenScraper needs
+    /// a different format.
+    ///
+    /// Returns `None` if no adaptation is needed (use the raw serial as-is).
+    fn extract_scraper_serial(&self, serial: &str) -> Option<String> {
+        self.extract_dat_game_code(serial)
     }
 }

@@ -9,6 +9,7 @@
 //! - PlayStation Vita
 
 pub mod ps1;
+mod ps1_disc;
 pub mod ps2;
 pub mod ps3;
 pub mod psp;

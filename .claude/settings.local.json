@@ -36,7 +36,9 @@
       "Bash(cargo doc:*)",
       "Bash(grep:*)",
       "Bash(wc:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(git stash:*)",
+      "Bash(echo:*)"
     ]
   }
 }

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use retro_junk_core::{AnalysisOptions, Region, RomAnalyzer};
 use retro_junk_frontend::ScrapedGame;
+use retro_junk_lib::scanner;
 
 use crate::client::ScreenScraperClient;
 use crate::error::ScrapeError;
@@ -108,53 +109,26 @@ pub async fn scrape_folder(
     let system_id = systems::screenscraper_system_id(platform)
         .ok_or_else(|| ScrapeError::Config(format!("No ScreenScraper system ID for '{}'", short_name)))?;
 
-    let extensions: std::collections::HashSet<String> = analyzer
-        .file_extensions()
-        .iter()
-        .map(|e| e.to_lowercase())
-        .collect();
+    let extensions = scanner::extension_set(analyzer.file_extensions());
 
-    // Collect ROM files
+    // Collect game entries: top-level ROM files and .m3u directories
     progress(ScrapeProgress::Scanning);
-    let mut rom_files: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(folder_path) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_lowercase())
-                .unwrap_or_default();
-            if extensions.contains(&ext) {
-                rom_files.push(path);
-            }
-        }
-    }
-    rom_files.sort();
+    let mut game_entries = scanner::scan_game_entries(folder_path, &extensions)
+        .map_err(|e| ScrapeError::Config(format!("Error reading folder: {}", e)))?;
     if let Some(max) = options.limit {
-        rom_files.truncate(max);
+        game_entries.truncate(max);
     }
 
-    let total = rom_files.len();
+    let total = game_entries.len();
     let mut games = Vec::new();
     let mut log = ScrapeLog::new();
 
     let system_media_dir = options.media_dir.join(short_name);
 
-    for (index, rom_path) in rom_files.iter().enumerate() {
-        let filename = rom_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?")
-            .to_string();
-        let rom_stem = rom_path
-            .file_stem()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?")
-            .to_string();
+    for (index, entry) in game_entries.iter().enumerate() {
+        let filename = entry.display_name().to_string();
+        let rom_stem = entry.rom_stem().to_string();
+        let rom_path = entry.analysis_path();
 
         progress(ScrapeProgress::LookingUp {
             file: filename.clone(),
@@ -163,7 +137,7 @@ pub async fn scrape_folder(
         });
 
         // Analyze the ROM to extract serial and regions
-        let analysis_opts = AnalysisOptions::new().quick(true);
+        let analysis_opts = AnalysisOptions::new().quick(true).file_path(rom_path);
         let (serial, rom_regions): (Option<String>, Vec<Region>) =
             match std::fs::File::open(rom_path) {
                 Ok(mut f) => match analyzer.analyze(&mut f, &analysis_opts) {
@@ -219,8 +193,13 @@ pub async fn scrape_folder(
             (None, None, None)
         };
 
+        let scraper_serial = serial
+            .as_ref()
+            .and_then(|s| analyzer.extract_scraper_serial(s));
+
         let rom_info = RomInfo {
             serial: serial.clone(),
+            scraper_serial,
             filename: filename.clone(),
             file_size,
             crc32,

@@ -252,7 +252,7 @@ fn test_cci_exefs_superblock_hash_ok() {
 fn test_cci_quick_mode_skips_hashes() {
     let rom = make_cci();
     let file_size = rom.len() as u64;
-    let options = AnalysisOptions { quick: true };
+    let options = AnalysisOptions { quick: true, ..Default::default() };
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
     assert!(
@@ -396,7 +396,7 @@ fn test_cci_trimmed() {
     rom.truncate(filled as usize);
 
     let file_size = rom.len() as u64;
-    let options = AnalysisOptions { quick: true };
+    let options = AnalysisOptions { quick: true, ..Default::default() };
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
     assert_eq!(result.file_size, Some(file_size));
@@ -416,7 +416,7 @@ fn test_cci_partially_trimmed() {
     rom.truncate(partial_size);
 
     let file_size = rom.len() as u64;
-    let options = AnalysisOptions { quick: true };
+    let options = AnalysisOptions { quick: true, ..Default::default() };
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
     assert_eq!(result.file_size, Some(file_size));
@@ -440,7 +440,7 @@ fn test_cci_genuinely_truncated() {
     rom.truncate(truncated_size);
 
     let file_size = rom.len() as u64;
-    let options = AnalysisOptions { quick: true };
+    let options = AnalysisOptions { quick: true, ..Default::default() };
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
     assert_eq!(result.file_size, Some(file_size));

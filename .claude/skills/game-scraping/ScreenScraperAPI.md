@@ -268,6 +268,19 @@ This is a partial list. Always call `systemesListe.php` at startup to build an u
 | NEC PC Engine CD          | 114 |
 | Neo Geo                   | 142 |
 
+## Serial Number Adaptation
+
+Serial numbers extracted from ROM headers may need platform-specific adaptation
+before passing to the `serialnum` parameter. For example, N64 ROMs store serials
+as `NUS-NSME-USA` but ScreenScraper may match better on the extracted game code `NSME`.
+
+The `extract_scraper_serial()` method on `RomAnalyzer` handles this adaptation.
+By default it delegates to `extract_dat_game_code()`, which works for most platforms.
+Override per-console when ScreenScraper needs a different format than DAT matching.
+
+The scraper lookup tries the adapted serial first, then falls back to the raw serial
+if they differ.
+
 ## Rate Limiting Best Practices
 
 1. Call `ssuserInfos.php` at startup to learn your limits.

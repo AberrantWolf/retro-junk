@@ -47,3 +47,4 @@ futures = "0.3"
 chrono = "0.4"
 retro-junk-scraper = { path = "retro-junk-scraper" }
 retro-junk-frontend = { path = "retro-junk-frontend" }
+chd = "0.3"

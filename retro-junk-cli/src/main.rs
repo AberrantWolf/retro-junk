@@ -289,7 +289,7 @@ fn run_analyze(
         println!("Quick mode enabled");
     }
     if let Some(n) = limit {
-        println!("Limit: {} ROMs per console", n);
+        println!("Limit: {} games per console", n);
     }
     println!();
 
@@ -381,13 +381,11 @@ fn analyze_folder(
     options: &AnalysisOptions,
     limit: Option<usize>,
 ) {
-    let extensions: std::collections::HashSet<_> = analyzer
-        .file_extensions()
-        .iter()
-        .map(|e| e.to_lowercase())
-        .collect();
+    use retro_junk_lib::scanner::{self, GameEntry};
 
-    let entries = match fs::read_dir(folder) {
+    let extensions = scanner::extension_set(analyzer.file_extensions());
+
+    let mut game_entries = match scanner::scan_game_entries(folder, &extensions) {
         Ok(entries) => entries,
         Err(e) => {
             eprintln!(
@@ -399,65 +397,81 @@ fn analyze_folder(
         }
     };
 
-    let mut files: Vec<PathBuf> = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase())
-            .unwrap_or_default();
-        if extensions.contains(&ext) {
-            files.push(path);
-        }
-    }
-    files.sort();
     if let Some(max) = limit {
-        files.truncate(max);
+        game_entries.truncate(max);
     }
 
-    for path in &files {
-        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-
-        // Try to analyze the file
-        let mut file = match fs::File::open(path) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!(
-                    "  {} Error opening {}: {}",
-                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                    file_name,
-                    e,
-                );
-                continue;
+    let mut any_output = false;
+    for entry in &game_entries {
+        match entry {
+            GameEntry::SingleFile(path) => {
+                any_output = true;
+                analyze_and_print(path, analyzer, options, "");
             }
-        };
-
-        match analyzer.analyze(&mut file, options) {
-            Ok(info) => {
-                print_analysis(file_name, &info);
-            }
-            Err(e) => {
+            GameEntry::MultiDisc { name, files } => {
+                any_output = true;
                 println!(
-                    "  {}: {} Analysis not implemented ({})",
-                    file_name,
-                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                    e,
+                    "  {}",
+                    format!("{}:", name).if_supports_color(Stdout, |t| t.bold()),
                 );
+                for path in files {
+                    analyze_and_print(path, analyzer, options, "  ");
+                }
             }
         }
     }
 
-    if files.is_empty() {
+    if !any_output {
         println!(
             "  {}",
             "No ROM files found".if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
     println!();
+}
+
+/// Analyze a single file and print its results.
+fn analyze_and_print(
+    path: &PathBuf,
+    analyzer: &dyn RomAnalyzer,
+    options: &AnalysisOptions,
+    indent: &str,
+) {
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+
+    let file_options = AnalysisOptions {
+        file_path: Some(path.clone()),
+        ..options.clone()
+    };
+
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!(
+                "  {}{} Error opening {}: {}",
+                indent,
+                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                file_name,
+                e,
+            );
+            return;
+        }
+    };
+
+    match analyzer.analyze(&mut file, &file_options) {
+        Ok(info) => {
+            print_analysis(file_name, &info, indent);
+        }
+        Err(e) => {
+            println!(
+                "  {}{}: {} Analysis not implemented ({})",
+                indent,
+                file_name,
+                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                e,
+            );
+        }
+    }
 }
 
 /// Format a byte size as a human-readable string.
@@ -609,36 +623,45 @@ const HARDWARE_KEYS: &[&str] = &[
 ];
 
 /// Print the analysis result for a single file.
-fn print_analysis(file_name: &str, info: &RomIdentification) {
+/// `indent` is prepended to every line for multi-disc grouping (e.g., "  ").
+fn print_analysis(file_name: &str, info: &RomIdentification, indent: &str) {
     let mut shown_keys: HashSet<&str> = HashSet::new();
 
-    println!("  {}:", file_name.if_supports_color(Stdout, |t| t.bold()),);
+    println!(
+        "  {}{}:",
+        indent,
+        file_name.if_supports_color(Stdout, |t| t.bold()),
+    );
 
     // (a) Identity fields
     if let Some(ref serial) = info.serial_number {
         println!(
-            "    {}   {}",
+            "    {}{}   {}",
+            indent,
             "Serial:".if_supports_color(Stdout, |t| t.cyan()),
             serial,
         );
     }
     if let Some(ref name) = info.internal_name {
         println!(
-            "    {}     {}",
+            "    {}{}     {}",
+            indent,
             "Name:".if_supports_color(Stdout, |t| t.cyan()),
             name,
         );
     }
     if let Some(ref maker) = info.maker_code {
         println!(
-            "    {}    {}",
+            "    {}{}    {}",
+            indent,
             "Maker:".if_supports_color(Stdout, |t| t.cyan()),
             maker,
         );
     }
     if let Some(ref version) = info.version {
         println!(
-            "    {}  {}",
+            "    {}{}  {}",
+            indent,
             "Version:".if_supports_color(Stdout, |t| t.cyan()),
             version,
         );
@@ -648,7 +671,8 @@ fn print_analysis(file_name: &str, info: &RomIdentification) {
     if let Some(format) = info.extra.get("format") {
         shown_keys.insert("format");
         print!(
-            "    {}   {}",
+            "    {}{}   {}",
+            indent,
             "Format:".if_supports_color(Stdout, |t| t.cyan()),
             format,
         );
@@ -672,14 +696,16 @@ fn print_analysis(file_name: &str, info: &RomIdentification) {
 
     if !hardware_present.is_empty() {
         println!(
-            "    {}",
+            "    {}{}",
+            indent,
             "Hardware:".if_supports_color(Stdout, |t| t.bright_magenta()),
         );
         for key in &hardware_present {
             shown_keys.insert(key);
             let value = &info.extra[*key];
             println!(
-                "      {} {}",
+                "      {}{} {}",
+                indent,
                 format!("{}:", prettify_key(key)).if_supports_color(Stdout, |t| t.cyan()),
                 value,
             );
@@ -691,7 +717,8 @@ fn print_analysis(file_name: &str, info: &RomIdentification) {
         (Some(actual), Some(expected)) => {
             let verdict = compute_size_verdict(actual, expected);
             println!(
-                "    {}     {} on disk, {} expected [{}]",
+                "    {}{}     {} on disk, {} expected [{}]",
+                indent,
                 "Size:".if_supports_color(Stdout, |t| t.cyan()),
                 format_bytes(actual),
                 format_bytes(expected),
@@ -700,7 +727,8 @@ fn print_analysis(file_name: &str, info: &RomIdentification) {
         }
         (Some(actual), None) => {
             println!(
-                "    {}     {}",
+                "    {}{}     {}",
+                indent,
                 "Size:".if_supports_color(Stdout, |t| t.cyan()),
                 format_bytes(actual),
             );
@@ -733,14 +761,16 @@ fn print_analysis(file_name: &str, info: &RomIdentification) {
         let is_ok = status.starts_with("OK") || status.starts_with("Valid");
         if is_ok {
             println!(
-                "    {} {}  {}",
+                "    {}{} {}  {}",
+                indent,
                 emoji.if_supports_color(Stdout, |t| t.green()),
                 format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
                 colored_status,
             );
         } else {
             println!(
-                "    {} {}  {}",
+                "    {}{} {}  {}",
+                indent,
                 emoji.if_supports_color(Stdout, |t| t.red()),
                 format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
                 colored_status,
@@ -752,7 +782,8 @@ fn print_analysis(file_name: &str, info: &RomIdentification) {
     if !info.regions.is_empty() {
         let region_str: Vec<_> = info.regions.iter().map(|r| r.name()).collect();
         println!(
-            "    {}   {}",
+            "    {}{}   {}",
+            indent,
             "Region:".if_supports_color(Stdout, |t| t.cyan()),
             region_str.join(", "),
         );
@@ -768,13 +799,15 @@ fn print_analysis(file_name: &str, info: &RomIdentification) {
 
     if !remaining.is_empty() {
         println!(
-            "    {}",
+            "    {}{}",
+            indent,
             "Details:".if_supports_color(Stdout, |t| t.bright_magenta()),
         );
         for key in &remaining {
             let value = &info.extra[key.as_str()];
             println!(
-                "      {} {}",
+                "      {}{} {}",
+                indent,
                 format!("{}:", prettify_key(key)).if_supports_color(Stdout, |t| t.cyan()),
                 value,
             );
