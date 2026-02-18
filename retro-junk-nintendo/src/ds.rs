@@ -677,8 +677,12 @@ impl RomAnalyzer for DsAnalyzer {
         logo_checksum == EXPECTED_LOGO_CHECKSUM
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Nintendo - Nintendo DS")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &[
+            "Nintendo - Nintendo DS",
+            "Nintendo - Nintendo DS (Download Play)",
+            "Nintendo - Nintendo DSi",
+        ]
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {

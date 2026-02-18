@@ -56,7 +56,8 @@ retro-junk-core          (types, traits)
 - `ReadSeek` — trait alias for `Read + Seek` used as the reader parameter
 
 **DAT support via trait methods on `RomAnalyzer`:**
-- `dat_name()` — returns the NoIntro DAT name (e.g., `"Nintendo - Nintendo 64"`)
+- `dat_names()` — returns NoIntro DAT names as a slice (e.g., `&["Nintendo - Nintendo 64"]`); multi-DAT consoles return multiple entries, all merged into one `DatIndex`
+- `has_dat_support()` — convenience: true when `dat_names()` is non-empty
 - `dat_header_size()` — bytes to skip before hashing (e.g., 16 for iNES header)
 - `dat_chunk_normalizer()` — optional closure for byte-order normalization (e.g., N64 format detection)
 - `extract_dat_game_code()` — extracts short game code from full serial (e.g., `NUS-NSME-USA` → `NSME`)
@@ -76,7 +77,7 @@ Use `retro-junk-nintendo/src/nes.rs` as the reference implementation.
    - `can_handle()` — detect via magic bytes, return bool
    - `platform_name()`, `short_name()`, `folder_names()`, `manufacturer()`, `file_extensions()` — return `&'static str` / `&'static [&'static str]`
    - `analyze_with_progress()` — delegate to `analyze()` for small ROMs
-   - Optionally override DAT methods: `dat_name()`, `dat_header_size()`, `dat_chunk_normalizer()`, `extract_dat_game_code()`
+   - Optionally override DAT methods: `dat_names()`, `dat_header_size()`, `dat_chunk_normalizer()`, `extract_dat_game_code()`
    - Optionally override scraper methods: `extract_scraper_serial()` (defaults to `extract_dat_game_code()`)
 3. Re-export from the platform crate's `lib.rs`
 4. Register in `retro-junk-cli/src/main.rs` `create_context()`

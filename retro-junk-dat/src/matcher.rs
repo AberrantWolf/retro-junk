@@ -56,6 +56,21 @@ fn normalize_serial(serial: &str) -> String {
 }
 
 impl DatIndex {
+    /// Build an index by merging multiple parsed DAT files into one.
+    ///
+    /// All games from every DAT are combined into a single index, so
+    /// downstream consumers (rename, match_by_serial, match_by_hash)
+    /// see one unified set of entries.
+    pub fn from_dats(dats: Vec<DatFile>) -> Self {
+        let all_games: Vec<DatGame> = dats.into_iter().flat_map(|d| d.games).collect();
+        Self::from_dat(DatFile {
+            name: String::new(),
+            description: String::new(),
+            version: String::new(),
+            games: all_games,
+        })
+    }
+
     /// Build an index from a parsed DAT file.
     pub fn from_dat(dat: DatFile) -> Self {
         let mut by_size: HashMap<u64, Vec<(usize, usize)>> = HashMap::new();

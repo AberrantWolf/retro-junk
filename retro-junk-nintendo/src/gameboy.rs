@@ -698,8 +698,8 @@ impl RomAnalyzer for GameBoyAnalyzer {
         logo == NINTENDO_LOGO
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Nintendo - Game Boy")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Nintendo - Game Boy", "Nintendo - Game Boy Color"]
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {

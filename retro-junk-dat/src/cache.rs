@@ -12,7 +12,7 @@ const GITHUB_MIRROR_BASE: &str =
 
 /// Cache format version. Bump this when changing DAT sources or format to
 /// invalidate stale cached DATs automatically.
-const CACHE_VERSION: u32 = 2;
+const CACHE_VERSION: u32 = 3;
 
 /// Metadata about a cached DAT file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,7 +32,8 @@ pub struct CacheMeta {
     /// Cache format version — mismatched versions trigger automatic invalidation.
     #[serde(default)]
     pub version: u32,
-    pub dats: HashMap<String, CachedDat>,
+    /// Per-console list of cached DATs (keyed by short_name).
+    pub dats: HashMap<String, Vec<CachedDat>>,
 }
 
 /// Information about a cached DAT for display purposes.
@@ -93,8 +94,13 @@ fn save_meta(meta: &CacheMeta) -> Result<(), DatError> {
 }
 
 /// Get the cached DAT file path for a system.
-fn dat_file_path(short_name: &str) -> Result<PathBuf, DatError> {
-    Ok(cache_dir()?.join(format!("{short_name}.dat")))
+/// When a console has multiple DATs, they are stored as `{short_name}_{index}.dat`.
+fn dat_file_path(short_name: &str, index: usize) -> Result<PathBuf, DatError> {
+    if index == 0 {
+        Ok(cache_dir()?.join(format!("{short_name}.dat")))
+    } else {
+        Ok(cache_dir()?.join(format!("{short_name}_{index}.dat")))
+    }
 }
 
 /// Construct the download URL for a DAT file.
@@ -104,82 +110,135 @@ fn download_url(dat_name: &str) -> String {
     format!("{GITHUB_MIRROR_BASE}{encoded}.dat")
 }
 
-/// Download and cache a DAT file for a system.
+/// Download and cache all DAT files for a system.
 ///
-/// `short_name` is used as the cache key. `dat_name` is the NoIntro DAT name
-/// used to construct the download URL (e.g., "Nintendo - Nintendo 64").
-pub fn fetch(short_name: &str, dat_name: &str) -> Result<PathBuf, DatError> {
-    let url = download_url(dat_name);
-    let dat_path = dat_file_path(short_name)?;
+/// `short_name` is used as the cache key. `dat_names` are the NoIntro DAT names
+/// used to construct download URLs (e.g., `&["Nintendo - Nintendo 64"]`).
+///
+/// Returns paths to all successfully downloaded DAT files. Partial failures
+/// are warned but don't fail the entire operation — partial coverage is better
+/// than none.
+pub fn fetch(short_name: &str, dat_names: &[&str]) -> Result<Vec<PathBuf>, DatError> {
+    let mut paths = Vec::new();
+    let mut cached_entries = Vec::new();
 
-    // Ensure cache directory exists
-    if let Some(parent) = dat_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    for (i, dat_name) in dat_names.iter().enumerate() {
+        let url = download_url(dat_name);
+        let dat_path = dat_file_path(short_name, i)?;
 
-    // Download
-    let response = reqwest::blocking::get(&url)
-        .map_err(|e| DatError::download(format!("Failed to download {url}: {e}")))?;
+        // Ensure cache directory exists
+        if let Some(parent) = dat_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
 
-    if !response.status().is_success() {
-        return Err(DatError::download(format!(
-            "HTTP {} for {url}",
-            response.status()
-        )));
-    }
+        // Download
+        let response = match reqwest::blocking::get(&url) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Warning: failed to download {dat_name}: {e}");
+                continue;
+            }
+        };
 
-    let bytes = response
-        .bytes()
-        .map_err(|e| DatError::download(format!("Failed to read response: {e}")))?;
+        if !response.status().is_success() {
+            eprintln!(
+                "Warning: HTTP {} for {dat_name} ({url})",
+                response.status()
+            );
+            continue;
+        }
 
-    fs::write(&dat_path, &bytes)?;
+        let bytes = match response.bytes() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Warning: failed to read response for {dat_name}: {e}");
+                continue;
+            }
+        };
 
-    // Parse to get version info
-    let dat = dat::parse_dat_file(&dat_path)?;
+        fs::write(&dat_path, &bytes)?;
 
-    // Update metadata
-    let mut meta = load_meta()?;
-    meta.version = CACHE_VERSION;
-    meta.dats.insert(
-        short_name.to_string(),
-        CachedDat {
+        // Parse to get version info
+        let dat = dat::parse_dat_file(&dat_path)?;
+
+        cached_entries.push(CachedDat {
             source: url,
             downloaded: chrono_now(),
             dat_version: dat.version.clone(),
             file_size: bytes.len() as u64,
             dat_name: dat_name.to_string(),
-        },
-    );
-    save_meta(&meta)?;
+        });
 
-    Ok(dat_path)
-}
-
-/// Load a DAT file, either from a custom directory or from the cache.
-/// If not cached and no custom dir is provided, downloads it automatically.
-///
-/// `short_name` is used as the cache key. `dat_name` is the NoIntro DAT name
-/// used for downloading and for matching files in custom directories.
-pub fn load_dat(
-    short_name: &str,
-    dat_name: &str,
-    dat_dir: Option<&Path>,
-) -> Result<DatFile, DatError> {
-    if let Some(dir) = dat_dir {
-        // Try to find a matching DAT in the custom directory
-        let path = find_dat_in_dir(short_name, dat_name, dir)?;
-        return dat::parse_dat_file(&path);
+        paths.push(dat_path);
     }
 
-    // Try cache first
-    let dat_path = dat_file_path(short_name)?;
-    if dat_path.exists() {
-        return dat::parse_dat_file(&dat_path);
+    if paths.is_empty() {
+        return Err(DatError::download(format!(
+            "Failed to download any DATs for '{short_name}'"
+        )));
+    }
+
+    // Update metadata
+    let mut meta = load_meta()?;
+    meta.version = CACHE_VERSION;
+    meta.dats.insert(short_name.to_string(), cached_entries);
+    save_meta(&meta)?;
+
+    Ok(paths)
+}
+
+/// Load all DAT files for a system, either from a custom directory or from the cache.
+/// If not cached and no custom dir is provided, downloads them automatically.
+///
+/// `short_name` is used as the cache key. `dat_names` are the NoIntro DAT names
+/// used for downloading and for matching files in custom directories.
+pub fn load_dats(
+    short_name: &str,
+    dat_names: &[&str],
+    dat_dir: Option<&Path>,
+) -> Result<Vec<DatFile>, DatError> {
+    if let Some(dir) = dat_dir {
+        // Try to find matching DATs in the custom directory
+        let mut dats = Vec::new();
+        for dat_name in dat_names {
+            match find_dat_in_dir(short_name, dat_name, dir) {
+                Ok(path) => dats.push(dat::parse_dat_file(&path)?),
+                Err(e) => eprintln!("Warning: {e}"),
+            }
+        }
+        if dats.is_empty() {
+            return Err(DatError::cache(format!(
+                "No DAT files found for '{short_name}' in {}",
+                dir.display()
+            )));
+        }
+        return Ok(dats);
+    }
+
+    // Try cache first — check if all indexed DATs exist
+    let mut cached_paths = Vec::new();
+    for i in 0..dat_names.len() {
+        let dat_path = dat_file_path(short_name, i)?;
+        if dat_path.exists() {
+            cached_paths.push(dat_path);
+        }
+    }
+
+    if cached_paths.len() == dat_names.len() {
+        let mut dats = Vec::new();
+        for path in &cached_paths {
+            dats.push(dat::parse_dat_file(path)?);
+        }
+        return Ok(dats);
     }
 
     // Download and cache
-    let path = fetch(short_name, dat_name)?;
-    dat::parse_dat_file(&path)
+    let paths = fetch(short_name, dat_names)?;
+    let mut dats = Vec::new();
+    for path in &paths {
+        dats.push(dat::parse_dat_file(path)?);
+    }
+    Ok(dats)
 }
 
 /// Find a DAT file in a user-provided directory.
@@ -216,20 +275,22 @@ pub fn list() -> Result<Vec<CacheEntry>, DatError> {
     let meta = load_meta()?;
     let mut entries = Vec::new();
 
-    for (short_name, cached) in &meta.dats {
-        let dat_name = if cached.dat_name.is_empty() {
-            short_name.clone()
-        } else {
-            cached.dat_name.clone()
-        };
+    for (short_name, cached_list) in &meta.dats {
+        for cached in cached_list {
+            let dat_name = if cached.dat_name.is_empty() {
+                short_name.clone()
+            } else {
+                cached.dat_name.clone()
+            };
 
-        entries.push(CacheEntry {
-            short_name: short_name.clone(),
-            dat_name,
-            file_size: cached.file_size,
-            downloaded: cached.downloaded.clone(),
-            dat_version: cached.dat_version.clone(),
-        });
+            entries.push(CacheEntry {
+                short_name: short_name.clone(),
+                dat_name,
+                file_size: cached.file_size,
+                downloaded: cached.downloaded.clone(),
+                dat_version: cached.dat_version.clone(),
+            });
+        }
     }
 
     entries.sort_by(|a, b| a.short_name.cmp(&b.short_name));
@@ -268,7 +329,12 @@ pub fn clear() -> Result<u64, DatError> {
 /// Get the total size of cached DAT files.
 pub fn total_cache_size() -> Result<u64, DatError> {
     let meta = load_meta()?;
-    Ok(meta.dats.values().map(|c| c.file_size).sum())
+    Ok(meta
+        .dats
+        .values()
+        .flat_map(|list| list.iter())
+        .map(|c| c.file_size)
+        .sum())
 }
 
 /// Simple ISO-8601-ish timestamp without pulling in a chrono dependency.

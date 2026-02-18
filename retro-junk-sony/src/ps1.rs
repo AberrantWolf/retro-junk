@@ -273,8 +273,8 @@ impl RomAnalyzer for Ps1Analyzer {
         }
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Sony - PlayStation")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Sony - PlayStation"]
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {

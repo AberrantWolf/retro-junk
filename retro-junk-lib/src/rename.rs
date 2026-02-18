@@ -107,16 +107,17 @@ pub fn plan_renames(
     options: &RenameOptions,
     progress: &dyn Fn(RenameProgress),
 ) -> Result<RenamePlan, DatError> {
-    let dat_name = analyzer.dat_name().ok_or_else(|| {
-        DatError::cache(format!(
+    let dat_names = analyzer.dat_names();
+    if dat_names.is_empty() {
+        return Err(DatError::cache(format!(
             "No DAT support for platform '{}'",
             analyzer.platform_name()
-        ))
-    })?;
+        )));
+    }
 
-    // Load DAT
-    let dat = cache::load_dat(analyzer.short_name(), dat_name, options.dat_dir.as_deref())?;
-    let index = DatIndex::from_dat(dat);
+    // Load DATs and merge into a single index
+    let dats = cache::load_dats(analyzer.short_name(), dat_names, options.dat_dir.as_deref())?;
+    let index = DatIndex::from_dats(dats);
 
     // Collect ROM files
     let extensions: std::collections::HashSet<String> = analyzer
@@ -280,7 +281,27 @@ fn match_by_serial(
     let info = analyzer.analyze(&mut file, analysis_options).ok()?;
     let serial = info.serial_number.as_ref()?;
     let game_code = analyzer.extract_dat_game_code(serial);
-    index.match_by_serial(serial, game_code.as_deref())
+
+    match index.match_by_serial(serial, game_code.as_deref()) {
+        Some(result) => {
+            // let game_code = game_code.unwrap_or("NONE".into());
+            // println!(
+            //     "Serial {} matched successfully for file {}",
+            //     game_code,
+            //     file_path.display()
+            // );
+            Some(result)
+        }
+        None => {
+            let game_code = game_code.unwrap_or("NONE".into());
+            println!(
+                "Serial {} failed to match for file {}",
+                game_code,
+                file_path.display()
+            );
+            None
+        }
+    }
 }
 
 /// Match a file by computing its CRC32 hash (with SHA1 fallback).

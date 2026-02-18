@@ -51,7 +51,7 @@ impl RomAnalyzer for Sega32xAnalyzer {
         false // Not yet implemented
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Sega - 32X")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Sega - 32X"]
     }
 }

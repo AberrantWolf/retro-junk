@@ -941,8 +941,8 @@ impl RomAnalyzer for NesAnalyzer {
         detect_format(reader).is_ok()
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Nintendo - Nintendo Entertainment System")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Nintendo - Nintendo Entertainment System"]
     }
 
     fn dat_header_size(

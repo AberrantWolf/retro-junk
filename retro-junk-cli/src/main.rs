@@ -911,7 +911,7 @@ fn run_rename(
 
         for console in consoles_to_use {
             // Check if this system has DAT support via the analyzer trait
-            if console.analyzer.dat_name().is_none() {
+            if !console.analyzer.has_dat_support() {
                 eprintln!(
                     "  {} Skipping \"{}\" — no DAT support yet",
                     "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
@@ -1037,8 +1037,9 @@ fn run_rename(
         println!();
         println!("Supported systems for rename:");
         for console in ctx.consoles() {
-            if let Some(dat_name) = console.analyzer.dat_name() {
-                println!("  {} [{}]", console.metadata.short_name, dat_name,);
+            let dat_names = console.analyzer.dat_names();
+            if !dat_names.is_empty() {
+                println!("  {} [{}]", console.metadata.short_name, dat_names.join(", "));
             }
         }
         return;
@@ -1540,7 +1541,7 @@ fn run_list(ctx: &AnalysisContext) {
 
         let extensions = console.metadata.extensions.join(", ");
         let folders = console.metadata.folder_names.join(", ");
-        let has_dat = console.analyzer.dat_name().is_some();
+        let has_dat = console.analyzer.has_dat_support();
 
         println!(
             "  {} [{}]{}",
@@ -1636,13 +1637,15 @@ fn run_cache_clear() {
 
 /// Fetch DAT files for specified systems.
 fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
-    let to_fetch: Vec<(String, String)> =
+    let to_fetch: Vec<(String, Vec<&str>)> =
         if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
             ctx.consoles()
-                .filter_map(|c| {
-                    c.analyzer
-                        .dat_name()
-                        .map(|dat_name| (c.metadata.short_name.to_string(), dat_name.to_string()))
+                .filter(|c| c.analyzer.has_dat_support())
+                .map(|c| {
+                    (
+                        c.metadata.short_name.to_string(),
+                        c.analyzer.dat_names().to_vec(),
+                    )
                 })
                 .collect()
         } else {
@@ -1651,17 +1654,19 @@ fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
                 .filter_map(|short_name| {
                     let console = ctx.get_by_short_name(&short_name);
                     match console {
-                        Some(c) => match c.analyzer.dat_name() {
-                            Some(dat_name) => Some((short_name, dat_name.to_string())),
-                            None => {
+                        Some(c) => {
+                            let dat_names = c.analyzer.dat_names();
+                            if dat_names.is_empty() {
                                 eprintln!(
                                     "  {} No DAT support for '{}'",
                                     "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                                     short_name,
                                 );
                                 None
+                            } else {
+                                Some((short_name, dat_names.to_vec()))
                             }
-                        },
+                        }
                         None => {
                             eprintln!(
                                 "  {} Unknown system '{}'",
@@ -1675,21 +1680,34 @@ fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
                 .collect()
         };
 
-    for (short_name, dat_name) in &to_fetch {
+    for (short_name, dat_names) in &to_fetch {
         print!(
             "  Fetching {}... ",
             short_name.if_supports_color(Stdout, |t| t.bold()),
         );
         std::io::stdout().flush().unwrap();
 
-        match retro_junk_dat::cache::fetch(short_name, dat_name) {
-            Ok(path) => {
-                let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-                println!(
-                    "{} ({})",
-                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                    format_bytes(size),
-                );
+        match retro_junk_dat::cache::fetch(short_name, dat_names) {
+            Ok(paths) => {
+                let total_size: u64 = paths
+                    .iter()
+                    .filter_map(|p| fs::metadata(p).ok())
+                    .map(|m| m.len())
+                    .sum();
+                if paths.len() == 1 {
+                    println!(
+                        "{} ({})",
+                        "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                        format_bytes(total_size),
+                    );
+                } else {
+                    println!(
+                        "{} ({} DATs, {})",
+                        "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                        paths.len(),
+                        format_bytes(total_size),
+                    );
+                }
             }
             Err(e) => {
                 println!(

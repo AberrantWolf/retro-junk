@@ -187,11 +187,19 @@ pub trait RomAnalyzer: Send + Sync {
 
     // -- DAT support methods (override in platform analyzers) --
 
-    /// Returns the NoIntro DAT name for this platform, if DAT matching is supported.
+    /// Returns the NoIntro DAT names for this platform.
     ///
-    /// Example: `"Nintendo - Nintendo Entertainment System"`
-    fn dat_name(&self) -> Option<&'static str> {
-        None
+    /// Most consoles return a single name, but some need multiple DATs
+    /// (e.g., base + DLC, color variants). All are merged into one index.
+    ///
+    /// Example: `&["Nintendo - Nintendo Entertainment System"]`
+    fn dat_names(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Returns true if this platform has DAT support (i.e., `dat_names()` is non-empty).
+    fn has_dat_support(&self) -> bool {
+        !self.dat_names().is_empty()
     }
 
     /// Returns the number of header bytes to skip before hashing for DAT matching.

@@ -52,7 +52,7 @@ impl RomAnalyzer for GameGearAnalyzer {
         false // Not yet implemented
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Sega - Game Gear")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Sega - Game Gear"]
     }
 }

@@ -284,9 +284,9 @@ fn test_analyze_cue_multi_track() {
 // -- DAT methods --
 
 #[test]
-fn test_dat_name() {
+fn test_dat_names() {
     let analyzer = Ps1Analyzer::new();
-    assert_eq!(analyzer.dat_name(), Some("Sony - PlayStation"));
+    assert_eq!(analyzer.dat_names(), &["Sony - PlayStation"]);
 }
 
 #[test]

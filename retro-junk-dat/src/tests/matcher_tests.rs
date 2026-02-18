@@ -154,6 +154,65 @@ fn test_no_match() {
 }
 
 #[test]
+fn test_from_dats_merge() {
+    let dat1 = DatFile {
+        name: "DAT A".into(),
+        description: "".into(),
+        version: "1".into(),
+        games: vec![DatGame {
+            name: "Game A (USA)".into(),
+            region: None,
+            roms: vec![DatRom {
+                name: "Game A (USA).bin".into(),
+                size: 1024,
+                crc: "aaaa0001".into(),
+                sha1: None,
+                md5: None,
+                serial: Some("SLUS-99999".into()),
+            }],
+        }],
+    };
+    let dat2 = DatFile {
+        name: "DAT B".into(),
+        description: "".into(),
+        version: "2".into(),
+        games: vec![DatGame {
+            name: "Game B (USA)".into(),
+            region: None,
+            roms: vec![DatRom {
+                name: "Game B (USA).bin".into(),
+                size: 2048,
+                crc: "bbbb0002".into(),
+                sha1: None,
+                md5: None,
+                serial: Some("SLUS-88888".into()),
+            }],
+        }],
+    };
+
+    let index = DatIndex::from_dats(vec![dat1, dat2]);
+    assert_eq!(index.game_count(), 2);
+
+    // Can find game from first DAT
+    let result_a = index.match_by_serial("SLUS-99999", None).unwrap();
+    assert_eq!(index.games[result_a.game_index].name, "Game A (USA)");
+
+    // Can find game from second DAT
+    let result_b = index.match_by_serial("SLUS-88888", None).unwrap();
+    assert_eq!(index.games[result_b.game_index].name, "Game B (USA)");
+
+    // Hash lookup works across merged DATs
+    let hashes = FileHashes {
+        crc32: "bbbb0002".into(),
+        sha1: None,
+        md5: None,
+        data_size: 2048,
+    };
+    let hash_result = index.match_by_hash(2048, &hashes).unwrap();
+    assert_eq!(index.games[hash_result.game_index].name, "Game B (USA)");
+}
+
+#[test]
 fn test_crc32_requires_matching_size() {
     let index = DatIndex::from_dat(make_test_dat());
     // Right CRC but wrong size — should not match

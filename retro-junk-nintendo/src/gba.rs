@@ -456,8 +456,8 @@ impl RomAnalyzer for GbaAnalyzer {
         fixed[0] == FIXED_VALUE
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Nintendo - Game Boy Advance")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Nintendo - Game Boy Advance"]
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {

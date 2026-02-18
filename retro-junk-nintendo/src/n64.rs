@@ -493,8 +493,8 @@ impl RomAnalyzer for N64Analyzer {
         detect_n64_format(&magic).is_some()
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Nintendo - Nintendo 64")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Nintendo - Nintendo 64"]
     }
 
     fn dat_chunk_normalizer(

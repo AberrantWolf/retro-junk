@@ -166,8 +166,13 @@ impl RomAnalyzer for N3dsAnalyzer {
         detect_format(reader).ok().flatten().is_some()
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Nintendo - Nintendo 3DS")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &[
+            "Nintendo - New Nintendo 3DS (Digital)",
+            "Nintendo - New Nintendo 3DS",
+            "Nintendo - Nintendo 3DS (Digital)",
+            "Nintendo - Nintendo 3DS",
+        ]
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {

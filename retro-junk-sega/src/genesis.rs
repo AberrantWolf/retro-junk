@@ -330,8 +330,8 @@ impl RomAnalyzer for GenesisAnalyzer {
         result.unwrap_or(false)
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Sega - Mega Drive - Genesis")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Sega - Mega Drive - Genesis"]
     }
 }
 

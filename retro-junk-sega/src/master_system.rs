@@ -53,7 +53,7 @@ impl RomAnalyzer for MasterSystemAnalyzer {
         false // Not yet implemented
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Sega - Master System - Mark III")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Sega - Master System - Mark III"]
     }
 }

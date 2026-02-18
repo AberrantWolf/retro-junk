@@ -1012,8 +1012,8 @@ impl RomAnalyzer for SnesAnalyzer {
         detect_mapping(reader, file_size).is_ok()
     }
 
-    fn dat_name(&self) -> Option<&'static str> {
-        Some("Nintendo - Super Nintendo Entertainment System")
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Nintendo - Super Nintendo Entertainment System"]
     }
 
     fn dat_header_size(
