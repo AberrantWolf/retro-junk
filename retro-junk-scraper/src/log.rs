@@ -46,6 +46,10 @@ impl ScrapeLog {
         self.entries.push(entry);
     }
 
+    pub fn entries(&self) -> &[LogEntry] {
+        &self.entries
+    }
+
     pub fn summary(&self) -> LogSummary {
         let mut summary = LogSummary::default();
         for entry in &self.entries {

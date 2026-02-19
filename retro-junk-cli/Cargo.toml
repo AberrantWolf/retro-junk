@@ -21,3 +21,5 @@ owo-colors.workspace = true
 indicatif.workspace = true
 tokio.workspace = true
 chrono.workspace = true
+log.workspace = true
+strip-ansi-escapes.workspace = true

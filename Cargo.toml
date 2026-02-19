@@ -51,3 +51,5 @@ chd = "0.3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 image = "0.25"
 serde_yml = "0.0.12"
+log = { version = "0.4", features = ["std"] }
+strip-ansi-escapes = "0.2"
