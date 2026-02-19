@@ -52,4 +52,8 @@ impl RomAnalyzer for WiiUAnalyzer {
     fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
         false // Not yet implemented
     }
+
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Nintendo - Wii U (Digital)"]
+    }
 }

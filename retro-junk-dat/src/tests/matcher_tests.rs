@@ -224,3 +224,63 @@ fn test_crc32_requires_matching_size() {
     };
     assert!(index.match_by_hash(999, &hashes).is_none());
 }
+
+#[test]
+fn test_comma_separated_serials() {
+    // Redump DATs have comma-separated serials like "SLUS-01041, SLUS-01041GH"
+    let dat = DatFile {
+        name: "Test".into(),
+        description: "".into(),
+        version: "1".into(),
+        games: vec![DatGame {
+            name: "Chrono Cross (USA) (Disc 1)".into(),
+            region: None,
+            roms: vec![DatRom {
+                name: "Chrono Cross (USA) (Disc 1).bin".into(),
+                size: 736651104,
+                crc: "a07898cc".into(),
+                sha1: None,
+                md5: None,
+                serial: Some("SLUS-01041, SLUS-01041GH, SLUS-01041GH-F".into()),
+            }],
+        }],
+    };
+    let index = DatIndex::from_dat(dat);
+
+    // Each individual serial should be findable
+    assert!(index.match_by_serial("SLUS-01041", None).is_some());
+    assert!(index.match_by_serial("SLUS-01041GH", None).is_some());
+    assert!(index.match_by_serial("SLUS-01041GH-F", None).is_some());
+}
+
+#[test]
+fn test_serial_space_dash_normalization() {
+    // Redump DATs sometimes use spaces instead of dashes: "SLPS 00700"
+    // ROM analysis produces dashes: "SLPS-00700"
+    let dat = DatFile {
+        name: "Test".into(),
+        description: "".into(),
+        version: "1".into(),
+        games: vec![DatGame {
+            name: "Some Game (Japan)".into(),
+            region: None,
+            roms: vec![DatRom {
+                name: "Some Game (Japan).bin".into(),
+                size: 1024,
+                crc: "deadbeef".into(),
+                sha1: None,
+                md5: None,
+                serial: Some("SLPS 00700".into()),
+            }],
+        }],
+    };
+    let index = DatIndex::from_dat(dat);
+
+    // Query with dash should match DAT with space
+    let result = index.match_by_serial("SLPS-00700", None);
+    assert!(result.is_some());
+    assert_eq!(
+        index.games[result.unwrap().game_index].name,
+        "Some Game (Japan)"
+    );
+}

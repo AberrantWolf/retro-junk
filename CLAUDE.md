@@ -21,7 +21,7 @@ cargo run -p retro-junk-cli -- analyze --root /path/to/roms
 ## Architecture
 
 **Workspace crates:**
-- `retro-junk-core` — bottom-level types and traits (`RomAnalyzer`, `ReadSeek`, `RomIdentification`, `AnalysisError`, `Region`, `AnalysisOptions`)
+- `retro-junk-core` — bottom-level types and traits (`RomAnalyzer`, `ReadSeek`, `RomIdentification`, `AnalysisError`, `Region`, `AnalysisOptions`, `DatSource`)
 - `retro-junk-nintendo` — NES, SNES, N64, GameCube, Wii, Wii U, GB, GBA, DS, 3DS
 - `retro-junk-sony` — PS1, PS2, PS3, PSP, Vita
 - `retro-junk-sega` — SG-1000, Master System, Genesis, Sega CD, 32X, Saturn, Dreamcast, Game Gear
@@ -56,7 +56,9 @@ retro-junk-core          (types, traits)
 - `ReadSeek` — trait alias for `Read + Seek` used as the reader parameter
 
 **DAT support via trait methods on `RomAnalyzer`:**
-- `dat_names()` — returns NoIntro DAT names as a slice (e.g., `&["Nintendo - Nintendo 64"]`); multi-DAT consoles return multiple entries, all merged into one `DatIndex`
+- `dat_source()` — returns `DatSource::NoIntro` (default, cartridge) or `DatSource::Redump` (disc-based consoles); determines the download base URL
+- `dat_names()` — returns DAT display names as a slice (e.g., `&["Nintendo - Nintendo 64"]`); multi-DAT consoles return multiple entries, all merged into one `DatIndex`
+- `dat_download_ids()` — returns download identifiers for URL construction; defaults to `dat_names()` (No-Intro). Redump consoles override to return system slugs (e.g., `&["psx"]`)
 - `has_dat_support()` — convenience: true when `dat_names()` is non-empty
 - `dat_header_size()` — bytes to skip before hashing (e.g., 16 for iNES header)
 - `dat_chunk_normalizer()` — optional closure for byte-order normalization (e.g., N64 format detection)
@@ -77,7 +79,7 @@ Use `retro-junk-nintendo/src/nes.rs` as the reference implementation.
    - `can_handle()` — detect via magic bytes, return bool
    - `platform_name()`, `short_name()`, `folder_names()`, `manufacturer()`, `file_extensions()` — return `&'static str` / `&'static [&'static str]`
    - `analyze_with_progress()` — delegate to `analyze()` for small ROMs
-   - Optionally override DAT methods: `dat_names()`, `dat_header_size()`, `dat_chunk_normalizer()`, `extract_dat_game_code()`
+   - Optionally override DAT methods: `dat_source()`, `dat_names()`, `dat_download_ids()`, `dat_header_size()`, `dat_chunk_normalizer()`, `extract_dat_game_code()`
    - Optionally override scraper methods: `extract_scraper_serial()` (defaults to `extract_dat_game_code()`)
 3. Re-export from the platform crate's `lib.rs`
 4. Register in `retro-junk-cli/src/main.rs` `create_context()`
@@ -90,8 +92,20 @@ Use `retro-junk-nintendo/src/nes.rs` as the reference implementation.
 - **Serial format normalization** lives in `retro-junk-dat/src/matcher.rs` — the single place that
   bridges analyzer serial output (e.g., `NUS-NSME-USA`) to DAT serial lookup (e.g., `NSME`).
   Game code extraction is done by `analyzer.extract_dat_game_code()` and passed to the matcher.
-- **DAT source:** LibRetro enhanced DATs from `libretro/libretro-database` (not `libretro-mirrors/nointro-db`).
-  These are a strict superset of standard No-Intro DATs with serial, region, and release date fields.
+- **DAT sources:** Two different sources depending on console type:
+  - **No-Intro** (cartridge consoles): LibRetro enhanced DATs from `libretro/libretro-database`
+    (`metadat/no-intro/`). These are a strict superset of standard No-Intro DATs with serial,
+    region, and release date fields. `dat_download_ids()` defaults to `dat_names()`.
+  - **Redump** (disc consoles): Downloaded directly from redump.org (`http://redump.org/datfile/{id}/serial,version`).
+    The `/serial,version` parameter includes serial numbers in the DAT. Downloads are ZIP archives
+    containing a .dat file. `dat_download_ids()` returns system slugs (e.g., `"psx"`, `"ps2"`,
+    `"dc"`) used in the URL path.
+  **Known issue:** Redump's serial data reflects catalog/product serials (printed on the box),
+  not per-disc boot serials (from `SYSTEM.CNF`). For most games these are identical, but some
+  multi-disc games list the same catalog serial for all discs (e.g., all three FF7 USA discs
+  list `SCUS-94163` instead of per-disc `SCUS-94163`/`94164`/`94165`). This affects both
+  redump.org's own DATs and the libretro-database mirror. Hash fallback handles these cases.
+  See `.claude/skills/retro-archive/formats/PSX.md` for details.
 
 ## Conventions
 

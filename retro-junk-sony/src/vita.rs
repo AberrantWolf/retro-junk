@@ -52,4 +52,8 @@ impl RomAnalyzer for VitaAnalyzer {
     fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
         false // Not yet implemented
     }
+
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Sony - PlayStation Vita", "Sony - PlayStation Vita (PSN)"]
+    }
 }

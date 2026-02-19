@@ -17,6 +17,8 @@ pub enum MediaType {
     Fanart,
     /// Physical media image (cartridge/disc)
     PhysicalMedia,
+    /// Composite miximage (screenshot + box + marquee + physical media)
+    Miximage,
 }
 
 impl MediaType {

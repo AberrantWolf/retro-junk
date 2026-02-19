@@ -17,8 +17,10 @@ impl Default for MediaSelection {
         Self {
             types: vec![
                 MediaType::Cover,
+                MediaType::Cover3D,
                 MediaType::Screenshot,
                 MediaType::Marquee,
+                MediaType::PhysicalMedia,
                 MediaType::Video,
             ],
         }
@@ -72,6 +74,7 @@ fn ss_media_type(mt: MediaType) -> &'static str {
         MediaType::Video => "video-normalized",
         MediaType::Fanart => "fanart",
         MediaType::PhysicalMedia => "support-2D",
+        MediaType::Miximage => unreachable!("Miximage is generated, not downloaded"),
     }
 }
 
@@ -95,7 +98,35 @@ pub fn media_subdir(mt: MediaType) -> &'static str {
         MediaType::Video => "videos",
         MediaType::Fanart => "fanart",
         MediaType::PhysicalMedia => "physicalmedia",
+        MediaType::Miximage => "miximages",
     }
+}
+
+/// Collect paths for media files that already exist on disk for a given ROM.
+///
+/// Returns a map of MediaType -> path for every selected media type that has
+/// an existing file in the expected location. Miximage is excluded from the
+/// returned map (it's checked separately).
+pub fn collect_existing_media(
+    selection: &MediaSelection,
+    media_dir: &Path,
+    rom_stem: &str,
+) -> std::collections::HashMap<MediaType, PathBuf> {
+    let mut found = std::collections::HashMap::new();
+
+    for &mt in &selection.types {
+        if mt == MediaType::Miximage {
+            continue;
+        }
+        let subdir = media_dir.join(media_subdir(mt));
+        let ext = mt.default_extension();
+        let path = subdir.join(format!("{}.{}", rom_stem, ext));
+        if path.exists() {
+            found.insert(mt, path);
+        }
+    }
+
+    found
 }
 
 /// Download all selected media for a game.
@@ -108,11 +139,16 @@ pub async fn download_game_media(
     media_dir: &Path,
     rom_stem: &str,
     preferred_region: &str,
+    force_redownload: bool,
 ) -> Result<std::collections::HashMap<MediaType, PathBuf>, ScrapeError> {
     let mut results = std::collections::HashMap::new();
     let mut downloads = Vec::new();
 
     for &mt in &selection.types {
+        // Miximage is generated locally, never downloaded
+        if mt == MediaType::Miximage {
+            continue;
+        }
         let ss_type = ss_media_type(mt);
         let media = game
             .media_for_region(ss_type, preferred_region)
@@ -130,8 +166,8 @@ pub async fn download_game_media(
             let subdir = media_dir.join(media_subdir(mt));
             let dest = subdir.join(format!("{}.{}", rom_stem, ext));
 
-            // Skip if file already exists
-            if dest.exists() {
+            // Skip if file already exists (unless force redownload)
+            if !force_redownload && dest.exists() {
                 results.insert(mt, dest);
                 continue;
             }

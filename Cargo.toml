@@ -48,3 +48,6 @@ chrono = "0.4"
 retro-junk-scraper = { path = "retro-junk-scraper" }
 retro-junk-frontend = { path = "retro-junk-frontend" }
 chd = "0.3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+image = "0.25"
+serde_yml = "0.0.12"

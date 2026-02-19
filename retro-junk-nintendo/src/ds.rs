@@ -685,6 +685,10 @@ impl RomAnalyzer for DsAnalyzer {
         ]
     }
 
+    fn expects_serial(&self) -> bool {
+        true
+    }
+
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
         // NTR-XXXX → XXXX
         let parts: Vec<&str> = serial.split('-').collect();

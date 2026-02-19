@@ -103,6 +103,39 @@ impl RomIdentification {
     }
 }
 
+/// The source database for DAT files.
+///
+/// Cartridge-based consoles use No-Intro DATs from the LibRetro enhanced DAT repository.
+/// Disc-based consoles use Redump DATs downloaded directly from redump.org (with
+/// `/serial,version` parameter for correct per-disc serial numbers).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatSource {
+    /// No-Intro DATs (cartridge-based consoles: NES, SNES, N64, GB, GBA, etc.)
+    NoIntro,
+    /// Redump DATs (disc-based consoles: PS1, PS2, GameCube, Saturn, etc.)
+    Redump,
+}
+
+impl DatSource {
+    /// Returns the base URL for downloading DATs from this source.
+    pub fn base_url(&self) -> &'static str {
+        match self {
+            DatSource::NoIntro => {
+                "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/"
+            }
+            DatSource::Redump => "http://redump.org/datfile/",
+        }
+    }
+
+    /// Returns a human-readable name for this source.
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            DatSource::NoIntro => "No-Intro",
+            DatSource::Redump => "Redump",
+        }
+    }
+}
+
 /// A reader that implements both Read and Seek.
 pub trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
@@ -187,14 +220,31 @@ pub trait RomAnalyzer: Send + Sync {
 
     // -- DAT support methods (override in platform analyzers) --
 
-    /// Returns the NoIntro DAT names for this platform.
+    /// Returns the DAT source for this platform (No-Intro or Redump).
+    ///
+    /// Cartridge-based consoles default to `DatSource::NoIntro`.
+    /// Disc-based consoles should override this to return `DatSource::Redump`.
+    fn dat_source(&self) -> DatSource {
+        DatSource::NoIntro
+    }
+
+    /// Returns the DAT names for this platform.
     ///
     /// Most consoles return a single name, but some need multiple DATs
     /// (e.g., base + DLC, color variants). All are merged into one index.
+    /// The DAT source (No-Intro vs Redump) is determined by `dat_source()`.
     ///
     /// Example: `&["Nintendo - Nintendo Entertainment System"]`
     fn dat_names(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    /// Returns download identifiers for DAT files.
+    ///
+    /// For No-Intro, this is the same as `dat_names()` (the DAT name IS the download path).
+    /// For Redump, this returns system IDs (e.g., "psx") used in the redump.org URL path.
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        self.dat_names()
     }
 
     /// Returns true if this platform has DAT support (i.e., `dat_names()` is non-empty).
@@ -244,6 +294,14 @@ pub trait RomAnalyzer: Send + Sync {
     /// expected pattern.
     fn extract_dat_game_code(&self, _serial: &str) -> Option<String> {
         None
+    }
+
+    /// Whether ROMs for this platform normally contain an extractable serial number.
+    ///
+    /// When true, failure to extract a serial during matching is reported as a
+    /// diagnostic warning rather than silently falling back to hash matching.
+    fn expects_serial(&self) -> bool {
+        false
     }
 
     // -- Scraper support methods (override in platform analyzers) --

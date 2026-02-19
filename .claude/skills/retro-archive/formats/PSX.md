@@ -93,6 +93,20 @@ VMODE = NTSC
 - Serial extraction: take the 4-letter prefix, then collect all digits after it, format as `PREFIX-DIGITS`
 - `VMODE` indicates NTSC or PAL (optional)
 
+### Boot Path Variants
+
+Not all games use the same boot path format. Known variants:
+
+| Format | Example | Games |
+|--------|---------|-------|
+| Standard with backslash | `cdrom:\SLUS_012.34;1` | Most games |
+| Double backslash | `cdrom:\\SLUS_012.34;1` | Some games |
+| No path separator | `cdrom:SLUS_006.91;1` | Tomb Raider III, others |
+| Forward slash | `cdrom:/SLUS_012.34;1` | Rare |
+| BOOT2 key (PS2-style) | `BOOT2 = cdrom0:\SLPS_000.01;1` | Some later games |
+
+The serial extractor must split on `\`, `/`, and `:` to handle all variants.
+
 ### Serial Prefix to Region Mapping
 
 | Prefix | Region | Description |
@@ -162,10 +176,55 @@ Extra fields vary by format:
 | `chd_hunk_size` | CHD format | Hunk size in bytes |
 | `chd_logical_size` | CHD format | Uncompressed logical size |
 
+## Multi-Disc Serial Numbering
+
+Each PS1 disc has its own unique serial derived from the SYSTEM.CNF boot executable. There is no
+shared "game ID" embedded in the disc data — grouping discs into games is a cataloging convention.
+
+Multi-disc games use one of two serial assignment patterns:
+
+| Pattern | Example | Games |
+|---------|---------|-------|
+| **Sequential** | SCUS-94163, SCUS-94164, SCUS-94165 (FF7 discs 1-3) | Common for first-party/early titles |
+| **Unrelated** | SLUS-00421, SLUS-00592 (RE2 discs 1-2) | Common for third-party titles |
+
+The PVD Volume Identifier is not standardized for disc grouping — some games use the serial,
+some use a short game name, some leave it blank.
+
 ## DAT Support
 
 - DAT name: `"Sony - PlayStation"` (Redump)
 - Game code extraction: returns the full serial (e.g., `SLUS-01234`) since Redump DATs use full serials
+
+### Known DAT Serial Quality Issues
+
+**libretro-database** (`metadat/redump/Sony - PlayStation.dat`): The libretro enhanced Redump DATs
+have a known issue where multi-disc games with sequential serials may list only the base serial
+for all discs. For example, Final Fantasy VII lists `SCUS-94163` for all three discs instead of
+the correct per-disc serials (SCUS-94163, SCUS-94164, SCUS-94165). This causes serial-based
+matching to fail for discs 2+ of affected games. The hash-based fallback handles these cases.
+
+See: [libretro-database issue #1432](https://github.com/libretro/libretro-database/issues/1432)
+
+**Redump.org direct DATs**: The standard Redump DAT download (`http://redump.org/datfile/psx/`)
+does NOT include serial data at all. To get per-disc serials, use the `/serial` URL parameter:
+
+```
+http://redump.org/datfile/psx/serial,version
+```
+
+This produces a DAT with `<serial>` elements per game entry, with correct per-disc values.
+No existing GitHub mirror (libretro-database, RetroArcher.dats, etc.) uses this parameter,
+which is why serial data is missing or incorrect in all derived databases.
+
+### Alternative Serial Sources
+
+| Source | URL | Per-disc serials? | Programmatic access? |
+|--------|-----|-------------------|---------------------|
+| Redump (with `/serial`) | `http://redump.org/datfile/psx/serial,version` | Yes | Direct DAT download (ZIP) |
+| PSX Datacenter | `https://psxdatacenter.com/` | Yes | No API, reference only |
+| GameDB-PSX | `https://github.com/niemasd/GameDB-PSX` | Yes | JSON/TSV files on GitHub |
+| SerialStation | `https://serialstation.com/` | Yes | API planned but not public yet |
 
 ## Sources
 

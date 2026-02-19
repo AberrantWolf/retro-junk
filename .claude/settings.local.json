@@ -38,7 +38,11 @@
       "Bash(wc:*)",
       "Bash(cargo check:*)",
       "Bash(git stash:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "WebFetch(domain:forum.redump.org)",
+      "WebFetch(domain:psxdatacenter.com)",
+      "Bash(unzip:*)",
+      "WebFetch(domain:gitlab.com)"
     ]
   }
 }

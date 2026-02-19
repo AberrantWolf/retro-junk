@@ -54,4 +54,16 @@ impl RomAnalyzer for Ps2Analyzer {
     fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
         false // Not yet implemented
     }
+
+    fn dat_source(&self) -> retro_junk_core::DatSource {
+        retro_junk_core::DatSource::Redump
+    }
+
+    fn dat_names(&self) -> &'static [&'static str] {
+        &["Sony - PlayStation 2"]
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["ps2"]
+    }
 }

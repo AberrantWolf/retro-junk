@@ -13,7 +13,8 @@ use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::rename::{
-    RenameOptions, RenamePlan, RenameProgress, execute_renames, format_match_method, plan_renames,
+    RenameOptions, RenamePlan, RenameProgress, SerialWarningKind, execute_renames,
+    format_match_method, plan_renames, M3uAction,
 };
 use retro_junk_lib::{AnalysisContext, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
 
@@ -122,6 +123,14 @@ enum Commands {
         /// Disable scrape log file
         #[arg(long)]
         no_log: bool,
+
+        /// Disable miximage generation
+        #[arg(long)]
+        no_miximage: bool,
+
+        /// Force redownload of all media, ignoring existing files
+        #[arg(long)]
+        force_redownload: bool,
     },
 
     /// Manage cached DAT files
@@ -200,6 +209,8 @@ fn main() {
             dry_run,
             skip_existing,
             no_log,
+            no_miximage,
+            force_redownload,
         } => {
             run_scrape(
                 &ctx,
@@ -216,6 +227,8 @@ fn main() {
                 dry_run,
                 skip_existing,
                 no_log,
+                no_miximage,
+                force_redownload,
                 cli.root,
             );
         }
@@ -983,9 +996,20 @@ fn run_rename(
                     pb.finish_and_clear();
                     print_rename_plan(&plan);
 
-                    if !dry_run && !plan.renames.is_empty() {
+                    let has_work =
+                        !plan.renames.is_empty() || !plan.m3u_actions.is_empty();
+                    if !dry_run && has_work {
                         // Prompt for confirmation
-                        print!("\n  Proceed with {} renames? [y/N] ", plan.renames.len(),);
+                        let m3u_count = plan.m3u_actions.len();
+                        if m3u_count > 0 {
+                            print!(
+                                "\n  Proceed with {} renames and {} m3u updates? [y/N] ",
+                                plan.renames.len(),
+                                m3u_count,
+                            );
+                        } else {
+                            print!("\n  Proceed with {} renames? [y/N] ", plan.renames.len());
+                        }
                         std::io::stdout().flush().unwrap();
 
                         let mut input = String::new();
@@ -1003,6 +1027,20 @@ fn run_rename(
                                 "\u{2714}".if_supports_color(Stdout, |t| t.green()),
                                 summary.renamed,
                             );
+                            if summary.m3u_folders_renamed > 0 {
+                                println!(
+                                    "  {} {} m3u folders renamed",
+                                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                    summary.m3u_folders_renamed,
+                                );
+                            }
+                            if summary.m3u_playlists_written > 0 {
+                                println!(
+                                    "  {} {} m3u playlists written",
+                                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                    summary.m3u_playlists_written,
+                                );
+                            }
                         } else {
                             println!("  {}", "Skipped".if_supports_color(Stdout, |t| t.dimmed()),);
                         }
@@ -1150,6 +1188,87 @@ fn print_rename_plan(plan: &RenamePlan) {
             d.hash_game,
         );
     }
+
+    // Serial warnings
+    for w in &plan.serial_warnings {
+        let file_name = w.file.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        match &w.kind {
+            SerialWarningKind::NoMatch {
+                full_serial,
+                game_code,
+            } => {
+                if let Some(code) = game_code {
+                    println!(
+                        "  {} {}: serial \"{}\" (looked up as \"{}\") not found in DAT",
+                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                        file_name.if_supports_color(Stdout, |t| t.dimmed()),
+                        full_serial,
+                        code,
+                    );
+                } else {
+                    println!(
+                        "  {} {}: serial \"{}\" not found in DAT",
+                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                        file_name.if_supports_color(Stdout, |t| t.dimmed()),
+                        full_serial,
+                    );
+                }
+            }
+            SerialWarningKind::Missing => {
+                println!(
+                    "  {} {}: no serial found (expected for this platform)",
+                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                    file_name.if_supports_color(Stdout, |t| t.dimmed()),
+                );
+            }
+        }
+    }
+
+    // M3U actions
+    print_m3u_actions(&plan.m3u_actions);
+}
+
+/// Print M3U folder rename and playlist actions.
+fn print_m3u_actions(actions: &[M3uAction]) {
+    if actions.is_empty() {
+        return;
+    }
+
+    for action in actions {
+        let source_name = action
+            .source_folder
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        let target_name = action
+            .target_folder
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+
+        // Folder rename (if different)
+        if action.source_folder != action.target_folder {
+            println!(
+                "  {} {} {} {} {}",
+                "\u{1F4C1}".if_supports_color(Stdout, |t| t.green()),
+                source_name.if_supports_color(Stdout, |t| t.dimmed()),
+                "\u{2192}".if_supports_color(Stdout, |t| t.green()),
+                target_name.if_supports_color(Stdout, |t| t.bold()),
+                "(folder)".if_supports_color(Stdout, |t| t.dimmed()),
+            );
+        }
+
+        // Playlist write
+        if !action.playlist_entries.is_empty() {
+            let playlist_name = format!("{}.m3u", action.game_name);
+            println!(
+                "  {} Write {} ({} discs)",
+                "\u{1F4DD}".if_supports_color(Stdout, |t| t.green()),
+                playlist_name.if_supports_color(Stdout, |t| t.bold()),
+                action.playlist_entries.len(),
+            );
+        }
+    }
 }
 
 /// Run the scrape command.
@@ -1169,6 +1288,8 @@ fn run_scrape(
     dry_run: bool,
     skip_existing: bool,
     no_log: bool,
+    no_miximage: bool,
+    force_redownload: bool,
     root: Option<PathBuf>,
 ) {
     let root_path =
@@ -1183,7 +1304,25 @@ fn run_scrape(
     options.dry_run = dry_run;
     options.skip_existing = skip_existing;
     options.no_log = no_log;
+    options.no_miximage = no_miximage;
+    options.force_redownload = force_redownload;
     options.limit = limit;
+
+    // Load miximage layout unless disabled
+    if !no_miximage {
+        match retro_junk_frontend::miximage_layout::MiximageLayout::load_or_create() {
+            Ok(layout) => {
+                options.miximage_layout = Some(layout);
+            }
+            Err(e) => {
+                eprintln!(
+                    "{} Failed to load miximage layout, disabling miximages: {}",
+                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                    e,
+                );
+            }
+        }
+    }
 
     if let Some(mdir) = metadata_dir {
         options.metadata_dir = mdir;
@@ -1637,7 +1776,9 @@ fn run_cache_clear() {
 
 /// Fetch DAT files for specified systems.
 fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
-    let to_fetch: Vec<(String, Vec<&str>)> =
+    use retro_junk_lib::DatSource;
+
+    let to_fetch: Vec<(String, Vec<&str>, &'static [&'static str], DatSource)> =
         if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
             ctx.consoles()
                 .filter(|c| c.analyzer.has_dat_support())
@@ -1645,6 +1786,8 @@ fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
                     (
                         c.metadata.short_name.to_string(),
                         c.analyzer.dat_names().to_vec(),
+                        c.analyzer.dat_download_ids(),
+                        c.analyzer.dat_source(),
                     )
                 })
                 .collect()
@@ -1664,7 +1807,12 @@ fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
                                 );
                                 None
                             } else {
-                                Some((short_name, dat_names.to_vec()))
+                                Some((
+                                    short_name,
+                                    dat_names.to_vec(),
+                                    c.analyzer.dat_download_ids(),
+                                    c.analyzer.dat_source(),
+                                ))
                             }
                         }
                         None => {
@@ -1680,14 +1828,14 @@ fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
                 .collect()
         };
 
-    for (short_name, dat_names) in &to_fetch {
+    for (short_name, dat_names, download_ids, dat_source) in &to_fetch {
         print!(
             "  Fetching {}... ",
             short_name.if_supports_color(Stdout, |t| t.bold()),
         );
         std::io::stdout().flush().unwrap();
 
-        match retro_junk_dat::cache::fetch(short_name, dat_names) {
+        match retro_junk_dat::cache::fetch(short_name, dat_names, download_ids, *dat_source) {
             Ok(paths) => {
                 let total_size: u64 = paths
                     .iter()

@@ -9,4 +9,7 @@ pub enum FrontendError {
 
     #[error("Invalid metadata: {0}")]
     InvalidMetadata(String),
+
+    #[error("Image processing error: {0}")]
+    Image(#[from] image::ImageError),
 }

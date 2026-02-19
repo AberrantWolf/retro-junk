@@ -460,6 +460,10 @@ impl RomAnalyzer for GbaAnalyzer {
         &["Nintendo - Game Boy Advance"]
     }
 
+    fn expects_serial(&self) -> bool {
+        true
+    }
+
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
         // AGB-XXXX-YYY → XXXX
         let parts: Vec<&str> = serial.split('-').collect();

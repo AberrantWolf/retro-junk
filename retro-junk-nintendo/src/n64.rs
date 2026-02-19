@@ -515,6 +515,10 @@ impl RomAnalyzer for N64Analyzer {
         }
     }
 
+    fn expects_serial(&self) -> bool {
+        true
+    }
+
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
         // NUS-XXXX-YYY → XXXX
         let parts: Vec<&str> = serial.split('-').collect();

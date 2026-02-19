@@ -71,14 +71,26 @@ impl Frontend for EsDeFrontend {
             }
 
             // Media paths — use relative paths from the ROM directory if possible
-            write_media_tag(
-                &mut xml,
-                "image",
-                game,
-                MediaType::Screenshot,
-                rom_dir,
-                media_dir,
-            );
+            // Prefer miximage for <image>, fall back to screenshot
+            if game.media.contains_key(&MediaType::Miximage) {
+                write_media_tag(
+                    &mut xml,
+                    "image",
+                    game,
+                    MediaType::Miximage,
+                    rom_dir,
+                    media_dir,
+                );
+            } else {
+                write_media_tag(
+                    &mut xml,
+                    "image",
+                    game,
+                    MediaType::Screenshot,
+                    rom_dir,
+                    media_dir,
+                );
+            }
             write_media_tag(
                 &mut xml,
                 "cover",
@@ -149,6 +161,7 @@ impl Frontend for EsDeFrontend {
             ("3dboxes", MediaType::Cover3D),
             ("fanart", MediaType::Fanart),
             ("physicalmedia", MediaType::PhysicalMedia),
+            ("miximages", MediaType::Miximage),
             ("videos", MediaType::Video),
         ]
     }

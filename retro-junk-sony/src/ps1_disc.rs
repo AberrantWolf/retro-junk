@@ -418,12 +418,13 @@ pub fn parse_system_cnf(content: &str) -> Result<SystemCnf, AnalysisError> {
 
 /// Extract a normalized serial from a SYSTEM.CNF boot path.
 ///
-/// Input: `"cdrom:\SLUS_012.34;1"` or `"cdrom:\\SLUS_012.34;1"`
+/// Input: `"cdrom:\SLUS_012.34;1"` or `"cdrom:\\SLUS_012.34;1"` or `"cdrom:SLUS_006.91;1"`
 /// Output: `"SLUS-01234"`
 pub fn extract_serial(boot_path: &str) -> Option<String> {
-    // Find the filename part (after last \ or /)
+    // Find the filename part (after last \, /, or : to handle all SYSTEM.CNF variants)
+    // Some games use "cdrom:\SLUS_012.34;1", others use "cdrom:SLUS_006.91;1"
     let filename = boot_path
-        .rsplit(|c: char| c == '\\' || c == '/')
+        .rsplit(|c: char| c == '\\' || c == '/' || c == ':')
         .next()?;
 
     // Strip version suffix (";1")
@@ -1043,6 +1044,15 @@ mod tests {
         assert_eq!(
             extract_serial("cdrom:\\SLPS_000.01"),
             Some("SLPS-00001".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_serial_no_backslash() {
+        // Some games use "cdrom:FILENAME" with no path separator
+        assert_eq!(
+            extract_serial("cdrom:SLUS_006.91;1"),
+            Some("SLUS-00691".to_string())
         );
     }
 

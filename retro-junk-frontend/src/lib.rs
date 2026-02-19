@@ -1,6 +1,8 @@
 pub mod error;
 pub mod esde;
 pub mod media_types;
+pub mod miximage;
+pub mod miximage_layout;
 
 pub use error::FrontendError;
 pub use media_types::MediaType;

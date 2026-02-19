@@ -49,10 +49,14 @@ pub struct DatIndex {
 }
 
 /// Normalize a serial number for matching.
-/// Uppercases, strips spaces. Keeps hyphens since they're structurally
-/// significant in serials (e.g., "SLUS-00123" vs "SNS-ZL-USA").
+/// Uppercases, strips spaces and hyphens. Redump DATs inconsistently use
+/// spaces (e.g., "SLPS 00700") vs dashes (e.g., "SLPS-00700"), so we
+/// strip both for reliable matching.
 fn normalize_serial(serial: &str) -> String {
-    serial.to_uppercase().replace(' ', "")
+    serial
+        .to_uppercase()
+        .replace(' ', "")
+        .replace('-', "")
 }
 
 impl DatIndex {
@@ -88,7 +92,15 @@ impl DatIndex {
                 }
 
                 if let Some(ref serial) = rom.serial {
-                    by_serial.insert(normalize_serial(serial), (gi, ri));
+                    // Redump DATs may have comma-separated serials
+                    // (e.g., "SLUS-01041, SLUS-01041GH, SLUS-01041GH-F").
+                    // Index each one individually for lookup.
+                    for part in serial.split(',') {
+                        let trimmed = part.trim();
+                        if !trimmed.is_empty() {
+                            by_serial.insert(normalize_serial(trimmed), (gi, ri));
+                        }
+                    }
                 }
             }
         }

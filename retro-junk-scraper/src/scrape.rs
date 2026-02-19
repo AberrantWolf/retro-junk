@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use retro_junk_core::{AnalysisOptions, Region, RomAnalyzer};
 use retro_junk_frontend::ScrapedGame;
+use retro_junk_frontend::miximage_layout::MiximageLayout;
 use retro_junk_lib::scanner;
 
 use crate::client::ScreenScraperClient;
@@ -38,6 +40,12 @@ pub struct ScrapeOptions {
     pub no_log: bool,
     /// Maximum number of ROMs to process per console
     pub limit: Option<usize>,
+    /// Disable miximage generation
+    pub no_miximage: bool,
+    /// Force redownload of all media, ignoring existing files
+    pub force_redownload: bool,
+    /// Layout config for miximage generation (None when no_miximage is true)
+    pub miximage_layout: Option<MiximageLayout>,
 }
 
 impl ScrapeOptions {
@@ -65,6 +73,9 @@ impl ScrapeOptions {
             skip_existing: false,
             no_log: false,
             limit: None,
+            no_miximage: false,
+            force_redownload: false,
+            miximage_layout: None,
         }
     }
 }
@@ -94,6 +105,40 @@ pub enum ScrapeProgress {
 pub struct ScrapeResult {
     pub games: Vec<ScrapedGame>,
     pub log: ScrapeLog,
+}
+
+/// Try to generate a miximage into `media_map`, or register an existing one.
+///
+/// When `force` is true, always regenerates even if the file exists.
+/// Inserts `MediaType::Miximage` into `media_map` on success.
+fn try_generate_miximage(
+    media_map: &mut HashMap<retro_junk_frontend::MediaType, PathBuf>,
+    system_media_dir: &Path,
+    rom_stem: &str,
+    layout: &MiximageLayout,
+    force: bool,
+) {
+    let miximage_path = miximage_path(system_media_dir, rom_stem);
+    if force || !miximage_path.exists() {
+        match retro_junk_frontend::miximage::generate_miximage(media_map, &miximage_path, layout) {
+            Ok(true) => {
+                media_map.insert(retro_junk_frontend::MediaType::Miximage, miximage_path);
+            }
+            Ok(false) => {} // no screenshot, skip
+            Err(e) => {
+                eprintln!("Warning: failed to generate miximage: {}", e);
+            }
+        }
+    } else {
+        media_map.insert(retro_junk_frontend::MediaType::Miximage, miximage_path);
+    }
+}
+
+/// Miximage output path for a ROM.
+fn miximage_path(system_media_dir: &Path, rom_stem: &str) -> PathBuf {
+    system_media_dir
+        .join("miximages")
+        .join(format!("{}.png", rom_stem))
 }
 
 /// Scrape all ROMs in a folder for a given console.
@@ -135,6 +180,66 @@ pub async fn scrape_folder(
             index,
             total,
         });
+
+        // Check if we can skip ScreenScraper entirely using existing media
+        if !options.force_redownload {
+            let existing = media::collect_existing_media(
+                &options.media_selection,
+                &system_media_dir,
+                &rom_stem,
+            );
+
+            let has_screenshot = existing.contains_key(&retro_junk_frontend::MediaType::Screenshot);
+            let has_miximage = miximage_path(&system_media_dir, &rom_stem).exists();
+            let needs_miximage = !options.no_miximage && !has_miximage;
+
+            if has_screenshot && (!needs_miximage || options.miximage_layout.is_some()) {
+                let mut media_map = existing;
+
+                if needs_miximage {
+                    // Has media but no miximage — generate from existing files
+                    let layout = options.miximage_layout.as_ref().unwrap();
+                    try_generate_miximage(
+                        &mut media_map,
+                        &system_media_dir,
+                        &rom_stem,
+                        layout,
+                        false,
+                    );
+                } else if has_miximage {
+                    media_map.insert(
+                        retro_junk_frontend::MediaType::Miximage,
+                        miximage_path(&system_media_dir, &rom_stem),
+                    );
+                }
+
+                let reason = if needs_miximage {
+                    "media exists, generated miximage"
+                } else {
+                    "media already exists"
+                };
+                progress(ScrapeProgress::Skipped {
+                    file: filename.clone(),
+                    reason: reason.to_string(),
+                });
+
+                let scraped = ScrapedGame {
+                    rom_stem,
+                    rom_filename: filename,
+                    name: entry.display_name().to_string(),
+                    description: None,
+                    developer: None,
+                    publisher: None,
+                    genre: None,
+                    players: None,
+                    rating: None,
+                    release_date: None,
+                    media: media_map,
+                };
+                games.push(scraped);
+                continue;
+            }
+        }
 
         // Analyze the ROM to extract serial and regions
         let analysis_opts = AnalysisOptions::new().quick(true).file_path(rom_path);
@@ -206,6 +311,7 @@ pub async fn scrape_folder(
             md5,
             sha1,
             platform,
+            expects_serial: analyzer.expects_serial(),
         };
 
         if options.dry_run {
@@ -238,16 +344,28 @@ pub async fn scrape_folder(
                     file: filename.clone(),
                 });
 
-                let media_map = media::download_game_media(
+                let mut media_map = media::download_game_media(
                     client,
                     &result.game,
                     &options.media_selection,
                     &system_media_dir,
                     &rom_stem,
                     &effective_region,
+                    options.force_redownload,
                 )
                 .await
                 .unwrap_or_default();
+
+                // Generate miximage if enabled
+                if let Some(ref layout) = options.miximage_layout {
+                    try_generate_miximage(
+                        &mut media_map,
+                        &system_media_dir,
+                        &rom_stem,
+                        layout,
+                        options.force_redownload,
+                    );
+                }
 
                 let media_names: Vec<String> = media_map
                     .keys()
@@ -304,6 +422,7 @@ pub async fn scrape_folder(
             Err(ScrapeError::NotFound) => {
                 log.add(LogEntry::Unidentified {
                     file: filename,
+                    scraper_serial_tried: rom_info.scraper_serial.clone(),
                     serial_tried: serial,
                     filename_tried: true,
                     hashes_tried: rom_info.crc32.is_some(),

@@ -19,6 +19,8 @@ pub enum LogEntry {
     Unidentified {
         file: String,
         serial_tried: Option<String>,
+        /// Scraper serial format(s) that were actually sent to the API
+        scraper_serial_tried: Option<String>,
         filename_tried: bool,
         hashes_tried: bool,
         errors: Vec<String>,
@@ -100,10 +102,13 @@ impl ScrapeLog {
                         writeln!(file, "     Warning: {}", w)?;
                     }
                 }
-                LogEntry::Unidentified { file: f, serial_tried, filename_tried, hashes_tried, errors } => {
+                LogEntry::Unidentified { file: f, serial_tried, scraper_serial_tried, filename_tried, hashes_tried, errors } => {
                     writeln!(file, "[UNIDENTIFIED] {}", f)?;
                     if let Some(serial) = serial_tried {
-                        writeln!(file, "     Serial tried: {}", serial)?;
+                        writeln!(file, "     ROM serial: {}", serial)?;
+                    }
+                    if let Some(scraper) = scraper_serial_tried {
+                        writeln!(file, "     Scraper serial tried: {}", scraper)?;
                     }
                     if *filename_tried {
                         writeln!(file, "     Filename lookup: tried")?;

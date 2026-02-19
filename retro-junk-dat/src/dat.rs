@@ -91,6 +91,7 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     let mut in_header = false;
     let mut current_tag = String::new();
     let mut current_game: Option<DatGame> = None;
+    let mut game_serial: Option<String> = None;
 
     loop {
         match xml.read_event_into(&mut buf)? {
@@ -111,6 +112,7 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                             region: None,
                             roms: Vec::new(),
                         });
+                        game_serial = None;
                     }
                     _ => current_tag = tag_name,
                 }
@@ -125,12 +127,17 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 }
             }
             Event::Text(ref e) => {
+                let text = e.unescape()?.to_string();
                 if in_header {
-                    let text = e.unescape()?.to_string();
                     match current_tag.as_str() {
                         "name" => dat.name = text,
                         "description" => dat.description = text,
                         "version" => dat.version = text,
+                        _ => {}
+                    }
+                } else if current_game.is_some() {
+                    match current_tag.as_str() {
+                        "serial" => game_serial = Some(text),
                         _ => {}
                     }
                 }
@@ -140,7 +147,16 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 match tag_name.as_str() {
                     "header" => in_header = false,
                     "game" => {
-                        if let Some(game) = current_game.take() {
+                        if let Some(mut game) = current_game.take() {
+                            // Propagate game-level serial to ROMs that lack one
+                            if let Some(ref serial) = game_serial {
+                                for rom in &mut game.roms {
+                                    if rom.serial.is_none() {
+                                        rom.serial = Some(serial.clone());
+                                    }
+                                }
+                            }
+                            game_serial = None;
                             dat.games.push(game);
                         }
                     }

@@ -9,3 +9,6 @@ quick-xml.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+image.workspace = true
+serde_yml.workspace = true
+dirs.workspace = true

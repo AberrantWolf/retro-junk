@@ -250,7 +250,7 @@ impl RomAnalyzer for Ps1Analyzer {
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {
-        &["iso", "bin", "cue", "img", "chd"]
+        &["iso", "bin", "chd"]
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
@@ -273,8 +273,20 @@ impl RomAnalyzer for Ps1Analyzer {
         }
     }
 
+    fn dat_source(&self) -> retro_junk_core::DatSource {
+        retro_junk_core::DatSource::Redump
+    }
+
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sony - PlayStation"]
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["psx"]
+    }
+
+    fn expects_serial(&self) -> bool {
+        true
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {

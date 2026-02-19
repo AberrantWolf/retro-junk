@@ -121,13 +121,30 @@ industry-standard format supported by all major ROM management tools.
 
 ### Optional URL Parameters
 
-The Redump DAT download URL accepts parameters to include additional fields:
+The Redump DAT download URL accepts comma-separated parameters to include additional fields:
 
 ```
-http://redump.org/datfile/ps2/serial,version
+http://redump.org/datfile/<system>/serial,version
 ```
 
-This adds `serial` and `version` elements to game entries in the XML.
+| Parameter | Effect |
+|-----------|--------|
+| `serial` | Adds `<serial>` element with per-disc serial number |
+| `version` | Adds `<version>` element with disc version/revision |
+
+**This is critical for serial-based matching.** The standard DAT (no parameters) does NOT include
+serial data — serials only appear in the game title (e.g., the title says "Final Fantasy VII (USA)
+(Disc 1)" but there's no machine-readable serial field). Without the `/serial` parameter, any
+tool that needs to match by serial must fall back to hash-based identification.
+
+**Important:** No major GitHub mirror of Redump DATs currently uses the `/serial` parameter.
+This includes libretro-database, RetroArcher.dats, and others. As a result, serial data in
+derived databases is either absent or reconstructed (often incorrectly for multi-disc games).
+
+The libretro-database enhanced DATs add their own serial field by cross-referencing other sources,
+but this process has known bugs — for example, multi-disc PS1 games with sequential serials
+(like Final Fantasy VII: SCUS-94163/94164/94165) may list only the base serial for all discs.
+See [libretro-database issue #1432](https://github.com/libretro/libretro-database/issues/1432).
 
 ## Obtaining DAT Files
 

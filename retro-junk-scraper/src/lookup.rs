@@ -55,6 +55,8 @@ pub struct RomInfo {
     pub sha1: Option<String>,
     /// Platform identifier
     pub platform: Platform,
+    /// Whether this platform's analyzer expects ROMs to have serials
+    pub expects_serial: bool,
 }
 
 /// Look up a game using the tiered strategy.
@@ -100,7 +102,17 @@ pub async fn lookup_game(
                 Err(e) => return Err(e),
             }
         }
-    } else if systems::expects_serial(rom_info.platform) {
+
+        // All serial attempts failed — add summary warning with ROM serial and tried values
+        if let Some(raw) = &rom_info.serial {
+            let tried: Vec<&str> = attempts.iter().map(|s| s.as_str()).collect();
+            warnings.push(format!(
+                "Serial lookup failed \u{2014} ROM serial: \"{}\", tried: [{}]",
+                raw,
+                tried.join(", "),
+            ));
+        }
+    } else if rom_info.expects_serial {
         warnings.push(format!(
             "Expected serial not found in ROM header for {}",
             rom_info.filename

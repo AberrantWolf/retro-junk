@@ -175,6 +175,10 @@ impl RomAnalyzer for N3dsAnalyzer {
         ]
     }
 
+    fn expects_serial(&self) -> bool {
+        true
+    }
+
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
         Some(serial.to_string())
     }

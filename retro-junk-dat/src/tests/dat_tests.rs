@@ -199,3 +199,36 @@ fn test_auto_detect_clrmamepro() {
     let dat = parse_dat(SAMPLE_CLR_DAT.as_bytes()).unwrap();
     assert!(dat.games.len() > 0);
 }
+
+#[test]
+fn test_xml_game_level_serial_propagation() {
+    // Redump DATs from redump.org have <serial> as a child of <game>, not on <rom>.
+    // The parser should propagate game-level serial to ROMs that lack one.
+    let xml = r#"<?xml version="1.0"?>
+<datafile>
+    <header><name>Sony - PlayStation</name><version>2026-01-01</version></header>
+    <game name="Crash Bandicoot (USA)">
+        <serial>SCUS-94900</serial>
+        <rom name="Crash Bandicoot (USA).cue" size="120" crc="aabbccdd" sha1="1234567890abcdef1234567890abcdef12345678"/>
+        <rom name="Crash Bandicoot (USA).bin" size="470999760" crc="11223344" sha1="abcdef1234567890abcdef1234567890abcdef12"/>
+    </game>
+    <game name="Final Fantasy VII (USA) (Disc 1)">
+        <serial>SCUS-94163</serial>
+        <rom name="Final Fantasy VII (USA) (Disc 1).cue" size="100" crc="55667788" sha1="fedcba0987654321fedcba0987654321fedcba09"/>
+        <rom name="Final Fantasy VII (USA) (Disc 1).bin" size="736836912" crc="99aabbcc" sha1="0123456789abcdef0123456789abcdef01234567"/>
+    </game>
+</datafile>"#;
+    let dat = parse_dat(xml.as_bytes()).unwrap();
+    assert_eq!(dat.games.len(), 2);
+
+    // Both ROMs in Crash Bandicoot should have the game-level serial
+    let crash = &dat.games[0];
+    assert_eq!(crash.roms.len(), 2);
+    assert_eq!(crash.roms[0].serial.as_deref(), Some("SCUS-94900"));
+    assert_eq!(crash.roms[1].serial.as_deref(), Some("SCUS-94900"));
+
+    // FF7 disc 1 ROMs should have the correct per-disc serial
+    let ff7 = &dat.games[1];
+    assert_eq!(ff7.roms[0].serial.as_deref(), Some("SCUS-94163"));
+    assert_eq!(ff7.roms[1].serial.as_deref(), Some("SCUS-94163"));
+}
