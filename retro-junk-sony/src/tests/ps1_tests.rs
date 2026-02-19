@@ -317,9 +317,11 @@ fn test_file_extensions() {
     let exts = analyzer.file_extensions();
     assert!(exts.contains(&"iso"));
     assert!(exts.contains(&"bin"));
-    assert!(exts.contains(&"cue"));
     assert!(exts.contains(&"chd"));
-    assert!(exts.contains(&"img"));
+    // cue and img excluded: cue files don't contain game data (just
+    // references to bin/img tracks), and scanning them caused spurious errors
+    assert!(!exts.contains(&"cue"));
+    assert!(!exts.contains(&"img"));
     // pbp and ecm removed per plan
     assert!(!exts.contains(&"pbp"));
     assert!(!exts.contains(&"ecm"));

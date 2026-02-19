@@ -1467,7 +1467,6 @@ fn run_scrape(
 
             for console in consoles_to_use {
                 let platform = console.metadata.platform;
-                let short_name = platform.short_name();
 
                 // Check if this system has a ScreenScraper ID
                 if retro_junk_scraper::screenscraper_system_id(platform).is_none() {
@@ -1521,6 +1520,7 @@ fn run_scrape(
                     &path,
                     console.analyzer.as_ref(),
                     &options,
+                    folder_name,
                     &progress_callback,
                 )
                 .await
@@ -1569,8 +1569,8 @@ fn run_scrape(
 
                         // Write metadata
                         if !result.games.is_empty() && !dry_run {
-                            let system_metadata_dir = options.metadata_dir.join(short_name);
-                            let system_media_dir = options.media_dir.join(short_name);
+                            let system_metadata_dir = options.metadata_dir.join(folder_name);
+                            let system_media_dir = options.media_dir.join(folder_name);
 
                             use retro_junk_frontend::Frontend;
                             if let Err(e) = esde.write_metadata(
@@ -1597,7 +1597,7 @@ fn run_scrape(
                         if !no_log && !dry_run {
                             let log_path = options.metadata_dir.join(format!(
                                 "scrape-log-{}-{}.txt",
-                                short_name,
+                                folder_name,
                                 chrono::Local::now().format("%Y%m%d-%H%M%S"),
                             ));
                             if let Err(e) = std::fs::create_dir_all(&options.metadata_dir) {

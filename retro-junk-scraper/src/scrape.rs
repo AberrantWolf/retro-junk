@@ -147,6 +147,7 @@ pub async fn scrape_folder(
     folder_path: &Path,
     analyzer: &dyn RomAnalyzer,
     options: &ScrapeOptions,
+    folder_name: &str,
     progress: &dyn Fn(ScrapeProgress),
 ) -> Result<ScrapeResult, ScrapeError> {
     let platform = analyzer.platform();
@@ -168,7 +169,7 @@ pub async fn scrape_folder(
     let mut games = Vec::new();
     let mut log = ScrapeLog::new();
 
-    let system_media_dir = options.media_dir.join(short_name);
+    let system_media_dir = options.media_dir.join(folder_name);
 
     for (index, entry) in game_entries.iter().enumerate() {
         let filename = entry.display_name().to_string();
