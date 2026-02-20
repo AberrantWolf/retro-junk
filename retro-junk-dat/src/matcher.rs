@@ -262,13 +262,24 @@ impl DatIndex {
             }
         }
 
-        // Genuinely ambiguous — deduplicate game names for the warning
+        // Deduplicate game names — if all entries share the same name,
+        // it's not truly ambiguous (e.g., same game with multiple ROM entries).
         let mut candidate_names: Vec<String> = entries
             .iter()
             .map(|&(gi, _)| self.games[gi].name.clone())
             .collect();
         candidate_names.sort();
         candidate_names.dedup();
+
+        if candidate_names.len() == 1 {
+            // All entries agree on the game name — treat as a unique match
+            let (gi, ri) = entries[0];
+            return SerialLookupResult::Match(MatchResult {
+                game_index: gi,
+                rom_index: ri,
+                method: MatchMethod::Serial,
+            });
+        }
 
         SerialLookupResult::Ambiguous {
             candidates: candidate_names,

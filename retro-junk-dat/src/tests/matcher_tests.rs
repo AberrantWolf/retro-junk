@@ -469,7 +469,7 @@ fn test_normal_game_unaffected_by_suffix_logic() {
     );
 }
 
-// --- New ambiguity tests ---
+// --- Ambiguity tests ---
 
 #[test]
 fn test_ambiguous_serial_returns_ambiguous() {
@@ -622,5 +622,51 @@ fn test_multi_disc_shared_bare_serial_resolves_via_suffix() {
             .contains("Disc 1"),
         "Expected Disc 1 match via suffix, got: {}",
         index.games[result.game_index].name
+    );
+}
+
+#[test]
+fn test_same_name_entries_resolve_as_match() {
+    // Multiple DAT entries with the same serial AND the same game name
+    // (e.g., same game listed in multiple DATs after merge) should resolve
+    // as a unique match, not ambiguous.
+    let dat = DatFile {
+        name: "Test".into(),
+        description: "".into(),
+        version: "1".into(),
+        games: vec![
+            DatGame {
+                name: "Metroid Fusion (USA)".into(),
+                region: None,
+                roms: vec![DatRom {
+                    name: "Metroid Fusion (USA).gba".into(),
+                    size: 8388608,
+                    crc: "11111111".into(),
+                    sha1: None,
+                    md5: None,
+                    serial: Some("AMTE".into()),
+                }],
+            },
+            DatGame {
+                name: "Metroid Fusion (USA)".into(),
+                region: None,
+                roms: vec![DatRom {
+                    name: "Metroid Fusion (USA).gba".into(),
+                    size: 8388608,
+                    crc: "22222222".into(),
+                    sha1: None,
+                    md5: None,
+                    serial: Some("AMTE".into()),
+                }],
+            },
+        ],
+    };
+    let index = DatIndex::from_dat(dat);
+
+    // Both entries have the same name — should match, not be ambiguous
+    let result = expect_match(index.match_by_serial("AMTE", None));
+    assert_eq!(
+        index.games[result.game_index].name,
+        "Metroid Fusion (USA)"
     );
 }
