@@ -23,6 +23,9 @@ pub enum LogEntry {
         scraper_serial_tried: Option<String>,
         filename_tried: bool,
         hashes_tried: bool,
+        crc32: Option<String>,
+        md5: Option<String>,
+        sha1: Option<String>,
         errors: Vec<String>,
     },
     GroupedDisc {
@@ -113,7 +116,7 @@ impl ScrapeLog {
                         writeln!(file, "     Warning: {}", w)?;
                     }
                 }
-                LogEntry::Unidentified { file: f, serial_tried, scraper_serial_tried, filename_tried, hashes_tried, errors } => {
+                LogEntry::Unidentified { file: f, serial_tried, scraper_serial_tried, filename_tried, hashes_tried, crc32, md5, sha1, errors } => {
                     writeln!(file, "[UNIDENTIFIED] {}", f)?;
                     if let Some(serial) = serial_tried {
                         writeln!(file, "     ROM serial: {}", serial)?;
@@ -126,6 +129,15 @@ impl ScrapeLog {
                     }
                     if *hashes_tried {
                         writeln!(file, "     Hash lookup: tried")?;
+                        if let Some(crc) = crc32 {
+                            writeln!(file, "       CRC32: {}", crc)?;
+                        }
+                        if let Some(md5_val) = md5 {
+                            writeln!(file, "       MD5:   {}", md5_val)?;
+                        }
+                        if let Some(sha1_val) = sha1 {
+                            writeln!(file, "       SHA1:  {}", sha1_val)?;
+                        }
                     }
                     for e in errors {
                         writeln!(file, "     Error: {}", e)?;

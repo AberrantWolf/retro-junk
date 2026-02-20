@@ -472,3 +472,40 @@ impl GameInfo {
     }
 }
 ```
+
+## Filesystem-Illegal Characters in Game Titles
+
+No-Intro canonical names may contain characters that are illegal on some filesystems.
+The most common case is `:` (colon), which appears in many game titles but is forbidden
+on Windows (NTFS) and macOS (HFS+/APFS Finder layer).
+
+Examples:
+- `Castlevania - Circle of the Moon (USA)` — no problem
+- `Yu-Gi-Oh! - The Sacred Cards (USA)` — no problem
+- `Shin Megami Tensei - Devil Children - Book of Light (Japan)` — no problem
+- `Bokujou Monogatari 3 - Harvest Moon: Boy Meets Girl (Japan)` — colon in title
+
+Users who have substituted illegal characters (e.g., `:` → `-`) will fail filename
+lookup because the `romnom` parameter won't match ScreenScraper's database.
+
+**Fallback behavior:**
+- Hash lookup is the natural fallback for this situation, since the file content is unchanged
+- If hash lookup also fails, the specific ROM dump may not be in ScreenScraper's database
+- Serial lookup (when available) is unaffected by filename character substitution
+
+**Possible future improvements:**
+- Try `jeuRecherche.php` (game name search) as an additional lookup tier for cases where
+  both filename and hash fail but we have a reasonable game name to search for
+
+## Multi-System Analyzers and Per-ROM System IDs
+
+Some analyzers handle multiple ScreenScraper system IDs. The `GameBoyAnalyzer` covers
+both Game Boy (system 9) and Game Boy Color (system 10). Currently we send system ID 9
+for all GB/GBC ROMs and accept system 10 responses via `acceptable_system_ids()` in
+`systems.rs`.
+
+The analysis result already knows the CGB flag — the `extra["format"]` field distinguishes
+`"Game Boy Color (Exclusive)"` (0xC0), `"Game Boy Color (Compatible)"` (0x80), and
+`"Game Boy"`. A possible future improvement would be to use this per-ROM to send the
+correct system ID (10 for GBC-exclusive, 9 for GB/hybrid), which could improve match
+accuracy for edge cases where ScreenScraper has different entries per system.

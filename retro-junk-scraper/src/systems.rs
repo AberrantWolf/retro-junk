@@ -41,6 +41,21 @@ pub fn screenscraper_system_id(platform: Platform) -> Option<u32> {
     }
 }
 
+/// Additional ScreenScraper system IDs that should be accepted as valid
+/// when looking up games for a given platform.
+///
+/// Some platforms span multiple ScreenScraper system IDs. For example, our
+/// `GameBoy` analyzer handles both GB (system 9) and GBC (system 10) ROMs.
+/// When we send system ID 9, ScreenScraper may return a GBC-only game as
+/// system 10 — that's a valid match, not a platform mismatch.
+pub fn acceptable_system_ids(platform: Platform) -> &'static [u32] {
+    match platform {
+        // Game Boy analyzer handles both GB (9) and GBC (10)
+        Platform::GameBoy => &[10],
+        _ => &[],
+    }
+}
+
 /// Whether a console's ROM format normally contains a serial number.
 ///
 /// Consoles that return true are expected to have serials extractable

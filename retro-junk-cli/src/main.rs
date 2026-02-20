@@ -2127,6 +2127,9 @@ fn run_scrape(
                                 scraper_serial_tried,
                                 filename_tried,
                                 hashes_tried,
+                                crc32,
+                                md5,
+                                sha1,
                                 errors,
                             } => {
                                 log::warn!("  ? {}: unidentified", file);
@@ -2141,6 +2144,15 @@ fn run_scrape(
                                 }
                                 if *hashes_tried {
                                     log::warn!("      Hash lookup: tried");
+                                    if let Some(c) = crc32 {
+                                        log::warn!("        CRC32: {}", c);
+                                    }
+                                    if let Some(m) = md5 {
+                                        log::warn!("        MD5:   {}", m);
+                                    }
+                                    if let Some(s) = sha1 {
+                                        log::warn!("        SHA1:  {}", s);
+                                    }
                                 }
                                 for e in errors {
                                     log::warn!("      Error: {}", e);
@@ -2151,7 +2163,12 @@ fn run_scrape(
                                 game_name,
                                 warnings,
                             } => {
-                                log::warn!("  ~ {}: \"{}\"", file, game_name);
+                                log::warn!(
+                                    "  {} {}: \"{}\"",
+                                    "~".if_supports_color(Stdout, |t| t.green()),
+                                    file,
+                                    game_name.if_supports_color(Stdout, |t| t.green()),
+                                );
                                 for w in warnings {
                                     log::warn!("      {}", w);
                                 }

@@ -131,7 +131,7 @@ impl ScreenScraperClient {
 
         // Check for common error patterns in the response text
         if text.contains("Erreur") || text.contains("Jeu non trouvé") || text.is_empty() {
-            return Err(ScrapeError::NotFound);
+            return Err(ScrapeError::NotFound { warnings: vec![] });
         }
         if text.contains("API fermé") || text.contains("API closed") {
             return Err(ScrapeError::ServerClosed(

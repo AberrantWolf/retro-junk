@@ -662,12 +662,17 @@ async fn process_single_game(
                 primary_group,
             }
         }
-        Err(ScrapeError::NotFound) => {
+        Err(ScrapeError::NotFound { warnings }) => {
             let _ = events.send(ScrapeEvent::GameFailed {
                 index,
                 file: filename.clone(),
                 reason: "Game not found".to_string(),
             });
+            let errors = if warnings.is_empty() {
+                vec!["Game not found in ScreenScraper".to_string()]
+            } else {
+                warnings
+            };
             GameResult::Failed {
                 log_entry: LogEntry::Unidentified {
                     file: filename,
@@ -675,7 +680,10 @@ async fn process_single_game(
                     serial_tried: serial,
                     filename_tried: true,
                     hashes_tried: rom_info.crc32.is_some(),
-                    errors: vec!["Game not found in ScreenScraper".to_string()],
+                    crc32: rom_info.crc32.clone(),
+                    md5: rom_info.md5.clone(),
+                    sha1: rom_info.sha1.clone(),
+                    errors,
                 },
             }
         }

@@ -11,7 +11,7 @@ pub enum ScrapeError {
     QuotaExceeded { used: u32, max: u32 },
 
     #[error("Game not found in ScreenScraper database")]
-    NotFound,
+    NotFound { warnings: Vec<String> },
 
     #[error("Invalid credentials: {0}")]
     InvalidCredentials(String),

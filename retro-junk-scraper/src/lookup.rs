@@ -4,7 +4,7 @@ use retro_junk_core::Platform;
 
 use crate::client::ScreenScraperClient;
 use crate::error::ScrapeError;
-use crate::systems;
+use crate::systems::{self, acceptable_system_ids};
 use crate::types::GameInfo;
 
 /// How a game was matched in ScreenScraper.
@@ -96,7 +96,7 @@ pub async fn lookup_game(
                         });
                     }
                 }
-                Err(ScrapeError::NotFound) => {
+                Err(ScrapeError::NotFound { .. }) => {
                     warnings.push(format!("Serial '{}' not found in ScreenScraper", attempt));
                 }
                 Err(e) => return Err(e),
@@ -135,7 +135,7 @@ pub async fn lookup_game(
                 });
             }
         }
-        Err(ScrapeError::NotFound) => {
+        Err(ScrapeError::NotFound { .. }) => {
             warnings.push(format!(
                 "Filename '{}' not found in ScreenScraper",
                 rom_info.filename
@@ -167,7 +167,7 @@ pub async fn lookup_game(
                         });
                     }
                 }
-                Err(ScrapeError::NotFound) => {
+                Err(ScrapeError::NotFound { .. }) => {
                     warnings.push("Hash not found in ScreenScraper".to_string());
                 }
                 Err(e) => return Err(e),
@@ -175,7 +175,7 @@ pub async fn lookup_game(
         }
     }
 
-    Err(ScrapeError::NotFound)
+    Err(ScrapeError::NotFound { warnings })
 }
 
 /// Check if the returned game's platform matches the expected system ID.
@@ -193,7 +193,9 @@ fn check_platform_mismatch(
     let id_str = systeme.id.as_ref()?;
     let returned_id = id_str.parse::<u32>().ok()?;
 
-    if returned_id != expected_system_id {
+    if returned_id != expected_system_id
+        && !acceptable_system_ids(expected_platform).contains(&returned_id)
+    {
         Some(format!(
             "expected {} (system {}) but got '{}' (system {})",
             expected_platform.display_name(),
