@@ -33,6 +33,7 @@ retro-junk analyze --root /path/to/roms
 ```
 
 Options:
+
 - `--quick` / `-q` — Minimize disk reads (useful for network shares)
 - `--consoles` / `-c` — Filter to specific consoles: `-c snes,n64,ps1`
 - `--limit` — Maximum number of ROMs to process per console
@@ -46,6 +47,7 @@ retro-junk rename --root /path/to/roms --dry-run
 ```
 
 Options:
+
 - `--dry-run` / `-n` — Preview renames without executing
 - `--hash` — Force CRC32 hash-based matching (reads full files)
 - `--consoles` / `-c` — Filter to specific consoles
@@ -61,6 +63,7 @@ retro-junk scrape --root /path/to/roms --dry-run
 ```
 
 Options:
+
 - `--media-types` — Media to download (comma-delimited): `covers,screenshots,videos,marquees`
 - `--metadata-dir` — Output directory for metadata (default: `<root>-metadata`)
 - `--media-dir` — Output directory for media (default: `<root>-media`)
@@ -105,6 +108,42 @@ retro-junk config path     # print config file path
 **Sega:** SG-1000, Master System, Genesis, Sega CD, 32X, Saturn, Dreamcast, Game Gear
 
 **Microsoft:** Xbox, Xbox 360
+
+## Missing Features
+
+**Analyzer implementations:**
+Hash-based rename and scraping may work for these systems, but serial-based matching and header metadata are unavailable.
+
+They are registered with DAT metadata, but the analyze() function is not yet implemented.
+
+- GameCube
+- Wii
+- Wii U
+- PS2
+- PS3
+- PSP
+- Vita
+- SG-1000
+- Master System
+- Sega CD
+- 32X
+- Saturn
+- Dreamcast
+- Game Gear
+- Xbox
+- Xbox 360)
+
+**GUI:** The `retro-junk-gui` framework has not been implemented (stub only).
+
+**Frontend formats:** Only ES-DE (`gamelist.xml`) is implemented for metadata/media output. Other frontends (Pegasus, Batocera, LaunchBox, RetroArch playlists) are not yet supported.
+
+**Disc image format support:** PS1 is the only disc-based console with full ISO/BIN+CUE parsing. Other disc consoles (PS2, PS3, PSP, GameCube, Wii, Sega CD, Saturn, Dreamcast, Xbox, Xbox 360) lack disc image header parsing entirely.
+
+**CHD support:** PS1 has full CHD decompression and serial extraction via the `chd` crate. Other disc-based consoles (PS2, Dreamcast, Saturn, Sega CD) list CHD as a supported extension for detection and hash-based matching, but lack CHD-specific header parsing.
+
+**Compressed ROM support:** No support for reading ROMs inside ZIP or 7z archives, which is how many collections are stored.
+
+**Multi-disc game handling:** Rename and scraping both group multi-disc games via `.m3u` folders and loose "(Disc N)" filename detection. However, multi-disc sets are not yet auto-organized into `.m3u` folders during scraping.
 
 ## License
 

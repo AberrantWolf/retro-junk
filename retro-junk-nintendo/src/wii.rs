@@ -65,7 +65,4 @@ impl RomAnalyzer for WiiAnalyzer {
         &["Nintendo - Wii"]
     }
 
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["wii"]
-    }
 }

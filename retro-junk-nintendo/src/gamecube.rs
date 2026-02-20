@@ -64,9 +64,6 @@ impl RomAnalyzer for GameCubeAnalyzer {
         &["Nintendo - GameCube"]
     }
 
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["gc"]
-    }
 }
 
 #[cfg(test)]

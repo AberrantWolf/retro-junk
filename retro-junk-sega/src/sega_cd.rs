@@ -62,7 +62,4 @@ impl RomAnalyzer for SegaCdAnalyzer {
         &["Sega - Mega-CD - Sega CD"]
     }
 
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["mcd"]
-    }
 }

@@ -62,7 +62,4 @@ impl RomAnalyzer for DreamcastAnalyzer {
         &["Sega - Dreamcast"]
     }
 
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["dc"]
-    }
 }

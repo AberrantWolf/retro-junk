@@ -63,7 +63,4 @@ impl RomAnalyzer for PspAnalyzer {
         &["Sony - PlayStation Portable"]
     }
 
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["psp"]
-    }
 }

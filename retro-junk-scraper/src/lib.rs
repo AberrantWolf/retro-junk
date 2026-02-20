@@ -11,7 +11,7 @@ pub mod types;
 pub use client::ScreenScraperClient;
 pub use credentials::{
     CredentialSource, CredentialSources, Credentials, config_path, credential_sources,
-    save_to_file,
+    has_embedded_dev_credentials, save_to_file,
 };
 pub use error::ScrapeError;
 pub use lookup::{LookupMethod, LookupResult};

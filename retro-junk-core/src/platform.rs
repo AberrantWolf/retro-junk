@@ -167,7 +167,7 @@ impl Platform {
     pub fn aliases(&self) -> &'static [&'static str] {
         match self {
             Self::Nes => &["nes", "famicom", "fc"],
-            Self::Snes => &["snes", "sfc", "super famicom", "super nintendo"],
+            Self::Snes => &["snes", "snesna", "sfc", "super famicom", "super nintendo"],
             Self::N64 => &["n64", "nintendo 64", "nintendo64"],
             Self::GameCube => &["gamecube", "gcn", "gc", "ngc"],
             Self::Wii => &["wii"],
@@ -178,7 +178,14 @@ impl Platform {
             Self::N3ds => &["3ds", "nintendo 3ds", "n3ds"],
             Self::Sg1000 => &["sg1000", "sg-1000", "sc3000", "sc-3000"],
             Self::MasterSystem => &["sms", "master system", "mastersystem", "mark iii"],
-            Self::Genesis => &["genesis", "megadrive", "mega drive", "md", "gen"],
+            Self::Genesis => &[
+                "genesis",
+                "megadrive",
+                "megadrivejp",
+                "mega drive",
+                "md",
+                "gen",
+            ],
             Self::SegaCd => &["segacd", "sega cd", "megacd", "mega cd"],
             Self::Sega32x => &["32x", "sega32x", "sega 32x"],
             Self::Saturn => &["saturn", "sega saturn"],
@@ -279,7 +286,11 @@ mod tests {
         ];
         for (input, expected) in cases {
             let parsed: Platform = input.parse().unwrap();
-            assert_eq!(parsed, expected, "alias '{}' should parse to {:?}", input, expected);
+            assert_eq!(
+                parsed, expected,
+                "alias '{}' should parse to {:?}",
+                input, expected
+            );
         }
     }
 

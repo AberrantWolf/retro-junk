@@ -62,7 +62,4 @@ impl RomAnalyzer for Xbox360Analyzer {
         &["Microsoft - Xbox 360"]
     }
 
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["xbox360"]
-    }
 }

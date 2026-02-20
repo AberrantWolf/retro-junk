@@ -62,7 +62,4 @@ impl RomAnalyzer for Ps3Analyzer {
         &["Sony - PlayStation 3"]
     }
 
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["ps3"]
-    }
 }

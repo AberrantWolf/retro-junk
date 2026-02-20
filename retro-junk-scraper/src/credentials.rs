@@ -2,6 +2,32 @@ use std::path::PathBuf;
 
 use crate::error::ScrapeError;
 
+// XOR-obfuscated dev credentials embedded at compile time.
+// Set SCREENSCRAPER_DEVID and SCREENSCRAPER_DEVPASSWORD env vars when building.
+include!(concat!(env!("OUT_DIR"), "/embedded_credentials.rs"));
+
+fn deobfuscate(data: &[u8]) -> String {
+    let decoded: Vec<u8> = data
+        .iter()
+        .enumerate()
+        .map(|(i, b)| b ^ OBFUSCATION_KEY[i % OBFUSCATION_KEY.len()])
+        .collect();
+    String::from_utf8(decoded).expect("embedded credentials must be valid UTF-8")
+}
+
+fn embedded_dev_id() -> Option<String> {
+    EMBEDDED_DEV_ID.map(deobfuscate)
+}
+
+fn embedded_dev_password() -> Option<String> {
+    EMBEDDED_DEV_PASSWORD.map(deobfuscate)
+}
+
+/// Returns true if dev credentials were embedded at compile time.
+pub fn has_embedded_dev_credentials() -> bool {
+    EMBEDDED_DEV_ID.is_some() && EMBEDDED_DEV_PASSWORD.is_some()
+}
+
 /// Credentials for authenticating with the ScreenScraper API.
 #[derive(Debug, Clone)]
 pub struct Credentials {
@@ -19,6 +45,8 @@ pub enum CredentialSource {
     EnvVar(&'static str),
     /// Loaded from the config file.
     ConfigFile,
+    /// Embedded at compile time.
+    Embedded,
     /// Hard-coded default value.
     Default,
     /// Not set anywhere.
@@ -30,6 +58,7 @@ impl std::fmt::Display for CredentialSource {
         match self {
             Self::EnvVar(var) => write!(f, "env ${}", var),
             Self::ConfigFile => write!(f, "config file"),
+            Self::Embedded => write!(f, "embedded"),
             Self::Default => write!(f, "default"),
             Self::Missing => write!(f, "not set"),
         }
@@ -62,9 +91,9 @@ struct ScreenScraperConfig {
 }
 
 impl Credentials {
-    /// Load credentials from environment variables, falling back to config file.
+    /// Load credentials from environment variables, config file, or embedded defaults.
     ///
-    /// Priority: env vars > config file.
+    /// Priority: env vars > config file > embedded (compile-time).
     /// Required: dev_id, dev_password, soft_name.
     /// Optional: user_id, user_password.
     pub fn load() -> Result<Self, ScrapeError> {
@@ -74,6 +103,7 @@ impl Credentials {
         let dev_id = std::env::var("SCREENSCRAPER_DEVID")
             .ok()
             .or_else(|| config.as_ref().and_then(|c| c.dev_id.clone()))
+            .or_else(embedded_dev_id)
             .ok_or_else(|| {
                 ScrapeError::Config(
                     "Missing dev_id. Set SCREENSCRAPER_DEVID env var or add to config file"
@@ -84,6 +114,7 @@ impl Credentials {
         let dev_password = std::env::var("SCREENSCRAPER_DEVPASSWORD")
             .ok()
             .or_else(|| config.as_ref().and_then(|c| c.dev_password.clone()))
+            .or_else(embedded_dev_password)
             .ok_or_else(|| {
                 ScrapeError::Config(
                     "Missing dev_password. Set SCREENSCRAPER_DEVPASSWORD env var or add to config file"
@@ -143,6 +174,9 @@ pub fn config_path() -> Option<PathBuf> {
 }
 
 /// Save credentials to the config file, creating parent directories as needed.
+///
+/// Dev credentials are omitted from the file if they match the embedded values
+/// (no point persisting what's already in the binary).
 /// Returns the path the file was written to.
 pub fn save_to_file(creds: &Credentials) -> Result<PathBuf, ScrapeError> {
     let path = config_path().ok_or_else(|| {
@@ -153,10 +187,25 @@ pub fn save_to_file(creds: &Credentials) -> Result<PathBuf, ScrapeError> {
         std::fs::create_dir_all(parent)?;
     }
 
+    // Only persist dev credentials if they differ from the embedded defaults
+    let embedded_id = embedded_dev_id();
+    let embedded_pw = embedded_dev_password();
+    let dev_id_differs = embedded_id.as_ref() != Some(&creds.dev_id);
+    let dev_pw_differs = embedded_pw.as_ref() != Some(&creds.dev_password);
+    let save_dev = dev_id_differs || dev_pw_differs;
+
     let config = ConfigFile {
         screenscraper: Some(ScreenScraperConfig {
-            dev_id: Some(creds.dev_id.clone()),
-            dev_password: Some(creds.dev_password.clone()),
+            dev_id: if save_dev {
+                Some(creds.dev_id.clone())
+            } else {
+                None
+            },
+            dev_password: if save_dev {
+                Some(creds.dev_password.clone())
+            } else {
+                None
+            },
             soft_name: if creds.soft_name == "retro-junk" {
                 None
             } else {
@@ -182,6 +231,8 @@ pub fn credential_sources() -> CredentialSources {
         CredentialSource::EnvVar("SCREENSCRAPER_DEVID")
     } else if config.as_ref().and_then(|c| c.dev_id.as_ref()).is_some() {
         CredentialSource::ConfigFile
+    } else if has_embedded_dev_credentials() {
+        CredentialSource::Embedded
     } else {
         CredentialSource::Missing
     };
@@ -194,6 +245,8 @@ pub fn credential_sources() -> CredentialSources {
         .is_some()
     {
         CredentialSource::ConfigFile
+    } else if has_embedded_dev_credentials() {
+        CredentialSource::Embedded
     } else {
         CredentialSource::Missing
     };

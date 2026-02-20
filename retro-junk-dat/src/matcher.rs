@@ -147,6 +147,8 @@ impl DatIndex {
     /// Handles the format gap between analyzers and DATs:
     /// - Analyzer may produce `NUS-NSME-USA`, DAT may have `NSME`
     /// - Tries exact match first, then tries with the pre-extracted game code
+    /// - For multi-disc games, tries disc suffixes (`-0` through `-9`) to match
+    ///   LibRetro Redump DAT entries that use suffixed serials
     ///
     /// The `game_code` parameter is the platform-specific extracted code
     /// (e.g., `NSME` from `NUS-NSME-USA`), provided by the analyzer's
@@ -154,8 +156,22 @@ impl DatIndex {
     pub fn match_by_serial(&self, serial: &str, game_code: Option<&str>) -> Option<MatchResult> {
         let norm = normalize_serial(serial);
 
-        // Try exact match first
+        // Try exact match, but prefer a suffixed variant if one exists.
+        // LibRetro Redump DATs have both bare and suffixed entries for
+        // multi-disc games (e.g., "SCUS-94163" and "SCUS-94163-0").
+        // The bare serial is ambiguous (shared across discs), but the
+        // "-0" suffixed entry uniquely identifies disc 1.
         if let Some(&(gi, ri)) = self.by_serial.get(&norm) {
+            // Check if a "-0" suffixed entry exists — if so, the bare serial
+            // is from a multi-disc set and we should use the specific entry.
+            let suffixed = format!("{norm}0");
+            if let Some(&(sgi, sri)) = self.by_serial.get(&suffixed) {
+                return Some(MatchResult {
+                    game_index: sgi,
+                    rom_index: sri,
+                    method: MatchMethod::Serial,
+                });
+            }
             return Some(MatchResult {
                 game_index: gi,
                 rom_index: ri,
@@ -167,6 +183,28 @@ impl DatIndex {
         if let Some(code) = game_code {
             let norm_code = normalize_serial(code);
             if let Some(&(gi, ri)) = self.by_serial.get(&norm_code) {
+                let suffixed = format!("{norm_code}0");
+                if let Some(&(sgi, sri)) = self.by_serial.get(&suffixed) {
+                    return Some(MatchResult {
+                        game_index: sgi,
+                        rom_index: sri,
+                        method: MatchMethod::Serial,
+                    });
+                }
+                return Some(MatchResult {
+                    game_index: gi,
+                    rom_index: ri,
+                    method: MatchMethod::Serial,
+                });
+            }
+        }
+
+        // No exact match — try with disc suffixes as a last resort.
+        // Handles cases where the disc's boot serial doesn't appear bare
+        // in the DAT but does appear with a suffix.
+        for suffix in b'0'..=b'9' {
+            let suffixed = format!("{norm}{}", suffix as char);
+            if let Some(&(gi, ri)) = self.by_serial.get(&suffixed) {
                 return Some(MatchResult {
                     game_index: gi,
                     rom_index: ri,

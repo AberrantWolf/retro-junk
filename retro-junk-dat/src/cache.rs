@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +10,7 @@ use retro_junk_core::DatSource;
 
 /// Cache format version. Bump this when changing DAT sources or format to
 /// invalidate stale cached DATs automatically.
-const CACHE_VERSION: u32 = 5;
+const CACHE_VERSION: u32 = 6;
 
 /// Metadata about a cached DAT file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,45 +103,13 @@ fn dat_file_path(short_name: &str, index: usize) -> Result<PathBuf, DatError> {
 
 /// Construct the download URL for a DAT file.
 ///
-/// For No-Intro, the download ID is the DAT name (used as the GitHub filename).
-/// For Redump, the download ID is the system slug (e.g., "psx") used in the
-/// redump.org URL with `/serial,version` to get per-disc serial numbers.
+/// Both No-Intro and Redump DATs are hosted on the libretro-database GitHub
+/// repo as raw `.dat` files. The download ID is the DAT name used as the
+/// filename (e.g., "Sony - PlayStation" → "Sony%20-%20PlayStation.dat").
 fn download_url(download_id: &str, dat_source: DatSource) -> String {
     let base = dat_source.base_url();
-    match dat_source {
-        DatSource::NoIntro => {
-            let encoded = download_id.replace(' ', "%20");
-            format!("{base}{encoded}.dat")
-        }
-        DatSource::Redump => {
-            format!("{base}{download_id}/serial,version")
-        }
-    }
-}
-
-/// Extract the DAT file contents from downloaded bytes.
-///
-/// Redump downloads are ZIP archives containing a .dat file.
-/// No-Intro downloads are raw .dat files.
-fn extract_dat_bytes(bytes: &[u8], dat_source: DatSource) -> Result<Vec<u8>, DatError> {
-    if dat_source == DatSource::Redump && bytes.starts_with(b"PK") {
-        let cursor = std::io::Cursor::new(bytes);
-        let mut archive = zip::ZipArchive::new(cursor)
-            .map_err(|e| DatError::download(format!("Failed to open ZIP archive: {e}")))?;
-        for i in 0..archive.len() {
-            let mut file = archive
-                .by_index(i)
-                .map_err(|e| DatError::download(format!("Failed to read ZIP entry: {e}")))?;
-            if file.name().ends_with(".dat") {
-                let mut dat_bytes = Vec::new();
-                file.read_to_end(&mut dat_bytes)?;
-                return Ok(dat_bytes);
-            }
-        }
-        Err(DatError::download("No .dat file found in ZIP archive"))
-    } else {
-        Ok(bytes.to_vec())
-    }
+    let encoded = download_id.replace(' ', "%20");
+    format!("{base}{encoded}.dat")
 }
 
 /// Download and cache all DAT files for a system.
@@ -198,9 +165,8 @@ pub fn fetch(
             }
         };
 
-        // Extract DAT from ZIP if needed (Redump downloads are ZIP archives)
-        let dat_bytes = extract_dat_bytes(&bytes, dat_source)?;
-        fs::write(&dat_path, &dat_bytes)?;
+        fs::write(&dat_path, &bytes)?;
+        let dat_bytes = &bytes;
 
         // Parse to get version info
         let dat = dat::parse_dat_file(&dat_path)?;

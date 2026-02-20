@@ -284,3 +284,166 @@ fn test_serial_space_dash_normalization() {
         "Some Game (Japan)"
     );
 }
+
+#[test]
+fn test_multi_disc_suffix_prefers_suffixed_over_bare() {
+    // LibRetro Redump DATs have both bare and suffixed entries for multi-disc
+    // games. When a disc's boot serial matches the bare entry, the "-0"
+    // suffixed entry should be preferred since the bare serial is ambiguous.
+    let dat = DatFile {
+        name: "Test".into(),
+        description: "".into(),
+        version: "1".into(),
+        games: vec![
+            // Bare entries (shared serial — last one overwrites in the HashMap)
+            DatGame {
+                name: "FF7 (USA) (Disc 1)".into(),
+                region: None,
+                roms: vec![DatRom {
+                    name: "FF7 (USA) (Disc 1).bin".into(),
+                    size: 747435024,
+                    crc: "1459cbef".into(),
+                    sha1: None,
+                    md5: None,
+                    serial: Some("SCUS-94163".into()),
+                }],
+            },
+            DatGame {
+                name: "FF7 (USA) (Disc 1) [suffixed]".into(),
+                region: None,
+                roms: vec![DatRom {
+                    name: "FF7 (USA) (Disc 1).bin".into(),
+                    size: 747435024,
+                    crc: "1459cbef".into(),
+                    sha1: None,
+                    md5: None,
+                    serial: Some("SCUS-94163-0".into()),
+                }],
+            },
+            DatGame {
+                name: "FF7 (USA) (Disc 2)".into(),
+                region: None,
+                roms: vec![DatRom {
+                    name: "FF7 (USA) (Disc 2).bin".into(),
+                    size: 732657408,
+                    crc: "a997a8cc".into(),
+                    sha1: None,
+                    md5: None,
+                    serial: Some("SCUS-94163".into()),
+                }],
+            },
+            DatGame {
+                name: "FF7 (USA) (Disc 2) [suffixed]".into(),
+                region: None,
+                roms: vec![DatRom {
+                    name: "FF7 (USA) (Disc 2).bin".into(),
+                    size: 732657408,
+                    crc: "a997a8cc".into(),
+                    sha1: None,
+                    md5: None,
+                    serial: Some("SCUS-94163-1".into()),
+                }],
+            },
+            DatGame {
+                name: "FF7 (USA) (Disc 3)".into(),
+                region: None,
+                roms: vec![DatRom {
+                    name: "FF7 (USA) (Disc 3).bin".into(),
+                    size: 659561952,
+                    crc: "1c27b277".into(),
+                    sha1: None,
+                    md5: None,
+                    serial: Some("SCUS-94163".into()),
+                }],
+            },
+            DatGame {
+                name: "FF7 (USA) (Disc 3) [suffixed]".into(),
+                region: None,
+                roms: vec![DatRom {
+                    name: "FF7 (USA) (Disc 3).bin".into(),
+                    size: 659561952,
+                    crc: "1c27b277".into(),
+                    sha1: None,
+                    md5: None,
+                    serial: Some("SCUS-94163-2".into()),
+                }],
+            },
+        ],
+    };
+    let index = DatIndex::from_dat(dat);
+
+    // Disc 1's boot serial "SCUS-94163" should prefer the "-0" suffixed entry
+    let disc1 = index.match_by_serial("SCUS-94163", None).unwrap();
+    assert!(
+        index.games[disc1.game_index].name.contains("Disc 1"),
+        "Expected Disc 1 match, got: {}",
+        index.games[disc1.game_index].name
+    );
+
+    // A serial that doesn't exist bare but does with suffix should still match
+    // (suffix fallback when no exact match)
+    // Note: SCUS-94164 (disc 2's actual boot serial) won't match anything here
+    // because the DAT uses SCUS-94163-1, not SCUS-94164-anything. Hash fallback
+    // handles that case.
+}
+
+#[test]
+fn test_suffix_fallback_when_no_exact_match() {
+    // When exact serial doesn't match, try with disc suffixes
+    let dat = DatFile {
+        name: "Test".into(),
+        description: "".into(),
+        version: "1".into(),
+        games: vec![DatGame {
+            name: "Some Game (USA) (Disc 1)".into(),
+            region: None,
+            roms: vec![DatRom {
+                name: "Some Game (USA) (Disc 1).bin".into(),
+                size: 700000000,
+                crc: "deadbeef".into(),
+                sha1: None,
+                md5: None,
+                // Only suffixed entry, no bare serial
+                serial: Some("SLUS-99999-0".into()),
+            }],
+        }],
+    };
+    let index = DatIndex::from_dat(dat);
+
+    // "SLUS-99999" doesn't exist bare, but "SLUS-99999-0" does
+    let result = index.match_by_serial("SLUS-99999", None).unwrap();
+    assert_eq!(
+        index.games[result.game_index].name,
+        "Some Game (USA) (Disc 1)"
+    );
+}
+
+#[test]
+fn test_normal_game_unaffected_by_suffix_logic() {
+    // Single-disc games with no suffixed variants should still match normally
+    let dat = DatFile {
+        name: "Test".into(),
+        description: "".into(),
+        version: "1".into(),
+        games: vec![DatGame {
+            name: "Crash Bandicoot (USA)".into(),
+            region: None,
+            roms: vec![DatRom {
+                name: "Crash Bandicoot (USA).bin".into(),
+                size: 500000000,
+                crc: "aabbccdd".into(),
+                sha1: None,
+                md5: None,
+                serial: Some("SCUS-94900".into()),
+            }],
+        }],
+    };
+    let index = DatIndex::from_dat(dat);
+
+    let result = index.match_by_serial("SCUS-94900", None).unwrap();
+    assert_eq!(
+        index.games[result.game_index].name,
+        "Crash Bandicoot (USA)"
+    );
+}
+

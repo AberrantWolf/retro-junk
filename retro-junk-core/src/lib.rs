@@ -106,9 +106,9 @@ impl RomIdentification {
 
 /// The source database for DAT files.
 ///
-/// Cartridge-based consoles use No-Intro DATs from the LibRetro enhanced DAT repository.
-/// Disc-based consoles use Redump DATs downloaded directly from redump.org (with
-/// `/serial,version` parameter for correct per-disc serial numbers).
+/// Both sources use the LibRetro enhanced DAT repository on GitHub:
+/// - No-Intro DATs for cartridge-based consoles (`metadat/no-intro/`)
+/// - Redump DATs for disc-based consoles (`metadat/redump/`)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatSource {
     /// No-Intro DATs (cartridge-based consoles: NES, SNES, N64, GB, GBA, etc.)
@@ -124,7 +124,9 @@ impl DatSource {
             DatSource::NoIntro => {
                 "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/"
             }
-            DatSource::Redump => "http://redump.org/datfile/",
+            DatSource::Redump => {
+                "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/"
+            }
         }
     }
 

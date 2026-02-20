@@ -292,9 +292,38 @@ fn test_dat_names() {
 #[test]
 fn test_extract_dat_game_code() {
     let analyzer = Ps1Analyzer::new();
+    // Normal serial passes through unchanged
     assert_eq!(
         analyzer.extract_dat_game_code("SLUS-01234"),
         Some("SLUS-01234".to_string())
+    );
+}
+
+#[test]
+fn test_extract_dat_game_code_multi_disc_fixups() {
+    let analyzer = Ps1Analyzer::new();
+
+    // FF7 disc 2 boot serial → suffixed catalog serial
+    assert_eq!(
+        analyzer.extract_dat_game_code("SCUS-94164"),
+        Some("SCUS-94163-1".to_string())
+    );
+    // FF7 disc 3 boot serial → suffixed catalog serial
+    assert_eq!(
+        analyzer.extract_dat_game_code("SCUS-94165"),
+        Some("SCUS-94163-2".to_string())
+    );
+    // Star Ocean disc 2 boot serial → suffixed catalog serial
+    assert_eq!(
+        analyzer.extract_dat_game_code("SCUS-94422"),
+        Some("SCUS-94421-1".to_string())
+    );
+
+    // FF7 disc 1 is NOT in the fixup table — it passes through as-is
+    // (the matcher's suffix preference handles disc 1 via -0 lookup)
+    assert_eq!(
+        analyzer.extract_dat_game_code("SCUS-94163"),
+        Some("SCUS-94163".to_string())
     );
 }
 

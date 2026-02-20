@@ -16,6 +16,21 @@ use retro_junk_core::{
 
 use crate::ps1_disc::{self, DiscFormat};
 
+/// Multi-disc PS1 games where the per-disc boot serial (from SYSTEM.CNF)
+/// differs from the catalog serial used in the DAT. Maps boot serial to the
+/// suffixed catalog serial in the LibRetro Redump DAT.
+///
+/// Only needed for discs whose boot serial is NOT the catalog serial (i.e.,
+/// discs 2+ of sequential-serial games). Disc 1 is handled by the matcher's
+/// "-0" suffix preference when the boot serial matches the catalog serial.
+const MULTI_DISC_SERIAL_FIXUPS: &[(&str, &str)] = &[
+    // Final Fantasy VII (USA) - Disc 2, Disc 3
+    ("SCUS-94164", "SCUS-94163-1"),
+    ("SCUS-94165", "SCUS-94163-2"),
+    // Star Ocean - The Second Story (USA) - Disc 2
+    ("SCUS-94422", "SCUS-94421-1"),
+];
+
 /// Analyzer for PlayStation disc images.
 #[derive(Debug, Default)]
 pub struct Ps1Analyzer;
@@ -281,15 +296,19 @@ impl RomAnalyzer for Ps1Analyzer {
         &["Sony - PlayStation"]
     }
 
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["psx"]
-    }
-
     fn expects_serial(&self) -> bool {
         true
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
+        // Check fixup table for multi-disc games where the per-disc boot
+        // serial differs from the catalog serial in the DAT
+        if let Some((_, suffixed)) = MULTI_DISC_SERIAL_FIXUPS
+            .iter()
+            .find(|(boot, _)| *boot == serial)
+        {
+            return Some(suffixed.to_string());
+        }
         // Redump DATs use the full serial (e.g., "SLUS-01234")
         Some(serial.to_string())
     }

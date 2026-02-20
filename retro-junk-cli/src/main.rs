@@ -2326,6 +2326,9 @@ fn run_config_show() {
             match source {
                 CredentialSource::Missing => None,
                 CredentialSource::Default => Some("retro-junk".to_string()),
+                CredentialSource::Embedded => {
+                    from_creds.map(|v| if is_secret { mask_value(&v) } else { v })
+                }
                 CredentialSource::EnvVar(var) => {
                     let v = std::env::var(var).ok()?;
                     Some(if is_secret { mask_value(&v) } else { v })
@@ -2444,22 +2447,41 @@ fn run_config_setup() {
         }
     };
 
-    println!(
-        "  {}",
-        "Developer credentials (required):".if_supports_color(Stdout, |t| t.dimmed()),
-    );
-    let dev_id = read_line(
-        "dev_id",
-        existing.as_ref().map(|c| c.dev_id.as_str()),
-        true,
-    )
-    .unwrap();
-    let dev_password = read_line(
-        "dev_password",
-        existing.as_ref().map(|c| c.dev_password.as_str()),
-        true,
-    )
-    .unwrap();
+    let has_embedded = retro_junk_scraper::has_embedded_dev_credentials();
+
+    let (dev_id, dev_password) = if has_embedded {
+        println!(
+            "  {}",
+            "Developer credentials: embedded in binary (no setup needed)"
+                .if_supports_color(Stdout, |t| t.dimmed()),
+        );
+        // Use whatever load() resolved (embedded or overridden)
+        let base = existing.as_ref();
+        (
+            base.map(|c| c.dev_id.clone())
+                .unwrap_or_else(|| "embedded".to_string()),
+            base.map(|c| c.dev_password.clone())
+                .unwrap_or_else(|| "embedded".to_string()),
+        )
+    } else {
+        println!(
+            "  {}",
+            "Developer credentials (required):".if_supports_color(Stdout, |t| t.dimmed()),
+        );
+        let dev_id = read_line(
+            "dev_id",
+            existing.as_ref().map(|c| c.dev_id.as_str()),
+            true,
+        )
+        .unwrap();
+        let dev_password = read_line(
+            "dev_password",
+            existing.as_ref().map(|c| c.dev_password.as_str()),
+            true,
+        )
+        .unwrap();
+        (dev_id, dev_password)
+    };
 
     println!();
     println!(

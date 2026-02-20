@@ -63,7 +63,4 @@ impl RomAnalyzer for SaturnAnalyzer {
         &["Sega - Saturn"]
     }
 
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["ss"]
-    }
 }

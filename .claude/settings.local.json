@@ -42,7 +42,8 @@
       "WebFetch(domain:forum.redump.org)",
       "WebFetch(domain:psxdatacenter.com)",
       "Bash(unzip:*)",
-      "WebFetch(domain:gitlab.com)"
+      "WebFetch(domain:gitlab.com)",
+      "Bash(python3:*)"
     ]
   }
 }
