@@ -1871,7 +1871,7 @@ fn run_scrape(
                         pb.finish_and_clear();
 
                         let summary = result.log.summary();
-                        total_games += summary.total_success + summary.total_partial;
+                        total_games += summary.total_success + summary.total_partial + summary.total_grouped;
                         total_media += summary.media_downloaded;
                         total_errors += summary.total_errors;
                         total_unidentified += summary.total_unidentified;
@@ -1896,6 +1896,13 @@ fn run_scrape(
                                 summary.by_serial,
                                 summary.by_filename,
                                 summary.by_hash,
+                            );
+                        }
+                        if summary.total_grouped > 0 {
+                            log::info!(
+                                "  {} {} discs grouped with primary",
+                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                summary.total_grouped,
                             );
                         }
                         if summary.media_downloaded > 0 {

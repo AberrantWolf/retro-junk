@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use retro_junk_core::disc;
 use retro_junk_core::{AnalysisOptions, Region, RomAnalyzer};
 use retro_junk_frontend::ScrapedGame;
 use retro_junk_frontend::miximage_layout::MiximageLayout;
@@ -171,16 +172,69 @@ pub async fn scrape_folder(
 
     let system_media_dir = options.media_dir.join(folder_name);
 
+    // Detect disc groups among loose single-file entries
+    let disc_entries: Vec<(usize, &str)> = game_entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, entry)| match entry {
+            scanner::GameEntry::SingleFile(_) => Some((i, entry.rom_stem())),
+            _ => None,
+        })
+        .collect();
+    let disc_groups = disc::detect_disc_groups(&disc_entries);
+
+    // Map from entry index → (group_index, is_primary)
+    let mut disc_membership: HashMap<usize, (usize, bool)> = HashMap::new();
+    for (gi, group) in disc_groups.iter().enumerate() {
+        for &mi in &group.member_indices {
+            disc_membership.insert(mi, (gi, mi == group.primary_index));
+        }
+    }
+
+    // Stash primary disc results for cloning to secondaries
+    let mut primary_results: HashMap<usize, ScrapedGame> = HashMap::new();
+
     for (index, entry) in game_entries.iter().enumerate() {
         let filename = entry.display_name().to_string();
-        let rom_stem = entry.rom_stem().to_string();
         let rom_path = entry.analysis_path();
+
+        // For primary discs in a group, use the base name (disc tag stripped)
+        // so media is saved under the shared name for all discs
+        let rom_stem = if let Some(&(group_idx, true)) = disc_membership.get(&index) {
+            disc_groups[group_idx].base_name.clone()
+        } else {
+            entry.rom_stem().to_string()
+        };
 
         progress(ScrapeProgress::LookingUp {
             file: filename.clone(),
             index,
             total,
         });
+
+        // Secondary disc fast path: clone metadata from primary disc
+        if let Some(&(group_idx, false)) = disc_membership.get(&index) {
+            if let Some(primary_scraped) = primary_results.get(&group_idx) {
+                let group = &disc_groups[group_idx];
+                let disc_num = disc::extract_disc_number(&filename).unwrap_or(0);
+                let scraped = ScrapedGame {
+                    rom_filename: filename.clone(),
+                    rom_stem: group.base_name.clone(),
+                    name: format!("{} (Disc {})", primary_scraped.name, disc_num),
+                    ..primary_scraped.clone()
+                };
+
+                let primary_filename = game_entries[group.primary_index].display_name();
+                log.add(LogEntry::GroupedDisc {
+                    file: filename,
+                    primary_file: primary_filename.to_string(),
+                    game_name: scraped.name.clone(),
+                });
+                games.push(scraped);
+                continue;
+            }
+            // Primary not yet processed or failed — fall through to normal lookup
+        }
 
         // Check if we can skip ScreenScraper entirely using existing media
         if !options.force_redownload {
@@ -417,6 +471,11 @@ pub async fn scrape_folder(
                         .map(|d| d.to_string()),
                     media: media_map,
                 };
+
+                // Stash result for secondary discs in the same group
+                if let Some(&(group_idx, true)) = disc_membership.get(&index) {
+                    primary_results.insert(group_idx, scraped.clone());
+                }
 
                 games.push(scraped);
             }

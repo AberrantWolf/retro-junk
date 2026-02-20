@@ -25,6 +25,11 @@ pub enum LogEntry {
         hashes_tried: bool,
         errors: Vec<String>,
     },
+    GroupedDisc {
+        file: String,
+        primary_file: String,
+        game_name: String,
+    },
     Error {
         file: String,
         message: String,
@@ -64,6 +69,7 @@ impl ScrapeLog {
                     }
                 }
                 LogEntry::Partial { .. } => summary.total_partial += 1,
+                LogEntry::GroupedDisc { .. } => summary.total_grouped += 1,
                 LogEntry::Unidentified { .. } => summary.total_unidentified += 1,
                 LogEntry::Error { .. } => summary.total_errors += 1,
             }
@@ -84,6 +90,7 @@ impl ScrapeLog {
         writeln!(file, "--- Summary ---")?;
         writeln!(file, "Successful: {} (serial: {}, filename: {}, hash: {})",
             summary.total_success, summary.by_serial, summary.by_filename, summary.by_hash)?;
+        writeln!(file, "Grouped discs: {}", summary.total_grouped)?;
         writeln!(file, "Partial: {}", summary.total_partial)?;
         writeln!(file, "Unidentified: {}", summary.total_unidentified)?;
         writeln!(file, "Errors: {}", summary.total_errors)?;
@@ -124,6 +131,9 @@ impl ScrapeLog {
                         writeln!(file, "     Error: {}", e)?;
                     }
                 }
+                LogEntry::GroupedDisc { file: f, primary_file, game_name } => {
+                    writeln!(file, "[GROUPED] {} -> \"{}\" (grouped with {})", f, game_name, primary_file)?;
+                }
                 LogEntry::Error { file: f, message } => {
                     writeln!(file, "[ERROR] {}: {}", f, message)?;
                 }
@@ -138,6 +148,7 @@ impl ScrapeLog {
 pub struct LogSummary {
     pub total_success: usize,
     pub total_partial: usize,
+    pub total_grouped: usize,
     pub total_unidentified: usize,
     pub total_errors: usize,
     pub media_downloaded: usize,

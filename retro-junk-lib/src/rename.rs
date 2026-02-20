@@ -143,41 +143,7 @@ pub struct RenamePlan {
     pub m3u_actions: Vec<M3uAction>,
 }
 
-/// Remove " (Disc N)" from a game name, preserving other parenthesized tags.
-///
-/// Examples:
-/// - `"Final Fantasy VII (Disc 1) (USA)"` → `"Final Fantasy VII (USA)"`
-/// - `"Crash Bandicoot (USA)"` → `"Crash Bandicoot (USA)"` (unchanged)
-fn strip_disc_tag(name: &str) -> String {
-    const PREFIX: &str = " (Disc ";
-    if let Some(start) = name.find(PREFIX) {
-        let after = &name[start + PREFIX.len()..];
-        // Find closing ')' after the digits
-        if let Some(close) = after.find(')') {
-            let digits = &after[..close];
-            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
-                let mut result = String::with_capacity(name.len());
-                result.push_str(&name[..start]);
-                result.push_str(&after[close + 1..]);
-                return result;
-            }
-        }
-    }
-    name.to_string()
-}
-
-/// Extract disc number from a filename or game name for sorting.
-///
-/// Examples:
-/// - `"Final Fantasy VII (Disc 2) (USA).chd"` → `Some(2)`
-/// - `"Crash Bandicoot (USA).chd"` → `None`
-fn extract_disc_number(name: &str) -> Option<u32> {
-    const PREFIX: &str = "(Disc ";
-    let start = name.find(PREFIX)?;
-    let after = &name[start + PREFIX.len()..];
-    let close = after.find(')')?;
-    after[..close].parse().ok()
-}
+use retro_junk_core::disc::{extract_disc_number, strip_disc_tag};
 
 /// Returns true for file extensions that are M3U entry points (playable disc images).
 /// Returns false for companion data files (.bin, .img) that shouldn't appear in playlists.

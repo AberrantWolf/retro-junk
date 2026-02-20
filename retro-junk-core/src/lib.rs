@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 
 pub mod checksum;
+pub mod disc;
 pub mod error;
 pub mod platform;
 pub mod progress;
