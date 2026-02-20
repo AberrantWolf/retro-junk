@@ -34,6 +34,20 @@ pub struct MatchResult {
     pub method: MatchMethod,
 }
 
+/// Result of a serial lookup, distinguishing unique match from ambiguous.
+#[derive(Debug, Clone)]
+pub enum SerialLookupResult {
+    /// Unique match found
+    Match(MatchResult),
+    /// Multiple games share this serial — caller should fall back to hash
+    Ambiguous {
+        /// Names of the candidate games
+        candidates: Vec<String>,
+    },
+    /// No match found at all
+    NotFound,
+}
+
 /// An indexed view of a DAT file for fast lookups.
 pub struct DatIndex {
     /// File size → list of (game_index, rom_index)
@@ -42,8 +56,8 @@ pub struct DatIndex {
     by_crc32: HashMap<String, (usize, usize)>,
     /// SHA1 (lowercase hex) → (game_index, rom_index)
     by_sha1: HashMap<String, (usize, usize)>,
-    /// Serial (uppercase, stripped of spaces/hyphens) → (game_index, rom_index)
-    by_serial: HashMap<String, (usize, usize)>,
+    /// Serial (uppercase, stripped of spaces/hyphens) → list of (game_index, rom_index)
+    by_serial: HashMap<String, Vec<(usize, usize)>>,
     /// Backing store of games
     pub games: Vec<DatGame>,
 }
@@ -80,7 +94,7 @@ impl DatIndex {
         let mut by_size: HashMap<u64, Vec<(usize, usize)>> = HashMap::new();
         let mut by_crc32 = HashMap::new();
         let mut by_sha1 = HashMap::new();
-        let mut by_serial = HashMap::new();
+        let mut by_serial: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
 
         for (gi, game) in dat.games.iter().enumerate() {
             for (ri, rom) in game.roms.iter().enumerate() {
@@ -98,7 +112,10 @@ impl DatIndex {
                     for part in serial.split(',') {
                         let trimmed = part.trim();
                         if !trimmed.is_empty() {
-                            by_serial.insert(normalize_serial(trimmed), (gi, ri));
+                            by_serial
+                                .entry(normalize_serial(trimmed))
+                                .or_default()
+                                .push((gi, ri));
                         }
                     }
                 }
@@ -150,52 +167,36 @@ impl DatIndex {
     /// - For multi-disc games, tries disc suffixes (`-0` through `-9`) to match
     ///   LibRetro Redump DAT entries that use suffixed serials
     ///
+    /// Returns `SerialLookupResult::Ambiguous` when multiple games share the
+    /// same serial (e.g., alternate versions, Greatest Hits re-releases, or
+    /// romhacks). The caller should fall back to hash matching in that case.
+    ///
     /// The `game_code` parameter is the platform-specific extracted code
     /// (e.g., `NSME` from `NUS-NSME-USA`), provided by the analyzer's
     /// `extract_dat_game_code()` method.
-    pub fn match_by_serial(&self, serial: &str, game_code: Option<&str>) -> Option<MatchResult> {
+    pub fn match_by_serial(
+        &self,
+        serial: &str,
+        game_code: Option<&str>,
+    ) -> SerialLookupResult {
         let norm = normalize_serial(serial);
 
-        // Try exact match, but prefer a suffixed variant if one exists.
-        // LibRetro Redump DATs have both bare and suffixed entries for
-        // multi-disc games (e.g., "SCUS-94163" and "SCUS-94163-0").
-        // The bare serial is ambiguous (shared across discs), but the
-        // "-0" suffixed entry uniquely identifies disc 1.
-        if let Some(&(gi, ri)) = self.by_serial.get(&norm) {
-            // Check if a "-0" suffixed entry exists — if so, the bare serial
-            // is from a multi-disc set and we should use the specific entry.
-            let suffixed = format!("{norm}0");
-            if let Some(&(sgi, sri)) = self.by_serial.get(&suffixed) {
-                return Some(MatchResult {
-                    game_index: sgi,
-                    rom_index: sri,
-                    method: MatchMethod::Serial,
-                });
+        // Try exact match first
+        if let Some(entries) = self.by_serial.get(&norm) {
+            let result = self.resolve_serial_entries(entries, &norm);
+            if !matches!(result, SerialLookupResult::NotFound) {
+                return result;
             }
-            return Some(MatchResult {
-                game_index: gi,
-                rom_index: ri,
-                method: MatchMethod::Serial,
-            });
         }
 
         // Try with the pre-extracted game code
         if let Some(code) = game_code {
             let norm_code = normalize_serial(code);
-            if let Some(&(gi, ri)) = self.by_serial.get(&norm_code) {
-                let suffixed = format!("{norm_code}0");
-                if let Some(&(sgi, sri)) = self.by_serial.get(&suffixed) {
-                    return Some(MatchResult {
-                        game_index: sgi,
-                        rom_index: sri,
-                        method: MatchMethod::Serial,
-                    });
+            if let Some(entries) = self.by_serial.get(&norm_code) {
+                let result = self.resolve_serial_entries(entries, &norm_code);
+                if !matches!(result, SerialLookupResult::NotFound) {
+                    return result;
                 }
-                return Some(MatchResult {
-                    game_index: gi,
-                    rom_index: ri,
-                    method: MatchMethod::Serial,
-                });
             }
         }
 
@@ -204,16 +205,74 @@ impl DatIndex {
         // in the DAT but does appear with a suffix.
         for suffix in b'0'..=b'9' {
             let suffixed = format!("{norm}{}", suffix as char);
-            if let Some(&(gi, ri)) = self.by_serial.get(&suffixed) {
-                return Some(MatchResult {
-                    game_index: gi,
-                    rom_index: ri,
+            if let Some(entries) = self.by_serial.get(&suffixed) {
+                let result = self.resolve_serial_entries(entries, &suffixed);
+                if !matches!(result, SerialLookupResult::NotFound) {
+                    return result;
+                }
+            }
+        }
+
+        SerialLookupResult::NotFound
+    }
+
+    /// Resolve a Vec of serial entries to a single match or ambiguity.
+    ///
+    /// - 1 entry → unique match
+    /// - Multiple entries but a `-0` suffix resolves uniquely → use that
+    ///   (preserves multi-disc behavior where bare serial is shared)
+    /// - Multiple entries with no suffix resolution → Ambiguous
+    fn resolve_serial_entries(
+        &self,
+        entries: &[(usize, usize)],
+        norm: &str,
+    ) -> SerialLookupResult {
+        if entries.len() == 1 {
+            let (gi, ri) = entries[0];
+            // Check if a "-0" suffixed entry exists — if so, the bare serial
+            // is from a multi-disc set and we should use the specific entry.
+            let suffixed = format!("{norm}0");
+            if let Some(suffixed_entries) = self.by_serial.get(&suffixed) {
+                if suffixed_entries.len() == 1 {
+                    let (sgi, sri) = suffixed_entries[0];
+                    return SerialLookupResult::Match(MatchResult {
+                        game_index: sgi,
+                        rom_index: sri,
+                        method: MatchMethod::Serial,
+                    });
+                }
+            }
+            return SerialLookupResult::Match(MatchResult {
+                game_index: gi,
+                rom_index: ri,
+                method: MatchMethod::Serial,
+            });
+        }
+
+        // Multiple entries — try "-0" suffix to disambiguate multi-disc sets
+        let suffixed = format!("{norm}0");
+        if let Some(suffixed_entries) = self.by_serial.get(&suffixed) {
+            if suffixed_entries.len() == 1 {
+                let (sgi, sri) = suffixed_entries[0];
+                return SerialLookupResult::Match(MatchResult {
+                    game_index: sgi,
+                    rom_index: sri,
                     method: MatchMethod::Serial,
                 });
             }
         }
 
-        None
+        // Genuinely ambiguous — deduplicate game names for the warning
+        let mut candidate_names: Vec<String> = entries
+            .iter()
+            .map(|&(gi, _)| self.games[gi].name.clone())
+            .collect();
+        candidate_names.sort();
+        candidate_names.dedup();
+
+        SerialLookupResult::Ambiguous {
+            candidates: candidate_names,
+        }
     }
 
     /// Number of games in the index.

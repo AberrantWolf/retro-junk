@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use retro_junk_core::{AnalysisOptions, RomAnalyzer};
 use retro_junk_dat::cache;
 use retro_junk_dat::error::DatError;
-use retro_junk_dat::matcher::{DatIndex, MatchMethod, MatchResult};
+use retro_junk_dat::matcher::{DatIndex, MatchMethod, MatchResult, SerialLookupResult};
 
 use crate::hasher;
 
@@ -118,6 +118,12 @@ pub enum SerialWarningKind {
         full_serial: String,
         game_code: Option<String>,
     },
+    /// Serial matches multiple DAT entries (ambiguous) — fell back to hash
+    Ambiguous {
+        full_serial: String,
+        game_code: Option<String>,
+        candidates: Vec<String>,
+    },
     /// Platform expects serial but none was found in ROM
     Missing,
 }
@@ -129,6 +135,8 @@ struct SerialMatchOutcome {
     full_serial: Option<String>,
     /// Extracted game code used for DAT lookup (e.g., "NSME")
     game_code: Option<String>,
+    /// When serial matched multiple games, the candidate names
+    ambiguous_candidates: Option<Vec<String>>,
 }
 
 /// A planned M3U folder rename + playlist write for a multi-disc set.
@@ -279,7 +287,23 @@ pub fn plan_renames(
                 let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
                 last_hash = Some((hash_outcome.crc32.clone(), hash_outcome.data_size));
 
-                if let Some(ref full_serial) = serial_outcome.full_serial {
+                if let Some(ref candidates) = serial_outcome.ambiguous_candidates {
+                    // Serial matched multiple games — report ambiguity
+                    serial_warnings.push(SerialWarning {
+                        file: file_path.clone(),
+                        kind: SerialWarningKind::Ambiguous {
+                            full_serial: serial_outcome
+                                .full_serial
+                                .clone()
+                                .unwrap_or_default(),
+                            game_code: serial_outcome.game_code.clone(),
+                            candidates: candidates.clone(),
+                        },
+                        crc32: Some(hash_outcome.crc32.clone()),
+                        data_size: Some(hash_outcome.data_size),
+                        matched_by_hash: hash_outcome.result.is_some(),
+                    });
+                } else if let Some(ref full_serial) = serial_outcome.full_serial {
                     serial_warnings.push(SerialWarning {
                         file: file_path.clone(),
                         kind: SerialWarningKind::NoMatch {
@@ -492,6 +516,7 @@ fn match_by_serial(
         result: None,
         full_serial: None,
         game_code: None,
+        ambiguous_candidates: None,
     };
 
     let mut file = match fs::File::open(file_path) {
@@ -509,12 +534,27 @@ fn match_by_serial(
     };
 
     let game_code = analyzer.extract_dat_game_code(&serial);
-    let result = index.match_by_serial(&serial, game_code.as_deref());
+    let lookup = index.match_by_serial(&serial, game_code.as_deref());
 
-    SerialMatchOutcome {
-        result,
-        full_serial: Some(serial),
-        game_code,
+    match lookup {
+        SerialLookupResult::Match(result) => SerialMatchOutcome {
+            result: Some(result),
+            full_serial: Some(serial),
+            game_code,
+            ambiguous_candidates: None,
+        },
+        SerialLookupResult::Ambiguous { candidates } => SerialMatchOutcome {
+            result: None,
+            full_serial: Some(serial),
+            game_code,
+            ambiguous_candidates: Some(candidates),
+        },
+        SerialLookupResult::NotFound => SerialMatchOutcome {
+            result: None,
+            full_serial: Some(serial),
+            game_code,
+            ambiguous_candidates: None,
+        },
     }
 }
 

@@ -1614,6 +1614,23 @@ fn print_rename_plan(plan: &RenamePlan) {
                     );
                 }
             }
+            SerialWarningKind::Ambiguous {
+                full_serial,
+                game_code: _,
+                candidates,
+            } => {
+                let candidate_list = candidates.join(", ");
+                let lookup_serial = full_serial;
+                log::warn!(
+                    "  {} {}: serial \"{}\" matches {} DAT entries (falling back to hash): {}{}",
+                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                    file_name.if_supports_color(Stdout, |t| t.dimmed()),
+                    lookup_serial,
+                    candidates.len(),
+                    candidate_list,
+                    hash_suffix,
+                );
+            }
             SerialWarningKind::Missing => {
                 log::warn!(
                     "  {} {}: no serial found (expected for this platform){}",
