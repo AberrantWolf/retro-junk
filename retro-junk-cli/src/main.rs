@@ -134,7 +134,7 @@ enum Commands {
         dat_dir: Option<PathBuf>,
     },
 
-    /// Repair trimmed/truncated ROMs by padding to match DAT checksums
+    /// [Experimental] Repair trimmed/truncated ROMs by padding to match DAT checksums
     Repair {
         /// Show planned repairs without executing
         #[arg(short = 'n', long)]
@@ -1228,6 +1228,12 @@ fn run_repair(
         limit,
         create_backup: !no_backup,
     };
+
+    log::warn!(
+        "{}",
+        "The repair command is experimental and may not work correctly for all ROMs."
+            .if_supports_color(Stdout, |t| t.yellow()),
+    );
 
     log::info!(
         "Scanning ROMs in: {}",
