@@ -556,3 +556,27 @@ fn test_homebrew_no_secure_area() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.extra.get("secure_area").unwrap(), "None (homebrew)");
 }
+
+#[test]
+fn test_extract_dat_game_code_ntr() {
+    let analyzer = DsAnalyzer::new();
+    assert_eq!(
+        analyzer.extract_dat_game_code("NTR-ADME"),
+        Some("ADME".to_string())
+    );
+}
+
+#[test]
+fn test_extract_dat_game_code_twl() {
+    let analyzer = DsAnalyzer::new();
+    assert_eq!(
+        analyzer.extract_dat_game_code("TWL-IRBO"),
+        Some("IRBO".to_string())
+    );
+}
+
+#[test]
+fn test_extract_dat_game_code_unknown_prefix() {
+    let analyzer = DsAnalyzer::new();
+    assert_eq!(analyzer.extract_dat_game_code("XXX-ABCD"), None);
+}

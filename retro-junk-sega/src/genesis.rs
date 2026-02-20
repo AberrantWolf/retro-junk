@@ -333,6 +333,19 @@ impl RomAnalyzer for GenesisAnalyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sega - Mega Drive - Genesis"]
     }
+
+    fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
+        // Genesis header serials are "TT SERIAL-VV" where TT is the media type
+        // (GM=game, AI=educational, etc.). DATs store only "SERIAL-VV"
+        // (e.g., "MK-1058-00"). Strip the type prefix.
+        if let Some((_prefix, rest)) = serial.split_once(' ') {
+            let code = rest.trim();
+            if !code.is_empty() {
+                return Some(code.to_string());
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]

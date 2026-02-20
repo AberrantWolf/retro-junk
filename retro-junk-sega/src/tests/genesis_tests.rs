@@ -219,3 +219,40 @@ fn test_address_ranges() {
         "0x00FF0000-0x00FFFFFF"
     );
 }
+
+#[test]
+fn test_extract_dat_game_code_sega() {
+    let analyzer = GenesisAnalyzer::new();
+    // Standard Sega first-party serial
+    assert_eq!(
+        analyzer.extract_dat_game_code("GM MK-1058 -00"),
+        Some("MK-1058 -00".to_string())
+    );
+}
+
+#[test]
+fn test_extract_dat_game_code_third_party() {
+    let analyzer = GenesisAnalyzer::new();
+    // Third-party T-prefixed serial
+    assert_eq!(
+        analyzer.extract_dat_game_code("GM T-70176 -00"),
+        Some("T-70176 -00".to_string())
+    );
+}
+
+#[test]
+fn test_extract_dat_game_code_japanese() {
+    let analyzer = GenesisAnalyzer::new();
+    // Japanese G-prefixed serial with extra spaces
+    assert_eq!(
+        analyzer.extract_dat_game_code("GM G-5512   00"),
+        Some("G-5512   00".to_string())
+    );
+}
+
+#[test]
+fn test_extract_dat_game_code_no_prefix() {
+    let analyzer = GenesisAnalyzer::new();
+    // No type prefix — should return None
+    assert_eq!(analyzer.extract_dat_game_code("MK-1058-00"), None);
+}
