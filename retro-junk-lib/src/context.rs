@@ -1,6 +1,6 @@
 //! Analysis context for ROM analysis.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use retro_junk_core::{Platform, RomAnalyzer};
 
@@ -123,16 +123,83 @@ impl AnalysisContext {
             .any(|c| c.analyzer.matches_folder(folder_name))
     }
 
-    /// Scan a root directory and return folders that match registered consoles.
-    /// Returns pairs of (folder_path, matching_console).
-    pub fn scan_root(
+    /// Scan a root directory and match subfolders to registered consoles.
+    ///
+    /// Returns a `FolderScanResult` containing matched console folders and
+    /// the names of any non-hidden folders that didn't match a console.
+    pub fn scan_console_folders(
         &self,
         root: &Path,
-        filter_consoles: Option<&[String]>,
-    ) -> std::io::Result<Vec<(&Path, &RegisteredConsole)>> {
-        // This would need to be implemented with actual directory scanning
-        // For now, return empty - the CLI will handle the scanning
-        let _ = (root, filter_consoles);
-        Ok(Vec::new())
+        filter: Option<&[Platform]>,
+    ) -> std::io::Result<FolderScanResult> {
+        let mut matches = Vec::new();
+        let mut unrecognized = Vec::new();
+
+        let mut dir_entries: Vec<std::fs::DirEntry> =
+            std::fs::read_dir(root)?.flatten().collect();
+        dir_entries.sort_by_key(|e| e.path());
+
+        for entry in dir_entries {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+
+            let folder_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+
+            let matching_consoles = self.find_by_folder(&folder_name);
+            if matching_consoles.is_empty() {
+                if !folder_name.starts_with('.') {
+                    unrecognized.push(folder_name);
+                }
+                continue;
+            }
+
+            let consoles_to_use: Vec<_> = if let Some(platforms) = filter {
+                matching_consoles
+                    .into_iter()
+                    .filter(|c| platforms.contains(&c.metadata.platform))
+                    .collect()
+            } else {
+                matching_consoles
+            };
+
+            for console in consoles_to_use {
+                matches.push(ConsoleFolder {
+                    path: path.clone(),
+                    folder_name: folder_name.clone(),
+                    platform: console.metadata.platform,
+                });
+            }
+        }
+
+        Ok(FolderScanResult {
+            matches,
+            unrecognized,
+        })
     }
 }
+
+/// A console folder matched during a root directory scan.
+#[derive(Debug, Clone)]
+pub struct ConsoleFolder {
+    /// Path to the folder.
+    pub path: PathBuf,
+    /// Name of the folder (e.g., "snes", "n3ds").
+    pub folder_name: String,
+    /// The platform this folder was matched to.
+    pub platform: Platform,
+}
+
+/// Result of scanning a root directory for console folders.
+#[derive(Debug)]
+pub struct FolderScanResult {
+    /// Folders that matched a registered console.
+    pub matches: Vec<ConsoleFolder>,
+    /// Non-hidden folder names that didn't match any console.
+    pub unrecognized: Vec<String>,
+}
+

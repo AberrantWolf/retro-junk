@@ -6,7 +6,8 @@ pub use retro_junk_core::*;
 pub mod context;
 pub mod hasher;
 pub mod rename;
+pub mod repair;
 pub mod scanner;
 
 // Re-export context items at crate root for backwards compatibility.
-pub use context::{AnalysisContext, Console, RegisteredConsole};
+pub use context::{AnalysisContext, Console, ConsoleFolder, FolderScanResult, RegisteredConsole};

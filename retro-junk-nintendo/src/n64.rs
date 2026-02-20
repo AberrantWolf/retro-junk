@@ -431,7 +431,7 @@ impl RomAnalyzer for N64Analyzer {
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
+        _options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
         let file_size = reader.seek(SeekFrom::End(0))?;
         reader.seek(SeekFrom::Start(0))?;
@@ -445,7 +445,7 @@ impl RomAnalyzer for N64Analyzer {
 
         let header = parse_header(reader)?;
 
-        let crc_result = if !options.quick && file_size >= MIN_CRC_SIZE {
+        let crc_result = if file_size >= MIN_CRC_SIZE {
             Some(compute_n64_crc(reader, header.format, header.cic)?)
         } else {
             None

@@ -18,7 +18,13 @@ use retro_junk_lib::rename::{
     RenameOptions, RenamePlan, RenameProgress, SerialWarningKind, execute_renames,
     format_match_method, plan_renames, M3uAction,
 };
-use retro_junk_lib::{AnalysisContext, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
+use retro_junk_lib::repair::{
+    RepairOptions, RepairPlan, RepairProgress, execute_repairs, plan_repairs,
+};
+use retro_junk_lib::{
+    AnalysisContext, AnalysisOptions, FolderScanResult, Platform, RomAnalyzer,
+    RomIdentification,
+};
 
 // -- Custom logger --
 
@@ -119,6 +125,24 @@ enum Commands {
         /// Force CRC32 hash-based matching (reads full files)
         #[arg(long)]
         hash: bool,
+
+        #[command(flatten)]
+        roms: RomFilterArgs,
+
+        /// Use DAT files from this directory instead of the cache
+        #[arg(long)]
+        dat_dir: Option<PathBuf>,
+    },
+
+    /// Repair trimmed/truncated ROMs by padding to match DAT checksums
+    Repair {
+        /// Show planned repairs without executing
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        /// Don't create .bak backup files
+        #[arg(long)]
+        no_backup: bool,
 
         #[command(flatten)]
         roms: RomFilterArgs,
@@ -264,6 +288,14 @@ fn main() {
         } => {
             run_rename(&ctx, dry_run, hash, roms.consoles, roms.limit, cli.root, dat_dir, quiet);
         }
+        Commands::Repair {
+            dry_run,
+            no_backup,
+            roms,
+            dat_dir,
+        } => {
+            run_repair(&ctx, dry_run, no_backup, roms.consoles, roms.limit, cli.root, dat_dir, quiet);
+        }
         Commands::Scrape {
             roms,
             media_types,
@@ -355,6 +387,53 @@ fn create_context() -> AnalysisContext {
     ctx
 }
 
+/// Scan the root directory for console folders, logging unrecognized ones.
+///
+/// Shared by all commands that iterate over console folders.
+fn scan_folders(
+    ctx: &AnalysisContext,
+    root: &std::path::Path,
+    consoles: &Option<Vec<Platform>>,
+) -> Option<FolderScanResult> {
+    let filter = consoles.as_deref();
+    match ctx.scan_console_folders(root, filter) {
+        Ok(result) => {
+            for name in &result.unrecognized {
+                log::info!(
+                    "  {} Skipping \"{}\" — not a recognized console folder",
+                    "\u{2014}".if_supports_color(Stdout, |t| t.dimmed()),
+                    name.if_supports_color(Stdout, |t| t.dimmed()),
+                );
+            }
+            Some(result)
+        }
+        Err(e) => {
+            log::warn!(
+                "{} Error reading directory: {}",
+                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                e,
+            );
+            None
+        }
+    }
+}
+
+/// Log a DAT loading error with a `cache fetch` hint.
+fn log_dat_error(platform_name: &str, folder_name: &str, short_name: &str, error: &dyn std::fmt::Display) {
+    log::warn!(
+        "{} {}: {} Error: {}",
+        platform_name.if_supports_color(Stdout, |t| t.bold()),
+        format!("({})", folder_name).if_supports_color(Stdout, |t| t.dimmed()),
+        "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+        error,
+    );
+    log::warn!(
+        "  {} Try: retro-junk cache fetch {}",
+        "\u{2139}".if_supports_color(Stdout, |t| t.cyan()),
+        short_name,
+    );
+}
+
 /// Run the analyze command.
 fn run_analyze(
     ctx: &AnalysisContext,
@@ -377,69 +456,24 @@ fn run_analyze(
 
     let options = AnalysisOptions::new().quick(quick);
 
-    // Read the root directory
-    let entries = match fs::read_dir(&root_path) {
-        Ok(entries) => entries,
-        Err(e) => {
-            log::warn!(
-                "{} Error reading directory: {}",
-                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                e,
-            );
-            return;
-        }
+    let scan = match scan_folders(ctx, &root_path, &consoles) {
+        Some(s) => s,
+        None => return,
     };
 
-    let mut found_any = false;
+    for cf in &scan.matches {
+        let console = ctx.get_by_platform(cf.platform).unwrap();
+        log::info!(
+            "{} {} folder: {}",
+            "Found".if_supports_color(Stdout, |t| t.bold()),
+            console.metadata.platform_name,
+            cf.folder_name.if_supports_color(Stdout, |t| t.cyan()),
+        );
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let folder_name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name,
-            None => continue,
-        };
-
-        // Find matching consoles for this folder
-        let matching_consoles = ctx.find_by_folder(folder_name);
-
-        if matching_consoles.is_empty() {
-            continue;
-        }
-
-        // Filter by requested consoles if specified
-        let consoles_to_use: Vec<_> = if let Some(ref filter) = consoles {
-            matching_consoles
-                .into_iter()
-                .filter(|c| filter.contains(&c.metadata.platform))
-                .collect()
-        } else {
-            matching_consoles
-        };
-
-        if consoles_to_use.is_empty() {
-            continue;
-        }
-
-        found_any = true;
-
-        for console in consoles_to_use {
-            log::info!(
-                "{} {} folder: {}",
-                "Found".if_supports_color(Stdout, |t| t.bold()),
-                console.metadata.platform_name,
-                folder_name.if_supports_color(Stdout, |t| t.cyan()),
-            );
-
-            // Scan for ROM files in the folder
-            analyze_folder(&path, console.analyzer.as_ref(), &options, limit);
-        }
+        analyze_folder(&cf.path, console.analyzer.as_ref(), &options, limit);
     }
 
-    if !found_any {
+    if scan.matches.is_empty() {
         log::info!(
             "{}",
             format!(
@@ -946,17 +980,9 @@ fn run_rename(
     }
     log::info!("");
 
-    // Read root directory and find console folders
-    let entries = match fs::read_dir(&root_path) {
-        Ok(entries) => entries,
-        Err(e) => {
-            log::warn!(
-                "{} Error reading directory: {}",
-                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                e,
-            );
-            return;
-        }
+    let scan = match scan_folders(ctx, &root_path, &consoles) {
+        Some(s) => s,
+        None => return,
     };
 
     let mut total_renamed = 0usize;
@@ -966,201 +992,168 @@ fn run_rename(
     let mut total_conflicts: Vec<String> = Vec::new();
     let mut found_any = false;
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+    for cf in &scan.matches {
+        let console = ctx.get_by_platform(cf.platform).unwrap();
+
+        // Check if this system has DAT support via the analyzer trait
+        if !console.analyzer.has_dat_support() {
+            log::warn!(
+                "  {} Skipping \"{}\" — no DAT support yet",
+                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                cf.folder_name,
+            );
             continue;
         }
 
-        let folder_name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name,
-            None => continue,
-        };
+        found_any = true;
 
-        let matching_consoles = ctx.find_by_folder(folder_name);
-        if matching_consoles.is_empty() {
-            continue;
-        }
-
-        // Filter by requested consoles
-        let consoles_to_use: Vec<_> = if let Some(ref filter) = consoles {
-            matching_consoles
-                .into_iter()
-                .filter(|c| filter.contains(&c.metadata.platform))
-                .collect()
+        // Set up progress bar (hidden in quiet mode)
+        let pb = if quiet {
+            ProgressBar::hidden()
         } else {
-            matching_consoles
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_chars("/-\\|"),
+            );
+            pb
         };
 
-        if consoles_to_use.is_empty() {
-            continue;
-        }
-
-        for console in consoles_to_use {
-            // Check if this system has DAT support via the analyzer trait
-            if !console.analyzer.has_dat_support() {
-                log::warn!(
-                    "  {} Skipping \"{}\" — no DAT support yet",
-                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                    folder_name,
-                );
-                continue;
+        let progress_callback = |progress: RenameProgress| match progress {
+            RenameProgress::ScanningConsole { file_count, .. } => {
+                pb.set_message(format!("Found {file_count} ROM files"));
+                pb.tick();
             }
-
-            found_any = true;
-
-            // Set up progress bar (hidden in quiet mode)
-            let pb = if quiet {
-                ProgressBar::hidden()
-            } else {
-                let pb = ProgressBar::new_spinner();
-                pb.set_style(
-                    ProgressStyle::with_template("  {spinner:.cyan} {msg}")
-                        .unwrap()
-                        .tick_chars("/-\\|"),
-                );
-                pb
-            };
-
-            let progress_callback = |progress: RenameProgress| match progress {
-                RenameProgress::ScanningConsole { file_count, .. } => {
-                    pb.set_message(format!("Found {file_count} ROM files"));
-                    pb.tick();
-                }
-                RenameProgress::MatchingFile {
-                    ref file_name,
-                    file_index,
+            RenameProgress::MatchingFile {
+                ref file_name,
+                file_index,
+                total,
+            } => {
+                pb.set_message(format!(
+                    "[{}/{}] Matching {}",
+                    file_index + 1,
                     total,
-                } => {
-                    pb.set_message(format!(
-                        "[{}/{}] Matching {}",
-                        file_index + 1,
-                        total,
-                        file_name
-                    ));
-                    pb.tick();
+                    file_name
+                ));
+                pb.tick();
+            }
+            RenameProgress::Hashing {
+                ref file_name,
+                bytes_done,
+                bytes_total,
+            } => {
+                if bytes_total > 0 {
+                    let pct = (bytes_done * 100) / bytes_total;
+                    pb.set_message(format!("Hashing {} ({pct}%)", file_name));
                 }
-                RenameProgress::Hashing {
-                    ref file_name,
-                    bytes_done,
-                    bytes_total,
-                } => {
-                    if bytes_total > 0 {
-                        let pct = (bytes_done * 100) / bytes_total;
-                        pb.set_message(format!("Hashing {} ({pct}%)", file_name));
+                pb.tick();
+            }
+            RenameProgress::Done => {
+                pb.finish_and_clear();
+            }
+        };
+
+        match plan_renames(
+            &cf.path,
+            console.analyzer.as_ref(),
+            &rename_options,
+            &progress_callback,
+        ) {
+            Ok(plan) => {
+                pb.finish_and_clear();
+
+                // Determine if plan has issues (affects header level in quiet mode)
+                let has_issues = !plan.unmatched.is_empty()
+                    || !plan.conflicts.is_empty()
+                    || !plan.discrepancies.is_empty()
+                    || !plan.serial_warnings.is_empty();
+
+                let header_level = if has_issues { Level::Warn } else { Level::Info };
+                log::log!(
+                    header_level,
+                    "{} {}",
+                    console
+                        .metadata
+                        .platform_name
+                        .if_supports_color(Stdout, |t| t.bold()),
+                    format!("({})", cf.folder_name).if_supports_color(Stdout, |t| t.dimmed()),
+                );
+
+                print_rename_plan(&plan);
+
+                let has_work =
+                    !plan.renames.is_empty() || !plan.m3u_actions.is_empty();
+                if !dry_run && has_work {
+                    // Prompt for confirmation (raw print — user interaction)
+                    let m3u_count = plan.m3u_actions.len();
+                    if m3u_count > 0 {
+                        print!(
+                            "\n  Proceed with {} renames and {} m3u updates? [y/N] ",
+                            plan.renames.len(),
+                            m3u_count,
+                        );
+                    } else {
+                        print!("\n  Proceed with {} renames? [y/N] ", plan.renames.len());
                     }
-                    pb.tick();
-                }
-                RenameProgress::Done => {
-                    pb.finish_and_clear();
-                }
-            };
+                    std::io::stdout().flush().unwrap();
 
-            match plan_renames(
-                &path,
-                console.analyzer.as_ref(),
-                &rename_options,
-                &progress_callback,
-            ) {
-                Ok(plan) => {
-                    pb.finish_and_clear();
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input).unwrap();
 
-                    // Determine if plan has issues (affects header level in quiet mode)
-                    let has_issues = !plan.unmatched.is_empty()
-                        || !plan.conflicts.is_empty()
-                        || !plan.discrepancies.is_empty()
-                        || !plan.serial_warnings.is_empty();
+                    if input.trim().eq_ignore_ascii_case("y") {
+                        let summary = execute_renames(&plan);
+                        total_renamed += summary.renamed;
+                        total_already_correct += summary.already_correct;
+                        total_errors.extend(summary.errors);
+                        total_conflicts.extend(summary.conflicts);
 
-                    let header_level = if has_issues { Level::Warn } else { Level::Info };
-                    log::log!(
-                        header_level,
-                        "{} {}",
-                        console
-                            .metadata
-                            .platform_name
-                            .if_supports_color(Stdout, |t| t.bold()),
-                        format!("({})", folder_name).if_supports_color(Stdout, |t| t.dimmed()),
-                    );
-
-                    print_rename_plan(&plan);
-
-                    let has_work =
-                        !plan.renames.is_empty() || !plan.m3u_actions.is_empty();
-                    if !dry_run && has_work {
-                        // Prompt for confirmation (raw print — user interaction)
-                        let m3u_count = plan.m3u_actions.len();
-                        if m3u_count > 0 {
-                            print!(
-                                "\n  Proceed with {} renames and {} m3u updates? [y/N] ",
-                                plan.renames.len(),
-                                m3u_count,
-                            );
-                        } else {
-                            print!("\n  Proceed with {} renames? [y/N] ", plan.renames.len());
-                        }
-                        std::io::stdout().flush().unwrap();
-
-                        let mut input = String::new();
-                        std::io::stdin().read_line(&mut input).unwrap();
-
-                        if input.trim().eq_ignore_ascii_case("y") {
-                            let summary = execute_renames(&plan);
-                            total_renamed += summary.renamed;
-                            total_already_correct += summary.already_correct;
-                            total_errors.extend(summary.errors);
-                            total_conflicts.extend(summary.conflicts);
-
+                        log::info!(
+                            "  {} {} files renamed",
+                            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                            summary.renamed,
+                        );
+                        if summary.m3u_folders_renamed > 0 {
                             log::info!(
-                                "  {} {} files renamed",
+                                "  {} {} m3u folders renamed",
                                 "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                                summary.renamed,
+                                summary.m3u_folders_renamed,
                             );
-                            if summary.m3u_folders_renamed > 0 {
-                                log::info!(
-                                    "  {} {} m3u folders renamed",
-                                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                                    summary.m3u_folders_renamed,
-                                );
-                            }
-                            if summary.m3u_playlists_written > 0 {
-                                log::info!(
-                                    "  {} {} m3u playlists written",
-                                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                                    summary.m3u_playlists_written,
-                                );
-                            }
-                        } else {
-                            log::info!("  {}", "Skipped".if_supports_color(Stdout, |t| t.dimmed()));
+                        }
+                        if summary.m3u_playlists_written > 0 {
+                            log::info!(
+                                "  {} {} m3u playlists written",
+                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                summary.m3u_playlists_written,
+                            );
                         }
                     } else {
-                        total_already_correct += plan.already_correct.len();
-                        total_unmatched += plan.unmatched.len();
-                        total_conflicts.extend(
-                            plan.conflicts
-                                .iter()
-                                .map(|(_, msg): &(PathBuf, String)| msg.clone()),
-                        );
+                        log::info!("  {}", "Skipped".if_supports_color(Stdout, |t| t.dimmed()));
                     }
-                }
-                Err(e) => {
-                    pb.finish_and_clear();
-                    log::warn!(
-                        "{} {}: {} Error: {}",
-                        console
-                            .metadata
-                            .platform_name
-                            .if_supports_color(Stdout, |t| t.bold()),
-                        format!("({})", folder_name).if_supports_color(Stdout, |t| t.dimmed()),
-                        "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                        e,
+                } else {
+                    total_already_correct += plan.already_correct.len();
+                    total_unmatched += plan.unmatched.len();
+                    total_conflicts.extend(
+                        plan.conflicts
+                            .iter()
+                            .map(|(_, msg): &(PathBuf, String)| msg.clone()),
                     );
                 }
             }
-            log::info!("");
+            Err(e) => {
+                pb.finish_and_clear();
+                log_dat_error(
+                    console.metadata.platform_name,
+                    &cf.folder_name,
+                    console.metadata.short_name,
+                    &e,
+                );
+            }
         }
+        log::info!("");
     }
 
-    if !found_any {
+    if scan.matches.is_empty() || !found_any {
         log::info!(
             "{}",
             "No console folders with DAT support found.".if_supports_color(Stdout, |t| t.dimmed()),
@@ -1211,6 +1204,281 @@ fn run_rename(
             "  {} {}",
             "\u{2718}".if_supports_color(Stdout, |t| t.red()),
             error,
+        );
+    }
+}
+
+/// Run the repair command.
+#[allow(clippy::too_many_arguments)]
+fn run_repair(
+    ctx: &AnalysisContext,
+    dry_run: bool,
+    no_backup: bool,
+    consoles: Option<Vec<Platform>>,
+    limit: Option<usize>,
+    root: Option<PathBuf>,
+    dat_dir: Option<PathBuf>,
+    quiet: bool,
+) {
+    let root_path =
+        root.unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
+
+    let repair_options = RepairOptions {
+        dat_dir,
+        limit,
+        create_backup: !no_backup,
+    };
+
+    log::info!(
+        "Scanning ROMs in: {}",
+        root_path.display().if_supports_color(Stdout, |t| t.cyan()),
+    );
+    if dry_run {
+        log::info!(
+            "{}",
+            "Dry run: no files will be modified".if_supports_color(Stdout, |t| t.dimmed()),
+        );
+    }
+    if no_backup {
+        log::info!(
+            "{}",
+            "Backups disabled".if_supports_color(Stdout, |t| t.dimmed()),
+        );
+    }
+    if let Some(n) = limit {
+        log::info!(
+            "{}",
+            format!("Limit: {} ROMs per console", n).if_supports_color(Stdout, |t| t.dimmed()),
+        );
+    }
+    log::info!("");
+
+    let scan = match scan_folders(ctx, &root_path, &consoles) {
+        Some(s) => s,
+        None => return,
+    };
+
+    let mut total_repaired = 0usize;
+    let mut total_already_correct = 0usize;
+    let mut total_no_match = 0usize;
+    let mut total_errors: Vec<String> = Vec::new();
+    let mut found_any = false;
+
+    for cf in &scan.matches {
+        let console = ctx.get_by_platform(cf.platform).unwrap();
+
+        if !console.analyzer.has_dat_support() {
+            log::warn!(
+                "  {} Skipping \"{}\" — no DAT support yet",
+                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                cf.folder_name,
+            );
+            continue;
+        }
+
+        found_any = true;
+
+        let pb = if quiet {
+            ProgressBar::hidden()
+        } else {
+            let pb = ProgressBar::new_spinner();
+            pb.set_style(
+                ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+                    .unwrap()
+                    .tick_chars("/-\\|"),
+            );
+            pb
+        };
+
+        let progress_callback = |progress: RepairProgress| match progress {
+            RepairProgress::Scanning { file_count } => {
+                pb.set_message(format!("Found {file_count} ROM files"));
+                pb.tick();
+            }
+            RepairProgress::Checking {
+                ref file_name,
+                file_index,
+                total,
+            } => {
+                pb.set_message(format!(
+                    "[{}/{}] Checking {}",
+                    file_index + 1,
+                    total,
+                    file_name
+                ));
+                pb.tick();
+            }
+            RepairProgress::TryingRepair {
+                ref file_name,
+                ref strategy_desc,
+            } => {
+                pb.set_message(format!("{}: {}", file_name, strategy_desc));
+                pb.tick();
+            }
+            RepairProgress::Done => {
+                pb.finish_and_clear();
+            }
+        };
+
+        match plan_repairs(
+            &cf.path,
+            console.analyzer.as_ref(),
+            &repair_options,
+            &progress_callback,
+        ) {
+            Ok(plan) => {
+                pb.finish_and_clear();
+
+                let has_issues =
+                    !plan.no_match.is_empty() || !plan.errors.is_empty();
+                let header_level = if has_issues { Level::Warn } else { Level::Info };
+                log::log!(
+                    header_level,
+                    "{} {}",
+                    console
+                        .metadata
+                        .platform_name
+                        .if_supports_color(Stdout, |t| t.bold()),
+                    format!("({})", cf.folder_name).if_supports_color(Stdout, |t| t.dimmed()),
+                );
+
+                print_repair_plan(&plan);
+
+                if !dry_run && !plan.repairable.is_empty() {
+                    print!(
+                        "\n  Proceed with {} repairs? [y/N] ",
+                        plan.repairable.len(),
+                    );
+                    std::io::stdout().flush().unwrap();
+
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input).unwrap();
+
+                    if input.trim().eq_ignore_ascii_case("y") {
+                        let summary = execute_repairs(&plan, repair_options.create_backup);
+                        total_repaired += summary.repaired;
+                        total_already_correct += summary.already_correct;
+                        total_errors.extend(summary.errors);
+
+                        log::info!(
+                            "  {} {} files repaired",
+                            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                            summary.repaired,
+                        );
+                        if summary.backups_created > 0 {
+                            log::info!(
+                                "  {} {} backups created",
+                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                summary.backups_created,
+                            );
+                        }
+                    } else {
+                        log::info!("  {}", "Skipped".if_supports_color(Stdout, |t| t.dimmed()));
+                    }
+                } else {
+                    total_already_correct += plan.already_correct.len();
+                    total_no_match += plan.no_match.len();
+                }
+            }
+            Err(e) => {
+                pb.finish_and_clear();
+                log_dat_error(
+                    console.metadata.platform_name,
+                    &cf.folder_name,
+                    console.metadata.short_name,
+                    &e,
+                );
+            }
+        }
+        log::info!("");
+    }
+
+    if scan.matches.is_empty() || !found_any {
+        log::info!(
+            "{}",
+            "No console folders with DAT support found.".if_supports_color(Stdout, |t| t.dimmed()),
+        );
+        return;
+    }
+
+    // Print overall summary
+    log::info!("{}", "Summary:".if_supports_color(Stdout, |t| t.bold()));
+    if total_repaired > 0 {
+        log::info!(
+            "  {} {} files repaired",
+            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+            total_repaired,
+        );
+    }
+    if total_already_correct > 0 {
+        log::info!(
+            "  {} {} already correct",
+            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+            total_already_correct,
+        );
+    }
+    if total_no_match > 0 {
+        log::warn!(
+            "  {} {} no matching repair",
+            "?".if_supports_color(Stdout, |t| t.yellow()),
+            total_no_match,
+        );
+    }
+    for error in &total_errors {
+        log::warn!(
+            "  {} {}",
+            "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+            error,
+        );
+    }
+}
+
+/// Print the repair plan for a single console.
+fn print_repair_plan(plan: &RepairPlan) {
+    // Repairable files
+    for action in &plan.repairable {
+        let file_name = action
+            .file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        log::info!(
+            "  {} {} {} \"{}\" [{}]",
+            "\u{1F527}".if_supports_color(Stdout, |t| t.green()),
+            file_name.if_supports_color(Stdout, |t| t.bold()),
+            "\u{2192}".if_supports_color(Stdout, |t| t.green()),
+            action.game_name,
+            action.method.description().if_supports_color(Stdout, |t| t.dimmed()),
+        );
+    }
+
+    // Already correct
+    if !plan.already_correct.is_empty() {
+        log::info!(
+            "  {} {} already correct",
+            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+            plan.already_correct.len(),
+        );
+    }
+
+    // No match
+    for path in &plan.no_match {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        log::warn!(
+            "  {} {} (no matching repair)",
+            "?".if_supports_color(Stdout, |t| t.yellow()),
+            name.if_supports_color(Stdout, |t| t.dimmed()),
+        );
+    }
+
+    // Errors
+    for (path, msg) in &plan.errors {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        log::warn!(
+            "  {} {}: {}",
+            "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+            name.if_supports_color(Stdout, |t| t.dimmed()),
+            msg,
         );
     }
 }
@@ -1515,17 +1783,9 @@ fn run_scrape(
         );
         log::info!("");
 
-        // Scan root directory for console folders
-        let entries = match fs::read_dir(&root_path) {
-            Ok(entries) => entries,
-            Err(e) => {
-                log::warn!(
-                    "{} Error reading directory: {}",
-                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                    e,
-                );
-                return;
-            }
+        let scan = match scan_folders(ctx, &root_path, &consoles) {
+            Some(s) => s,
+            None => return,
         };
 
         let esde = retro_junk_frontend::esde::EsDeFrontend::new();
@@ -1534,57 +1794,29 @@ fn run_scrape(
         let mut total_errors = 0usize;
         let mut total_unidentified = 0usize;
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
+        for cf in &scan.matches {
+            let console = ctx.get_by_platform(cf.platform).unwrap();
+            let path = &cf.path;
+            let folder_name = &cf.folder_name;
 
-            let folder_name = match path.file_name().and_then(|n| n.to_str()) {
-                Some(name) => name,
-                None => continue,
-            };
-
-            let matching_consoles = ctx.find_by_folder(folder_name);
-            if matching_consoles.is_empty() {
-                continue;
-            }
-
-            // Filter by requested consoles
-            let consoles_to_use: Vec<_> = if let Some(ref filter) = consoles {
-                matching_consoles
-                    .into_iter()
-                    .filter(|c| filter.contains(&c.metadata.platform))
-                    .collect()
-            } else {
-                matching_consoles
-            };
-
-            if consoles_to_use.is_empty() {
-                continue;
-            }
-
-            for console in consoles_to_use {
-                let platform = console.metadata.platform;
-
-                // Check if this system has a ScreenScraper ID
-                if retro_junk_scraper::screenscraper_system_id(platform).is_none() {
-                    log::warn!(
-                        "  {} Skipping \"{}\" — no ScreenScraper system ID",
-                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                        folder_name,
-                    );
-                    continue;
-                }
-
-                log::info!(
-                    "{} {}",
-                    console
-                        .metadata
-                        .platform_name
-                        .if_supports_color(Stdout, |t| t.bold()),
-                    format!("({})", folder_name).if_supports_color(Stdout, |t| t.dimmed()),
+            // Check if this system has a ScreenScraper ID
+            if retro_junk_scraper::screenscraper_system_id(cf.platform).is_none() {
+                log::warn!(
+                    "  {} Skipping \"{}\" — no ScreenScraper system ID",
+                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                    folder_name,
                 );
+                continue;
+            }
+
+            log::info!(
+                "{} {}",
+                console
+                    .metadata
+                    .platform_name
+                    .if_supports_color(Stdout, |t| t.bold()),
+                format!("({})", folder_name).if_supports_color(Stdout, |t| t.dimmed()),
+            );
 
                 let pb = if quiet {
                     ProgressBar::hidden()
@@ -1778,7 +2010,6 @@ fn run_scrape(
                     }
                 }
                 log::info!("");
-            }
         }
 
         // Print overall summary
