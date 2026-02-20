@@ -1526,13 +1526,22 @@ fn print_rename_plan(plan: &RenamePlan) {
     }
 
     // Unmatched
-    for path in &plan.unmatched {
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        log::warn!(
-            "  {} {} (no match)",
-            "?".if_supports_color(Stdout, |t| t.yellow()),
-            name.if_supports_color(Stdout, |t| t.dimmed()),
-        );
+    for uf in &plan.unmatched {
+        let name = uf.file.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        if let Some(ref crc) = uf.crc32 {
+            log::warn!(
+                "  {} {} (no match, CRC32: {})",
+                "?".if_supports_color(Stdout, |t| t.yellow()),
+                name.if_supports_color(Stdout, |t| t.dimmed()),
+                crc,
+            );
+        } else {
+            log::warn!(
+                "  {} {} (no match)",
+                "?".if_supports_color(Stdout, |t| t.yellow()),
+                name.if_supports_color(Stdout, |t| t.dimmed()),
+            );
+        }
     }
 
     // Conflicts
@@ -1559,6 +1568,22 @@ fn print_rename_plan(plan: &RenamePlan) {
     // Serial warnings
     for w in &plan.serial_warnings {
         let file_name = w.file.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+
+        // Build hash suffix: "(matched by CRC32: abc123)" or "(CRC32: abc123, no DAT match)"
+        let hash_suffix = match (&w.crc32, w.matched_by_hash) {
+            (Some(crc), true) => format!(
+                " {}",
+                format!("(matched by CRC32: {crc})")
+                    .if_supports_color(Stdout, |t| t.dimmed()),
+            ),
+            (Some(crc), false) => format!(
+                " {}",
+                format!("(CRC32: {crc}, no DAT match)")
+                    .if_supports_color(Stdout, |t| t.dimmed()),
+            ),
+            _ => String::new(),
+        };
+
         match &w.kind {
             SerialWarningKind::NoMatch {
                 full_serial,
@@ -1566,26 +1591,29 @@ fn print_rename_plan(plan: &RenamePlan) {
             } => {
                 if let Some(code) = game_code {
                     log::warn!(
-                        "  {} {}: serial \"{}\" (looked up as \"{}\") not found in DAT",
+                        "  {} {}: serial \"{}\" (looked up as \"{}\") not found in DAT{}",
                         "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                         file_name.if_supports_color(Stdout, |t| t.dimmed()),
                         full_serial,
                         code,
+                        hash_suffix,
                     );
                 } else {
                     log::warn!(
-                        "  {} {}: serial \"{}\" not found in DAT",
+                        "  {} {}: serial \"{}\" not found in DAT{}",
                         "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                         file_name.if_supports_color(Stdout, |t| t.dimmed()),
                         full_serial,
+                        hash_suffix,
                     );
                 }
             }
             SerialWarningKind::Missing => {
                 log::warn!(
-                    "  {} {}: no serial found (expected for this platform)",
+                    "  {} {}: no serial found (expected for this platform){}",
                     "\u{2718}".if_supports_color(Stdout, |t| t.red()),
                     file_name.if_supports_color(Stdout, |t| t.dimmed()),
+                    hash_suffix,
                 );
             }
         }

@@ -849,7 +849,19 @@ fn to_identification(
         } else {
             0
         };
-        id.expected_size = Some(header.rom_size + copier);
+        let rom_data_size = file_size - copier;
+        // The SNES header ROM size field can only encode powers of 2, but many
+        // games use multi-chip configurations with non-power-of-2 totals
+        // (e.g., 3 MB = 2 MB + 1 MB, 1.5 MB = 1 MB + 512 KB). Only flag a
+        // size mismatch when the file is genuinely too small or too large —
+        // not when it's a valid ROM size between adjacent powers of 2.
+        if rom_data_size != header.rom_size {
+            let is_valid_multi_chip = rom_data_size > header.rom_size / 2
+                && rom_data_size < header.rom_size;
+            if !is_valid_multi_chip {
+                id.expected_size = Some(header.rom_size + copier);
+            }
+        }
     }
 
     // Region

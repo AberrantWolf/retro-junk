@@ -79,6 +79,16 @@ pub struct RenameSummary {
     pub m3u_playlists_written: usize,
 }
 
+/// A file that couldn't be matched by serial or hash.
+#[derive(Debug, Clone)]
+pub struct UnmatchedFile {
+    pub file: PathBuf,
+    /// CRC32 hash of the file data (if hashing was attempted)
+    pub crc32: Option<String>,
+    /// Data size that was hashed (after header stripping)
+    pub data_size: Option<u64>,
+}
+
 /// A discrepancy between serial-based and hash-based matching (reported in --hash mode).
 #[derive(Debug, Clone)]
 pub struct MatchDiscrepancy {
@@ -92,6 +102,12 @@ pub struct MatchDiscrepancy {
 pub struct SerialWarning {
     pub file: PathBuf,
     pub kind: SerialWarningKind,
+    /// CRC32 of the file data (if hash matching was attempted)
+    pub crc32: Option<String>,
+    /// Data size that was hashed (after header stripping)
+    pub data_size: Option<u64>,
+    /// Whether the file ultimately matched by hash despite serial failure
+    pub matched_by_hash: bool,
 }
 
 /// The kind of serial warning.
@@ -133,7 +149,7 @@ pub struct M3uAction {
 pub struct RenamePlan {
     pub renames: Vec<RenameAction>,
     pub already_correct: Vec<PathBuf>,
-    pub unmatched: Vec<PathBuf>,
+    pub unmatched: Vec<UnmatchedFile>,
     pub conflicts: Vec<(PathBuf, String)>,
     /// Files where serial and hash matched different games (--hash mode only)
     pub discrepancies: Vec<MatchDiscrepancy>,
@@ -231,13 +247,17 @@ pub fn plan_renames(
             total: files.len(),
         });
 
+        // Track hash info for diagnostics if the file ends up unmatched
+        let mut last_hash: Option<(String, u64)> = None;
+
         let match_result = if options.hash_mode {
             // Hash mode: hash is authoritative, but also check serial for discrepancies
-            let hash_result = match_by_hash(file_path, &index, analyzer, progress)?;
+            let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
+            last_hash = Some((hash_outcome.crc32, hash_outcome.data_size));
             let serial_outcome = match_by_serial(file_path, analyzer, &analysis_options, &index);
 
             // Report discrepancy if both matched but to different games
-            if let (Some(hr), Some(sr)) = (&hash_result, &serial_outcome.result) {
+            if let (Some(hr), Some(sr)) = (&hash_outcome.result, &serial_outcome.result) {
                 if hr.game_index != sr.game_index {
                     discrepancies.push(MatchDiscrepancy {
                         file: file_path.clone(),
@@ -247,35 +267,40 @@ pub fn plan_renames(
                 }
             }
 
-            hash_result
+            hash_outcome.result
         } else {
             // Default mode: try serial first, then always fall back to hash
             let serial_outcome = match_by_serial(file_path, analyzer, &analysis_options, &index);
 
-            // Collect serial warnings
-            if serial_outcome.result.is_none() {
+            if serial_outcome.result.is_some() {
+                serial_outcome.result
+            } else {
+                // Serial failed — try hash, then create serial warning with hash info
+                let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
+                last_hash = Some((hash_outcome.crc32.clone(), hash_outcome.data_size));
+
                 if let Some(ref full_serial) = serial_outcome.full_serial {
-                    // Serial found but DAT lookup failed
                     serial_warnings.push(SerialWarning {
                         file: file_path.clone(),
                         kind: SerialWarningKind::NoMatch {
                             full_serial: full_serial.clone(),
                             game_code: serial_outcome.game_code.clone(),
                         },
+                        crc32: Some(hash_outcome.crc32.clone()),
+                        data_size: Some(hash_outcome.data_size),
+                        matched_by_hash: hash_outcome.result.is_some(),
                     });
                 } else if analyzer.expects_serial() {
-                    // No serial found but platform expects one
                     serial_warnings.push(SerialWarning {
                         file: file_path.clone(),
                         kind: SerialWarningKind::Missing,
+                        crc32: Some(hash_outcome.crc32.clone()),
+                        data_size: Some(hash_outcome.data_size),
+                        matched_by_hash: hash_outcome.result.is_some(),
                     });
                 }
-            }
 
-            if serial_outcome.result.is_some() {
-                serial_outcome.result
-            } else {
-                match_by_hash(file_path, &index, analyzer, progress)?
+                hash_outcome.result
             }
         };
 
@@ -315,7 +340,15 @@ pub fn plan_renames(
                 });
             }
         } else {
-            unmatched.push(file_path.clone());
+            let (crc32, data_size) = match last_hash {
+                Some((c, s)) => (Some(c), Some(s)),
+                None => (None, None),
+            };
+            unmatched.push(UnmatchedFile {
+                file: file_path.clone(),
+                crc32,
+                data_size,
+            });
         }
     }
 
@@ -485,13 +518,22 @@ fn match_by_serial(
     }
 }
 
+/// Result of a hash matching attempt, carrying hash info regardless of match success.
+struct HashMatchOutcome {
+    result: Option<MatchResult>,
+    /// CRC32 of the hashed data
+    crc32: String,
+    /// Size of data that was hashed (after header stripping)
+    data_size: u64,
+}
+
 /// Match a file by computing its CRC32 hash (with SHA1 fallback).
 fn match_by_hash(
     file_path: &Path,
     index: &DatIndex,
     analyzer: &dyn RomAnalyzer,
     progress: &dyn Fn(RenameProgress),
-) -> Result<Option<MatchResult>, DatError> {
+) -> Result<HashMatchOutcome, DatError> {
     let mut file = fs::File::open(file_path)?;
     let file_name = file_path
         .file_name()
@@ -507,8 +549,15 @@ fn match_by_hash(
         });
     })?;
 
+    let crc32 = hashes.crc32.clone();
+    let data_size = hashes.data_size;
+
     if let Some(result) = index.match_by_hash(hashes.data_size, &hashes) {
-        return Ok(Some(result));
+        return Ok(HashMatchOutcome {
+            result: Some(result),
+            crc32,
+            data_size,
+        });
     }
 
     // If CRC32 didn't match, try SHA1 (recompute with SHA1)
@@ -517,11 +566,19 @@ fn match_by_hash(
         let mut file = fs::File::open(file_path)?;
         let full_hashes = hasher::compute_crc32_sha1(&mut file, analyzer)?;
         if let Some(result) = index.match_by_hash(full_hashes.data_size, &full_hashes) {
-            return Ok(Some(result));
+            return Ok(HashMatchOutcome {
+                result: Some(result),
+                crc32,
+                data_size,
+            });
         }
     }
 
-    Ok(None)
+    Ok(HashMatchOutcome {
+        result: None,
+        crc32,
+        data_size,
+    })
 }
 
 /// Execute a rename plan, performing the actual file renames and M3U operations.

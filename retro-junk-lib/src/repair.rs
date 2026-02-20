@@ -301,7 +301,7 @@ pub fn plan_repairs(
             total: files.len(),
         });
 
-        // Step 1: Hash file as-is — if it matches, skip
+        // Step 1: Hash file as-is and check against DAT
         let as_is_result = match hash_and_match(file_path, analyzer, &index) {
             Ok(r) => r,
             Err(e) => {
@@ -309,11 +309,6 @@ pub fn plan_repairs(
                 continue;
             }
         };
-
-        if as_is_result.is_some() {
-            already_correct.push(file_path.clone());
-            continue;
-        }
 
         // Step 2: Analyze file to get expected_size
         let expected_data_size = get_expected_data_size(file_path, analyzer, &analysis_options);
@@ -327,7 +322,18 @@ pub fn plan_repairs(
             }
         };
 
+        // Check if file is trimmed (smaller than header-declared size)
+        let is_trimmed = matches!(expected_data_size, Some(expected) if expected > data_size);
+
+        // If the as-is hash matches and the file is NOT trimmed, it's correct
+        if as_is_result.is_some() && !is_trimmed {
+            already_correct.push(file_path.clone());
+            continue;
+        }
+
         // Step 4: Build and try strategies
+        // Even if the as-is hash matched, a trimmed file may have a better
+        // (full-size) match available in the DAT.
         let strategies = build_strategies(data_size, expected_data_size, dat_source);
 
         let mut found = false;
@@ -389,7 +395,13 @@ pub fn plan_repairs(
         }
 
         if !found {
-            no_match.push(file_path.clone());
+            if as_is_result.is_some() {
+                // File matches DAT as-is but is trimmed and no full-size
+                // entry exists — the trimmed version is the best we have
+                already_correct.push(file_path.clone());
+            } else {
+                no_match.push(file_path.clone());
+            }
         }
     }
 
