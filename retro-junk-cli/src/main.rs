@@ -208,6 +208,10 @@ enum Commands {
         /// Force redownload of all media, ignoring existing files
         #[arg(long)]
         force_redownload: bool,
+
+        /// Maximum concurrent API threads (default: server-granted max)
+        #[arg(long)]
+        threads: Option<usize>,
     },
 
     /// Manage cached DAT files
@@ -311,6 +315,7 @@ fn main() {
             no_log,
             no_miximage,
             force_redownload,
+            threads,
         } => {
             run_scrape(
                 &ctx,
@@ -329,6 +334,7 @@ fn main() {
                 no_log,
                 no_miximage,
                 force_redownload,
+                threads,
                 cli.root,
                 quiet,
             );
@@ -1685,9 +1691,13 @@ fn run_scrape(
     no_log: bool,
     no_miximage: bool,
     force_redownload: bool,
+    threads: Option<usize>,
     root: Option<PathBuf>,
     quiet: bool,
 ) {
+    use std::collections::HashMap;
+    use indicatif::MultiProgress;
+
     let root_path =
         root.unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
 
@@ -1808,12 +1818,23 @@ fn run_scrape(
         };
         pb.finish_and_clear();
 
+        // Compute worker count: min(user override or server max, cpu count)
+        let ss_max = user_info.max_threads() as usize;
+        let cpu_max = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let max_workers = threads
+            .map(|t| t.min(ss_max))
+            .unwrap_or_else(|| ss_max.min(cpu_max));
+        let max_workers = max_workers.max(1);
+
         log::info!(
-            "{} Connected to ScreenScraper (requests today: {}/{}, max threads: {})",
+            "{} Connected to ScreenScraper (requests today: {}/{}, max threads: {}, using: {})",
             "\u{2714}".if_supports_color(Stdout, |t| t.green()),
             user_info.requests_today(),
             user_info.max_requests_per_day(),
             user_info.max_threads(),
+            max_workers,
         );
         log::info!("");
 
@@ -1852,205 +1873,329 @@ fn run_scrape(
                 format!("({})", folder_name).if_supports_color(Stdout, |t| t.dimmed()),
             );
 
-                let pb = if quiet {
-                    ProgressBar::hidden()
-                } else {
-                    let pb = ProgressBar::new_spinner();
-                    pb.set_style(
-                        ProgressStyle::with_template("  {spinner:.cyan} {msg}")
-                            .unwrap()
-                            .tick_chars("/-\\|"),
-                    );
+            // Set up MultiProgress with N spinner slots
+            let mp = if quiet {
+                MultiProgress::with_draw_target(indicatif::ProgressDrawTarget::hidden())
+            } else {
+                MultiProgress::new()
+            };
+
+            let spinner_style = ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_chars("/-\\|");
+
+            let mut spinners: Vec<ProgressBar> = (0..max_workers)
+                .map(|_| {
+                    let pb = mp.add(ProgressBar::new_spinner());
+                    pb.set_style(spinner_style.clone());
                     pb.enable_steady_tick(std::time::Duration::from_millis(100));
                     pb
-                };
+                })
+                .collect();
 
-                let progress_callback = |progress: retro_junk_scraper::ScrapeProgress| {
-                    match progress {
-                        retro_junk_scraper::ScrapeProgress::Scanning => {
-                            pb.set_message("Scanning for ROM files...");
-                        }
-                        retro_junk_scraper::ScrapeProgress::LookingUp { ref file, index, total } => {
-                            pb.set_message(format!("[{}/{}] Looking up {}", index + 1, total, file));
-                        }
-                        retro_junk_scraper::ScrapeProgress::Downloading { ref media_type, ref file } => {
-                            pb.set_message(format!("Downloading {} for {}", media_type, file));
-                        }
-                        retro_junk_scraper::ScrapeProgress::Skipped { ref file, ref reason } => {
-                            pb.set_message(format!("Skipped {}: {}", file, reason));
-                        }
-                        retro_junk_scraper::ScrapeProgress::Done => {
-                            pb.finish_and_clear();
-                        }
+            // Track which spinner slot each game index is using
+            let mut slot_assignments: HashMap<usize, usize> = HashMap::new();
+            let mut free_slots: Vec<usize> = (0..max_workers).rev().collect();
+            let mut scan_total = 0usize;
+
+            let (event_tx, mut event_rx) =
+                tokio::sync::mpsc::unbounded_channel::<retro_junk_scraper::ScrapeEvent>();
+
+            let scrape_future = retro_junk_scraper::scrape_folder(
+                &client,
+                path,
+                console.analyzer.as_ref(),
+                &options,
+                folder_name,
+                max_workers,
+                event_tx,
+            );
+            tokio::pin!(scrape_future);
+            let mut scrape_result: Option<Result<retro_junk_scraper::ScrapeResult, retro_junk_scraper::ScrapeError>> = None;
+
+            loop {
+                tokio::select! {
+                    result = &mut scrape_future, if scrape_result.is_none() => {
+                        scrape_result = Some(result);
                     }
-                };
-
-                match retro_junk_scraper::scrape_folder(
-                    &client,
-                    &path,
-                    console.analyzer.as_ref(),
-                    &options,
-                    folder_name,
-                    &progress_callback,
-                )
-                .await
-                {
-                    Ok(result) => {
-                        pb.finish_and_clear();
-
-                        let summary = result.log.summary();
-                        total_games += summary.total_success + summary.total_partial + summary.total_grouped;
-                        total_media += summary.media_downloaded;
-                        total_errors += summary.total_errors;
-                        total_unidentified += summary.total_unidentified;
-
-                        let has_issues = summary.total_unidentified > 0 || summary.total_errors > 0;
-
-                        // In quiet mode, re-emit console header as warn for context
-                        if has_issues && log::max_level() < LevelFilter::Info {
-                            log::warn!(
-                                "{} ({}):",
-                                console.metadata.platform_name,
-                                folder_name,
-                            );
-                        }
-
-                        // Print per-system summary
-                        if summary.total_success > 0 {
-                            log::info!(
-                                "  {} {} games scraped (serial: {}, filename: {}, hash: {})",
-                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                                summary.total_success,
-                                summary.by_serial,
-                                summary.by_filename,
-                                summary.by_hash,
-                            );
-                        }
-                        if summary.total_grouped > 0 {
-                            log::info!(
-                                "  {} {} discs grouped with primary",
-                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                                summary.total_grouped,
-                            );
-                        }
-                        if summary.media_downloaded > 0 {
-                            log::info!(
-                                "  {} {} media files downloaded",
-                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                                summary.media_downloaded,
-                            );
-                        }
-                        if summary.total_unidentified > 0 {
-                            log::warn!(
-                                "  {} {} unidentified",
-                                "?".if_supports_color(Stdout, |t| t.yellow()),
-                                summary.total_unidentified,
-                            );
-                        }
-                        if summary.total_errors > 0 {
-                            log::warn!(
-                                "  {} {} errors",
-                                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                                summary.total_errors,
-                            );
-                        }
-
-                        // Print per-game details for problem entries
-                        for entry in result.log.entries() {
-                            match entry {
-                                retro_junk_scraper::LogEntry::Unidentified {
-                                    file,
-                                    serial_tried,
-                                    scraper_serial_tried,
-                                    filename_tried,
-                                    hashes_tried,
-                                    errors,
-                                } => {
-                                    log::warn!("  ? {}: unidentified", file);
-                                    if let Some(s) = serial_tried {
-                                        log::warn!("      ROM serial: {}", s);
+                    event = event_rx.recv() => {
+                        match event {
+                            Some(e) => {
+                                match e {
+                                    retro_junk_scraper::ScrapeEvent::Scanning => {
+                                        if let Some(slot) = free_slots.pop() {
+                                            spinners[slot].set_message("Scanning for ROM files...");
+                                            slot_assignments.insert(usize::MAX, slot);
+                                        }
                                     }
-                                    if let Some(s) = scraper_serial_tried {
-                                        log::warn!("      Scraper serial tried: {}", s);
+                                    retro_junk_scraper::ScrapeEvent::ScanComplete { total } => {
+                                        scan_total = total;
+                                        // Free the scanning slot
+                                        if let Some(slot) = slot_assignments.remove(&usize::MAX) {
+                                            spinners[slot].set_message("");
+                                            free_slots.push(slot);
+                                        }
                                     }
-                                    if *filename_tried {
-                                        log::warn!("      Filename lookup: tried");
+                                    retro_junk_scraper::ScrapeEvent::GameStarted { index, ref file } => {
+                                        if let Some(slot) = free_slots.pop() {
+                                            spinners[slot].set_message(format!(
+                                                "[{}/{}] {}",
+                                                index + 1,
+                                                scan_total,
+                                                file,
+                                            ));
+                                            slot_assignments.insert(index, slot);
+                                        }
                                     }
-                                    if *hashes_tried {
-                                        log::warn!("      Hash lookup: tried");
+                                    retro_junk_scraper::ScrapeEvent::GameLookingUp { index, ref file } => {
+                                        if let Some(&slot) = slot_assignments.get(&index) {
+                                            spinners[slot].set_message(format!(
+                                                "[{}/{}] Looking up {}",
+                                                index + 1,
+                                                scan_total,
+                                                file,
+                                            ));
+                                        }
                                     }
-                                    for e in errors {
-                                        log::warn!("      Error: {}", e);
+                                    retro_junk_scraper::ScrapeEvent::GameDownloading { index, ref file } => {
+                                        if let Some(&slot) = slot_assignments.get(&index) {
+                                            spinners[slot].set_message(format!(
+                                                "[{}/{}] Downloading media for {}",
+                                                index + 1,
+                                                scan_total,
+                                                file,
+                                            ));
+                                        }
+                                    }
+                                    retro_junk_scraper::ScrapeEvent::GameSkipped { index, ref file, ref reason } => {
+                                        if let Some(&slot) = slot_assignments.get(&index) {
+                                            spinners[slot].set_message(format!(
+                                                "[{}/{}] Skipped {}: {}",
+                                                index + 1,
+                                                scan_total,
+                                                file,
+                                                reason,
+                                            ));
+                                        }
+                                        if let Some(slot) = slot_assignments.remove(&index) {
+                                            spinners[slot].set_message("");
+                                            free_slots.push(slot);
+                                        }
+                                    }
+                                    retro_junk_scraper::ScrapeEvent::GameCompleted { index, ref file, ref game_name } => {
+                                        if let Some(&slot) = slot_assignments.get(&index) {
+                                            spinners[slot].set_message(format!(
+                                                "[{}/{}] {} -> \"{}\"",
+                                                index + 1,
+                                                scan_total,
+                                                file,
+                                                game_name,
+                                            ));
+                                        }
+                                        if let Some(slot) = slot_assignments.remove(&index) {
+                                            spinners[slot].set_message("");
+                                            free_slots.push(slot);
+                                        }
+                                    }
+                                    retro_junk_scraper::ScrapeEvent::GameFailed { index, ref file, ref reason } => {
+                                        if let Some(&slot) = slot_assignments.get(&index) {
+                                            spinners[slot].set_message(format!(
+                                                "[{}/{}] {} failed: {}",
+                                                index + 1,
+                                                scan_total,
+                                                file,
+                                                reason,
+                                            ));
+                                        }
+                                        if let Some(slot) = slot_assignments.remove(&index) {
+                                            spinners[slot].set_message("");
+                                            free_slots.push(slot);
+                                        }
+                                    }
+                                    retro_junk_scraper::ScrapeEvent::GameGrouped { .. } => {
+                                        // Grouped discs happen after the concurrent phase; no spinner
+                                    }
+                                    retro_junk_scraper::ScrapeEvent::FatalError { ref message } => {
+                                        // Clear all spinners, show fatal error
+                                        for spinner in &spinners {
+                                            spinner.finish_and_clear();
+                                        }
+                                        log::warn!(
+                                            "  {} Fatal: {}",
+                                            "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                                            message,
+                                        );
+                                    }
+                                    retro_junk_scraper::ScrapeEvent::Done => {
+                                        // Handled when channel closes
                                     }
                                 }
-                                retro_junk_scraper::LogEntry::Partial {
-                                    file,
-                                    game_name,
-                                    warnings,
-                                } => {
-                                    log::warn!("  ~ {}: \"{}\"", file, game_name);
-                                    for w in warnings {
-                                        log::warn!("      {}", w);
-                                    }
-                                }
-                                retro_junk_scraper::LogEntry::Error { file, message } => {
-                                    log::warn!("  {} {}: {}", "\u{2718}", file, message);
-                                }
-                                _ => {}
                             }
+                            None => break, // channel closed, all senders dropped
                         }
-
-                        // Write metadata
-                        if !result.games.is_empty() && !dry_run {
-                            let system_metadata_dir = options.metadata_dir.join(folder_name);
-                            let system_media_dir = options.media_dir.join(folder_name);
-
-                            use retro_junk_frontend::Frontend;
-                            if let Err(e) = esde.write_metadata(
-                                &result.games,
-                                &path,
-                                &system_metadata_dir,
-                                &system_media_dir,
-                            ) {
-                                log::warn!(
-                                    "  {} Error writing metadata: {}",
-                                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                                    e,
-                                );
-                            } else {
-                                log::info!(
-                                    "  {} gamelist.xml written to {}",
-                                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                                    system_metadata_dir.display(),
-                                );
-                            }
-                        }
-
-                        // Write scrape log
-                        if !no_log && !dry_run {
-                            let log_path = options.metadata_dir.join(format!(
-                                "scrape-log-{}-{}.txt",
-                                folder_name,
-                                chrono::Local::now().format("%Y%m%d-%H%M%S"),
-                            ));
-                            if let Err(e) = std::fs::create_dir_all(&options.metadata_dir) {
-                                log::warn!("Warning: could not create metadata dir: {}", e);
-                            } else if let Err(e) = result.log.write_to_file(&log_path) {
-                                log::warn!("Warning: could not write scrape log: {}", e);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        pb.finish_and_clear();
-                        log::warn!(
-                            "  {} Error: {}",
-                            "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                            e,
-                        );
-                        total_errors += 1;
                     }
                 }
-                log::info!("");
+            }
+
+            // Clear all spinners
+            for spinner in &mut spinners {
+                spinner.finish_and_clear();
+            }
+
+            match scrape_result.expect("scrape_folder must have completed") {
+                Ok(result) => {
+                    let summary = result.log.summary();
+                    total_games += summary.total_success + summary.total_partial + summary.total_grouped;
+                    total_media += summary.media_downloaded;
+                    total_errors += summary.total_errors;
+                    total_unidentified += summary.total_unidentified;
+
+                    let has_issues = summary.total_unidentified > 0 || summary.total_errors > 0;
+
+                    // In quiet mode, re-emit console header as warn for context
+                    if has_issues && log::max_level() < LevelFilter::Info {
+                        log::warn!(
+                            "{} ({}):",
+                            console.metadata.platform_name,
+                            folder_name,
+                        );
+                    }
+
+                    // Print per-system summary
+                    if summary.total_success > 0 {
+                        log::info!(
+                            "  {} {} games scraped (serial: {}, filename: {}, hash: {})",
+                            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                            summary.total_success,
+                            summary.by_serial,
+                            summary.by_filename,
+                            summary.by_hash,
+                        );
+                    }
+                    if summary.total_grouped > 0 {
+                        log::info!(
+                            "  {} {} discs grouped with primary",
+                            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                            summary.total_grouped,
+                        );
+                    }
+                    if summary.media_downloaded > 0 {
+                        log::info!(
+                            "  {} {} media files downloaded",
+                            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                            summary.media_downloaded,
+                        );
+                    }
+                    if summary.total_unidentified > 0 {
+                        log::warn!(
+                            "  {} {} unidentified",
+                            "?".if_supports_color(Stdout, |t| t.yellow()),
+                            summary.total_unidentified,
+                        );
+                    }
+                    if summary.total_errors > 0 {
+                        log::warn!(
+                            "  {} {} errors",
+                            "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                            summary.total_errors,
+                        );
+                    }
+
+                    // Print per-game details for problem entries
+                    for entry in result.log.entries() {
+                        match entry {
+                            retro_junk_scraper::LogEntry::Unidentified {
+                                file,
+                                serial_tried,
+                                scraper_serial_tried,
+                                filename_tried,
+                                hashes_tried,
+                                errors,
+                            } => {
+                                log::warn!("  ? {}: unidentified", file);
+                                if let Some(s) = serial_tried {
+                                    log::warn!("      ROM serial: {}", s);
+                                }
+                                if let Some(s) = scraper_serial_tried {
+                                    log::warn!("      Scraper serial tried: {}", s);
+                                }
+                                if *filename_tried {
+                                    log::warn!("      Filename lookup: tried");
+                                }
+                                if *hashes_tried {
+                                    log::warn!("      Hash lookup: tried");
+                                }
+                                for e in errors {
+                                    log::warn!("      Error: {}", e);
+                                }
+                            }
+                            retro_junk_scraper::LogEntry::Partial {
+                                file,
+                                game_name,
+                                warnings,
+                            } => {
+                                log::warn!("  ~ {}: \"{}\"", file, game_name);
+                                for w in warnings {
+                                    log::warn!("      {}", w);
+                                }
+                            }
+                            retro_junk_scraper::LogEntry::Error { file, message } => {
+                                log::warn!("  {} {}: {}", "\u{2718}", file, message);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Write metadata
+                    if !result.games.is_empty() && !dry_run {
+                        let system_metadata_dir = options.metadata_dir.join(folder_name);
+                        let system_media_dir = options.media_dir.join(folder_name);
+
+                        use retro_junk_frontend::Frontend;
+                        if let Err(e) = esde.write_metadata(
+                            &result.games,
+                            path,
+                            &system_metadata_dir,
+                            &system_media_dir,
+                        ) {
+                            log::warn!(
+                                "  {} Error writing metadata: {}",
+                                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                                e,
+                            );
+                        } else {
+                            log::info!(
+                                "  {} gamelist.xml written to {}",
+                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                system_metadata_dir.display(),
+                            );
+                        }
+                    }
+
+                    // Write scrape log
+                    if !no_log && !dry_run {
+                        let log_path = options.metadata_dir.join(format!(
+                            "scrape-log-{}-{}.txt",
+                            folder_name,
+                            chrono::Local::now().format("%Y%m%d-%H%M%S"),
+                        ));
+                        if let Err(e) = std::fs::create_dir_all(&options.metadata_dir) {
+                            log::warn!("Warning: could not create metadata dir: {}", e);
+                        } else if let Err(e) = result.log.write_to_file(&log_path) {
+                            log::warn!("Warning: could not write scrape log: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!(
+                        "  {} Error: {}",
+                        "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                        e,
+                    );
+                    total_errors += 1;
+                }
+            }
+            log::info!("");
         }
 
         // Print overall summary

@@ -16,3 +16,4 @@ toml.workspace = true
 dirs.workspace = true
 futures.workspace = true
 chrono.workspace = true
+log.workspace = true

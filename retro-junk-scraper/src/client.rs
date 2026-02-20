@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use tokio::sync::Mutex;
 use tokio::time::{Duration, Instant};
@@ -11,29 +10,87 @@ use crate::types::{JeuInfosResponse, UserInfo, UserInfoResponse, UserQuota};
 const BASE_URL: &str = "https://api.screenscraper.fr/api2";
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(1200);
 
+/// A pool of N rate-limit tokens, each tracking its own 1200ms cooldown.
+///
+/// Pre-filled with N `Instant` values. `acquire()` takes a token (blocking if
+/// all N slots are busy), sleeps until that slot's cooldown has elapsed, and
+/// returns a guard. The guard's `release()` sends `Instant::now()` back.
+struct RateLimitPool {
+    send: tokio::sync::mpsc::Sender<Instant>,
+    recv: Mutex<tokio::sync::mpsc::Receiver<Instant>>,
+}
+
+impl RateLimitPool {
+    /// Create a pool with `n` concurrent slots.
+    fn new(n: usize) -> Self {
+        let (send, recv) = tokio::sync::mpsc::channel(n);
+        let past = Instant::now() - MIN_REQUEST_INTERVAL;
+        for _ in 0..n {
+            send.try_send(past).expect("channel should have capacity");
+        }
+        Self {
+            send,
+            recv: Mutex::new(recv),
+        }
+    }
+
+    /// Acquire a rate-limit slot. Blocks until a slot is available and its
+    /// cooldown has elapsed. Returns the sender for releasing the slot.
+    async fn acquire(&self) -> tokio::sync::mpsc::Sender<Instant> {
+        let last = {
+            let mut recv = self.recv.lock().await;
+            recv.recv().await.expect("rate limit pool closed unexpectedly")
+        };
+        let elapsed = last.elapsed();
+        if elapsed < MIN_REQUEST_INTERVAL {
+            tokio::time::sleep(MIN_REQUEST_INTERVAL - elapsed).await;
+        }
+        self.send.clone()
+    }
+}
+
+/// Release a rate-limit slot back to the pool.
+async fn release_slot(sender: &tokio::sync::mpsc::Sender<Instant>) {
+    let _ = sender.send(Instant::now()).await;
+}
+
 /// HTTP client for the ScreenScraper API with rate limiting and quota tracking.
 pub struct ScreenScraperClient {
     http: reqwest::Client,
     creds: Credentials,
-    last_request: Arc<Mutex<Instant>>,
-    quota: Arc<Mutex<Option<UserQuota>>>,
+    rate_pool: RateLimitPool,
+    quota: Mutex<Option<UserQuota>>,
 }
 
 impl ScreenScraperClient {
     /// Create a new client and validate credentials by calling ssuserInfos.php.
+    ///
+    /// Starts with 1 slot for the auth request, then rebuilds the pool with
+    /// `user_info.max_threads()` slots.
     pub async fn new(creds: Credentials) -> Result<(Self, UserInfo), ScrapeError> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()?;
 
+        // Start with 1 slot for the initial auth call
         let client = Self {
             http,
             creds,
-            last_request: Arc::new(Mutex::new(Instant::now() - MIN_REQUEST_INTERVAL)),
-            quota: Arc::new(Mutex::new(None)),
+            rate_pool: RateLimitPool::new(1),
+            quota: Mutex::new(None),
         };
 
         let user_info = client.get_user_info().await?;
+
+        // Rebuild with the user's actual max_threads
+        let max_threads = (user_info.max_threads() as usize).max(1);
+        let client = Self {
+            rate_pool: RateLimitPool::new(max_threads),
+            http: client.http,
+            creds: client.creds,
+            quota: client.quota,
+        };
+
         Ok((client, user_info))
     }
 
@@ -42,23 +99,15 @@ impl ScreenScraperClient {
         let mut params = self.base_params();
         params.insert("output", "json".to_string());
 
-        self.rate_limit().await;
-
-        let resp = self
-            .http
-            .get(format!("{}/ssuserInfos.php", BASE_URL))
-            .query(&params)
-            .send()
+        let text = self
+            .rate_limited_get(&format!("{}/ssuserInfos.php", BASE_URL), &params)
             .await?;
 
-        let status = resp.status();
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(ScrapeError::InvalidCredentials(
-                "Invalid developer or user credentials".to_string(),
-            ));
+        let status_err = check_auth_status_from_text(&text);
+        if let Some(e) = status_err {
+            return Err(e);
         }
 
-        let text = resp.text().await?;
         let info: UserInfoResponse =
             serde_json::from_str(&text).map_err(|e| ScrapeError::Api(format!("Failed to parse user info: {e}. Response: {}", &text[..text.len().min(200)])))?;
 
@@ -76,29 +125,11 @@ impl ScreenScraperClient {
             all_params.insert(k, v);
         }
 
-        self.rate_limit().await;
-
-        let resp = self
-            .http
-            .get(format!("{}/jeuInfos.php", BASE_URL))
-            .query(&all_params)
-            .send()
+        let text = self
+            .rate_limited_get(&format!("{}/jeuInfos.php", BASE_URL), &all_params)
             .await?;
 
-        let status = resp.status();
-        let text = resp.text().await?;
-
-        // Check for common error patterns
-        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-            return Err(ScrapeError::InvalidCredentials(
-                "Credentials rejected".to_string(),
-            ));
-        }
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(ScrapeError::RateLimit);
-        }
-
-        // ScreenScraper returns 200 with error text for not-found
+        // Check for common error patterns in the response text
         if text.contains("Erreur") || text.contains("Jeu non trouvé") || text.is_empty() {
             return Err(ScrapeError::NotFound);
         }
@@ -139,15 +170,37 @@ impl ScreenScraperClient {
         self.quota.lock().await.clone()
     }
 
-    /// Enforce rate limiting: wait until at least MIN_REQUEST_INTERVAL has
-    /// passed since the last API request.
-    async fn rate_limit(&self) {
-        let mut last = self.last_request.lock().await;
-        let elapsed = last.elapsed();
-        if elapsed < MIN_REQUEST_INTERVAL {
-            tokio::time::sleep(MIN_REQUEST_INTERVAL - elapsed).await;
+    /// Perform a rate-limited HTTP GET request. Acquires a slot from the pool,
+    /// sends the request, and always releases the slot back (even on error).
+    async fn rate_limited_get(
+        &self,
+        url: &str,
+        params: &HashMap<&str, String>,
+    ) -> Result<String, ScrapeError> {
+        let slot = self.rate_pool.acquire().await;
+
+        let result = async {
+            let resp = self.http.get(url).query(params).send().await?;
+
+            let status = resp.status();
+            if status == reqwest::StatusCode::UNAUTHORIZED
+                || status == reqwest::StatusCode::FORBIDDEN
+            {
+                return Err(ScrapeError::InvalidCredentials(
+                    "Credentials rejected".to_string(),
+                ));
+            }
+            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                return Err(ScrapeError::RateLimit);
+            }
+
+            let text = resp.text().await?;
+            Ok(text)
         }
-        *last = Instant::now();
+        .await;
+
+        release_slot(&slot).await;
+        result
     }
 
     fn base_params(&self) -> HashMap<&str, String> {
@@ -162,5 +215,16 @@ impl ScreenScraperClient {
             params.insert("sspassword", pw.clone());
         }
         params
+    }
+}
+
+/// Check response text for auth-related error messages.
+fn check_auth_status_from_text(text: &str) -> Option<ScrapeError> {
+    if text.contains("Erreur de login") || text.contains("Identifiants") {
+        Some(ScrapeError::InvalidCredentials(
+            "Invalid developer or user credentials".to_string(),
+        ))
+    } else {
+        None
     }
 }

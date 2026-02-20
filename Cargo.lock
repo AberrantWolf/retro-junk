@@ -2016,6 +2016,7 @@ dependencies = [
  "chrono",
  "dirs",
  "futures",
+ "log",
  "reqwest",
  "retro-junk-core",
  "retro-junk-frontend",
