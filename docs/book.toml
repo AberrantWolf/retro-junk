@@ -5,6 +5,8 @@ authors = ["retro-junk contributors"]
 language = "en"
 src = "../.claude/skills/retro-archive"
 
+[preprocessor.yml-header]
+
 [output.html]
 site-url = "/retro-junk/"
 git-repository-url = "https://github.com/AberrantWolf/retro-junk"

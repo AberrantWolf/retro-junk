@@ -1,0 +1,5 @@
+# AberrantWolf's Collection of Retro Archive Docs
+
+While writing this tool, I had to research a lot of information on each game console -- specifically how the games are both formatted and stored for archival purposes. This information has been useful to compile into one place for me, and I thought it would be useful to share it with others. I've taken care to cite where I got this information from. It's not my own research. I just looked it up and found various places online where other smart people had done the heavy lifting and documented everything.
+
+Hopefully this will be received as intended, as a consolidated resource for anyone else looking to do their own tools development across multiple consoles, or just wanting a single place to look for information to get them started. Please do follow the links and give credit to those who came before. Some of these pages are quite old, though also quite famous. I'm happy to take feedback and fixes, just keep in mind that NONE OF THIS IS MY OWN WORK.
