@@ -200,6 +200,73 @@ ES-DE-specific metadata fields when regenerating gamelists: `altemulator`, `brok
 - System folder names (used in paths) follow ES-DE's `es_systems.xml` naming convention (e.g.,
   `n64`, `snes`, `megadrive`, `psx`).
 
+## Using retro-junk Output with ES-DE
+
+By default, ES-DE reads gamelists from `~/ES-DE/gamelists/<system>/` and media from
+`~/ES-DE/downloaded_media/<system>/`. retro-junk writes gamelists to a `<root>-metadata/`
+directory and media to a `<root>-media/` directory by default. To bridge these, ES-DE provides
+configurable settings that let it read from wherever retro-junk writes.
+
+### Recommended Portable Setup
+
+This layout works across platforms (including Android) and is SyncThing-friendly with no
+symlinks required:
+
+```
+~/gaming/                          <- SyncThing root
+  ROMs/                            <- ES-DE ROMDirectory
+    nes/
+      game.nes
+      gamelist.xml                 <- retro-junk writes here
+    snes/
+      game.sfc
+      gamelist.xml
+  ROMs-media/                      <- ES-DE MediaDirectory
+    nes/
+      covers/game.png
+      screenshots/game.png
+    snes/
+      covers/game.sfc.png
+```
+
+**retro-junk command:**
+```bash
+retro-junk scrape --root ~/gaming/ROMs --metadata-dir ~/gaming/ROMs
+```
+
+Setting `--metadata-dir` to the same path as `--root` places `gamelist.xml` files directly
+inside each system's ROM directory, which ES-DE can read with `LegacyGamelistFileLocation`.
+
+**ES-DE settings** (`~/ES-DE/settings/es_settings.xml`, configured per machine):
+```xml
+<string name="ROMDirectory" value="~/gaming/ROMs" />
+<string name="MediaDirectory" value="~/gaming/ROMs-media" />
+<bool name="LegacyGamelistFileLocation" value="true" />
+```
+
+### Key ES-DE Settings
+
+- **`ROMDirectory`** — where ES-DE looks for ROMs. Point this at your retro-junk `--root`.
+
+- **`MediaDirectory`** — where ES-DE looks for media (covers, screenshots, etc.). Point this
+  at your retro-junk media output directory (`<root>-media` by default). ES-DE finds media
+  purely by filename matching within this directory — it **ignores media path tags** in
+  gamelist.xml entirely. The media tags we write are for compatibility with other tools
+  (Skyscraper, other ES forks) that do read them.
+
+- **`LegacyGamelistFileLocation`** — when `true`, ES-DE reads `gamelist.xml` from within the
+  ROM directory tree (e.g., `ROMs/nes/gamelist.xml`) instead of `~/ES-DE/gamelists/nes/`.
+  This is the recommended setting when using retro-junk with `--metadata-dir` set to `--root`.
+
+### Notes
+
+- Scrape log files will also land in the ROM directory when `--metadata-dir` equals `--root`.
+  Use `--no-log` to suppress them if they're unwanted, or leave them — ES-DE ignores
+  non-ROM files that don't match known extensions.
+
+- ES-DE matches media files to games by filename (stem must match the ROM filename). Our
+  scraper already names media files to match ROMs, so this works automatically.
+
 ## Information Sources
 
 - [ES-DE GitLab Repository](https://gitlab.com/es-de/emulationstation-de)
