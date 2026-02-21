@@ -186,13 +186,14 @@ fn write_media_tag(
     _media_dir: &Path,
 ) {
     if let Some(media_path) = game.media.get(&media_type) {
-        // Try to make a relative path from the ROM directory
-        let display_path =
-            if let Ok(rel) = media_path.strip_prefix(rom_dir.parent().unwrap_or(rom_dir)) {
-                format!("./{}", rel.display())
-            } else {
-                media_path.display().to_string()
-            };
+        // Compute a relative path from the ROM directory to the media file.
+        // This handles sibling directories (e.g., roms-media/ next to roms/)
+        // by producing paths with .. components.
+        let display_path = if let Some(rel) = pathdiff::diff_paths(media_path, rom_dir) {
+            format!("./{}", rel.display())
+        } else {
+            media_path.display().to_string()
+        };
         write_tag(xml, tag, &display_path);
     }
 }
