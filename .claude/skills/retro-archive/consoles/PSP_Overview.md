@@ -34,7 +34,7 @@
 - **.pbp**: Required for PSN titles
 
 ### Considerations
-- PPSSPP emulator offers excellent compatibility
+- PPSSPP emulator offers broad compatibility
 - Save data stored in separate files
 - Custom firmware enables additional features
 - Total library size: ~400GB uncompressed
@@ -45,4 +45,4 @@
 - **Organization**: Separate UMD dumps from PSN titles
 - **Metadata**: Use scene databases for verification
 - **Compression**: CSO offers good space savings
-- **Emulation**: Excellent preservation through PPSSPP
+- **Emulation**: Well-supported through PPSSPP

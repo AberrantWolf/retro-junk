@@ -50,4 +50,4 @@ See [GBA Format Reference](../formats/GBA.md) for full header layout, checksum a
 - **Organization**: Separate by region and save type
 - **Metadata**: Use No-Intro or GoodGBA databases
 - **Compression**: Good space savings with ZIP compression
-- **Emulation**: Excellent preservation with mGBA and other emulators
+- **Emulation**: Well-supported by mGBA and other active emulators

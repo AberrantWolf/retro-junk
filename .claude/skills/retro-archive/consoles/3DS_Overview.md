@@ -26,7 +26,7 @@
 - **.app**: Decrypted application files
 
 ### Best Practices
-- Archive eShop titles before store closure (March 2023)
+- Archive eShop titles before store closure (Nintendo 3DS/Wii U eShop closed March 27, 2023; [Nintendo support announcement](https://en-americas-support.nintendo.com/app/answers/detail/a_id/57847))
 - Preserve save data and system transfers
 - Include DLC and update data
 - Document system firmware requirements

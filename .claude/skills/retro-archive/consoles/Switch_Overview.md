@@ -35,7 +35,7 @@
 - **Extracted folders**: For development and modding
 
 ### Considerations
-- Yuzu and Ryujinx were shut down in 2024 due to legal action; community forks exist but the emulation landscape is unstable
+- Yuzu was shut down March 2024 after Nintendo of America v. Tropic Haze LLC settled for $2.4M ([court settlement](https://storage.courtlistener.com/recap/gov.uscourts.cod.240704/gov.uscourts.cod.240704.56.0.pdf)); Ryujinx voluntarily shut down October 2024 after Nintendo contact; community forks exist but the emulation landscape is unstable
 - Requires system firmware files
 - Save data encryption complicates preservation
 - Performance varies significantly by title

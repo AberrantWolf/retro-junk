@@ -34,7 +34,7 @@
 - **.sc**: For Sega Card games
 
 ### Considerations
-- Simple 8-bit architecture, excellent emulation
+- Simple 8-bit architecture enables good emulation accuracy
 - FM sound enhancement in some regions
 - Save data stored separately when present
 - Total library size: ~50MB (complete set)
@@ -48,4 +48,4 @@ See [MasterSystem.md](../formats/MasterSystem.md) for detailed header format, ch
 - **Organization**: Separate cartridges from cards
 - **Metadata**: Use No-Intro database for verification
 - **Compression**: Significant space savings possible
-- **Emulation**: Perfect preservation through emulation
+- **Emulation**: Well-supported by multiple mature emulators

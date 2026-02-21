@@ -1,0 +1,12 @@
+[book]
+title = "Retro Archive"
+description = "Technical reference for retro game ROM and disc image formats, file structures, and preservation notes."
+authors = ["retro-junk contributors"]
+language = "en"
+src = "../.claude/skills/retro-archive"
+
+[output.html]
+site-url = "/retro-junk/"
+git-repository-url = "https://github.com/AberrantWolf/retro-junk"
+git-repository-icon = "fab-github"
+edit-url-template = "https://github.com/AberrantWolf/retro-junk/edit/main/.claude/skills/retro-archive/{path}"

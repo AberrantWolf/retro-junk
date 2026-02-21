@@ -51,4 +51,4 @@
 - **Organization**: Separate DS games from DSi-enhanced titles
 - **Metadata**: Use No-Intro database for verification
 - **Compression**: Significant space savings possible
-- **Emulation**: Excellent preservation with DeSmuME and melonDS
+- **Emulation**: Well-supported by DeSmuME and melonDS

@@ -50,4 +50,4 @@ See [GameBoy.md](../formats/GameBoy.md) for detailed header format, checksum alg
 - **Organization**: Separate color-only from enhanced games
 - **Metadata**: Use No-Intro database for verification
 - **Compression**: Excellent space savings with ZIP/7z
-- **Emulation**: Excellent preservation with modern emulators
+- **Emulation**: Well-supported by multiple mature emulators

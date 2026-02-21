@@ -35,7 +35,7 @@
 - **.7z**: Alternative compression with better ratios
 
 ### Considerations
-- Simple 8-bit architecture ensures perfect emulation
+- Simple 8-bit architecture enables high-accuracy emulation
 - Battery saves stored as separate .sav files
 - Super Game Boy features require specific emulator support
 - Total library size: ~800MB (complete set)
@@ -49,4 +49,4 @@ See [GameBoy.md](../formats/GameBoy.md) for detailed header format, checksum alg
 - **Organization**: Sort by region, then alphabetically
 - **Metadata**: Use No-Intro DAT files for verification
 - **Compression**: ZIP compression saves significant space with no performance impact
-- **Emulation**: Perfect preservation through modern emulators
+- **Emulation**: Well-supported by multiple mature emulators

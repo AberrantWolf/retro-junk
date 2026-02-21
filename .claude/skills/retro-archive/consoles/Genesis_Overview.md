@@ -34,7 +34,7 @@
 - **.zip**: Compressed format supported by most emulators
 
 ### Considerations
-- Excellent emulation accuracy available
+- Good emulation accuracy available
 - Save data stored in separate files
 - Sega CD requires disc images and BIOS
 - 32X games need special emulator support
@@ -49,4 +49,4 @@ See [Megadrive_Genesis.md](../formats/Megadrive_Genesis.md) for detailed header 
 - **Organization**: Separate by region and add-on compatibility
 - **Metadata**: Use No-Intro or GoodGen databases
 - **Compression**: Good space savings with ZIP
-- **Emulation**: Near-perfect preservation possible
+- **Emulation**: High-accuracy preservation possible with multiple active emulators

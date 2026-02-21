@@ -34,7 +34,7 @@
 - **.cdi**: Legacy format, limited use
 
 ### Considerations
-- Excellent emulation with Flycast/Redream
+- Flycast and Redream offer good compatibility
 - VMU data stored separately
 - Online features not preserved in emulation
 - Some games require specific emulator settings
@@ -46,4 +46,4 @@
 - **Organization**: Separate by region and release type
 - **Metadata**: Use Redump database for GDI verification
 - **Compression**: CHD recommended for long-term storage
-- **Emulation**: Excellent preservation through modern emulators
+- **Emulation**: Well-supported by modern emulators (Flycast, Redream)
