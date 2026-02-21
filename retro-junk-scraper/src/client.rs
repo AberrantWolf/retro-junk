@@ -1,7 +1,8 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use tokio::sync::Mutex;
-use tokio::time::{Duration, Instant};
+use tokio::sync::{Mutex, Semaphore};
+use tokio::time::Duration;
 
 use crate::credentials::Credentials;
 use crate::error::ScrapeError;
@@ -10,65 +11,30 @@ use crate::types::{JeuInfosResponse, UserInfo, UserInfoResponse, UserQuota};
 const BASE_URL: &str = "https://api.screenscraper.fr/api2";
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(1200);
 
-/// A pool of N rate-limit tokens, each tracking its own 1200ms cooldown.
-///
-/// Pre-filled with N `Instant` values. `acquire()` takes a token (blocking if
-/// all N slots are busy), sleeps until that slot's cooldown has elapsed, and
-/// returns a guard. The guard's `release()` sends `Instant::now()` back.
-struct RateLimitPool {
-    send: tokio::sync::mpsc::Sender<Instant>,
-    recv: Mutex<tokio::sync::mpsc::Receiver<Instant>>,
-}
+/// Hard timeout for API requests (covers connect + headers + body read).
+const API_TIMEOUT: Duration = Duration::from_secs(30);
 
-impl RateLimitPool {
-    /// Create a pool with `n` concurrent slots.
-    fn new(n: usize) -> Self {
-        let (send, recv) = tokio::sync::mpsc::channel(n);
-        let past = Instant::now() - MIN_REQUEST_INTERVAL;
-        for _ in 0..n {
-            send.try_send(past).expect("channel should have capacity");
-        }
-        Self {
-            send,
-            recv: Mutex::new(recv),
-        }
-    }
-
-    /// Acquire a rate-limit slot. Blocks until a slot is available and its
-    /// cooldown has elapsed. Returns the sender for releasing the slot.
-    async fn acquire(&self) -> tokio::sync::mpsc::Sender<Instant> {
-        let last = {
-            let mut recv = self.recv.lock().await;
-            recv.recv().await.expect("rate limit pool closed unexpectedly")
-        };
-        let elapsed = last.elapsed();
-        if elapsed < MIN_REQUEST_INTERVAL {
-            tokio::time::sleep(MIN_REQUEST_INTERVAL - elapsed).await;
-        }
-        self.send.clone()
-    }
-}
-
-/// Release a rate-limit slot back to the pool.
-async fn release_slot(sender: &tokio::sync::mpsc::Sender<Instant>) {
-    let _ = sender.send(Instant::now()).await;
-}
+/// Hard timeout for media file downloads.
+const MEDIA_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// HTTP client for the ScreenScraper API with rate limiting and quota tracking.
 pub struct ScreenScraperClient {
     http: reqwest::Client,
     creds: Credentials,
-    rate_pool: RateLimitPool,
+    /// Semaphore limiting concurrent API requests. Permits auto-release on drop,
+    /// preventing slot leaks even on timeout or cancellation.
+    rate_semaphore: Arc<Semaphore>,
     quota: Mutex<Option<UserQuota>>,
 }
 
 impl ScreenScraperClient {
     /// Create a new client and validate credentials by calling ssuserInfos.php.
     ///
-    /// Starts with 1 slot for the auth request, then rebuilds the pool with
+    /// Starts with 1 slot for the auth request, then rebuilds with
     /// `user_info.max_threads()` slots.
     pub async fn new(creds: Credentials) -> Result<(Self, UserInfo), ScrapeError> {
         let http = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(30))
             .build()?;
 
@@ -76,7 +42,7 @@ impl ScreenScraperClient {
         let client = Self {
             http,
             creds,
-            rate_pool: RateLimitPool::new(1),
+            rate_semaphore: Arc::new(Semaphore::new(1)),
             quota: Mutex::new(None),
         };
 
@@ -85,7 +51,7 @@ impl ScreenScraperClient {
         // Rebuild with the user's actual max_threads
         let max_threads = (user_info.max_threads() as usize).max(1);
         let client = Self {
-            rate_pool: RateLimitPool::new(max_threads),
+            rate_semaphore: Arc::new(Semaphore::new(max_threads)),
             http: client.http,
             creds: client.creds,
             quota: client.quota,
@@ -157,12 +123,24 @@ impl ScreenScraperClient {
         Ok(response)
     }
 
-    /// Download a media file from a URL. Media CDN downloads don't count against
-    /// the API rate limit, so no rate limiting is applied here.
+    /// Download a media file from a URL with a hard timeout.
+    ///
+    /// Media CDN downloads don't count against the API rate limit, so no
+    /// rate limiting is applied here — but we still enforce a total timeout
+    /// to prevent hangs when ScreenScraper stalls mid-transfer.
     pub async fn download_media(&self, url: &str) -> Result<Vec<u8>, ScrapeError> {
-        let resp = self.http.get(url).send().await?;
-        let bytes = resp.bytes().await?;
-        Ok(bytes.to_vec())
+        tokio::time::timeout(MEDIA_TIMEOUT, async {
+            let resp = self.http.get(url).send().await?;
+            Ok::<_, reqwest::Error>(resp.bytes().await?.to_vec())
+        })
+        .await
+        .map_err(|_| {
+            ScrapeError::Api(format!(
+                "Media download timed out after {}s",
+                MEDIA_TIMEOUT.as_secs()
+            ))
+        })?
+        .map_err(ScrapeError::from)
     }
 
     /// Get current quota info if available.
@@ -170,17 +148,31 @@ impl ScreenScraperClient {
         self.quota.lock().await.clone()
     }
 
-    /// Perform a rate-limited HTTP GET request. Acquires a slot from the pool,
-    /// sends the request, and always releases the slot back (even on error).
+    /// Perform a rate-limited HTTP GET request with a hard timeout.
+    ///
+    /// Acquires a semaphore permit (blocking if all slots are busy), makes the
+    /// request within a hard timeout that covers the full response (including
+    /// body read), then sleeps for the rate limit interval before releasing.
+    /// The permit auto-releases on drop, preventing slot leaks.
     async fn rate_limited_get(
         &self,
         url: &str,
         params: &HashMap<&str, String>,
     ) -> Result<String, ScrapeError> {
-        let slot = self.rate_pool.acquire().await;
+        let _permit = self
+            .rate_semaphore
+            .acquire()
+            .await
+            .map_err(|_| ScrapeError::Api("Rate limiter closed".to_string()))?;
 
-        let result = async {
-            let resp = self.http.get(url).query(params).send().await?;
+        let result = tokio::time::timeout(API_TIMEOUT, async {
+            let resp = self
+                .http
+                .get(url)
+                .query(params)
+                .send()
+                .await
+                .map_err(|e| ScrapeError::Api(redact_credentials(&e.to_string())))?;
 
             let status = resp.status();
             if status == reqwest::StatusCode::UNAUTHORIZED
@@ -194,12 +186,24 @@ impl ScreenScraperClient {
                 return Err(ScrapeError::RateLimit);
             }
 
-            let text = resp.text().await?;
+            let text = resp
+                .text()
+                .await
+                .map_err(|e| ScrapeError::Api(redact_credentials(&e.to_string())))?;
             Ok(text)
-        }
-        .await;
+        })
+        .await
+        .map_err(|_| {
+            ScrapeError::Api(format!(
+                "API request timed out after {}s",
+                API_TIMEOUT.as_secs()
+            ))
+        })?;
 
-        release_slot(&slot).await;
+        // Rate limit: sleep before releasing the permit so the next request
+        // on this slot respects the minimum interval.
+        tokio::time::sleep(MIN_REQUEST_INTERVAL).await;
+
         result
     }
 
@@ -227,4 +231,24 @@ fn check_auth_status_from_text(text: &str) -> Option<ScrapeError> {
     } else {
         None
     }
+}
+
+/// Redact credential query parameters from error messages that may contain URLs.
+///
+/// Replaces values for `devpassword`, `sspassword`, `devid`, and `ssid` with `[REDACTED]`.
+fn redact_credentials(msg: &str) -> String {
+    let mut result = msg.to_string();
+    for param in &["devpassword", "sspassword", "devid", "ssid"] {
+        // Match param=value where value ends at & or end of string/whitespace
+        let prefix = format!("{}=", param);
+        while let Some(start) = result.find(&prefix) {
+            let value_start = start + prefix.len();
+            let value_end = result[value_start..]
+                .find(|c: char| c == '&' || c.is_whitespace() || c == '"' || c == '\'')
+                .map(|i| value_start + i)
+                .unwrap_or(result.len());
+            result.replace_range(value_start..value_end, "[REDACTED]");
+        }
+    }
+    result
 }

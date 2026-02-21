@@ -12,3 +12,4 @@ chrono.workspace = true
 image.workspace = true
 serde_yml.workspace = true
 dirs.workspace = true
+pathdiff.workspace = true

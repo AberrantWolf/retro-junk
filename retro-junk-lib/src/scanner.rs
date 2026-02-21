@@ -42,16 +42,15 @@ impl GameEntry {
     }
 
     /// Stem used for media file naming: filename stem for single files,
-    /// .m3u directory name without the `.m3u` suffix for multi-disc.
+    /// full `.m3u` directory name for multi-disc (ES-DE matches media by
+    /// the full entry name, e.g. `game.m3u.png` for `./game.m3u`).
     pub fn rom_stem(&self) -> &str {
         match self {
             GameEntry::SingleFile(p) => p
                 .file_stem()
                 .and_then(|n| n.to_str())
                 .unwrap_or("?"),
-            GameEntry::MultiDisc { name, .. } => name
-                .strip_suffix(".m3u")
-                .unwrap_or(name),
+            GameEntry::MultiDisc { name, .. } => name,
         }
     }
 

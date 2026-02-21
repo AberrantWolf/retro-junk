@@ -1,9 +1,11 @@
 use std::path::{Path, PathBuf};
 
 use retro_junk_frontend::MediaType;
+use tokio::sync::mpsc;
 
 use crate::client::ScreenScraperClient;
 use crate::error::ScrapeError;
+use crate::scrape::ScrapeEvent;
 use crate::types::GameInfo;
 
 /// Configuration for which media types to download.
@@ -140,6 +142,9 @@ pub async fn download_game_media(
     rom_stem: &str,
     preferred_region: &str,
     force_redownload: bool,
+    index: usize,
+    filename: &str,
+    events: &mpsc::UnboundedSender<ScrapeEvent>,
 ) -> Result<std::collections::HashMap<MediaType, PathBuf>, ScrapeError> {
     let mut results = std::collections::HashMap::new();
     let mut downloads = Vec::new();
@@ -176,31 +181,36 @@ pub async fn download_game_media(
         }
     }
 
-    // Download concurrently (media CDN downloads don't hit API rate limits)
+    // Build (MediaType, Future) pairs so we can emit events before each download
     let handles: Vec<_> = downloads
         .into_iter()
         .map(|(mt, url, subdir, dest)| {
             let client_url = url.clone();
             let client_ref = client;
-            async move {
+            let fut = async move {
                 std::fs::create_dir_all(&subdir)?;
                 let bytes = client_ref.download_media(&client_url).await?;
                 std::fs::write(&dest, &bytes)?;
-                Ok::<(MediaType, PathBuf), ScrapeError>((mt, dest))
-            }
+                Ok::<PathBuf, ScrapeError>(dest)
+            };
+            (mt, fut)
         })
         .collect();
 
-    // We can't easily use tokio::spawn here without Arc, so run sequentially
-    // for media files of a single game (parallel across games is handled by the orchestrator)
-    for handle in handles {
-        match handle.await {
-            Ok((mt, path)) => {
+    // Run sequentially per game, emitting an event before each download
+    for (mt, fut) in handles {
+        let _ = events.send(ScrapeEvent::GameDownloadingMedia {
+            index,
+            file: filename.to_string(),
+            media_type: mt.to_string(),
+        });
+        match fut.await {
+            Ok(path) => {
                 results.insert(mt, path);
             }
             Err(e) => {
                 // Log but don't fail the whole scrape for a single media download failure
-                eprintln!("Warning: failed to download media: {}", e);
+                log::debug!("Failed to download media: {}", e);
             }
         }
     }

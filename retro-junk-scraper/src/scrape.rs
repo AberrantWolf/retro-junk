@@ -98,6 +98,8 @@ pub enum ScrapeEvent {
     GameLookingUp { index: usize, file: String },
     /// Downloading media for a game.
     GameDownloading { index: usize, file: String },
+    /// Downloading a specific media type for a game.
+    GameDownloadingMedia { index: usize, file: String, media_type: String },
     /// Game was skipped (existing media, dry run, etc.).
     GameSkipped { index: usize, file: String, reason: String },
     /// Game was successfully scraped.
@@ -159,7 +161,7 @@ fn try_generate_miximage(
             }
             Ok(false) => {} // no screenshot, skip
             Err(e) => {
-                log::warn!("Warning: failed to generate miximage: {}", e);
+                log::debug!("Failed to generate miximage: {}", e);
             }
         }
     } else {
@@ -480,10 +482,16 @@ async fn process_single_game(
                 Err(_) => (None, Vec::new()),
             },
             Err(e) => {
+                let message = format!("Failed to open file: {}", e);
+                let _ = events.send(ScrapeEvent::GameFailed {
+                    index,
+                    file: filename.clone(),
+                    reason: message.clone(),
+                });
                 return GameResult::Failed {
                     log_entry: LogEntry::Error {
                         file: filename,
-                        message: format!("Failed to open file: {}", e),
+                        message,
                     },
                 };
             }
@@ -512,7 +520,7 @@ async fn process_single_game(
             Ok(mut f) => match retro_junk_lib::hasher::compute_all_hashes(&mut f, analyzer) {
                 Ok(hashes) => (Some(hashes.crc32), hashes.md5, hashes.sha1),
                 Err(e) => {
-                    log::warn!("Failed to hash {}: {}", filename, e);
+                    log::debug!("Failed to hash {}: {}", filename, e);
                     (None, None, None)
                 }
             },
@@ -585,6 +593,9 @@ async fn process_single_game(
                 rom_stem,
                 &effective_region,
                 options.force_redownload,
+                index,
+                &filename,
+                events,
             )
             .await
             .unwrap_or_default();

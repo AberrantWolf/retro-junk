@@ -2,7 +2,7 @@
 //!
 //! Command-line interface for analyzing retro game ROMs and disc images.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
@@ -161,7 +161,9 @@ enum Commands {
         #[arg(long, value_delimiter = ',')]
         media_types: Option<Vec<String>>,
 
-        /// Directory for metadata files (default: <root>-metadata)
+        /// Directory for metadata files (default: <root>-metadata).
+        /// Set to the same path as --root to place gamelist.xml inside ROM directories,
+        /// which is needed for ES-DE with LegacyGamelistFileLocation enabled
         #[arg(long)]
         metadata_dir: Option<PathBuf>,
 
@@ -1689,6 +1691,35 @@ fn print_m3u_actions(actions: &[M3uAction]) {
     }
 }
 
+/// Claim a spinner slot from the free list, reset it, and start ticking with the given message.
+fn claim_spinner_slot(
+    key: usize,
+    msg: String,
+    spinners: &[ProgressBar],
+    free_slots: &mut Vec<usize>,
+    slot_assignments: &mut HashMap<usize, usize>,
+) {
+    if let Some(slot) = free_slots.pop() {
+        spinners[slot].reset();
+        spinners[slot].enable_steady_tick(std::time::Duration::from_millis(100));
+        spinners[slot].set_message(msg);
+        slot_assignments.insert(key, slot);
+    }
+}
+
+/// Release a spinner slot: stop it, clear the line, and return it to the free list.
+fn release_spinner_slot(
+    key: usize,
+    spinners: &[ProgressBar],
+    free_slots: &mut Vec<usize>,
+    slot_assignments: &mut HashMap<usize, usize>,
+) {
+    if let Some(slot) = slot_assignments.remove(&key) {
+        spinners[slot].finish_and_clear();
+        free_slots.push(slot);
+    }
+}
+
 /// Run the scrape command.
 #[allow(clippy::too_many_arguments)]
 fn run_scrape(
@@ -1712,7 +1743,6 @@ fn run_scrape(
     root: Option<PathBuf>,
     quiet: bool,
 ) {
-    use std::collections::HashMap;
     use indicatif::MultiProgress;
 
     let root_path =
@@ -1940,37 +1970,23 @@ fn run_scrape(
                             Some(e) => {
                                 match e {
                                     retro_junk_scraper::ScrapeEvent::Scanning => {
-                                        if let Some(slot) = free_slots.pop() {
-                                            spinners[slot].set_message("Scanning for ROM files...");
-                                            slot_assignments.insert(usize::MAX, slot);
-                                        }
+                                        claim_spinner_slot(usize::MAX, "Scanning for ROM files...".into(), &spinners, &mut free_slots, &mut slot_assignments);
                                     }
                                     retro_junk_scraper::ScrapeEvent::ScanComplete { total } => {
                                         scan_total = total;
-                                        // Free the scanning slot
-                                        if let Some(slot) = slot_assignments.remove(&usize::MAX) {
-                                            spinners[slot].set_message("");
-                                            free_slots.push(slot);
-                                        }
+                                        release_spinner_slot(usize::MAX, &spinners, &mut free_slots, &mut slot_assignments);
                                     }
                                     retro_junk_scraper::ScrapeEvent::GameStarted { index, ref file } => {
-                                        if let Some(slot) = free_slots.pop() {
-                                            spinners[slot].set_message(format!(
-                                                "[{}/{}] {}",
-                                                index + 1,
-                                                scan_total,
-                                                file,
-                                            ));
-                                            slot_assignments.insert(index, slot);
-                                        }
+                                        claim_spinner_slot(index, format!(
+                                            "[{}/{}] {}",
+                                            index + 1, scan_total, file,
+                                        ), &spinners, &mut free_slots, &mut slot_assignments);
                                     }
                                     retro_junk_scraper::ScrapeEvent::GameLookingUp { index, ref file } => {
                                         if let Some(&slot) = slot_assignments.get(&index) {
                                             spinners[slot].set_message(format!(
                                                 "[{}/{}] Looking up {}",
-                                                index + 1,
-                                                scan_total,
-                                                file,
+                                                index + 1, scan_total, file,
                                             ));
                                         }
                                     }
@@ -1978,9 +1994,15 @@ fn run_scrape(
                                         if let Some(&slot) = slot_assignments.get(&index) {
                                             spinners[slot].set_message(format!(
                                                 "[{}/{}] Downloading media for {}",
-                                                index + 1,
-                                                scan_total,
-                                                file,
+                                                index + 1, scan_total, file,
+                                            ));
+                                        }
+                                    }
+                                    retro_junk_scraper::ScrapeEvent::GameDownloadingMedia { index, ref file, ref media_type } => {
+                                        if let Some(&slot) = slot_assignments.get(&index) {
+                                            spinners[slot].set_message(format!(
+                                                "[{}/{}] Downloading {} for {}",
+                                                index + 1, scan_total, media_type, file,
                                             ));
                                         }
                                     }
@@ -1988,46 +2010,28 @@ fn run_scrape(
                                         if let Some(&slot) = slot_assignments.get(&index) {
                                             spinners[slot].set_message(format!(
                                                 "[{}/{}] Skipped {}: {}",
-                                                index + 1,
-                                                scan_total,
-                                                file,
-                                                reason,
+                                                index + 1, scan_total, file, reason,
                                             ));
                                         }
-                                        if let Some(slot) = slot_assignments.remove(&index) {
-                                            spinners[slot].set_message("");
-                                            free_slots.push(slot);
-                                        }
+                                        release_spinner_slot(index, &spinners, &mut free_slots, &mut slot_assignments);
                                     }
                                     retro_junk_scraper::ScrapeEvent::GameCompleted { index, ref file, ref game_name } => {
                                         if let Some(&slot) = slot_assignments.get(&index) {
                                             spinners[slot].set_message(format!(
                                                 "[{}/{}] {} -> \"{}\"",
-                                                index + 1,
-                                                scan_total,
-                                                file,
-                                                game_name,
+                                                index + 1, scan_total, file, game_name,
                                             ));
                                         }
-                                        if let Some(slot) = slot_assignments.remove(&index) {
-                                            spinners[slot].set_message("");
-                                            free_slots.push(slot);
-                                        }
+                                        release_spinner_slot(index, &spinners, &mut free_slots, &mut slot_assignments);
                                     }
                                     retro_junk_scraper::ScrapeEvent::GameFailed { index, ref file, ref reason } => {
                                         if let Some(&slot) = slot_assignments.get(&index) {
                                             spinners[slot].set_message(format!(
                                                 "[{}/{}] {} failed: {}",
-                                                index + 1,
-                                                scan_total,
-                                                file,
-                                                reason,
+                                                index + 1, scan_total, file, reason,
                                             ));
                                         }
-                                        if let Some(slot) = slot_assignments.remove(&index) {
-                                            spinners[slot].set_message("");
-                                            free_slots.push(slot);
-                                        }
+                                        release_spinner_slot(index, &spinners, &mut free_slots, &mut slot_assignments);
                                     }
                                     retro_junk_scraper::ScrapeEvent::GameGrouped { .. } => {
                                         // Grouped discs happen after the concurrent phase; no spinner
