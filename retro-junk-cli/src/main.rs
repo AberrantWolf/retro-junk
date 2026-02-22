@@ -227,6 +227,12 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// Manage the game catalog database
+    Catalog {
+        #[command(subcommand)]
+        action: CatalogAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -258,6 +264,35 @@ enum ConfigAction {
 
     /// Print the config file path
     Path,
+}
+
+#[derive(Subcommand)]
+enum CatalogAction {
+    /// Import DAT files into the catalog database
+    Import {
+        /// Systems to import (e.g., snes,n64) or "all"
+        #[arg(value_delimiter = ',')]
+        systems: Vec<String>,
+
+        /// Path to catalog YAML data directory (default: ./catalog)
+        #[arg(long)]
+        catalog_dir: Option<PathBuf>,
+
+        /// Path to the catalog database file (default: ~/.cache/retro-junk/catalog.db)
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Use DAT files from this directory instead of the cache
+        #[arg(long)]
+        dat_dir: Option<PathBuf>,
+    },
+
+    /// Show catalog database statistics
+    Stats {
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -351,6 +386,19 @@ fn main() {
             ConfigAction::Setup => run_config_setup(),
             ConfigAction::Test => run_config_test(quiet),
             ConfigAction::Path => run_config_path(),
+        },
+        Commands::Catalog { action } => match action {
+            CatalogAction::Import {
+                systems,
+                catalog_dir,
+                db,
+                dat_dir,
+            } => {
+                run_catalog_import(&ctx, systems, catalog_dir, db, dat_dir);
+            }
+            CatalogAction::Stats { db } => {
+                run_catalog_stats(db);
+            }
         },
     }
 }
@@ -2810,6 +2858,294 @@ fn run_config_path() {
         Some(path) => log::info!("{}", path.display()),
         None => {
             log::warn!("Could not determine config directory");
+            std::process::exit(1);
+        }
+    }
+}
+
+// -- Catalog subcommands --
+
+/// Default path for the catalog database.
+fn default_catalog_db_path() -> PathBuf {
+    retro_junk_dat::cache::cache_dir()
+        .unwrap_or_else(|_| PathBuf::from(".cache"))
+        .join("catalog.db")
+}
+
+/// Default path for catalog YAML data.
+fn default_catalog_dir() -> PathBuf {
+    // Look for catalog/ relative to the current directory
+    PathBuf::from("catalog")
+}
+
+/// Import DAT files into the catalog database.
+fn run_catalog_import(
+    ctx: &AnalysisContext,
+    systems: Vec<String>,
+    catalog_dir: Option<PathBuf>,
+    db_path: Option<PathBuf>,
+    dat_dir: Option<PathBuf>,
+) {
+    use retro_junk_import::{ImportStats, dat_source_str, import_dat, log_import};
+
+    let db_path = db_path.unwrap_or_else(default_catalog_db_path);
+    let catalog_dir = catalog_dir.unwrap_or_else(default_catalog_dir);
+
+    // Open or create the database
+    let conn = match retro_junk_db::open_database(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to open catalog database at {}: {}", db_path.display(), e);
+            std::process::exit(1);
+        }
+    };
+
+    // Seed platforms and companies from YAML
+    if catalog_dir.exists() {
+        match retro_junk_db::seed_from_catalog(&conn, &catalog_dir) {
+            Ok(stats) => {
+                log::info!(
+                    "Seeded {} platforms, {} companies, {} overrides from {}",
+                    stats.platforms,
+                    stats.companies,
+                    stats.overrides,
+                    catalog_dir.display(),
+                );
+            }
+            Err(e) => {
+                log::warn!("Warning: failed to seed from catalog YAML: {}", e);
+            }
+        }
+    } else {
+        log::warn!(
+            "Catalog directory not found at {}; skipping YAML seed",
+            catalog_dir.display(),
+        );
+    }
+
+    // Determine which consoles to import
+    let to_import: Vec<_> = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
+        ctx.consoles()
+            .filter(|c| c.analyzer.has_dat_support())
+            .collect()
+    } else {
+        systems
+            .iter()
+            .filter_map(|name| {
+                let console = ctx.get_by_short_name(name);
+                if console.is_none() {
+                    log::warn!(
+                        "  {} Unknown system '{}'",
+                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                        name,
+                    );
+                }
+                console
+            })
+            .filter(|c| {
+                if !c.analyzer.has_dat_support() {
+                    log::warn!(
+                        "  {} No DAT support for '{}'",
+                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                        c.metadata.short_name,
+                    );
+                    return false;
+                }
+                true
+            })
+            .collect()
+    };
+
+    if to_import.is_empty() {
+        log::warn!("No systems to import.");
+        return;
+    }
+
+    log::info!(
+        "{}",
+        format!("Importing {} system(s) into {}", to_import.len(), db_path.display())
+            .if_supports_color(Stdout, |t| t.bold()),
+    );
+
+    let mut total_stats = ImportStats::default();
+
+    for console in &to_import {
+        let short_name = console.metadata.short_name;
+        let dat_names = console.analyzer.dat_names();
+        let download_ids = console.analyzer.dat_download_ids();
+        let source = console.analyzer.dat_source();
+        let source_str = dat_source_str(&source);
+
+        // Load DAT files (from custom dir or cache, auto-downloading if needed)
+        let dats = match retro_junk_dat::cache::load_dats(
+            short_name,
+            dat_names,
+            download_ids,
+            dat_dir.as_deref(),
+            source,
+        ) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!(
+                    "  {} {}: {}",
+                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                    short_name.if_supports_color(Stdout, |t| t.bold()),
+                    e,
+                );
+                continue;
+            }
+        };
+
+        // Find the platform ID in catalog — use the core_platform mapping
+        let platform_id = console.metadata.platform.short_name();
+
+        // Import each DAT
+        for dat in &dats {
+            let progress = CliImportProgress::new(short_name);
+            let stats = match import_dat(&conn, dat, platform_id, source_str, Some(&progress)) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::warn!(
+                        "  {} {}: import failed: {}",
+                        "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                        short_name.if_supports_color(Stdout, |t| t.bold()),
+                        e,
+                    );
+                    continue;
+                }
+            };
+
+            // Log the import
+            if let Err(e) = log_import(&conn, source_str, &dat.name, Some(&dat.version), &stats) {
+                log::warn!("Failed to log import: {}", e);
+            }
+
+            log::info!(
+                "  {} {} — {} games: {} works, {} releases, {} media ({} new, {} updated, {} unchanged), {} skipped",
+                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                short_name.if_supports_color(Stdout, |t| t.bold()),
+                stats.total_games,
+                stats.works_created + stats.works_existing,
+                stats.releases_created + stats.releases_existing,
+                stats.media_created + stats.media_updated + stats.media_unchanged,
+                stats.media_created,
+                stats.media_updated,
+                stats.media_unchanged,
+                stats.skipped_bad,
+            );
+
+            total_stats.works_created += stats.works_created;
+            total_stats.works_existing += stats.works_existing;
+            total_stats.releases_created += stats.releases_created;
+            total_stats.releases_existing += stats.releases_existing;
+            total_stats.media_created += stats.media_created;
+            total_stats.media_updated += stats.media_updated;
+            total_stats.media_unchanged += stats.media_unchanged;
+            total_stats.skipped_bad += stats.skipped_bad;
+            total_stats.total_games += stats.total_games;
+        }
+    }
+
+    log::info!("");
+    log::info!(
+        "{}",
+        "Import complete".if_supports_color(Stdout, |t| t.bold()),
+    );
+    log::info!(
+        "  Works: {} new, {} existing",
+        total_stats.works_created,
+        total_stats.works_existing,
+    );
+    log::info!(
+        "  Releases: {} new, {} existing",
+        total_stats.releases_created,
+        total_stats.releases_existing,
+    );
+    log::info!(
+        "  Media: {} new, {} updated, {} unchanged, {} bad dumps skipped",
+        total_stats.media_created,
+        total_stats.media_updated,
+        total_stats.media_unchanged,
+        total_stats.skipped_bad,
+    );
+    log::info!("  Database: {}", db_path.display());
+}
+
+/// CLI progress reporter for DAT imports.
+struct CliImportProgress {
+    system: String,
+}
+
+impl CliImportProgress {
+    fn new(system: &str) -> Self {
+        Self {
+            system: system.to_string(),
+        }
+    }
+}
+
+impl retro_junk_import::ImportProgress for CliImportProgress {
+    fn on_game(&self, current: usize, total: usize, _name: &str) {
+        // Log progress every 1000 games to avoid spam
+        if current % 1000 == 0 && current < total {
+            log::info!(
+                "    {} [{}/{}]",
+                self.system.if_supports_color(Stdout, |t| t.dimmed()),
+                current,
+                total,
+            );
+        }
+    }
+
+    fn on_phase(&self, message: &str) {
+        log::info!("{}", message);
+    }
+
+    fn on_complete(&self, message: &str) {
+        log::info!("{}", message);
+    }
+}
+
+/// Show catalog database statistics.
+fn run_catalog_stats(db_path: Option<PathBuf>) {
+    let db_path = db_path.unwrap_or_else(default_catalog_db_path);
+
+    if !db_path.exists() {
+        log::warn!("No catalog database found at {}", db_path.display());
+        log::info!("Run 'retro-junk catalog import all' to create one.");
+        return;
+    }
+
+    let conn = match retro_junk_db::open_database(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to open catalog database: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    match retro_junk_db::catalog_stats(&conn) {
+        Ok(stats) => {
+            log::info!(
+                "{}",
+                "Catalog Database Statistics".if_supports_color(Stdout, |t| t.bold()),
+            );
+            log::info!("  Database: {}", db_path.display());
+            log::info!("");
+            log::info!("  Platforms:      {:>8}", stats.platforms);
+            log::info!("  Companies:      {:>8}", stats.companies);
+            log::info!("  Works:          {:>8}", stats.works);
+            log::info!("  Releases:       {:>8}", stats.releases);
+            log::info!("  Media entries:  {:>8}", stats.media);
+            log::info!("  Assets:         {:>8}", stats.assets);
+            log::info!("  Owned (coll.):  {:>8}", stats.collection_owned);
+            log::info!(
+                "  Disagreements:  {:>8} (unresolved)",
+                stats.unresolved_disagreements,
+            );
+        }
+        Err(e) => {
+            log::error!("Failed to query catalog stats: {}", e);
             std::process::exit(1);
         }
     }

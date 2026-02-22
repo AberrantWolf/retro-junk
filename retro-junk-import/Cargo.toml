@@ -1,0 +1,14 @@
+[package]
+name = "retro-junk-import"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+retro-junk-catalog = { workspace = true }
+retro-junk-db = { workspace = true }
+retro-junk-dat = { workspace = true }
+retro-junk-core = { workspace = true }
+thiserror = { workspace = true }
+chrono = { workspace = true }
+log = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
