@@ -1,0 +1,12 @@
+[package]
+name = "retro-junk-db"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+retro-junk-catalog = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
