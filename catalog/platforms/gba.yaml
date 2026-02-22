@@ -1,0 +1,20 @@
+id: gba
+display_name: "Game Boy Advance"
+short_name: GBA
+manufacturer: Nintendo
+generation: 6
+media_type: cartridge
+release_year: 2001
+core_platform: Gba
+regions:
+  - region: japan
+    release_date: "2001-03-21"
+  - region: usa
+    release_date: "2001-06-11"
+  - region: europe
+    release_date: "2001-06-22"
+relationships:
+  - platform: gb
+    type: compatible
+  - platform: nds
+    type: successor

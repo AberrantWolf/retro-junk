@@ -1,0 +1,18 @@
+id: ps1
+display_name: "Sony PlayStation"
+short_name: PS1
+manufacturer: Sony
+generation: 5
+media_type: disc
+release_year: 1994
+core_platform: Ps1
+regions:
+  - region: japan
+    release_date: "1994-12-03"
+  - region: usa
+    release_date: "1995-09-09"
+  - region: europe
+    release_date: "1995-09-29"
+relationships:
+  - platform: ps2
+    type: successor

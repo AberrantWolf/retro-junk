@@ -1,0 +1,18 @@
+id: segacd
+display_name: "Sega CD / Mega CD"
+short_name: SegaCD
+manufacturer: Sega
+generation: 4
+media_type: disc
+release_year: 1991
+core_platform: SegaCd
+regions:
+  - region: japan
+    release_date: "1991-12-12"
+  - region: usa
+    release_date: "1992-10-15"
+  - region: europe
+    release_date: "1993-04-02"
+relationships:
+  - platform: genesis
+    type: addon

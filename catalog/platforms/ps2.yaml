@@ -1,0 +1,20 @@
+id: ps2
+display_name: "Sony PlayStation 2"
+short_name: PS2
+manufacturer: Sony
+generation: 6
+media_type: disc
+release_year: 2000
+core_platform: Ps2
+regions:
+  - region: japan
+    release_date: "2000-03-04"
+  - region: usa
+    release_date: "2000-10-26"
+  - region: europe
+    release_date: "2000-11-24"
+relationships:
+  - platform: ps1
+    type: compatible
+  - platform: ps3
+    type: successor

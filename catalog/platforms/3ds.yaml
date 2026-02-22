@@ -1,0 +1,15 @@
+id: 3ds
+display_name: "Nintendo 3DS"
+short_name: 3DS
+manufacturer: Nintendo
+generation: 8
+media_type: card
+release_year: 2011
+core_platform: N3ds
+regions:
+  - region: japan
+    release_date: "2011-02-26"
+  - region: usa
+    release_date: "2011-03-27"
+  - region: europe
+    release_date: "2011-03-25"

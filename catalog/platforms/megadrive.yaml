@@ -1,0 +1,16 @@
+id: megadrive
+display_name: "Sega Mega Drive"
+short_name: MD
+manufacturer: Sega
+generation: 4
+media_type: cartridge
+release_year: 1988
+core_platform: Genesis
+regions:
+  - region: japan
+    release_date: "1988-10-29"
+  - region: europe
+    release_date: "1990-11-30"
+relationships:
+  - platform: genesis
+    type: regional_variant

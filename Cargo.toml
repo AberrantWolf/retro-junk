@@ -12,6 +12,9 @@ members = [
     "retro-junk-microsoft",
     "retro-junk-scraper",
     "retro-junk-frontend",
+    "retro-junk-catalog",
+    "retro-junk-db",
+    "retro-junk-import",
 ]
 
 [workspace.package]
@@ -28,6 +31,9 @@ retro-junk-sony = { path = "retro-junk-sony" }
 retro-junk-sega = { path = "retro-junk-sega" }
 retro-junk-microsoft = { path = "retro-junk-microsoft" }
 retro-junk-dat = { path = "retro-junk-dat" }
+retro-junk-catalog = { path = "retro-junk-catalog" }
+retro-junk-db = { path = "retro-junk-db" }
+retro-junk-import = { path = "retro-junk-import" }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 owo-colors = { version = "4", features = ["supports-colors"] }

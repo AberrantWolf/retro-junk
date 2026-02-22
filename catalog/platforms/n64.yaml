@@ -1,0 +1,18 @@
+id: n64
+display_name: "Nintendo 64"
+short_name: N64
+manufacturer: Nintendo
+generation: 5
+media_type: cartridge
+release_year: 1996
+core_platform: N64
+regions:
+  - region: japan
+    release_date: "1996-06-23"
+  - region: usa
+    release_date: "1996-09-29"
+  - region: europe
+    release_date: "1997-03-01"
+relationships:
+  - platform: gamecube
+    type: successor

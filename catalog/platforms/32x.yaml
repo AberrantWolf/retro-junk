@@ -1,0 +1,18 @@
+id: 32x
+display_name: "Sega 32X"
+short_name: 32X
+manufacturer: Sega
+generation: 4
+media_type: cartridge
+release_year: 1994
+core_platform: Sega32x
+regions:
+  - region: japan
+    release_date: "1994-12-03"
+  - region: usa
+    release_date: "1994-11-21"
+  - region: europe
+    release_date: "1995-01-01"
+relationships:
+  - platform: genesis
+    type: addon

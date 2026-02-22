@@ -1,0 +1,14 @@
+id: famicom
+display_name: "Nintendo Family Computer"
+short_name: FC
+manufacturer: Nintendo
+generation: 3
+media_type: cartridge
+release_year: 1983
+core_platform: Nes
+regions:
+  - region: japan
+    release_date: "1983-07-15"
+relationships:
+  - platform: nes
+    type: regional_variant

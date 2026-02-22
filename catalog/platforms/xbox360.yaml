@@ -1,0 +1,15 @@
+id: xbox360
+display_name: "Microsoft Xbox 360"
+short_name: X360
+manufacturer: Microsoft
+generation: 7
+media_type: disc
+release_year: 2005
+core_platform: Xbox360
+regions:
+  - region: usa
+    release_date: "2005-11-22"
+  - region: japan
+    release_date: "2005-12-10"
+  - region: europe
+    release_date: "2005-12-02"

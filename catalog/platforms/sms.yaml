@@ -1,0 +1,18 @@
+id: sms
+display_name: "Sega Master System"
+short_name: SMS
+manufacturer: Sega
+generation: 3
+media_type: cartridge
+release_year: 1985
+core_platform: MasterSystem
+regions:
+  - region: japan
+    release_date: "1985-10-20"
+  - region: usa
+    release_date: "1986-09-01"
+  - region: europe
+    release_date: "1986-09-01"
+relationships:
+  - platform: genesis
+    type: successor

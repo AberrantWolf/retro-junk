@@ -1,0 +1,26 @@
+# PS1 multi-disc serial overrides.
+# Redump's serial data reflects catalog/product serials (printed on the box),
+# not per-disc boot serials (from SYSTEM.CNF). For most games these are identical,
+# but some multi-disc games list the same catalog serial for all discs.
+# See .claude/skills/retro-archive/formats/PSX.md for details.
+
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy VII (USA) (Disc *)"
+  field: game_serial
+  override_value: "SCUS-94163"
+  reason: "All FF7 USA discs share catalog serial SCUS-94163; per-disc serials are SCUS-94163/94164/94165"
+
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy VIII (USA) (Disc *)"
+  field: game_serial
+  override_value: "SLUS-00892"
+  reason: "All FF8 USA discs share catalog serial SLUS-00892; per-disc serials are SLUS-00892/00908/00909/00910"
+
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy IX (USA) (Disc *)"
+  field: game_serial
+  override_value: "SLUS-01251"
+  reason: "All FF9 USA discs share catalog serial SLUS-01251; per-disc serials are SLUS-01251/01295/01296/01297"

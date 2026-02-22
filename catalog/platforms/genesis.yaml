@@ -1,0 +1,24 @@
+id: genesis
+display_name: "Sega Genesis / Mega Drive"
+short_name: Genesis
+manufacturer: Sega
+generation: 4
+media_type: cartridge
+release_year: 1988
+core_platform: Genesis
+regions:
+  - region: japan
+    release_date: "1988-10-29"
+  - region: usa
+    release_date: "1989-08-14"
+  - region: europe
+    release_date: "1990-11-30"
+relationships:
+  - platform: megadrive
+    type: regional_variant
+  - platform: segacd
+    type: addon
+  - platform: 32x
+    type: addon
+  - platform: saturn
+    type: successor

@@ -1,0 +1,14 @@
+id: super-famicom
+display_name: "Super Famicom"
+short_name: SFC
+manufacturer: Nintendo
+generation: 4
+media_type: cartridge
+release_year: 1990
+core_platform: Snes
+regions:
+  - region: japan
+    release_date: "1990-11-21"
+relationships:
+  - platform: snes
+    type: regional_variant

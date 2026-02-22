@@ -1,0 +1,15 @@
+id: vita
+display_name: "Sony PlayStation Vita"
+short_name: Vita
+manufacturer: Sony
+generation: 8
+media_type: card
+release_year: 2011
+core_platform: Vita
+regions:
+  - region: japan
+    release_date: "2011-12-17"
+  - region: usa
+    release_date: "2012-02-22"
+  - region: europe
+    release_date: "2012-02-22"

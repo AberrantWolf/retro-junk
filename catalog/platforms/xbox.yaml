@@ -1,0 +1,18 @@
+id: xbox
+display_name: "Microsoft Xbox"
+short_name: Xbox
+manufacturer: Microsoft
+generation: 6
+media_type: disc
+release_year: 2001
+core_platform: Xbox
+regions:
+  - region: usa
+    release_date: "2001-11-15"
+  - region: japan
+    release_date: "2002-02-22"
+  - region: europe
+    release_date: "2002-03-14"
+relationships:
+  - platform: xbox360
+    type: successor

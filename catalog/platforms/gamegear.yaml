@@ -1,0 +1,18 @@
+id: gamegear
+display_name: "Sega Game Gear"
+short_name: GG
+manufacturer: Sega
+generation: 4
+media_type: cartridge
+release_year: 1990
+core_platform: GameGear
+regions:
+  - region: japan
+    release_date: "1990-10-06"
+  - region: usa
+    release_date: "1991-04-26"
+  - region: europe
+    release_date: "1991-06-01"
+relationships:
+  - platform: sms
+    type: compatible

@@ -1,0 +1,18 @@
+id: gb
+display_name: "Game Boy / Game Boy Color"
+short_name: GB
+manufacturer: Nintendo
+generation: 4
+media_type: cartridge
+release_year: 1989
+core_platform: GameBoy
+regions:
+  - region: japan
+    release_date: "1989-04-21"
+  - region: usa
+    release_date: "1989-07-31"
+  - region: europe
+    release_date: "1990-09-28"
+relationships:
+  - platform: gba
+    type: successor

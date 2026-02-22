@@ -1,0 +1,18 @@
+id: gamecube
+display_name: "Nintendo GameCube"
+short_name: GCN
+manufacturer: Nintendo
+generation: 6
+media_type: disc
+release_year: 2001
+core_platform: GameCube
+regions:
+  - region: japan
+    release_date: "2001-09-14"
+  - region: usa
+    release_date: "2001-11-18"
+  - region: europe
+    release_date: "2002-05-03"
+relationships:
+  - platform: wii
+    type: successor

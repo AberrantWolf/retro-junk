@@ -1,0 +1,18 @@
+id: psp
+display_name: "Sony PlayStation Portable"
+short_name: PSP
+manufacturer: Sony
+generation: 7
+media_type: disc
+release_year: 2004
+core_platform: Psp
+regions:
+  - region: japan
+    release_date: "2004-12-12"
+  - region: usa
+    release_date: "2005-03-24"
+  - region: europe
+    release_date: "2005-09-01"
+relationships:
+  - platform: vita
+    type: successor

@@ -1,0 +1,18 @@
+id: wii
+display_name: "Nintendo Wii"
+short_name: Wii
+manufacturer: Nintendo
+generation: 7
+media_type: disc
+release_year: 2006
+core_platform: Wii
+regions:
+  - region: japan
+    release_date: "2006-12-02"
+  - region: usa
+    release_date: "2006-11-19"
+  - region: europe
+    release_date: "2006-12-08"
+relationships:
+  - platform: wiiu
+    type: successor

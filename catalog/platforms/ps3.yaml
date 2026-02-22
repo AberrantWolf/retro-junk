@@ -1,0 +1,15 @@
+id: ps3
+display_name: "Sony PlayStation 3"
+short_name: PS3
+manufacturer: Sony
+generation: 7
+media_type: disc
+release_year: 2006
+core_platform: Ps3
+regions:
+  - region: japan
+    release_date: "2006-11-11"
+  - region: usa
+    release_date: "2006-11-17"
+  - region: europe
+    release_date: "2007-03-23"

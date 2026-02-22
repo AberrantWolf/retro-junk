@@ -1,0 +1,15 @@
+id: dreamcast
+display_name: "Sega Dreamcast"
+short_name: DC
+manufacturer: Sega
+generation: 6
+media_type: disc
+release_year: 1998
+core_platform: Dreamcast
+regions:
+  - region: japan
+    release_date: "1998-11-27"
+  - region: usa
+    release_date: "1999-09-09"
+  - region: europe
+    release_date: "1999-10-14"

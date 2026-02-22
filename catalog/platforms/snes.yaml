@@ -1,0 +1,18 @@
+id: snes
+display_name: "Super Nintendo Entertainment System"
+short_name: SNES
+manufacturer: Nintendo
+generation: 4
+media_type: cartridge
+release_year: 1991
+core_platform: Snes
+regions:
+  - region: usa
+    release_date: "1991-08-23"
+  - region: europe
+    release_date: "1992-04-11"
+relationships:
+  - platform: super-famicom
+    type: regional_variant
+  - platform: n64
+    type: successor

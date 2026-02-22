@@ -1,0 +1,14 @@
+id: sg1000
+display_name: "Sega SG-1000"
+short_name: SG1000
+manufacturer: Sega
+generation: 3
+media_type: cartridge
+release_year: 1983
+core_platform: Sg1000
+regions:
+  - region: japan
+    release_date: "1983-07-15"
+relationships:
+  - platform: sms
+    type: successor
