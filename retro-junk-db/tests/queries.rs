@@ -473,3 +473,125 @@ fn asset_queries_with_collection_filter() {
     assert_eq!(missing.len(), 1);
     assert_eq!(missing[0].1, "Super Mario Bros.");
 }
+
+// ── Lookup Query Tests ────────────────────────────────────────────────────
+
+#[test]
+fn search_releases_filtered_no_platform() {
+    let conn = setup_db();
+    let results = search_releases_filtered(&conn, "Mario", None, 25).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].title, "Super Mario Bros.");
+}
+
+#[test]
+fn search_releases_filtered_with_platform() {
+    let conn = setup_db();
+    // Should find Mario on NES
+    let results = search_releases_filtered(&conn, "Mario", Some("nes"), 25).unwrap();
+    assert_eq!(results.len(), 1);
+
+    // Should not find Mario on a non-existent platform
+    let results = search_releases_filtered(&conn, "Mario", Some("snes"), 25).unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn search_releases_filtered_respects_limit() {
+    let conn = setup_db();
+    // Both releases match "%e%" (Super Mario Bros., The Legend of Zelda)
+    let results = search_releases_filtered(&conn, "e", None, 1).unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[test]
+fn find_media_by_md5_no_match() {
+    let conn = setup_db();
+    let results = find_media_by_md5(&conn, "00000000000000000000000000000000").unwrap();
+    assert!(results.is_empty());
+}
+
+#[test]
+fn find_media_by_md5_with_match() {
+    let conn = setup_db();
+    // Insert a media entry with an MD5
+    upsert_media(
+        &conn,
+        &Media {
+            id: "zelda1-nes-usa-v1".to_string(),
+            release_id: "zelda1-nes-usa".to_string(),
+            media_serial: None,
+            disc_number: None,
+            disc_label: None,
+            revision: None,
+            status: MediaStatus::Verified,
+            dat_name: Some("The Legend of Zelda (USA).nes".to_string()),
+            dat_source: Some("no-intro".to_string()),
+            file_size: Some(131088),
+            crc32: Some("a12b1f68".to_string()),
+            sha1: Some("a1234567890abcdef1234567890abcdef12345678".to_string()),
+            md5: Some("abc123def456abc123def456abc123de".to_string()),
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )
+    .unwrap();
+
+    let results = find_media_by_md5(&conn, "abc123def456abc123def456abc123de").unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, "zelda1-nes-usa-v1");
+}
+
+#[test]
+fn get_release_by_id_found() {
+    let conn = setup_db();
+    let release = get_release_by_id(&conn, "smb1-nes-usa").unwrap();
+    assert!(release.is_some());
+    assert_eq!(release.unwrap().title, "Super Mario Bros.");
+}
+
+#[test]
+fn get_release_by_id_not_found() {
+    let conn = setup_db();
+    let release = get_release_by_id(&conn, "nonexistent").unwrap();
+    assert!(release.is_none());
+}
+
+#[test]
+fn get_company_name_found() {
+    let conn = setup_db();
+    upsert_company(
+        &conn,
+        &Company {
+            id: "nintendo".to_string(),
+            name: "Nintendo".to_string(),
+            country: Some("Japan".to_string()),
+            aliases: vec![],
+        },
+    )
+    .unwrap();
+
+    let name = get_company_name(&conn, "nintendo").unwrap();
+    assert_eq!(name, Some("Nintendo".to_string()));
+}
+
+#[test]
+fn get_company_name_not_found() {
+    let conn = setup_db();
+    let name = get_company_name(&conn, "nonexistent").unwrap();
+    assert!(name.is_none());
+}
+
+#[test]
+fn get_platform_display_name_found() {
+    let conn = setup_db();
+    let name = get_platform_display_name(&conn, "nes").unwrap();
+    assert_eq!(name, Some("NES".to_string()));
+}
+
+#[test]
+fn get_platform_display_name_not_found() {
+    let conn = setup_db();
+    let name = get_platform_display_name(&conn, "nonexistent").unwrap();
+    assert!(name.is_none());
+}

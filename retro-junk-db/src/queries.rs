@@ -39,6 +39,21 @@ pub fn find_media_by_sha1(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// Find media entries by MD5 hash.
+pub fn find_media_by_md5(
+    conn: &Connection,
+    md5: &str,
+) -> Result<Vec<Media>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, release_id, media_serial, disc_number, disc_label,
+                revision, status, dat_name, dat_source, file_size,
+                crc32, sha1, md5, created_at, updated_at
+         FROM media WHERE md5 = ?1",
+    )?;
+    let rows = stmt.query_map(params![md5], row_to_media)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 /// Find media entries by serial number.
 pub fn find_media_by_serial(
     conn: &Connection,
@@ -104,6 +119,47 @@ pub fn search_releases(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// Search releases by title with optional platform filter and configurable limit.
+pub fn search_releases_filtered(
+    conn: &Connection,
+    query: &str,
+    platform_id: Option<&str>,
+    limit: u32,
+) -> Result<Vec<Release>, OperationError> {
+    let pattern = format!("%{}%", query);
+    let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match platform_id {
+        Some(pid) => (
+            format!(
+                "SELECT id, work_id, platform_id, region, title, alt_title,
+                        publisher_id, developer_id, release_date, game_serial,
+                        genre, players, rating, description, screenscraper_id,
+                        created_at, updated_at
+                 FROM releases WHERE title LIKE ?1 AND platform_id = ?2
+                 ORDER BY title LIMIT {limit}"
+            ),
+            vec![
+                Box::new(pattern),
+                Box::new(pid.to_string()),
+            ],
+        ),
+        None => (
+            format!(
+                "SELECT id, work_id, platform_id, region, title, alt_title,
+                        publisher_id, developer_id, release_date, game_serial,
+                        genre, players, rating, description, screenscraper_id,
+                        created_at, updated_at
+                 FROM releases WHERE title LIKE ?1
+                 ORDER BY title LIMIT {limit}"
+            ),
+            vec![Box::new(pattern)],
+        ),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
+    let rows = stmt.query_map(params.as_slice(), row_to_release)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 /// Find a release by game serial.
 pub fn find_release_by_serial(
     conn: &Connection,
@@ -160,6 +216,60 @@ pub fn releases_to_enrich(
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![platform_id], row_to_release)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Get a single release by its ID.
+pub fn get_release_by_id(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<Release>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, work_id, platform_id, region, title, alt_title,
+                publisher_id, developer_id, release_date, game_serial,
+                genre, players, rating, description, screenscraper_id,
+                created_at, updated_at
+         FROM releases WHERE id = ?1",
+    )?;
+    let result = stmt.query_row(params![id], row_to_release);
+    match result {
+        Ok(r) => Ok(Some(r)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Resolve a company ID to its display name.
+pub fn get_company_name(
+    conn: &Connection,
+    company_id: &str,
+) -> Result<Option<String>, OperationError> {
+    let result = conn.query_row(
+        "SELECT name FROM companies WHERE id = ?1",
+        params![company_id],
+        |row| row.get(0),
+    );
+    match result {
+        Ok(name) => Ok(Some(name)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Resolve a platform ID to its display name.
+pub fn get_platform_display_name(
+    conn: &Connection,
+    platform_id: &str,
+) -> Result<Option<String>, OperationError> {
+    let result = conn.query_row(
+        "SELECT short_name FROM platforms WHERE id = ?1",
+        params![platform_id],
+        |row| row.get(0),
+    );
+    match result {
+        Ok(name) => Ok(Some(name)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 
 // ── Platform Queries ────────────────────────────────────────────────────────
