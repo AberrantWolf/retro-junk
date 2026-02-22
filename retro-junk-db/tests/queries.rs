@@ -152,3 +152,324 @@ fn list_platforms_query() {
     assert_eq!(platforms[0].id, "nes");
     assert_eq!(platforms[0].core_platform.as_deref(), Some("Nes"));
 }
+
+#[test]
+fn disagreement_filter_by_field() {
+    let conn = setup_db();
+
+    // Insert two disagreements with different fields
+    insert_disagreement(
+        &conn,
+        &Disagreement {
+            id: 0,
+            entity_type: "release".to_string(),
+            entity_id: "smb1-nes-usa".to_string(),
+            field: "release_date".to_string(),
+            source_a: "no-intro".to_string(),
+            value_a: Some("1985-10-18".to_string()),
+            source_b: "screenscraper".to_string(),
+            value_b: Some("1985-09-13".to_string()),
+            resolved: false,
+            resolution: None,
+            resolved_at: None,
+            created_at: String::new(),
+        },
+    )
+    .unwrap();
+    insert_disagreement(
+        &conn,
+        &Disagreement {
+            id: 0,
+            entity_type: "release".to_string(),
+            entity_id: "smb1-nes-usa".to_string(),
+            field: "title".to_string(),
+            source_a: "no-intro".to_string(),
+            value_a: Some("Super Mario Bros.".to_string()),
+            source_b: "screenscraper".to_string(),
+            value_b: Some("Super Mario Brothers".to_string()),
+            resolved: false,
+            resolution: None,
+            resolved_at: None,
+            created_at: String::new(),
+        },
+    )
+    .unwrap();
+
+    // No filter — both
+    let all = list_unresolved_disagreements(&conn, &Default::default()).unwrap();
+    assert_eq!(all.len(), 2);
+
+    // Filter by field
+    let dates_only = list_unresolved_disagreements(
+        &conn,
+        &DisagreementFilter {
+            field: Some("release_date"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(dates_only.len(), 1);
+    assert_eq!(dates_only[0].field, "release_date");
+}
+
+#[test]
+fn disagreement_filter_by_platform() {
+    let conn = setup_db();
+
+    // Add a PS1 platform with a release
+    let ps1 = CatalogPlatform {
+        id: "ps1".to_string(),
+        display_name: "PlayStation".to_string(),
+        short_name: "PS1".to_string(),
+        manufacturer: "Sony".to_string(),
+        generation: Some(5),
+        media_type: MediaType::Disc,
+        release_year: Some(1994),
+        description: None,
+        core_platform: Some("Ps1".to_string()),
+        regions: vec![],
+        relationships: vec![],
+    };
+    upsert_platform(&conn, &ps1).unwrap();
+    insert_work(&conn, "ff7", "Final Fantasy VII").unwrap();
+    upsert_release(
+        &conn,
+        &Release {
+            id: "ff7-ps1-usa".to_string(),
+            work_id: "ff7".to_string(),
+            platform_id: "ps1".to_string(),
+            region: "usa".to_string(),
+            title: "Final Fantasy VII".to_string(),
+            alt_title: None,
+            publisher_id: None,
+            developer_id: None,
+            release_date: None,
+            game_serial: None,
+            genre: None,
+            players: None,
+            rating: None,
+            description: None,
+            screenscraper_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        },
+    )
+    .unwrap();
+
+    // NES disagreement
+    insert_disagreement(
+        &conn,
+        &Disagreement {
+            id: 0,
+            entity_type: "release".to_string(),
+            entity_id: "smb1-nes-usa".to_string(),
+            field: "release_date".to_string(),
+            source_a: "a".to_string(),
+            value_a: Some("1985".to_string()),
+            source_b: "b".to_string(),
+            value_b: Some("1986".to_string()),
+            resolved: false,
+            resolution: None,
+            resolved_at: None,
+            created_at: String::new(),
+        },
+    )
+    .unwrap();
+
+    // PS1 disagreement
+    insert_disagreement(
+        &conn,
+        &Disagreement {
+            id: 0,
+            entity_type: "release".to_string(),
+            entity_id: "ff7-ps1-usa".to_string(),
+            field: "release_date".to_string(),
+            source_a: "a".to_string(),
+            value_a: Some("1997".to_string()),
+            source_b: "b".to_string(),
+            value_b: Some("1998".to_string()),
+            resolved: false,
+            resolution: None,
+            resolved_at: None,
+            created_at: String::new(),
+        },
+    )
+    .unwrap();
+
+    // All disagreements
+    let all = list_unresolved_disagreements(&conn, &Default::default()).unwrap();
+    assert_eq!(all.len(), 2);
+
+    // Filter to NES only
+    let nes_only = list_unresolved_disagreements(
+        &conn,
+        &DisagreementFilter {
+            platform_id: Some("nes"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(nes_only.len(), 1);
+    assert_eq!(nes_only[0].entity_id, "smb1-nes-usa");
+
+    // Filter to PS1 only
+    let ps1_only = list_unresolved_disagreements(
+        &conn,
+        &DisagreementFilter {
+            platform_id: Some("ps1"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(ps1_only.len(), 1);
+    assert_eq!(ps1_only[0].entity_id, "ff7-ps1-usa");
+}
+
+// ── Asset Query Tests ─────────────────────────────────────────────────────
+
+fn setup_db_with_assets() -> rusqlite::Connection {
+    let conn = setup_db();
+
+    // Insert assets for SMB1
+    insert_media_asset(
+        &conn,
+        &MediaAsset {
+            id: 0,
+            release_id: Some("smb1-nes-usa".to_string()),
+            media_id: None,
+            asset_type: "box-front".to_string(),
+            region: Some("usa".to_string()),
+            source: "screenscraper".to_string(),
+            file_path: Some("/assets/smb1/box-front.png".to_string()),
+            source_url: Some("https://example.com/box.png".to_string()),
+            scraped: true,
+            file_hash: None,
+            width: Some(300),
+            height: Some(400),
+            created_at: String::new(),
+        },
+    )
+    .unwrap();
+
+    insert_media_asset(
+        &conn,
+        &MediaAsset {
+            id: 0,
+            release_id: Some("smb1-nes-usa".to_string()),
+            media_id: None,
+            asset_type: "screenshot".to_string(),
+            region: None,
+            source: "screenscraper".to_string(),
+            file_path: Some("/assets/smb1/screenshot.png".to_string()),
+            source_url: None,
+            scraped: true,
+            file_hash: None,
+            width: Some(256),
+            height: Some(240),
+            created_at: String::new(),
+        },
+    )
+    .unwrap();
+
+    conn
+}
+
+#[test]
+fn assets_for_release_returns_all() {
+    let conn = setup_db_with_assets();
+
+    let assets = assets_for_release(&conn, "smb1-nes-usa").unwrap();
+    assert_eq!(assets.len(), 2);
+    // Ordered by asset_type
+    assert_eq!(assets[0].asset_type, "box-front");
+    assert_eq!(assets[1].asset_type, "screenshot");
+
+    // Empty for zelda (no assets)
+    let empty = assets_for_release(&conn, "zelda1-nes-usa").unwrap();
+    assert!(empty.is_empty());
+}
+
+#[test]
+fn asset_coverage_summary_counts() {
+    let conn = setup_db_with_assets();
+
+    let (total, with_assets, asset_count) =
+        asset_coverage_summary(&conn, "nes", false).unwrap();
+    assert_eq!(total, 2); // SMB + Zelda
+    assert_eq!(with_assets, 1); // Only SMB has assets
+    assert_eq!(asset_count, 2); // 2 assets for SMB
+}
+
+#[test]
+fn asset_counts_by_type_works() {
+    let conn = setup_db_with_assets();
+
+    let counts = asset_counts_by_type(&conn, "nes", false).unwrap();
+    assert_eq!(counts.len(), 2);
+    assert!(counts.iter().any(|(t, c)| t == "box-front" && *c == 1));
+    assert!(counts.iter().any(|(t, c)| t == "screenshot" && *c == 1));
+}
+
+#[test]
+fn releases_missing_asset_type_finds_gaps() {
+    let conn = setup_db_with_assets();
+
+    // Zelda is missing box-front
+    let missing = releases_missing_asset_type(&conn, "nes", "box-front", false, None).unwrap();
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0].1, "The Legend of Zelda");
+
+    // Both are missing fanart
+    let missing = releases_missing_asset_type(&conn, "nes", "fanart", false, None).unwrap();
+    assert_eq!(missing.len(), 2);
+}
+
+#[test]
+fn releases_with_no_assets_finds_bare() {
+    let conn = setup_db_with_assets();
+
+    let bare = releases_with_no_assets(&conn, "nes", false, None).unwrap();
+    assert_eq!(bare.len(), 1);
+    assert_eq!(bare[0].1, "The Legend of Zelda");
+}
+
+#[test]
+fn asset_queries_with_collection_filter() {
+    let conn = setup_db_with_assets();
+
+    // Add SMB to collection
+    upsert_collection_entry(
+        &conn,
+        &CollectionEntry {
+            id: 0,
+            media_id: "smb1-nes-usa-v1".to_string(),
+            user_id: "default".to_string(),
+            owned: true,
+            condition: None,
+            notes: None,
+            date_acquired: None,
+            rom_path: None,
+            verified_at: None,
+        },
+    )
+    .unwrap();
+
+    // Collection-only coverage: only SMB is in collection
+    let (total, with_assets, _) =
+        asset_coverage_summary(&conn, "nes", true).unwrap();
+    assert_eq!(total, 1); // Only SMB in collection
+    assert_eq!(with_assets, 1); // SMB has assets
+
+    // Collection-only: no releases with no assets (SMB has assets)
+    let bare = releases_with_no_assets(&conn, "nes", true, None).unwrap();
+    assert!(bare.is_empty());
+
+    // Collection-only: SMB is not missing box-front
+    let missing = releases_missing_asset_type(&conn, "nes", "box-front", true, None).unwrap();
+    assert!(missing.is_empty());
+
+    // Collection-only: SMB IS missing fanart
+    let missing = releases_missing_asset_type(&conn, "nes", "fanart", true, None).unwrap();
+    assert_eq!(missing.len(), 1);
+    assert_eq!(missing[0].1, "Super Mario Bros.");
+}

@@ -247,33 +247,58 @@ pub struct CatalogStats {
 
 // ── Disagreement Queries ────────────────────────────────────────────────────
 
+/// Options for filtering disagreement queries.
+#[derive(Debug, Default)]
+pub struct DisagreementFilter<'a> {
+    pub entity_type: Option<&'a str>,
+    pub field: Option<&'a str>,
+    pub platform_id: Option<&'a str>,
+    pub limit: Option<u32>,
+}
+
 /// List unresolved disagreements, optionally filtered.
 pub fn list_unresolved_disagreements(
     conn: &Connection,
-    entity_type: Option<&str>,
-    limit: Option<u32>,
+    filter: &DisagreementFilter<'_>,
 ) -> Result<Vec<Disagreement>, OperationError> {
-    let limit = limit.unwrap_or(100);
-    let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match entity_type {
-        Some(et) => (
-            format!(
-                "SELECT id, entity_type, entity_id, field, source_a, value_a,
-                        source_b, value_b, resolved, resolution, resolved_at, created_at
-                 FROM disagreements WHERE resolved = 0 AND entity_type = ?1
-                 ORDER BY created_at DESC LIMIT {limit}"
-            ),
-            vec![Box::new(et.to_string())],
-        ),
-        None => (
-            format!(
-                "SELECT id, entity_type, entity_id, field, source_a, value_a,
-                        source_b, value_b, resolved, resolution, resolved_at, created_at
-                 FROM disagreements WHERE resolved = 0
-                 ORDER BY created_at DESC LIMIT {limit}"
-            ),
-            vec![],
-        ),
-    };
+    let limit = filter.limit.unwrap_or(100);
+    let mut conditions = vec!["resolved = 0".to_string()];
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    let mut param_idx = 1;
+
+    if let Some(et) = filter.entity_type {
+        conditions.push(format!("entity_type = ?{param_idx}"));
+        param_values.push(Box::new(et.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(field) = filter.field {
+        conditions.push(format!("field = ?{param_idx}"));
+        param_values.push(Box::new(field.to_string()));
+        param_idx += 1;
+    }
+
+    if let Some(pid) = filter.platform_id {
+        // Filter by platform: check if entity is a release on this platform,
+        // or a media item whose release is on this platform.
+        conditions.push(format!(
+            "((entity_type = 'release' AND entity_id IN \
+                (SELECT id FROM releases WHERE platform_id = ?{param_idx})) \
+             OR (entity_type = 'media' AND entity_id IN \
+                (SELECT id FROM media WHERE release_id IN \
+                    (SELECT id FROM releases WHERE platform_id = ?{param_idx}))))"
+        ));
+        param_values.push(Box::new(pid.to_string()));
+        // param_idx += 1;
+    }
+
+    let where_clause = conditions.join(" AND ");
+    let sql = format!(
+        "SELECT id, entity_type, entity_id, field, source_a, value_a,
+                source_b, value_b, resolved, resolution, resolved_at, created_at
+         FROM disagreements WHERE {where_clause}
+         ORDER BY created_at DESC LIMIT {limit}"
+    );
 
     let mut stmt = conn.prepare(&sql)?;
     let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
@@ -292,6 +317,163 @@ pub fn list_unresolved_disagreements(
             resolved_at: row.get(10)?,
             created_at: row.get(11)?,
         })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Get a single disagreement by ID.
+pub fn get_disagreement(
+    conn: &Connection,
+    id: i64,
+) -> Result<Option<Disagreement>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, entity_type, entity_id, field, source_a, value_a,
+                source_b, value_b, resolved, resolution, resolved_at, created_at
+         FROM disagreements WHERE id = ?1",
+    )?;
+    let result = stmt.query_row(rusqlite::params![id], |row| {
+        Ok(Disagreement {
+            id: row.get(0)?,
+            entity_type: row.get(1)?,
+            entity_id: row.get(2)?,
+            field: row.get(3)?,
+            source_a: row.get(4)?,
+            value_a: row.get(5)?,
+            source_b: row.get(6)?,
+            value_b: row.get(7)?,
+            resolved: row.get(8)?,
+            resolution: row.get(9)?,
+            resolved_at: row.get(10)?,
+            created_at: row.get(11)?,
+        })
+    });
+    match result {
+        Ok(d) => Ok(Some(d)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+// ── Collection Queries ──────────────────────────────────────────────────────
+
+/// A collection entry joined with its release and media info.
+#[derive(Debug)]
+pub struct CollectionRow {
+    pub collection_id: i64,
+    pub media_id: String,
+    pub release_id: String,
+    pub platform_id: String,
+    pub title: String,
+    pub region: String,
+    pub dat_name: Option<String>,
+    pub crc32: Option<String>,
+    pub sha1: Option<String>,
+    pub rom_path: Option<String>,
+    pub verified_at: Option<String>,
+    pub owned: bool,
+}
+
+/// List collection entries, optionally filtered by platform.
+pub fn list_collection(
+    conn: &Connection,
+    platform_id: Option<&str>,
+    limit: Option<u32>,
+) -> Result<Vec<CollectionRow>, OperationError> {
+    let limit = limit.unwrap_or(1000);
+    let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match platform_id {
+        Some(pid) => (
+            format!(
+                "SELECT c.id, c.media_id, m.release_id, r.platform_id, r.title, r.region,
+                        m.dat_name, m.crc32, m.sha1, c.rom_path, c.verified_at, c.owned
+                 FROM collection c
+                 JOIN media m ON c.media_id = m.id
+                 JOIN releases r ON m.release_id = r.id
+                 WHERE r.platform_id = ?1
+                 ORDER BY r.title
+                 LIMIT {limit}"
+            ),
+            vec![Box::new(pid.to_string())],
+        ),
+        None => (
+            format!(
+                "SELECT c.id, c.media_id, m.release_id, r.platform_id, r.title, r.region,
+                        m.dat_name, m.crc32, m.sha1, c.rom_path, c.verified_at, c.owned
+                 FROM collection c
+                 JOIN media m ON c.media_id = m.id
+                 JOIN releases r ON m.release_id = r.id
+                 ORDER BY r.platform_id, r.title
+                 LIMIT {limit}"
+            ),
+            vec![],
+        ),
+    };
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
+    let rows = stmt.query_map(params.as_slice(), |row| {
+        Ok(CollectionRow {
+            collection_id: row.get(0)?,
+            media_id: row.get(1)?,
+            release_id: row.get(2)?,
+            platform_id: row.get(3)?,
+            title: row.get(4)?,
+            region: row.get(5)?,
+            dat_name: row.get(6)?,
+            crc32: row.get(7)?,
+            sha1: row.get(8)?,
+            rom_path: row.get(9)?,
+            verified_at: row.get(10)?,
+            owned: row.get(11)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Find a collection entry by media ID and user.
+pub fn find_collection_entry(
+    conn: &Connection,
+    media_id: &str,
+    user_id: &str,
+) -> Result<Option<CollectionEntry>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, media_id, user_id, owned, condition, notes, date_acquired, rom_path, verified_at
+         FROM collection WHERE media_id = ?1 AND user_id = ?2",
+    )?;
+    let result = stmt.query_row(params![media_id, user_id], |row| {
+        Ok(CollectionEntry {
+            id: row.get(0)?,
+            media_id: row.get(1)?,
+            user_id: row.get(2)?,
+            owned: row.get(3)?,
+            condition: row.get(4)?,
+            notes: row.get(5)?,
+            date_acquired: row.get(6)?,
+            rom_path: row.get(7)?,
+            verified_at: row.get(8)?,
+        })
+    });
+    match result {
+        Ok(e) => Ok(Some(e)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Count collection entries grouped by platform.
+pub fn collection_counts_by_platform(
+    conn: &Connection,
+) -> Result<Vec<(String, i64)>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT r.platform_id, COUNT(*)
+         FROM collection c
+         JOIN media m ON c.media_id = m.id
+         JOIN releases r ON m.release_id = r.id
+         WHERE c.owned = 1
+         GROUP BY r.platform_id
+         ORDER BY r.platform_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
@@ -325,6 +507,202 @@ pub fn list_import_logs(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+// ── Asset Queries ─────────────────────────────────────────────────────────
+
+/// List all assets for a release.
+pub fn assets_for_release(
+    conn: &Connection,
+    release_id: &str,
+) -> Result<Vec<MediaAsset>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, release_id, media_id, asset_type, region, source,
+                file_path, source_url, scraped, file_hash, width, height, created_at
+         FROM media_assets WHERE release_id = ?1
+         ORDER BY asset_type, region",
+    )?;
+    let rows = stmt.query_map(params![release_id], row_to_asset)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Count assets per type for a platform, optionally restricted to collection.
+///
+/// Returns rows of (asset_type, count).
+pub fn asset_counts_by_type(
+    conn: &Connection,
+    platform_id: &str,
+    collection_only: bool,
+) -> Result<Vec<(String, i64)>, OperationError> {
+    let sql = if collection_only {
+        "SELECT a.asset_type, COUNT(DISTINCT a.id)
+         FROM media_assets a
+         JOIN releases r ON a.release_id = r.id
+         JOIN media m ON m.release_id = r.id
+         JOIN collection c ON c.media_id = m.id AND c.owned = 1
+         WHERE r.platform_id = ?1
+         GROUP BY a.asset_type
+         ORDER BY a.asset_type"
+    } else {
+        "SELECT a.asset_type, COUNT(DISTINCT a.id)
+         FROM media_assets a
+         JOIN releases r ON a.release_id = r.id
+         WHERE r.platform_id = ?1
+         GROUP BY a.asset_type
+         ORDER BY a.asset_type"
+    };
+    let mut stmt = conn.prepare(sql)?;
+    let rows = stmt.query_map(params![platform_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Find releases missing a specific asset type.
+///
+/// Returns (release_id, title, region) for releases that have no asset of the
+/// given type. Optionally filtered to collection-only releases.
+pub fn releases_missing_asset_type(
+    conn: &Connection,
+    platform_id: &str,
+    asset_type: &str,
+    collection_only: bool,
+    limit: Option<u32>,
+) -> Result<Vec<(String, String, String)>, OperationError> {
+    let limit = limit.unwrap_or(100);
+    let sql = if collection_only {
+        format!(
+            "SELECT r.id, r.title, r.region
+             FROM releases r
+             JOIN media m ON m.release_id = r.id
+             JOIN collection c ON c.media_id = m.id AND c.owned = 1
+             WHERE r.platform_id = ?1
+               AND r.id NOT IN (
+                   SELECT release_id FROM media_assets
+                   WHERE asset_type = ?2 AND release_id IS NOT NULL
+               )
+             GROUP BY r.id
+             ORDER BY r.title
+             LIMIT {limit}"
+        )
+    } else {
+        format!(
+            "SELECT r.id, r.title, r.region
+             FROM releases r
+             WHERE r.platform_id = ?1
+               AND r.id NOT IN (
+                   SELECT release_id FROM media_assets
+                   WHERE asset_type = ?2 AND release_id IS NOT NULL
+               )
+             ORDER BY r.title
+             LIMIT {limit}"
+        )
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![platform_id, asset_type], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Find releases with no assets at all.
+///
+/// Returns (release_id, title, region).
+pub fn releases_with_no_assets(
+    conn: &Connection,
+    platform_id: &str,
+    collection_only: bool,
+    limit: Option<u32>,
+) -> Result<Vec<(String, String, String)>, OperationError> {
+    let limit = limit.unwrap_or(100);
+    let sql = if collection_only {
+        format!(
+            "SELECT r.id, r.title, r.region
+             FROM releases r
+             JOIN media m ON m.release_id = r.id
+             JOIN collection c ON c.media_id = m.id AND c.owned = 1
+             WHERE r.platform_id = ?1
+               AND r.id NOT IN (
+                   SELECT release_id FROM media_assets WHERE release_id IS NOT NULL
+               )
+             GROUP BY r.id
+             ORDER BY r.title
+             LIMIT {limit}"
+        )
+    } else {
+        format!(
+            "SELECT r.id, r.title, r.region
+             FROM releases r
+             WHERE r.platform_id = ?1
+               AND r.id NOT IN (
+                   SELECT release_id FROM media_assets WHERE release_id IS NOT NULL
+               )
+             ORDER BY r.title
+             LIMIT {limit}"
+        )
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![platform_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Asset coverage summary for a platform.
+///
+/// Returns (total_releases, releases_with_any_asset, total_assets).
+pub fn asset_coverage_summary(
+    conn: &Connection,
+    platform_id: &str,
+    collection_only: bool,
+) -> Result<(i64, i64, i64), OperationError> {
+    let (total_sql, with_assets_sql, asset_count_sql) = if collection_only {
+        (
+            "SELECT COUNT(DISTINCT r.id)
+             FROM releases r
+             JOIN media m ON m.release_id = r.id
+             JOIN collection c ON c.media_id = m.id AND c.owned = 1
+             WHERE r.platform_id = ?1",
+            "SELECT COUNT(DISTINCT r.id)
+             FROM releases r
+             JOIN media m ON m.release_id = r.id
+             JOIN collection c ON c.media_id = m.id AND c.owned = 1
+             JOIN media_assets a ON a.release_id = r.id
+             WHERE r.platform_id = ?1",
+            "SELECT COUNT(*)
+             FROM media_assets a
+             JOIN releases r ON a.release_id = r.id
+             JOIN media m ON m.release_id = r.id
+             JOIN collection c ON c.media_id = m.id AND c.owned = 1
+             WHERE r.platform_id = ?1",
+        )
+    } else {
+        (
+            "SELECT COUNT(*) FROM releases WHERE platform_id = ?1",
+            "SELECT COUNT(DISTINCT r.id)
+             FROM releases r
+             JOIN media_assets a ON a.release_id = r.id
+             WHERE r.platform_id = ?1",
+            "SELECT COUNT(*)
+             FROM media_assets a
+             JOIN releases r ON a.release_id = r.id
+             WHERE r.platform_id = ?1",
+        )
+    };
+
+    let total: i64 = conn.query_row(total_sql, params![platform_id], |r| r.get(0))?;
+    let with_assets: i64 = conn.query_row(with_assets_sql, params![platform_id], |r| r.get(0))?;
+    let asset_count: i64 = conn.query_row(asset_count_sql, params![platform_id], |r| r.get(0))?;
+
+    Ok((total, with_assets, asset_count))
+}
+
 // ── Row Mapping Helpers ─────────────────────────────────────────────────────
 
 fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {
@@ -345,6 +723,24 @@ fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {
         md5: row.get(12)?,
         created_at: row.get(13)?,
         updated_at: row.get(14)?,
+    })
+}
+
+fn row_to_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<MediaAsset> {
+    Ok(MediaAsset {
+        id: row.get(0)?,
+        release_id: row.get(1)?,
+        media_id: row.get(2)?,
+        asset_type: row.get(3)?,
+        region: row.get(4)?,
+        source: row.get(5)?,
+        file_path: row.get(6)?,
+        source_url: row.get(7)?,
+        scraped: row.get(8)?,
+        file_hash: row.get(9)?,
+        width: row.get(10)?,
+        height: row.get(11)?,
+        created_at: row.get(12)?,
     })
 }
 

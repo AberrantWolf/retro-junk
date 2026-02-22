@@ -4,23 +4,88 @@
 # but some multi-disc games list the same catalog serial for all discs.
 # See .claude/skills/retro-archive/formats/PSX.md for details.
 
+# Final Fantasy VII (USA) — 3 discs
+# Catalog serial: SCUS-94163 (all discs)
+# Per-disc boot serials from SYSTEM.CNF:
 - entity_type: media
   platform_id: ps1
-  dat_name_pattern: "Final Fantasy VII (USA) (Disc *)"
-  field: game_serial
+  dat_name_pattern: "Final Fantasy VII (USA) (Disc 1)*"
+  field: media_serial
   override_value: "SCUS-94163"
-  reason: "All FF7 USA discs share catalog serial SCUS-94163; per-disc serials are SCUS-94163/94164/94165"
+  reason: "Per-disc boot serial for FF7 USA Disc 1"
 
 - entity_type: media
   platform_id: ps1
-  dat_name_pattern: "Final Fantasy VIII (USA) (Disc *)"
-  field: game_serial
+  dat_name_pattern: "Final Fantasy VII (USA) (Disc 2)*"
+  field: media_serial
+  override_value: "SCUS-94164"
+  reason: "Per-disc boot serial for FF7 USA Disc 2"
+
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy VII (USA) (Disc 3)*"
+  field: media_serial
+  override_value: "SCUS-94165"
+  reason: "Per-disc boot serial for FF7 USA Disc 3"
+
+# Final Fantasy VIII (USA) — 4 discs
+# Catalog serial: SLUS-00892 (all discs)
+# Per-disc boot serials from SYSTEM.CNF:
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy VIII (USA) (Disc 1)*"
+  field: media_serial
   override_value: "SLUS-00892"
-  reason: "All FF8 USA discs share catalog serial SLUS-00892; per-disc serials are SLUS-00892/00908/00909/00910"
+  reason: "Per-disc boot serial for FF8 USA Disc 1"
 
 - entity_type: media
   platform_id: ps1
-  dat_name_pattern: "Final Fantasy IX (USA) (Disc *)"
-  field: game_serial
+  dat_name_pattern: "Final Fantasy VIII (USA) (Disc 2)*"
+  field: media_serial
+  override_value: "SLUS-00908"
+  reason: "Per-disc boot serial for FF8 USA Disc 2"
+
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy VIII (USA) (Disc 3)*"
+  field: media_serial
+  override_value: "SLUS-00909"
+  reason: "Per-disc boot serial for FF8 USA Disc 3"
+
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy VIII (USA) (Disc 4)*"
+  field: media_serial
+  override_value: "SLUS-00910"
+  reason: "Per-disc boot serial for FF8 USA Disc 4"
+
+# Final Fantasy IX (USA) — 4 discs
+# Catalog serial: SLUS-01251 (all discs)
+# Per-disc boot serials from SYSTEM.CNF:
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy IX (USA) (Disc 1)*"
+  field: media_serial
   override_value: "SLUS-01251"
-  reason: "All FF9 USA discs share catalog serial SLUS-01251; per-disc serials are SLUS-01251/01295/01296/01297"
+  reason: "Per-disc boot serial for FF9 USA Disc 1"
+
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy IX (USA) (Disc 2)*"
+  field: media_serial
+  override_value: "SLUS-01295"
+  reason: "Per-disc boot serial for FF9 USA Disc 2"
+
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy IX (USA) (Disc 3)*"
+  field: media_serial
+  override_value: "SLUS-01296"
+  reason: "Per-disc boot serial for FF9 USA Disc 3"
+
+- entity_type: media
+  platform_id: ps1
+  dat_name_pattern: "Final Fantasy IX (USA) (Disc 4)*"
+  field: media_serial
+  override_value: "SLUS-01297"
+  reason: "Per-disc boot serial for FF9 USA Disc 4"

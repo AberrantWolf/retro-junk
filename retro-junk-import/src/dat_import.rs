@@ -5,6 +5,7 @@
 
 use retro_junk_catalog::name_parser::{self, DumpStatus};
 use retro_junk_catalog::types::*;
+use retro_junk_core::Platform;
 use retro_junk_dat::DatFile;
 use retro_junk_db::operations::{self, OperationError};
 use rusqlite::Connection;
@@ -34,18 +35,19 @@ pub struct ImportStats {
     pub media_unchanged: u64,
     pub skipped_bad: u64,
     pub total_games: u64,
+    pub disagreements_found: u64,
 }
 
 /// Import a parsed DAT file into the catalog database.
 ///
-/// `platform_id` is the catalog platform slug (e.g., "nes", "ps1").
+/// `platform` identifies the target platform (converted to string at the DB boundary).
 /// `dat_source` is "no-intro" or "redump".
 ///
 /// The optional `progress` callback is invoked after each game is processed.
 pub fn import_dat(
     conn: &Connection,
     dat: &DatFile,
-    platform_id: &str,
+    platform: Platform,
     dat_source: &str,
     progress: Option<&dyn ImportProgress>,
 ) -> Result<ImportStats, ImportError> {
@@ -55,7 +57,7 @@ pub fn import_dat(
     let tx = conn.unchecked_transaction()?;
 
     for (i, game) in dat.games.iter().enumerate() {
-        import_game(&tx, game, platform_id, dat_source, &mut stats)?;
+        import_game(&tx, game, platform, dat_source, &mut stats)?;
 
         if let Some(p) = progress {
             p.on_game(i + 1, dat.games.len(), &game.name);
@@ -71,10 +73,11 @@ pub fn import_dat(
 fn import_game(
     conn: &Connection,
     game: &retro_junk_dat::DatGame,
-    platform_id: &str,
+    platform: Platform,
     dat_source: &str,
     stats: &mut ImportStats,
 ) -> Result<(), ImportError> {
+    let platform_id = platform.short_name();
     let parsed = name_parser::parse_dat_name(&game.name);
 
     // Skip bad dumps by default
@@ -115,23 +118,18 @@ fn import_game(
     // Generate work ID from title + platform
     let work_id = make_work_id(&canonical_title, platform_id);
 
-    // Find or create Work
-    let work_exists = operations::find_work_by_name(conn, &canonical_title)?.is_some();
+    // Find or create Work (check by generated ID, not by name, to avoid
+    // false positives from cross-platform titles like "Tetris")
+    let work_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM works WHERE id = ?1)",
+        [&work_id],
+        |row| row.get(0),
+    )?;
     if work_exists {
         stats.works_existing += 1;
     } else {
-        // Check by ID too (different name, same slug)
-        let id_check: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM works WHERE id = ?1)",
-            [&work_id],
-            |row| row.get(0),
-        )?;
-        if id_check {
-            stats.works_existing += 1;
-        } else {
-            operations::insert_work(conn, &work_id, &canonical_title)?;
-            stats.works_created += 1;
-        }
+        operations::insert_work(conn, &work_id, &canonical_title)?;
+        stats.works_created += 1;
     }
 
     // Determine regions — use parsed regions, fallback to DAT-level region or "unknown"
@@ -242,7 +240,7 @@ pub fn log_import(
         records_created: stats.media_created as i64,
         records_updated: stats.media_updated as i64,
         records_unchanged: stats.media_unchanged as i64,
-        disagreements_found: 0,
+        disagreements_found: stats.disagreements_found as i64,
     };
     let id = operations::insert_import_log(conn, &log_entry)?;
     Ok(id)

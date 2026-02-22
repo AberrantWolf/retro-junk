@@ -1,4 +1,5 @@
 use retro_junk_catalog::types::*;
+use retro_junk_core::Platform;
 use retro_junk_dat::{DatFile, DatGame, DatRom};
 use retro_junk_db::*;
 use retro_junk_import::*;
@@ -85,7 +86,7 @@ fn import_creates_works_releases_media() {
     let conn = setup_db();
     let dat = sample_dat();
 
-    let stats = import_dat(&conn, &dat, "nes", "no-intro", None).unwrap();
+    let stats = import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
 
     // 3 unique works (SMB, Zelda, Bad Game skipped)
     assert_eq!(stats.works_created, 2);
@@ -97,7 +98,7 @@ fn import_creates_works_releases_media() {
 fn import_creates_correct_releases() {
     let conn = setup_db();
     let dat = sample_dat();
-    import_dat(&conn, &dat, "nes", "no-intro", None).unwrap();
+    import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
 
     let releases = releases_for_platform(&conn, "nes").unwrap();
     assert_eq!(releases.len(), 2); // SMB + Zelda (Rev A shares Zelda's release)
@@ -111,7 +112,7 @@ fn import_creates_correct_releases() {
 fn import_media_has_correct_hashes() {
     let conn = setup_db();
     let dat = sample_dat();
-    import_dat(&conn, &dat, "nes", "no-intro", None).unwrap();
+    import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
 
     let media = find_media_by_crc32(&conn, "d445f698").unwrap();
     assert_eq!(media.len(), 1);
@@ -127,7 +128,7 @@ fn import_media_has_correct_hashes() {
 fn import_revision_creates_separate_media() {
     let conn = setup_db();
     let dat = sample_dat();
-    import_dat(&conn, &dat, "nes", "no-intro", None).unwrap();
+    import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
 
     // Both Zelda entries should exist as media
     let zelda_orig = find_media_by_crc32(&conn, "a12d74c1").unwrap();
@@ -148,10 +149,10 @@ fn reimport_is_idempotent() {
     let conn = setup_db();
     let dat = sample_dat();
 
-    let stats1 = import_dat(&conn, &dat, "nes", "no-intro", None).unwrap();
+    let stats1 = import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
     assert_eq!(stats1.media_created, 3);
 
-    let stats2 = import_dat(&conn, &dat, "nes", "no-intro", None).unwrap();
+    let stats2 = import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
     assert_eq!(stats2.media_created, 0);
     assert_eq!(stats2.media_unchanged, 3);
     // 3 games processed (bad dump skipped), each finds existing work
@@ -163,7 +164,7 @@ fn reimport_is_idempotent() {
 fn bad_dumps_skipped() {
     let conn = setup_db();
     let dat = sample_dat();
-    let stats = import_dat(&conn, &dat, "nes", "no-intro", None).unwrap();
+    let stats = import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
 
     assert_eq!(stats.skipped_bad, 1);
     assert_eq!(stats.total_games, 4);
@@ -173,7 +174,7 @@ fn bad_dumps_skipped() {
 fn log_import_records_stats() {
     let conn = setup_db();
     let dat = sample_dat();
-    let stats = import_dat(&conn, &dat, "nes", "no-intro", None).unwrap();
+    let stats = import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
 
     let log_id = log_import(
         &conn,
@@ -212,7 +213,7 @@ fn multi_region_game() {
         }],
     };
 
-    let stats = import_dat(&conn, &dat, "nes", "no-intro", None).unwrap();
+    let stats = import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
     assert_eq!(stats.works_created, 1);
     assert_eq!(stats.releases_created, 1);
 
@@ -242,7 +243,7 @@ fn prototype_flag_sets_media_status() {
         }],
     };
 
-    import_dat(&conn, &dat, "nes", "no-intro", None).unwrap();
+    import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
     let media = find_media_by_crc32(&conn, "11223344").unwrap();
     assert_eq!(media.len(), 1);
     assert_eq!(media[0].status, MediaStatus::Prototype);
@@ -298,7 +299,7 @@ fn disc_number_extracted() {
         ],
     };
 
-    import_dat(&conn, &dat, "ps1", "redump", None).unwrap();
+    import_dat(&conn, &dat, Platform::Ps1, "redump", None).unwrap();
 
     let disc1 = find_media_by_crc32(&conn, "aabb0001").unwrap();
     let disc2 = find_media_by_crc32(&conn, "aabb0002").unwrap();

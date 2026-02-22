@@ -8,6 +8,7 @@ retro-junk-catalog = { workspace = true }
 retro-junk-db = { workspace = true }
 retro-junk-dat = { workspace = true }
 retro-junk-core = { workspace = true }
+retro-junk-lib = { workspace = true }
 retro-junk-scraper = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }

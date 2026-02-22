@@ -94,7 +94,7 @@ fn disagreement_recorded_when_values_differ() {
     .unwrap();
     assert!(result);
 
-    let disagreements = list_unresolved_disagreements(&conn, None, None).unwrap();
+    let disagreements = list_unresolved_disagreements(&conn, &Default::default()).unwrap();
     assert_eq!(disagreements.len(), 1);
     assert_eq!(disagreements[0].field, "release_date");
     assert_eq!(disagreements[0].value_a.as_deref(), Some("1985-10-18"));

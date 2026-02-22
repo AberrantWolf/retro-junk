@@ -7,11 +7,16 @@
 pub mod dat_import;
 pub mod merge;
 pub mod progress;
+pub mod scan_import;
 pub mod scraper_import;
 
 pub use dat_import::{ImportError, ImportStats, dat_source_str, import_dat, log_import};
 pub use merge::{apply_overrides, check_field, merge_release_fields};
 pub use progress::{ImportProgress, LogProgress, SilentProgress};
+pub use scan_import::{
+    ScanError, ScanOptions, ScanProgress, ScanResult, ScanStats, SilentScanProgress, VerifyStats,
+    scan_folder, verify_collection,
+};
 pub use scraper_import::{
     EnrichError, EnrichOptions, EnrichProgress, EnrichStats, SilentEnrichProgress,
     catalog_region_to_ss, enrich_releases, map_game_info, ss_media_type_to_asset_type,

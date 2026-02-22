@@ -2073,6 +2073,7 @@ dependencies = [
  "retro-junk-core",
  "retro-junk-dat",
  "retro-junk-db",
+ "retro-junk-lib",
  "retro-junk-scraper",
  "rusqlite",
  "thiserror",

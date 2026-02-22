@@ -10,6 +10,8 @@ pub enum OperationError {
     Sqlite(#[from] rusqlite::Error),
     #[error("Entity not found: {entity_type} with id '{id}'")]
     NotFound { entity_type: String, id: String },
+    #[error("Invalid field: {0}")]
+    InvalidField(String),
 }
 
 // ── Platform Operations ─────────────────────────────────────────────────────
@@ -52,18 +54,9 @@ pub fn upsert_platform(conn: &Connection, platform: &CatalogPlatform) -> Result<
         )?;
     }
 
-    // Insert relationships (skip if referenced platform doesn't exist yet)
-    for rel in &platform.relationships {
-        conn.execute(
-            "INSERT OR IGNORE INTO platform_relationships (platform_a, platform_b, relationship)
-             VALUES (?1, ?2, ?3)",
-            params![
-                platform.id,
-                rel.platform,
-                relationship_str(&rel.relationship_type),
-            ],
-        )?;
-    }
+    // Note: relationships are NOT inserted here because referenced platforms
+    // may not exist yet. seed_from_catalog() handles relationships in a second
+    // pass after all platforms have been inserted.
 
     Ok(())
 }
@@ -499,6 +492,61 @@ pub fn resolve_disagreement(
         return Err(OperationError::NotFound {
             entity_type: "disagreement".to_string(),
             id: id.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Apply a disagreement resolution by updating the entity field to the chosen value.
+///
+/// Only allows updates to a whitelist of safe fields.
+pub fn apply_disagreement_resolution(
+    conn: &Connection,
+    entity_type: &str,
+    entity_id: &str,
+    field: &str,
+    value: &str,
+) -> Result<(), OperationError> {
+    let safe_fields = [
+        "title",
+        "alt_title",
+        "release_date",
+        "game_serial",
+        "genre",
+        "players",
+        "description",
+        "media_serial",
+        "revision",
+        "status",
+    ];
+
+    if !safe_fields.contains(&field) {
+        return Err(OperationError::InvalidField(format!(
+            "Field '{}' cannot be updated via resolution",
+            field
+        )));
+    }
+
+    let table = match entity_type {
+        "release" => "releases",
+        "media" => "media",
+        _ => {
+            return Err(OperationError::InvalidField(format!(
+                "Unknown entity type '{}'",
+                entity_type
+            )));
+        }
+    };
+
+    let sql = format!(
+        "UPDATE {table} SET {field} = ?1, updated_at = datetime('now') WHERE id = ?2"
+    );
+
+    let changed = conn.execute(&sql, params![value, entity_id])?;
+    if changed == 0 {
+        return Err(OperationError::NotFound {
+            entity_type: entity_type.to_string(),
+            id: entity_id.to_string(),
         });
     }
     Ok(())

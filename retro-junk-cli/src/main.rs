@@ -326,11 +326,116 @@ enum CatalogAction {
         force_hash: bool,
     },
 
+    /// Scan a ROM folder and add matched files to collection
+    Scan {
+        /// System to scan (e.g., nes, snes, n64)
+        system: String,
+
+        /// Path to ROM folder
+        folder: PathBuf,
+
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// User ID for collection entries
+        #[arg(long, default_value = "default")]
+        user_id: String,
+    },
+
+    /// Re-verify collection entries against files on disk
+    Verify {
+        /// System to verify (e.g., nes, snes, n64)
+        system: String,
+
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// User ID for collection entries
+        #[arg(long, default_value = "default")]
+        user_id: String,
+    },
+
+    /// List unresolved disagreements between data sources
+    Disagreements {
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Filter by system (e.g., nes, snes)
+        #[arg(long)]
+        system: Option<String>,
+
+        /// Filter by field name (e.g., release_date, title)
+        #[arg(long)]
+        field: Option<String>,
+
+        /// Maximum number of disagreements to show
+        #[arg(long, default_value = "50")]
+        limit: u32,
+    },
+
+    /// Resolve a disagreement by choosing a value
+    Resolve {
+        /// Disagreement ID to resolve
+        id: i64,
+
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Choose source A's value
+        #[arg(long, group = "choice")]
+        source_a: bool,
+
+        /// Choose source B's value
+        #[arg(long, group = "choice")]
+        source_b: bool,
+
+        /// Provide a custom resolution value
+        #[arg(long, group = "choice")]
+        custom: Option<String>,
+    },
+
+    /// Analyze media asset coverage gaps
+    Gaps {
+        /// System to analyze (e.g., nes, snes)
+        system: String,
+
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Only analyze releases in your collection
+        #[arg(long)]
+        collection_only: bool,
+
+        /// Show releases missing this specific asset type (e.g., box-front, screenshot)
+        #[arg(long)]
+        missing: Option<String>,
+
+        /// Maximum releases to list
+        #[arg(long, default_value = "50")]
+        limit: u32,
+    },
+
     /// Show catalog database statistics
     Stats {
         /// Path to the catalog database file
         #[arg(long)]
         db: Option<PathBuf>,
+    },
+
+    /// Delete and recreate the catalog database
+    Reset {
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Confirm database deletion (required)
+        #[arg(long)]
+        confirm: bool,
     },
 }
 
@@ -459,8 +564,52 @@ fn main() {
                     quiet,
                 );
             }
+            CatalogAction::Scan {
+                system,
+                folder,
+                db,
+                user_id,
+            } => {
+                run_catalog_scan(&ctx, system, folder, db, user_id, quiet);
+            }
+            CatalogAction::Verify {
+                system,
+                db,
+                user_id,
+            } => {
+                run_catalog_verify(&ctx, system, db, user_id, quiet);
+            }
+            CatalogAction::Disagreements {
+                db,
+                system,
+                field,
+                limit,
+            } => {
+                run_catalog_disagreements(db, system, field, limit);
+            }
+            CatalogAction::Resolve {
+                id,
+                db,
+                source_a,
+                source_b,
+                custom,
+            } => {
+                run_catalog_resolve(id, db, source_a, source_b, custom);
+            }
+            CatalogAction::Gaps {
+                system,
+                db,
+                collection_only,
+                missing,
+                limit,
+            } => {
+                run_catalog_gaps(system, db, collection_only, missing, limit);
+            }
             CatalogAction::Stats { db } => {
                 run_catalog_stats(db);
+            }
+            CatalogAction::Reset { db, confirm } => {
+                run_catalog_reset(db, confirm);
             }
         },
     }
@@ -3059,13 +3208,10 @@ fn run_catalog_import(
             }
         };
 
-        // Find the platform ID in catalog — use the core_platform mapping
-        let platform_id = console.metadata.platform.short_name();
-
         // Import each DAT
         for dat in &dats {
             let progress = CliImportProgress::new(short_name);
-            let stats = match import_dat(&conn, dat, platform_id, source_str, Some(&progress)) {
+            let stats = match import_dat(&conn, dat, console.metadata.platform, source_str, Some(&progress)) {
                 Ok(s) => s,
                 Err(e) => {
                     log::warn!(
@@ -3106,8 +3252,40 @@ fn run_catalog_import(
             total_stats.media_unchanged += stats.media_unchanged;
             total_stats.skipped_bad += stats.skipped_bad;
             total_stats.total_games += stats.total_games;
+            total_stats.disagreements_found += stats.disagreements_found;
         }
     }
+
+    // Apply overrides after all imports
+    let overrides_applied = if catalog_dir.exists() {
+        match retro_junk_catalog::yaml::load_overrides(&catalog_dir.join("overrides")) {
+            Ok(overrides) if !overrides.is_empty() => {
+                match retro_junk_import::apply_overrides(&conn, &overrides) {
+                    Ok(count) => {
+                        if count > 0 {
+                            log::info!(
+                                "  {} Applied {} override(s)",
+                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                count,
+                            );
+                        }
+                        count
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to apply overrides: {}", e);
+                        0
+                    }
+                }
+            }
+            Ok(_) => 0,
+            Err(e) => {
+                log::warn!("Failed to load overrides: {}", e);
+                0
+            }
+        }
+    } else {
+        0
+    };
 
     log::info!("");
     log::info!(
@@ -3131,6 +3309,12 @@ fn run_catalog_import(
         total_stats.media_unchanged,
         total_stats.skipped_bad,
     );
+    if total_stats.disagreements_found > 0 {
+        log::info!("  Disagreements: {}", total_stats.disagreements_found);
+    }
+    if overrides_applied > 0 {
+        log::info!("  Overrides applied: {}", overrides_applied);
+    }
     log::info!("  Database: {}", db_path.display());
 }
 
@@ -3167,6 +3351,163 @@ impl retro_junk_import::ImportProgress for CliImportProgress {
     fn on_complete(&self, message: &str) {
         log::info!("{}", message);
     }
+}
+
+/// Analyze media asset coverage gaps.
+fn run_catalog_gaps(
+    system: String,
+    db_path: Option<PathBuf>,
+    collection_only: bool,
+    missing: Option<String>,
+    limit: u32,
+) {
+    let db_path = db_path.unwrap_or_else(default_catalog_db_path);
+
+    if !db_path.exists() {
+        log::warn!("No catalog database found at {}", db_path.display());
+        log::info!("Run 'retro-junk catalog import all' first.");
+        return;
+    }
+
+    let conn = match retro_junk_db::open_database(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to open catalog database: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let scope = if collection_only {
+        "collection"
+    } else {
+        "catalog"
+    };
+
+    // If --missing is specified, list releases missing that asset type
+    if let Some(ref asset_type) = missing {
+        log::info!(
+            "{}",
+            format!(
+                "Releases in {} {} missing '{}' assets:",
+                scope, system, asset_type,
+            )
+            .if_supports_color(Stdout, |t| t.bold()),
+        );
+
+        match retro_junk_db::releases_missing_asset_type(
+            &conn,
+            &system,
+            asset_type,
+            collection_only,
+            Some(limit),
+        ) {
+            Ok(releases) => {
+                if releases.is_empty() {
+                    log::info!("  No gaps found — all releases have '{}' assets.", asset_type);
+                } else {
+                    for (id, title, region) in &releases {
+                        log::info!(
+                            "  {} {} ({})",
+                            "\u{2022}".if_supports_color(Stdout, |t| t.dimmed()),
+                            title,
+                            region.if_supports_color(Stdout, |t| t.dimmed()),
+                        );
+                        log::debug!("    {}", id);
+                    }
+                    if releases.len() as u32 == limit {
+                        log::info!(
+                            "  ... (showing first {}, use --limit to see more)",
+                            limit,
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to query gaps: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Default: show coverage summary
+    log::info!(
+        "{}",
+        format!("Asset coverage for {} ({}):", system, scope)
+            .if_supports_color(Stdout, |t| t.bold()),
+    );
+
+    // Coverage summary
+    match retro_junk_db::asset_coverage_summary(&conn, &system, collection_only) {
+        Ok((total, with_assets, asset_count)) => {
+            let pct = if total > 0 {
+                (with_assets as f64 / total as f64 * 100.0) as u32
+            } else {
+                0
+            };
+            log::info!("  Total releases:       {:>6}", total);
+            log::info!("  With any asset:       {:>6} ({}%)", with_assets, pct);
+            log::info!("  Without any asset:    {:>6}", total - with_assets);
+            log::info!("  Total assets:         {:>6}", asset_count);
+        }
+        Err(e) => {
+            log::error!("Failed to query coverage: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    // Asset counts by type
+    match retro_junk_db::asset_counts_by_type(&conn, &system, collection_only) {
+        Ok(counts) => {
+            if !counts.is_empty() {
+                log::info!("");
+                log::info!(
+                    "{}",
+                    "  Assets by type:".if_supports_color(Stdout, |t| t.bold()),
+                );
+                for (asset_type, count) in &counts {
+                    log::info!("    {:<20} {:>6}", asset_type, count);
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to query asset types: {}", e);
+        }
+    }
+
+    // Show releases with no assets at all
+    match retro_junk_db::releases_with_no_assets(&conn, &system, collection_only, Some(10)) {
+        Ok(releases) => {
+            if !releases.is_empty() {
+                log::info!("");
+                log::info!(
+                    "{}",
+                    format!("  Releases with no assets (first {}):", releases.len())
+                        .if_supports_color(Stdout, |t| t.dimmed()),
+                );
+                for (_id, title, region) in &releases {
+                    log::info!(
+                        "    {} {} ({})",
+                        "\u{2022}".if_supports_color(Stdout, |t| t.dimmed()),
+                        title,
+                        region,
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("Failed to query releases without assets: {}", e);
+        }
+    }
+
+    log::info!("");
+    log::info!(
+        "Use {} to see releases missing a specific type.",
+        "--missing <type>".if_supports_color(Stdout, |t| t.bold()),
+    );
+    log::info!(
+        "  Asset types: box-front, box-back, screenshot, title-screen, wheel, fanart, cart-front"
+    );
 }
 
 /// Show catalog database statistics.
@@ -3209,6 +3550,49 @@ fn run_catalog_stats(db_path: Option<PathBuf>) {
         }
         Err(e) => {
             log::error!("Failed to query catalog stats: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Delete and recreate the catalog database.
+fn run_catalog_reset(db_path: Option<PathBuf>, confirm: bool) {
+    let db_path = db_path.unwrap_or_else(default_catalog_db_path);
+
+    if !confirm {
+        log::warn!(
+            "This will permanently delete the catalog database at:\n  {}",
+            db_path.display(),
+        );
+        log::info!("Re-run with --confirm to proceed:");
+        log::info!("  retro-junk catalog reset --confirm");
+        return;
+    }
+
+    if !db_path.exists() {
+        log::info!("No catalog database found at {}", db_path.display());
+        log::info!("Nothing to reset.");
+        return;
+    }
+
+    let file_size = std::fs::metadata(&db_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    match std::fs::remove_file(&db_path) {
+        Ok(()) => {
+            let size_mb = file_size as f64 / (1024.0 * 1024.0);
+            log::info!(
+                "{}",
+                "Catalog database deleted.".if_supports_color(Stdout, |t| t.bold()),
+            );
+            log::info!("  Path: {}", db_path.display());
+            log::info!("  Freed: {:.1} MB", size_mb);
+            log::info!("");
+            log::info!("Run 'retro-junk catalog import all' to rebuild.");
+        }
+        Err(e) => {
+            log::error!("Failed to delete {}: {}", db_path.display(), e);
             std::process::exit(1);
         }
     }
@@ -3387,3 +3771,391 @@ fn run_catalog_enrich(
         }
     });
 }
+
+/// Scan a ROM folder and add matched files to the collection.
+fn run_catalog_scan(
+    ctx: &AnalysisContext,
+    system: String,
+    folder: PathBuf,
+    db_path: Option<PathBuf>,
+    user_id: String,
+    quiet: bool,
+) {
+    use retro_junk_import::scan_import::{ScanOptions, ScanProgress, ScanStats};
+
+    let db_path = db_path.unwrap_or_else(default_catalog_db_path);
+
+    if !db_path.exists() {
+        log::warn!("No catalog database found at {}", db_path.display());
+        log::info!("Run 'retro-junk catalog import all' first.");
+        return;
+    }
+
+    if !folder.exists() {
+        log::error!("ROM folder not found: {}", folder.display());
+        std::process::exit(1);
+    }
+
+    let console = match ctx.get_by_short_name(&system) {
+        Some(c) => c,
+        None => {
+            log::error!("Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.", system);
+            std::process::exit(1);
+        }
+    };
+
+    let conn = match retro_junk_db::open_database(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to open catalog database: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let options = ScanOptions {
+        user_id,
+    };
+
+    struct CliScanProgress {
+        quiet: bool,
+    }
+
+    impl ScanProgress for CliScanProgress {
+        fn on_file(&self, current: usize, total: usize, filename: &str) {
+            if !self.quiet {
+                log::debug!("  [{}/{}] {}", current, total, filename);
+            }
+        }
+
+        fn on_match(&self, filename: &str, title: &str) {
+            log::info!(
+                "  {} {} -> {}",
+                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                filename,
+                title.if_supports_color(Stdout, |t| t.bold()),
+            );
+        }
+
+        fn on_no_match(&self, filename: &str) {
+            if !self.quiet {
+                log::info!(
+                    "  {} {}",
+                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                    filename.if_supports_color(Stdout, |t| t.dimmed()),
+                );
+            }
+        }
+
+        fn on_error(&self, filename: &str, error: &str) {
+            log::warn!(
+                "  {} {}: {}",
+                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                filename,
+                error,
+            );
+        }
+
+        fn on_complete(&self, stats: &ScanStats) {
+            log::info!("");
+            log::info!(
+                "{}",
+                "Scan complete".if_supports_color(Stdout, |t| t.bold()),
+            );
+            log::info!("  Files scanned: {:>6}", stats.files_scanned);
+            log::info!("  Matched:       {:>6}", stats.matched);
+            log::info!("  Already owned: {:>6}", stats.already_owned);
+            log::info!("  Unmatched:     {:>6}", stats.unmatched);
+            if stats.errors > 0 {
+                log::info!("  Errors:        {:>6}", stats.errors);
+            }
+        }
+    }
+
+    log::info!(
+        "{}",
+        format!(
+            "Scanning {} ROMs in {}",
+            console.metadata.short_name,
+            folder.display()
+        )
+        .if_supports_color(Stdout, |t| t.bold()),
+    );
+
+    let progress = CliScanProgress { quiet };
+
+    match retro_junk_import::scan_folder(
+        &conn,
+        &folder,
+        console.analyzer.as_ref(),
+        console.metadata.platform,
+        &options,
+        Some(&progress),
+    ) {
+        Ok(result) => {
+            if !result.unmatched.is_empty() && !quiet {
+                log::info!("");
+                log::info!(
+                    "{}",
+                    format!("{} unmatched files:", result.unmatched.len())
+                        .if_supports_color(Stdout, |t| t.dimmed()),
+                );
+                for f in &result.unmatched {
+                    log::info!(
+                        "  {} (CRC32: {}, size: {})",
+                        f.path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
+                        f.crc32,
+                        f.file_size,
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            log::error!("Scan failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Re-verify collection entries against files on disk.
+fn run_catalog_verify(
+    ctx: &AnalysisContext,
+    system: String,
+    db_path: Option<PathBuf>,
+    user_id: String,
+    _quiet: bool,
+) {
+    let db_path = db_path.unwrap_or_else(default_catalog_db_path);
+
+    if !db_path.exists() {
+        log::warn!("No catalog database found at {}", db_path.display());
+        log::info!("Run 'retro-junk catalog import all' first.");
+        return;
+    }
+
+    let console = match ctx.get_by_short_name(&system) {
+        Some(c) => c,
+        None => {
+            log::error!("Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.", system);
+            std::process::exit(1);
+        }
+    };
+
+    let conn = match retro_junk_db::open_database(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to open catalog database: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    log::info!(
+        "{}",
+        format!(
+            "Verifying {} collection entries",
+            console.metadata.short_name
+        )
+        .if_supports_color(Stdout, |t| t.bold()),
+    );
+
+    match retro_junk_import::verify_collection(
+        &conn,
+        console.analyzer.as_ref(),
+        console.metadata.platform,
+        &user_id,
+    ) {
+        Ok(stats) => {
+            log::info!("");
+            log::info!(
+                "{}",
+                "Verification complete".if_supports_color(Stdout, |t| t.bold()),
+            );
+            log::info!("  Checked:        {:>6}", stats.checked);
+            log::info!("  Verified:       {:>6}", stats.verified);
+            log::info!("  Missing:        {:>6}", stats.missing);
+            log::info!("  Hash mismatch:  {:>6}", stats.hash_mismatch);
+            log::info!("  No path:        {:>6}", stats.no_path);
+            if stats.errors > 0 {
+                log::info!("  Errors:         {:>6}", stats.errors);
+            }
+        }
+        Err(e) => {
+            log::error!("Verification failed: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// List unresolved disagreements between data sources.
+fn run_catalog_disagreements(
+    db_path: Option<PathBuf>,
+    system: Option<String>,
+    field: Option<String>,
+    limit: u32,
+) {
+    use retro_junk_db::DisagreementFilter;
+
+    let db_path = db_path.unwrap_or_else(default_catalog_db_path);
+
+    if !db_path.exists() {
+        log::warn!("No catalog database found at {}", db_path.display());
+        log::info!("Run 'retro-junk catalog import all' first.");
+        return;
+    }
+
+    let conn = match retro_junk_db::open_database(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to open catalog database: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    let filter = DisagreementFilter {
+        platform_id: system.as_deref(),
+        field: field.as_deref(),
+        limit: Some(limit),
+        ..Default::default()
+    };
+
+    match retro_junk_db::list_unresolved_disagreements(&conn, &filter) {
+        Ok(disagreements) => {
+            if disagreements.is_empty() {
+                log::info!("No unresolved disagreements found.");
+                return;
+            }
+
+            log::info!(
+                "{}",
+                format!("{} unresolved disagreement(s):", disagreements.len())
+                    .if_supports_color(Stdout, |t| t.bold()),
+            );
+            log::info!("");
+
+            for d in &disagreements {
+                log::info!(
+                    "  #{} {} {} [{}]",
+                    format!("{}", d.id).if_supports_color(Stdout, |t| t.bold()),
+                    d.entity_type,
+                    d.entity_id.if_supports_color(Stdout, |t| t.dimmed()),
+                    d.field.if_supports_color(Stdout, |t| t.cyan()),
+                );
+                log::info!(
+                    "    {} {}: {}",
+                    "\u{25B6}".if_supports_color(Stdout, |t| t.blue()),
+                    d.source_a,
+                    d.value_a.as_deref().unwrap_or("(empty)"),
+                );
+                log::info!(
+                    "    {} {}: {}",
+                    "\u{25B6}".if_supports_color(Stdout, |t| t.yellow()),
+                    d.source_b,
+                    d.value_b.as_deref().unwrap_or("(empty)"),
+                );
+                log::info!("");
+            }
+
+            log::info!(
+                "Resolve with: retro-junk catalog resolve <id> --source-a | --source-b | --custom <value>"
+            );
+        }
+        Err(e) => {
+            log::error!("Failed to query disagreements: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Resolve a disagreement by choosing a value.
+fn run_catalog_resolve(
+    id: i64,
+    db_path: Option<PathBuf>,
+    source_a: bool,
+    source_b: bool,
+    custom: Option<String>,
+) {
+    let db_path = db_path.unwrap_or_else(default_catalog_db_path);
+
+    if !db_path.exists() {
+        log::warn!("No catalog database found at {}", db_path.display());
+        return;
+    }
+
+    let conn = match retro_junk_db::open_database(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to open catalog database: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Fetch the disagreement first
+    let disagreement = match retro_junk_db::get_disagreement(&conn, id) {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            log::error!("Disagreement #{} not found.", id);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            log::error!("Failed to fetch disagreement: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if disagreement.resolved {
+        log::warn!(
+            "Disagreement #{} is already resolved (resolution: {}).",
+            id,
+            disagreement.resolution.as_deref().unwrap_or("unknown"),
+        );
+        return;
+    }
+
+    // Determine resolution
+    let (resolution, chosen_value) = if source_a {
+        ("source_a".to_string(), disagreement.value_a.clone())
+    } else if source_b {
+        ("source_b".to_string(), disagreement.value_b.clone())
+    } else if let Some(ref val) = custom {
+        (format!("custom: {val}"), Some(val.clone()))
+    } else {
+        log::error!("Must specify --source-a, --source-b, or --custom <value>.");
+        std::process::exit(1);
+    };
+
+    // Apply the chosen value to the entity
+    if let Some(ref value) = chosen_value {
+        if let Err(e) = retro_junk_db::apply_disagreement_resolution(
+            &conn,
+            &disagreement.entity_type,
+            &disagreement.entity_id,
+            &disagreement.field,
+            value,
+        ) {
+            log::error!("Failed to apply resolution: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    // Mark as resolved
+    match retro_junk_db::resolve_disagreement(&conn, id, &resolution) {
+        Ok(()) => {
+            log::info!(
+                "{} Resolved disagreement #{}",
+                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                id,
+            );
+            log::info!(
+                "  {} {} [{}] = {}",
+                disagreement.entity_type,
+                disagreement.entity_id,
+                disagreement.field,
+                chosen_value.as_deref().unwrap_or("(empty)"),
+            );
+        }
+        Err(e) => {
+            log::error!("Failed to resolve disagreement: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+

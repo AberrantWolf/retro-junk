@@ -210,3 +210,89 @@ fn disagreement_lifecycle() {
         .unwrap();
     assert!(resolved);
 }
+
+#[test]
+fn get_disagreement_returns_record() {
+    let conn = open_memory().unwrap();
+    let d = Disagreement {
+        id: 0,
+        entity_type: "release".to_string(),
+        entity_id: "smb1-nes-usa".to_string(),
+        field: "title".to_string(),
+        source_a: "no-intro".to_string(),
+        value_a: Some("Super Mario Bros.".to_string()),
+        source_b: "screenscraper".to_string(),
+        value_b: Some("Super Mario Brothers".to_string()),
+        resolved: false,
+        resolution: None,
+        resolved_at: None,
+        created_at: String::new(),
+    };
+    let id = insert_disagreement(&conn, &d).unwrap();
+
+    let found = get_disagreement(&conn, id).unwrap();
+    assert!(found.is_some());
+    let found = found.unwrap();
+    assert_eq!(found.field, "title");
+    assert_eq!(found.value_a.as_deref(), Some("Super Mario Bros."));
+
+    // Not found
+    let missing = get_disagreement(&conn, 9999).unwrap();
+    assert!(missing.is_none());
+}
+
+#[test]
+fn apply_disagreement_resolution_updates_entity() {
+    let conn = open_memory().unwrap();
+    let platform = test_platform();
+    upsert_platform(&conn, &platform).unwrap();
+    insert_work(&conn, "nes:smb", "Super Mario Bros.").unwrap();
+
+    let release = Release {
+        id: "nes:smb:nes:usa".to_string(),
+        work_id: "nes:smb".to_string(),
+        platform_id: "nes".to_string(),
+        region: "usa".to_string(),
+        title: "Super Mario Bros.".to_string(),
+        alt_title: None,
+        publisher_id: None,
+        developer_id: None,
+        release_date: None,
+        game_serial: None,
+        genre: None,
+        players: None,
+        rating: None,
+        description: None,
+        screenscraper_id: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    upsert_release(&conn, &release).unwrap();
+
+    // Apply resolution to set release_date
+    apply_disagreement_resolution(
+        &conn,
+        "release",
+        "nes:smb:nes:usa",
+        "release_date",
+        "1985-10-18",
+    )
+    .unwrap();
+
+    // Verify it was applied
+    let updated = find_release(&conn, "nes:smb", "nes", "usa").unwrap().unwrap();
+    assert_eq!(updated.release_date.as_deref(), Some("1985-10-18"));
+}
+
+#[test]
+fn apply_disagreement_resolution_rejects_unsafe_field() {
+    let conn = open_memory().unwrap();
+    let result = apply_disagreement_resolution(
+        &conn,
+        "release",
+        "nes:smb:nes:usa",
+        "work_id",
+        "different-work",
+    );
+    assert!(result.is_err());
+}
