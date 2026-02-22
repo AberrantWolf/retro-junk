@@ -240,6 +240,59 @@ pub fn find_release(
     }
 }
 
+/// Update release fields from ScreenScraper enrichment.
+///
+/// Only updates fields that are currently NULL in the database,
+/// preserving values already set by DAT import. The screenscraper_id
+/// is always set to mark this release as enriched.
+pub fn update_release_enrichment(
+    conn: &Connection,
+    release_id: &str,
+    screenscraper_id: &str,
+    title: Option<&str>,
+    release_date: Option<&str>,
+    genre: Option<&str>,
+    players: Option<&str>,
+    rating: Option<f64>,
+    description: Option<&str>,
+    publisher_id: Option<&str>,
+    developer_id: Option<&str>,
+) -> Result<(), OperationError> {
+    conn.execute(
+        "UPDATE releases SET
+             screenscraper_id = ?2,
+             release_date = COALESCE(release_date, ?3),
+             genre = COALESCE(genre, ?4),
+             players = COALESCE(players, ?5),
+             rating = COALESCE(rating, ?6),
+             description = COALESCE(description, ?7),
+             publisher_id = COALESCE(publisher_id, ?8),
+             developer_id = COALESCE(developer_id, ?9),
+             updated_at = datetime('now')
+         WHERE id = ?1",
+        params![
+            release_id,
+            screenscraper_id,
+            release_date,
+            genre,
+            players,
+            rating,
+            description,
+            publisher_id,
+            developer_id,
+        ],
+    )?;
+    // Title handled separately — only update if new value provided and existing matches DAT-imported title
+    if let Some(new_title) = title {
+        conn.execute(
+            "UPDATE releases SET alt_title = ?2, updated_at = datetime('now')
+             WHERE id = ?1 AND alt_title IS NULL AND title != ?2",
+            params![release_id, new_title],
+        )?;
+    }
+    Ok(())
+}
+
 // ── Media Operations ────────────────────────────────────────────────────────
 
 /// Insert or update a media entry.

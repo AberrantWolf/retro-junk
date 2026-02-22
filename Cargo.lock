@@ -2073,8 +2073,10 @@ dependencies = [
  "retro-junk-core",
  "retro-junk-dat",
  "retro-junk-db",
+ "retro-junk-scraper",
  "rusqlite",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]

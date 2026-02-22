@@ -8,7 +8,9 @@ retro-junk-catalog = { workspace = true }
 retro-junk-db = { workspace = true }
 retro-junk-dat = { workspace = true }
 retro-junk-core = { workspace = true }
+retro-junk-scraper = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 log = { workspace = true }
+tokio = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }

@@ -54,6 +54,21 @@ pub fn find_media_by_serial(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// Find all media entries for a given release.
+pub fn media_for_release(
+    conn: &Connection,
+    release_id: &str,
+) -> Result<Vec<Media>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, release_id, media_serial, disc_number, disc_label,
+                revision, status, dat_name, dat_source, file_size,
+                crc32, sha1, md5, created_at, updated_at
+         FROM media WHERE release_id = ?1 ORDER BY disc_number, dat_name",
+    )?;
+    let rows = stmt.query_map(params![release_id], row_to_media)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 // ── Release Lookups ─────────────────────────────────────────────────────────
 
 /// List all releases for a platform.
@@ -102,6 +117,48 @@ pub fn find_release_by_serial(
          FROM releases WHERE game_serial = ?1",
     )?;
     let rows = stmt.query_map(params![serial], row_to_release)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Find releases that need ScreenScraper enrichment.
+///
+/// Returns releases for the given platform that have at least one media entry
+/// (needed for lookup) and optionally filters to only those without a
+/// screenscraper_id.
+pub fn releases_to_enrich(
+    conn: &Connection,
+    platform_id: &str,
+    skip_existing: bool,
+    limit: Option<u32>,
+) -> Result<Vec<Release>, OperationError> {
+    let limit = limit.unwrap_or(u32::MAX);
+    let sql = if skip_existing {
+        format!(
+            "SELECT DISTINCT r.id, r.work_id, r.platform_id, r.region, r.title, r.alt_title,
+                    r.publisher_id, r.developer_id, r.release_date, r.game_serial,
+                    r.genre, r.players, r.rating, r.description, r.screenscraper_id,
+                    r.created_at, r.updated_at
+             FROM releases r
+             JOIN media m ON m.release_id = r.id
+             WHERE r.platform_id = ?1 AND r.screenscraper_id IS NULL
+             ORDER BY r.title
+             LIMIT {limit}"
+        )
+    } else {
+        format!(
+            "SELECT DISTINCT r.id, r.work_id, r.platform_id, r.region, r.title, r.alt_title,
+                    r.publisher_id, r.developer_id, r.release_date, r.game_serial,
+                    r.genre, r.players, r.rating, r.description, r.screenscraper_id,
+                    r.created_at, r.updated_at
+             FROM releases r
+             JOIN media m ON m.release_id = r.id
+             WHERE r.platform_id = ?1
+             ORDER BY r.title
+             LIMIT {limit}"
+        )
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![platform_id], row_to_release)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 

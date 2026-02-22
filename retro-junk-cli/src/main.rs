@@ -287,6 +287,45 @@ enum CatalogAction {
         dat_dir: Option<PathBuf>,
     },
 
+    /// Enrich catalog releases with ScreenScraper metadata
+    Enrich {
+        /// Systems to enrich (e.g., nes,snes) or "all"
+        #[arg(value_delimiter = ',')]
+        systems: Vec<String>,
+
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Maximum releases to process per system
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Re-enrich releases that already have ScreenScraper data
+        #[arg(long)]
+        force: bool,
+
+        /// Download media assets
+        #[arg(long)]
+        download_assets: bool,
+
+        /// Directory for downloaded media assets
+        #[arg(long)]
+        asset_dir: Option<PathBuf>,
+
+        /// Preferred region for names and media (default: us)
+        #[arg(long, default_value = "us")]
+        region: String,
+
+        /// Preferred language for descriptions (default: en)
+        #[arg(long, default_value = "en")]
+        language: String,
+
+        /// Force hash-based lookup even for serial consoles
+        #[arg(long)]
+        force_hash: bool,
+    },
+
     /// Show catalog database statistics
     Stats {
         /// Path to the catalog database file
@@ -395,6 +434,30 @@ fn main() {
                 dat_dir,
             } => {
                 run_catalog_import(&ctx, systems, catalog_dir, db, dat_dir);
+            }
+            CatalogAction::Enrich {
+                systems,
+                db,
+                limit,
+                force,
+                download_assets,
+                asset_dir,
+                region,
+                language,
+                force_hash,
+            } => {
+                run_catalog_enrich(
+                    systems,
+                    db,
+                    limit,
+                    force,
+                    download_assets,
+                    asset_dir,
+                    region,
+                    language,
+                    force_hash,
+                    quiet,
+                );
             }
             CatalogAction::Stats { db } => {
                 run_catalog_stats(db);
@@ -3149,4 +3212,178 @@ fn run_catalog_stats(db_path: Option<PathBuf>) {
             std::process::exit(1);
         }
     }
+}
+
+/// Enrich catalog releases with ScreenScraper metadata.
+fn run_catalog_enrich(
+    systems: Vec<String>,
+    db_path: Option<PathBuf>,
+    limit: Option<u32>,
+    force: bool,
+    download_assets: bool,
+    asset_dir: Option<PathBuf>,
+    region: String,
+    language: String,
+    force_hash: bool,
+    quiet: bool,
+) {
+    use retro_junk_import::scraper_import::{self, EnrichOptions, EnrichProgress, EnrichStats};
+    use retro_junk_scraper::lookup::LookupMethod;
+
+    let db_path = db_path.unwrap_or_else(default_catalog_db_path);
+
+    if !db_path.exists() {
+        log::warn!("No catalog database found at {}", db_path.display());
+        log::info!("Run 'retro-junk catalog import all' first.");
+        return;
+    }
+
+    let conn = match retro_junk_db::open_database(&db_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::error!("Failed to open catalog database: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    // Resolve "all" to all platforms with core_platform set
+    let platform_ids = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
+        match retro_junk_db::list_platforms(&conn) {
+            Ok(platforms) => platforms
+                .into_iter()
+                .filter(|p| p.core_platform.is_some())
+                .map(|p| p.id)
+                .collect(),
+            Err(e) => {
+                log::error!("Failed to list platforms: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        systems
+    };
+
+    if platform_ids.is_empty() {
+        log::warn!("No systems specified.");
+        return;
+    }
+
+    let options = EnrichOptions {
+        platform_ids,
+        limit,
+        skip_existing: !force,
+        download_assets,
+        asset_dir,
+        preferred_region: region,
+        preferred_language: language,
+        force_hash,
+    };
+
+    // Load credentials and create client
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+
+    rt.block_on(async {
+        let creds = match retro_junk_scraper::credentials::Credentials::load() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("Failed to load ScreenScraper credentials: {}", e);
+                log::info!("Run 'retro-junk config setup' to configure credentials.");
+                std::process::exit(1);
+            }
+        };
+
+        let (client, user_info) = match retro_junk_scraper::client::ScreenScraperClient::new(creds).await {
+            Ok(r) => r,
+            Err(e) => {
+                log::error!("Failed to connect to ScreenScraper: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        log::info!(
+            "{}",
+            format!(
+                "Connected to ScreenScraper (requests today: {}/{})",
+                user_info.requests_today(),
+                user_info.max_requests_per_day(),
+            )
+            .if_supports_color(Stdout, |t| t.bold()),
+        );
+
+        struct CliEnrichProgress {
+            quiet: bool,
+        }
+
+        impl EnrichProgress for CliEnrichProgress {
+            fn on_release(&self, current: usize, total: usize, title: &str) {
+                if !self.quiet {
+                    log::info!(
+                        "  [{}/{}] {}",
+                        current,
+                        total,
+                        title.if_supports_color(Stdout, |t| t.dimmed()),
+                    );
+                }
+            }
+
+            fn on_found(&self, _current: usize, title: &str, ss_name: &str, method: &LookupMethod) {
+                log::info!(
+                    "    {} {} (via {}, SS: \"{}\")",
+                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                    title.if_supports_color(Stdout, |t| t.bold()),
+                    method,
+                    ss_name,
+                );
+            }
+
+            fn on_not_found(&self, _current: usize, title: &str) {
+                log::info!(
+                    "    {} {}",
+                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                    title,
+                );
+            }
+
+            fn on_asset_downloaded(&self, _current: usize, _title: &str, asset_type: &str) {
+                log::debug!("      Downloaded {}", asset_type);
+            }
+
+            fn on_error(&self, _current: usize, title: &str, error: &str) {
+                log::warn!(
+                    "    {} {}: {}",
+                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                    title,
+                    error,
+                );
+            }
+
+            fn on_complete(&self, stats: &EnrichStats) {
+                log::info!("");
+                log::info!(
+                    "{}",
+                    "Enrichment complete".if_supports_color(Stdout, |t| t.bold()),
+                );
+                log::info!("  Processed:     {:>6}", stats.releases_processed);
+                log::info!("  Enriched:      {:>6}", stats.releases_enriched);
+                log::info!("  Not found:     {:>6}", stats.releases_not_found);
+                log::info!("  Skipped:       {:>6}", stats.releases_skipped);
+                log::info!("  Assets:        {:>6}", stats.assets_downloaded);
+                log::info!("  Companies:     {:>6} (new)", stats.companies_created);
+                log::info!("  Disagreements: {:>6}", stats.disagreements_found);
+                if stats.errors > 0 {
+                    log::info!("  Errors:        {:>6}", stats.errors);
+                }
+            }
+        }
+
+        let progress = CliEnrichProgress { quiet };
+
+        match scraper_import::enrich_releases(&client, &conn, &options, Some(&progress)).await {
+            Ok(_) => {}
+            Err(e) => {
+                log::error!("Enrichment failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+    });
 }
