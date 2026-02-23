@@ -8,8 +8,9 @@ pub mod queries;
 pub mod schema;
 
 pub use operations::{
-    apply_disagreement_resolution, find_company_by_alias, find_media_by_dat_name, find_release,
-    find_work_by_name, insert_disagreement, insert_import_log, insert_media_asset, insert_work,
+    apply_disagreement_resolution, clear_not_found_flags, find_company_by_alias,
+    find_media_by_dat_name, find_release, find_work_by_name, insert_disagreement,
+    insert_import_log, insert_media_asset, insert_work, mark_release_not_found,
     resolve_disagreement, seed_from_catalog, update_release_enrichment,
     upsert_collection_entry, upsert_company, upsert_media, upsert_override, upsert_platform,
     upsert_release, OperationError, SeedStats,

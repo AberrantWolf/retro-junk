@@ -122,6 +122,7 @@ pub struct Release {
     pub rating: Option<f64>,
     pub description: Option<String>,
     pub screenscraper_id: Option<String>,
+    pub scraper_not_found: bool,
     pub created_at: String,
     pub updated_at: String,
 }

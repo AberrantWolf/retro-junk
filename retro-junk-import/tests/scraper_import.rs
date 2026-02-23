@@ -248,6 +248,7 @@ fn enrichment_updates_release_fields() {
         rating: None,
         description: None,
         screenscraper_id: None,
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -326,6 +327,7 @@ fn enrichment_preserves_existing_fields() {
         rating: None,
         description: None,
         screenscraper_id: None,
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -383,6 +385,7 @@ fn releases_to_enrich_query() {
         rating: None,
         description: None,
         screenscraper_id: None, // Not enriched
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -404,6 +407,7 @@ fn releases_to_enrich_query() {
         rating: None,
         description: None,
         screenscraper_id: Some("99999".to_string()), // Already enriched
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -483,6 +487,7 @@ fn media_for_release_query() {
         rating: None,
         description: None,
         screenscraper_id: None,
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };

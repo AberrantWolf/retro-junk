@@ -7,21 +7,39 @@ use rusqlite::{params, Connection};
 
 use crate::operations::OperationError;
 
+// ── Column Constants ────────────────────────────────────────────────────────
+
+const MEDIA_COLUMNS: &str =
+    "id, release_id, media_serial, disc_number, disc_label, \
+     revision, status, dat_name, dat_source, file_size, \
+     crc32, sha1, md5, created_at, updated_at";
+
+const RELEASE_COLUMNS: &str =
+    "id, work_id, platform_id, region, title, alt_title, \
+     publisher_id, developer_id, release_date, game_serial, \
+     genre, players, rating, description, screenscraper_id, \
+     scraper_not_found, created_at, updated_at";
+
 // ── Media Lookups ───────────────────────────────────────────────────────────
+
+/// Query media with a single-param WHERE clause.
+fn query_media(
+    conn: &Connection,
+    where_clause: &str,
+    param: &str,
+) -> Result<Vec<Media>, OperationError> {
+    let sql = format!("SELECT {MEDIA_COLUMNS} FROM media WHERE {where_clause}");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![param], row_to_media)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
 
 /// Find media entries by CRC32 hash.
 pub fn find_media_by_crc32(
     conn: &Connection,
     crc32: &str,
 ) -> Result<Vec<Media>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, release_id, media_serial, disc_number, disc_label,
-                revision, status, dat_name, dat_source, file_size,
-                crc32, sha1, md5, created_at, updated_at
-         FROM media WHERE crc32 = ?1",
-    )?;
-    let rows = stmt.query_map(params![crc32], row_to_media)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    query_media(conn, "crc32 = ?1", crc32)
 }
 
 /// Find media entries by SHA1 hash.
@@ -29,14 +47,7 @@ pub fn find_media_by_sha1(
     conn: &Connection,
     sha1: &str,
 ) -> Result<Vec<Media>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, release_id, media_serial, disc_number, disc_label,
-                revision, status, dat_name, dat_source, file_size,
-                crc32, sha1, md5, created_at, updated_at
-         FROM media WHERE sha1 = ?1",
-    )?;
-    let rows = stmt.query_map(params![sha1], row_to_media)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    query_media(conn, "sha1 = ?1", sha1)
 }
 
 /// Find media entries by MD5 hash.
@@ -44,14 +55,7 @@ pub fn find_media_by_md5(
     conn: &Connection,
     md5: &str,
 ) -> Result<Vec<Media>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, release_id, media_serial, disc_number, disc_label,
-                revision, status, dat_name, dat_source, file_size,
-                crc32, sha1, md5, created_at, updated_at
-         FROM media WHERE md5 = ?1",
-    )?;
-    let rows = stmt.query_map(params![md5], row_to_media)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    query_media(conn, "md5 = ?1", md5)
 }
 
 /// Find media entries by serial number.
@@ -59,14 +63,7 @@ pub fn find_media_by_serial(
     conn: &Connection,
     serial: &str,
 ) -> Result<Vec<Media>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, release_id, media_serial, disc_number, disc_label,
-                revision, status, dat_name, dat_source, file_size,
-                crc32, sha1, md5, created_at, updated_at
-         FROM media WHERE media_serial = ?1",
-    )?;
-    let rows = stmt.query_map(params![serial], row_to_media)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    query_media(conn, "media_serial = ?1", serial)
 }
 
 /// Find all media entries for a given release.
@@ -74,32 +71,35 @@ pub fn media_for_release(
     conn: &Connection,
     release_id: &str,
 ) -> Result<Vec<Media>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, release_id, media_serial, disc_number, disc_label,
-                revision, status, dat_name, dat_source, file_size,
-                crc32, sha1, md5, created_at, updated_at
-         FROM media WHERE release_id = ?1 ORDER BY disc_number, dat_name",
-    )?;
+    let sql = format!(
+        "SELECT {MEDIA_COLUMNS} FROM media \
+         WHERE release_id = ?1 ORDER BY disc_number, dat_name"
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![release_id], row_to_media)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 // ── Release Lookups ─────────────────────────────────────────────────────────
 
+/// Query releases with a single-param WHERE clause.
+fn query_releases(
+    conn: &Connection,
+    where_and_tail: &str,
+    param: &str,
+) -> Result<Vec<Release>, OperationError> {
+    let sql = format!("SELECT {RELEASE_COLUMNS} FROM releases WHERE {where_and_tail}");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![param], row_to_release)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 /// List all releases for a platform.
 pub fn releases_for_platform(
     conn: &Connection,
     platform_id: &str,
 ) -> Result<Vec<Release>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, work_id, platform_id, region, title, alt_title,
-                publisher_id, developer_id, release_date, game_serial,
-                genre, players, rating, description, screenscraper_id,
-                created_at, updated_at
-         FROM releases WHERE platform_id = ?1 ORDER BY title",
-    )?;
-    let rows = stmt.query_map(params![platform_id], row_to_release)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    query_releases(conn, "platform_id = ?1 ORDER BY title", platform_id)
 }
 
 /// Search releases by title (case-insensitive LIKE).
@@ -108,15 +108,7 @@ pub fn search_releases(
     query: &str,
 ) -> Result<Vec<Release>, OperationError> {
     let pattern = format!("%{}%", query);
-    let mut stmt = conn.prepare(
-        "SELECT id, work_id, platform_id, region, title, alt_title,
-                publisher_id, developer_id, release_date, game_serial,
-                genre, players, rating, description, screenscraper_id,
-                created_at, updated_at
-         FROM releases WHERE title LIKE ?1 ORDER BY title LIMIT 100",
-    )?;
-    let rows = stmt.query_map(params![pattern], row_to_release)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    query_releases(conn, "title LIKE ?1 ORDER BY title LIMIT 100", &pattern)
 }
 
 /// Search releases by title with optional platform filter and configurable limit.
@@ -130,11 +122,8 @@ pub fn search_releases_filtered(
     let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match platform_id {
         Some(pid) => (
             format!(
-                "SELECT id, work_id, platform_id, region, title, alt_title,
-                        publisher_id, developer_id, release_date, game_serial,
-                        genre, players, rating, description, screenscraper_id,
-                        created_at, updated_at
-                 FROM releases WHERE title LIKE ?1 AND platform_id = ?2
+                "SELECT {RELEASE_COLUMNS} FROM releases \
+                 WHERE title LIKE ?1 AND platform_id = ?2 \
                  ORDER BY title LIMIT {limit}"
             ),
             vec![
@@ -144,12 +133,8 @@ pub fn search_releases_filtered(
         ),
         None => (
             format!(
-                "SELECT id, work_id, platform_id, region, title, alt_title,
-                        publisher_id, developer_id, release_date, game_serial,
-                        genre, players, rating, description, screenscraper_id,
-                        created_at, updated_at
-                 FROM releases WHERE title LIKE ?1
-                 ORDER BY title LIMIT {limit}"
+                "SELECT {RELEASE_COLUMNS} FROM releases \
+                 WHERE title LIKE ?1 ORDER BY title LIMIT {limit}"
             ),
             vec![Box::new(pattern)],
         ),
@@ -165,15 +150,7 @@ pub fn find_release_by_serial(
     conn: &Connection,
     serial: &str,
 ) -> Result<Vec<Release>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, work_id, platform_id, region, title, alt_title,
-                publisher_id, developer_id, release_date, game_serial,
-                genre, players, rating, description, screenscraper_id,
-                created_at, updated_at
-         FROM releases WHERE game_serial = ?1",
-    )?;
-    let rows = stmt.query_map(params![serial], row_to_release)?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    query_releases(conn, "game_serial = ?1", serial)
 }
 
 /// Find releases that need ScreenScraper enrichment.
@@ -188,31 +165,22 @@ pub fn releases_to_enrich(
     limit: Option<u32>,
 ) -> Result<Vec<Release>, OperationError> {
     let limit = limit.unwrap_or(u32::MAX);
-    let sql = if skip_existing {
-        format!(
-            "SELECT DISTINCT r.id, r.work_id, r.platform_id, r.region, r.title, r.alt_title,
-                    r.publisher_id, r.developer_id, r.release_date, r.game_serial,
-                    r.genre, r.players, r.rating, r.description, r.screenscraper_id,
-                    r.created_at, r.updated_at
-             FROM releases r
-             JOIN media m ON m.release_id = r.id
-             WHERE r.platform_id = ?1 AND r.screenscraper_id IS NULL
-             ORDER BY r.title
-             LIMIT {limit}"
-        )
+    let extra_filter = if skip_existing {
+        " AND r.screenscraper_id IS NULL AND r.scraper_not_found = 0"
     } else {
-        format!(
-            "SELECT DISTINCT r.id, r.work_id, r.platform_id, r.region, r.title, r.alt_title,
-                    r.publisher_id, r.developer_id, r.release_date, r.game_serial,
-                    r.genre, r.players, r.rating, r.description, r.screenscraper_id,
-                    r.created_at, r.updated_at
-             FROM releases r
-             JOIN media m ON m.release_id = r.id
-             WHERE r.platform_id = ?1
-             ORDER BY r.title
-             LIMIT {limit}"
-        )
+        ""
     };
+    let sql = format!(
+        "SELECT DISTINCT r.id, r.work_id, r.platform_id, r.region, r.title, r.alt_title, \
+                r.publisher_id, r.developer_id, r.release_date, r.game_serial, \
+                r.genre, r.players, r.rating, r.description, r.screenscraper_id, \
+                r.scraper_not_found, r.created_at, r.updated_at \
+         FROM releases r \
+         JOIN media m ON m.release_id = r.id \
+         WHERE r.platform_id = ?1{extra_filter} \
+         ORDER BY r.title \
+         LIMIT {limit}"
+    );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![platform_id], row_to_release)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -223,13 +191,8 @@ pub fn get_release_by_id(
     conn: &Connection,
     id: &str,
 ) -> Result<Option<Release>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, work_id, platform_id, region, title, alt_title,
-                publisher_id, developer_id, release_date, game_serial,
-                genre, players, rating, description, screenscraper_id,
-                created_at, updated_at
-         FROM releases WHERE id = ?1",
-    )?;
+    let sql = format!("SELECT {RELEASE_COLUMNS} FROM releases WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
     let result = stmt.query_row(params![id], row_to_release);
     match result {
         Ok(r) => Ok(Some(r)),
@@ -871,7 +834,8 @@ fn row_to_release(row: &rusqlite::Row<'_>) -> rusqlite::Result<Release> {
         rating: row.get(12)?,
         description: row.get(13)?,
         screenscraper_id: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
+        scraper_not_found: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
     })
 }

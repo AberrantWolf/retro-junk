@@ -115,6 +115,7 @@ fn release_upsert_and_find() {
         rating: None,
         description: None,
         screenscraper_id: None,
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -149,6 +150,7 @@ fn media_upsert_and_find() {
         rating: None,
         description: None,
         screenscraper_id: None,
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -264,6 +266,7 @@ fn apply_disagreement_resolution_updates_entity() {
         rating: None,
         description: None,
         screenscraper_id: None,
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };

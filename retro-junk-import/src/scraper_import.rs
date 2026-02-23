@@ -6,17 +6,34 @@
 //! and optionally downloads media assets.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use retro_junk_catalog::types::*;
 use retro_junk_core::Platform;
 use retro_junk_db::{operations, queries};
+use retro_junk_lib::worker_pool::WorkerPool;
 use retro_junk_scraper::client::ScreenScraperClient;
 use retro_junk_scraper::error::ScrapeError;
-use retro_junk_scraper::lookup::{self, LookupMethod, RomInfo};
+use retro_junk_scraper::lookup::{self, LookupMethod, LookupResult, RomInfo};
 use retro_junk_scraper::systems;
 use retro_junk_scraper::types::GameInfo;
+use tokio::time::Duration;
+
+/// Per-item timeout for the worker pool process function.
+/// Covers the entire lookup (serial + filename + hash tiers).
+/// Should be above LOOKUP_TIMEOUT in the scraper crate (60s).
+const WORKER_ITEM_TIMEOUT: Duration = Duration::from_secs(90);
+
+/// Timeout for downloading and cataloging all assets for a single release.
+/// Each individual download has a 120s timeout, but the full batch (~7 assets)
+/// should not exceed this.
+const ASSET_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+
+use crate::slugify;
 use rusqlite::Connection;
 use thiserror::Error;
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::merge;
 
@@ -74,7 +91,7 @@ impl Default for EnrichOptions {
 }
 
 /// Statistics from an enrichment run.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct EnrichStats {
     pub releases_processed: u64,
     pub releases_enriched: u64,
@@ -86,42 +103,105 @@ pub struct EnrichStats {
     pub errors: u64,
 }
 
-/// Progress callbacks for the enrichment process.
-pub trait EnrichProgress {
-    fn on_release(&self, current: usize, total: usize, title: &str);
-    fn on_found(&self, current: usize, title: &str, ss_name: &str, method: &LookupMethod);
-    fn on_not_found(&self, current: usize, title: &str);
-    fn on_asset_downloaded(&self, current: usize, title: &str, asset_type: &str);
-    fn on_error(&self, current: usize, title: &str, error: &str);
-    fn on_complete(&self, stats: &EnrichStats);
+/// Events emitted during enrichment for real-time progress reporting.
+#[derive(Debug)]
+pub enum EnrichEvent {
+    PlatformStarted {
+        platform_id: String,
+        platform_name: String,
+        total: usize,
+    },
+    ReleaseStarted {
+        index: usize,
+        total: usize,
+        title: String,
+    },
+    ReleaseLookingUp {
+        index: usize,
+        title: String,
+    },
+    ReleaseFound {
+        index: usize,
+        title: String,
+        ss_name: String,
+        method: LookupMethod,
+    },
+    ReleaseNotFound {
+        index: usize,
+        title: String,
+    },
+    ReleaseDownloadingAsset {
+        index: usize,
+        title: String,
+        asset_type: String,
+    },
+    ReleaseSkipped {
+        index: usize,
+    },
+    ReleaseError {
+        index: usize,
+        title: String,
+        error: String,
+    },
+    FatalError {
+        message: String,
+    },
+    PlatformDone {
+        platform_id: String,
+    },
+    Done {
+        stats: EnrichStats,
+    },
 }
 
-/// Silent progress — no output.
-pub struct SilentEnrichProgress;
+// ── Three-Phase Enrichment Types ─────────────────────────────────────────
 
-impl EnrichProgress for SilentEnrichProgress {
-    fn on_release(&self, _: usize, _: usize, _: &str) {}
-    fn on_found(&self, _: usize, _: &str, _: &str, _: &LookupMethod) {}
-    fn on_not_found(&self, _: usize, _: &str) {}
-    fn on_asset_downloaded(&self, _: usize, _: &str, _: &str) {}
-    fn on_error(&self, _: usize, _: &str, _: &str) {}
-    fn on_complete(&self, _: &EnrichStats) {}
+/// Pre-fetched work item for parallel API lookups.
+struct EnrichWorkItem {
+    index: usize,
+    release: Release,
+    media_entries: Vec<Media>,
+    core_platform: Platform,
+    system_id: u32,
+}
+
+/// Outcome of a single API lookup (Phase 2 result).
+enum LookupOutcome {
+    /// Game found — ready for DB enrichment.
+    Found {
+        index: usize,
+        release: Release,
+        result: LookupResult,
+        mapped: MappedGameInfo,
+    },
+    /// ScreenScraper confirmed the game doesn't exist.
+    NotFound { index: usize, release: Release },
+    /// Release had no media entries or was otherwise skippable.
+    Skipped { index: usize },
+    /// Non-fatal error during lookup.
+    Error {
+        index: usize,
+        release: Release,
+        error: String,
+    },
+    /// Fatal error — must stop all processing (quota exceeded, server closed).
+    Fatal { error: EnrichError },
 }
 
 /// Enrich releases in the database with ScreenScraper metadata.
 ///
-/// This is the main entry point for Phase 3. It queries the database for
-/// releases to enrich, looks each up on ScreenScraper, and writes back
-/// the metadata. Since ScreenScraper has aggressive rate limiting (~1 req/1.2s),
-/// this processes releases sequentially.
+/// Uses a three-phase batch model per platform to enable parallel API lookups
+/// while keeping all DB access on the main thread (since `Connection` is `!Send`):
 ///
-/// Note: `Connection` is `!Send`, so this future is `!Send`. Call it from
-/// the main tokio thread or use `spawn_local`.
+/// 1. **Phase 1 (DB Read):** Pre-fetch all releases + media entries (sequential)
+/// 2. **Phase 2 (API Lookups):** Dispatch lookups via a worker pool (N persistent tasks)
+/// 3. **Phase 3 (DB Write):** Apply results sequentially as they arrive
 pub async fn enrich_releases(
-    client: &ScreenScraperClient,
+    client: Arc<ScreenScraperClient>,
     conn: &Connection,
     options: &EnrichOptions,
-    progress: Option<&dyn EnrichProgress>,
+    max_workers: usize,
+    events: UnboundedSender<EnrichEvent>,
 ) -> Result<EnrichStats, EnrichError> {
     let mut stats = EnrichStats::default();
 
@@ -177,7 +257,15 @@ pub async fn enrich_releases(
             }
         };
 
-        // Get releases to enrich for this platform
+        // If --force, clear not-found flags so they get re-queried
+        if !options.skip_existing {
+            let cleared = operations::clear_not_found_flags(conn, platform_id)?;
+            if cleared > 0 {
+                log::info!("Cleared {} not-found flags for {}", cleared, platform_id);
+            }
+        }
+
+        // ── Phase 1: DB Read — pre-fetch releases + media ──────────────
         let releases =
             queries::releases_to_enrich(conn, platform_id, options.skip_existing, options.limit)?;
 
@@ -186,182 +274,310 @@ pub async fn enrich_releases(
             continue;
         }
 
-        log::info!(
-            "Enriching {} releases for {} (system {})",
+        log::debug!(
+            "Enriching {} releases for {} (system {}, {} workers)",
             releases.len(),
             platform_row.display_name,
             system_id,
+            max_workers,
         );
 
-        for (i, release) in releases.iter().enumerate() {
-            if let Some(p) = progress {
-                p.on_release(i + 1, releases.len(), &release.title);
-            }
+        let total = releases.len();
+        let mut work_items = Vec::with_capacity(total);
 
-            stats.releases_processed += 1;
+        let _ = events.send(EnrichEvent::PlatformStarted {
+            platform_id: platform_id.clone(),
+            platform_name: platform_row.display_name.clone(),
+            total,
+        });
 
-            match enrich_single_release(
-                client,
-                conn,
-                &release,
+        for (i, release) in releases.into_iter().enumerate() {
+            let media_entries = queries::media_for_release(conn, &release.id)?;
+            work_items.push(EnrichWorkItem {
+                index: i,
+                release,
+                media_entries,
                 core_platform,
                 system_id,
-                options,
-                &mut stats,
-            )
-            .await
-            {
-                Ok(true) => {
-                    // Successfully enriched
+            });
+        }
+
+        // ── Phase 2: Parallel API Lookups via Worker Pool ─────────────
+        let cancel = Arc::new(AtomicBool::new(false));
+        let force_hash = options.force_hash;
+
+        // Clone shared state for the worker pool closure
+        let pool_client = client.clone();
+        let pool_cancel = cancel.clone();
+        let pool_events = events.clone();
+        let pool_region = options.preferred_region.clone();
+        let pool_language = options.preferred_language.clone();
+
+        let mut pool = WorkerPool::start(max_workers, work_items, move |item: EnrichWorkItem| {
+            let client = pool_client.clone();
+            let cancel = pool_cancel.clone();
+            let events = pool_events.clone();
+            let preferred_region = pool_region.clone();
+            let preferred_language = pool_language.clone();
+            async move {
+                let index = item.index;
+
+                // Check cancel flag
+                if cancel.load(Ordering::Relaxed) {
+                    return LookupOutcome::Skipped { index };
                 }
-                Ok(false) => {
-                    // Not found
-                    if let Some(p) = progress {
-                        p.on_not_found(i + 1, &release.title);
+
+                // Skip releases with no media
+                if item.media_entries.is_empty() {
+                    return LookupOutcome::Skipped { index };
+                }
+
+                let _ = events.send(EnrichEvent::ReleaseStarted {
+                    index,
+                    total,
+                    title: item.release.title.clone(),
+                });
+
+                let _ = events.send(EnrichEvent::ReleaseLookingUp {
+                    index,
+                    title: item.release.title.clone(),
+                });
+
+                let best_media = pick_best_media_for_lookup(&item.media_entries);
+                let rom_info = build_rom_info(best_media, item.core_platform);
+
+                match tokio::time::timeout(
+                    WORKER_ITEM_TIMEOUT,
+                    lookup::lookup_game(&client, item.system_id, &rom_info, force_hash),
+                ).await {
+                    Ok(Ok(result)) => {
+                        let mapped = map_game_info(
+                            &result.game,
+                            &preferred_region,
+                            &preferred_language,
+                        );
+                        LookupOutcome::Found {
+                            index,
+                            release: item.release,
+                            result,
+                            mapped,
+                        }
                     }
+                    Ok(Err(ScrapeError::NotFound { .. })) => {
+                        LookupOutcome::NotFound {
+                            index,
+                            release: item.release,
+                        }
+                    }
+                    Ok(Err(e @ ScrapeError::QuotaExceeded { .. }))
+                    | Ok(Err(e @ ScrapeError::ServerClosed(_))) => {
+                        cancel.store(true, Ordering::Relaxed);
+                        LookupOutcome::Fatal {
+                            error: EnrichError::Scraper(e),
+                        }
+                    }
+                    Ok(Err(e)) => LookupOutcome::Error {
+                        index,
+                        release: item.release,
+                        error: e.to_string(),
+                    },
+                    Err(_timeout) => LookupOutcome::Error {
+                        index,
+                        release: item.release,
+                        error: format!(
+                            "Lookup timed out after {}s",
+                            WORKER_ITEM_TIMEOUT.as_secs()
+                        ),
+                    },
                 }
-                Err(EnrichError::Scraper(ScrapeError::QuotaExceeded { used, max })) => {
-                    log::warn!(
+            }
+        });
+
+        // ── Phase 3: Apply DB writes as results arrive ──────────────
+        let mut fatal_error = None;
+
+        while let Some(outcome) = pool.recv().await {
+            stats.releases_processed += 1;
+
+            match outcome {
+                LookupOutcome::Found {
+                    index,
+                    release,
+                    result,
+                    mapped,
+                } => {
+                    let game = &result.game;
+
+                    // Handle companies (find or create)
+                    let publisher_id = if let Some(ref pub_name) = mapped.publisher {
+                        Some(find_or_create_company(conn, pub_name, &mut stats)?)
+                    } else {
+                        None
+                    };
+                    let developer_id = if let Some(ref dev_name) = mapped.developer {
+                        Some(find_or_create_company(conn, dev_name, &mut stats)?)
+                    } else {
+                        None
+                    };
+
+                    // Check for disagreements with existing data
+                    let disagreement_count = merge::merge_release_fields(
+                        conn,
+                        &release.id,
+                        &release,
+                        "screenscraper",
+                        mapped.title.as_deref(),
+                        mapped.release_date.as_deref(),
+                        mapped.genre.as_deref(),
+                        mapped.players.as_deref(),
+                        mapped.description.as_deref(),
+                    )?;
+                    stats.disagreements_found += disagreement_count as u64;
+
+                    // Update release with enrichment data
+                    operations::update_release_enrichment(
+                        conn,
+                        &release.id,
+                        &game.id,
+                        mapped.title.as_deref(),
+                        mapped.release_date.as_deref(),
+                        mapped.genre.as_deref(),
+                        mapped.players.as_deref(),
+                        mapped.rating,
+                        mapped.description.as_deref(),
+                        publisher_id.as_deref(),
+                        developer_id.as_deref(),
+                    )?;
+
+                    // Download assets if requested
+                    if options.download_assets {
+                        if let Some(ref asset_dir) = options.asset_dir {
+                            let _ = events.send(EnrichEvent::ReleaseDownloadingAsset {
+                                index,
+                                title: release.title.clone(),
+                                asset_type: "media".to_string(),
+                            });
+                            match tokio::time::timeout(
+                                ASSET_DOWNLOAD_TIMEOUT,
+                                download_and_catalog_assets(
+                                    &client,
+                                    conn,
+                                    game,
+                                    &release.id,
+                                    asset_dir,
+                                    &options.preferred_region,
+                                ),
+                            ).await {
+                                Ok(Ok(downloaded)) => {
+                                    stats.assets_downloaded += downloaded as u64;
+                                }
+                                Ok(Err(e)) => {
+                                    log::debug!(
+                                        "Asset download failed for '{}': {}",
+                                        release.title, e
+                                    );
+                                }
+                                Err(_timeout) => {
+                                    log::debug!(
+                                        "Asset download timed out after {}s for '{}'",
+                                        ASSET_DOWNLOAD_TIMEOUT.as_secs(),
+                                        release.title,
+                                    );
+                                }
+                            }
+                        }
+                    }
+
+                    stats.releases_enriched += 1;
+
+                    let ss_name = result
+                        .game
+                        .name_for_region("us")
+                        .unwrap_or(&release.title)
+                        .to_string();
+
+                    log::debug!(
+                        "Enriched '{}' via {} (SS id: {}, {} disagreements)",
+                        release.title,
+                        result.method,
+                        result.game.id,
+                        disagreement_count,
+                    );
+
+                    let _ = events.send(EnrichEvent::ReleaseFound {
+                        index,
+                        title: release.title.clone(),
+                        ss_name,
+                        method: result.method,
+                    });
+                }
+                LookupOutcome::NotFound { index, release } => {
+                    let _ = events.send(EnrichEvent::ReleaseNotFound {
+                        index,
+                        title: release.title.clone(),
+                    });
+                    operations::mark_release_not_found(conn, &release.id)?;
+                    stats.releases_not_found += 1;
+                }
+                LookupOutcome::Skipped { index } => {
+                    let _ = events.send(EnrichEvent::ReleaseSkipped { index });
+                    stats.releases_skipped += 1;
+                }
+                LookupOutcome::Error {
+                    index,
+                    release,
+                    error,
+                } => {
+                    let _ = events.send(EnrichEvent::ReleaseError {
+                        index,
+                        title: release.title.clone(),
+                        error: error.clone(),
+                    });
+                    log::debug!("Error enriching '{}': {}", release.title, error);
+                    stats.errors += 1;
+                }
+                LookupOutcome::Fatal { error } => {
+                    let _ = events.send(EnrichEvent::FatalError {
+                        message: error.to_string(),
+                    });
+                    log::debug!("Fatal error during enrichment: {}", error);
+                    fatal_error = Some(error);
+                    // Don't break — remaining outcomes are Skipped due to cancel flag
+                }
+            }
+        }
+
+        let _ = events.send(EnrichEvent::PlatformDone {
+            platform_id: platform_id.clone(),
+        });
+
+        if let Some(err) = fatal_error {
+            // Log the fatal error details
+            match &err {
+                EnrichError::Scraper(ScrapeError::QuotaExceeded { used, max }) => {
+                    log::debug!(
                         "ScreenScraper daily quota exceeded ({}/{}), stopping",
                         used,
                         max
                     );
-                    if let Some(p) = progress {
-                        p.on_complete(&stats);
-                    }
-                    return Ok(stats);
                 }
-                Err(EnrichError::Scraper(ScrapeError::ServerClosed(_))) => {
-                    log::warn!("ScreenScraper API is closed, stopping");
-                    if let Some(p) = progress {
-                        p.on_complete(&stats);
-                    }
-                    return Ok(stats);
+                EnrichError::Scraper(ScrapeError::ServerClosed(_)) => {
+                    log::debug!("ScreenScraper API is closed, stopping");
                 }
-                Err(e) => {
-                    log::warn!("Error enriching '{}': {}", release.title, e);
-                    if let Some(p) = progress {
-                        p.on_error(i + 1, &release.title, &e.to_string());
-                    }
-                    stats.errors += 1;
-                }
+                _ => {}
             }
+            let _ = events.send(EnrichEvent::Done {
+                stats: stats.clone(),
+            });
+            return Ok(stats);
         }
     }
 
-    if let Some(p) = progress {
-        p.on_complete(&stats);
-    }
+    let _ = events.send(EnrichEvent::Done {
+        stats: stats.clone(),
+    });
 
     Ok(stats)
-}
-
-/// Enrich a single release. Returns `true` if the game was found and enriched.
-async fn enrich_single_release(
-    client: &ScreenScraperClient,
-    conn: &Connection,
-    release: &Release,
-    core_platform: Platform,
-    system_id: u32,
-    options: &EnrichOptions,
-    stats: &mut EnrichStats,
-) -> Result<bool, EnrichError> {
-    // Get media entries for this release to find lookup data
-    let media_entries = queries::media_for_release(conn, &release.id)?;
-    if media_entries.is_empty() {
-        stats.releases_skipped += 1;
-        return Ok(false);
-    }
-
-    // Pick the best media entry for lookup (prefer one with hashes)
-    let best_media = pick_best_media_for_lookup(&media_entries);
-
-    // Build RomInfo for the scraper lookup
-    let rom_info = build_rom_info(best_media, core_platform);
-
-    // Look up the game on ScreenScraper
-    let result = match lookup::lookup_game(client, system_id, &rom_info, options.force_hash).await {
-        Ok(r) => r,
-        Err(ScrapeError::NotFound { .. }) => {
-            stats.releases_not_found += 1;
-            return Ok(false);
-        }
-        Err(e) => return Err(e.into()),
-    };
-
-    let game = &result.game;
-
-    // Map GameInfo to release fields
-    let mapped = map_game_info(game, &options.preferred_region, &options.preferred_language);
-
-    // Handle companies (find or create)
-    let publisher_id = if let Some(ref pub_name) = mapped.publisher {
-        Some(find_or_create_company(conn, pub_name, stats)?)
-    } else {
-        None
-    };
-    let developer_id = if let Some(ref dev_name) = mapped.developer {
-        Some(find_or_create_company(conn, dev_name, stats)?)
-    } else {
-        None
-    };
-
-    // Check for disagreements with existing data
-    let disagreement_count = merge::merge_release_fields(
-        conn,
-        &release.id,
-        release,
-        "screenscraper",
-        mapped.title.as_deref(),
-        mapped.release_date.as_deref(),
-        mapped.genre.as_deref(),
-        mapped.players.as_deref(),
-        mapped.description.as_deref(),
-    )?;
-    stats.disagreements_found += disagreement_count as u64;
-
-    // Update release with enrichment data
-    operations::update_release_enrichment(
-        conn,
-        &release.id,
-        &game.id,
-        mapped.title.as_deref(),
-        mapped.release_date.as_deref(),
-        mapped.genre.as_deref(),
-        mapped.players.as_deref(),
-        mapped.rating,
-        mapped.description.as_deref(),
-        publisher_id.as_deref(),
-        developer_id.as_deref(),
-    )?;
-
-    // Download assets if requested
-    if options.download_assets {
-        if let Some(ref asset_dir) = options.asset_dir {
-            let downloaded = download_and_catalog_assets(
-                client,
-                conn,
-                game,
-                &release.id,
-                asset_dir,
-                &options.preferred_region,
-            )
-            .await?;
-            stats.assets_downloaded += downloaded as u64;
-        }
-    }
-
-    stats.releases_enriched += 1;
-
-    log::debug!(
-        "Enriched '{}' via {} (SS id: {}, {} disagreements)",
-        release.title,
-        result.method,
-        game.id,
-        disagreement_count,
-    );
-
-    Ok(true)
 }
 
 // ── Mapping Functions ───────────────────────────────────────────────────────
@@ -451,7 +667,7 @@ fn find_or_create_company(
     }
 
     // Also check by exact company name
-    let slug = slugify_company(name);
+    let slug = slugify(name);
     let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM companies WHERE id = ?1)",
         [&slug],
@@ -615,28 +831,6 @@ fn normalize_date(date: &str) -> String {
         return String::new();
     }
     trimmed.to_string()
-}
-
-/// Generate a slug for a company name.
-fn slugify_company(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
-    let mut last_was_separator = false;
-
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() {
-            result.push(c.to_ascii_lowercase());
-            last_was_separator = false;
-        } else if !last_was_separator && !result.is_empty() {
-            result.push('-');
-            last_was_separator = true;
-        }
-    }
-
-    if result.ends_with('-') {
-        result.pop();
-    }
-
-    result
 }
 
 /// Map ScreenScraper media type to our asset_type string.

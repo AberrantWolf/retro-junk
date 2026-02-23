@@ -19,6 +19,9 @@ pub enum ScrapeError {
     #[error("ScreenScraper server is closed: {0}")]
     ServerClosed(String),
 
+    #[error("Server error (HTTP {status}): {message}")]
+    ServerError { status: u16, message: String },
+
     #[error("API error: {0}")]
     Api(String),
 

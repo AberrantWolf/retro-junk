@@ -1,11 +1,18 @@
 use std::collections::HashMap;
 
 use retro_junk_core::Platform;
+use tokio::time::Duration;
 
 use crate::client::ScreenScraperClient;
 use crate::error::ScrapeError;
 use crate::systems::{self, acceptable_system_ids};
 use crate::types::GameInfo;
+
+/// Maximum time for the entire multi-tier lookup (serial + filename + hash).
+/// Each individual API call has a 30s timeout with retries, but the overall
+/// lookup across all tiers should not exceed this. Covers ~2 full tiers with
+/// retries; if the server is this slow, continuing is unlikely to help.
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How a game was matched in ScreenScraper.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,107 +82,113 @@ pub async fn lookup_game(
     rom_info: &RomInfo,
     force_hash: bool,
 ) -> Result<LookupResult, ScrapeError> {
-    let mut warnings = Vec::new();
+    tokio::time::timeout(LOOKUP_TIMEOUT, async {
+        let mut warnings = Vec::new();
 
-    // Tier 1: Serial match — try scraper serial first, then raw serial
-    let attempts = serial_attempts(&rom_info.serial, &rom_info.scraper_serial);
-    if !attempts.is_empty() {
-        for attempt in &attempts {
-            match try_serial_lookup(client, system_id, attempt).await {
-                Ok(game) => {
-                    if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
-                        warnings.push(format!(
-                            "Serial '{}' matched wrong platform: {}; skipping to next lookup method",
-                            attempt, warning,
-                        ));
-                    } else {
-                        return Ok(LookupResult {
-                            game,
-                            method: LookupMethod::Serial,
-                            warnings,
-                        });
+        // Tier 1: Serial match — try scraper serial first, then raw serial
+        let attempts = serial_attempts(&rom_info.serial, &rom_info.scraper_serial);
+        if !attempts.is_empty() {
+            for attempt in &attempts {
+                match try_serial_lookup(client, system_id, attempt).await {
+                    Ok(game) => {
+                        if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
+                            warnings.push(format!(
+                                "Serial '{}' matched wrong platform: {}; skipping to next lookup method",
+                                attempt, warning,
+                            ));
+                        } else {
+                            return Ok(LookupResult {
+                                game,
+                                method: LookupMethod::Serial,
+                                warnings,
+                            });
+                        }
                     }
+                    Err(ScrapeError::NotFound { .. }) => {
+                        warnings.push(format!("Serial '{}' not found in ScreenScraper", attempt));
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(ScrapeError::NotFound { .. }) => {
-                    warnings.push(format!("Serial '{}' not found in ScreenScraper", attempt));
-                }
-                Err(e) => return Err(e),
             }
-        }
 
-        // All serial attempts failed — add summary warning with ROM serial and tried values
-        if let Some(raw) = &rom_info.serial {
-            let tried: Vec<&str> = attempts.iter().map(|s| s.as_str()).collect();
-            warnings.push(format!(
-                "Serial lookup failed \u{2014} ROM serial: \"{}\", tried: [{}]",
-                raw,
-                tried.join(", "),
-            ));
-        }
-    } else if rom_info.expects_serial {
-        warnings.push(format!(
-            "Expected serial not found in ROM header for {}",
-            rom_info.filename
-        ));
-    }
-
-    // Tier 2: Filename match
-    match try_filename_lookup(client, system_id, &rom_info.filename, rom_info.file_size).await {
-        Ok(game) => {
-            if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
+            // All serial attempts failed — add summary warning with ROM serial and tried values
+            if let Some(raw) = &rom_info.serial {
+                let tried: Vec<&str> = attempts.iter().map(|s| s.as_str()).collect();
                 warnings.push(format!(
-                    "Filename '{}' matched wrong platform: {}; skipping to next lookup method",
-                    rom_info.filename, warning,
+                    "Serial lookup failed \u{2014} ROM serial: \"{}\", tried: [{}]",
+                    raw,
+                    tried.join(", "),
                 ));
-            } else {
-                return Ok(LookupResult {
-                    game,
-                    method: LookupMethod::Filename,
-                    warnings,
-                });
             }
-        }
-        Err(ScrapeError::NotFound { .. }) => {
+        } else if rom_info.expects_serial {
             warnings.push(format!(
-                "Filename '{}' not found in ScreenScraper",
+                "Expected serial not found in ROM header for {}",
                 rom_info.filename
             ));
         }
-        Err(e) => return Err(e),
-    }
 
-    // Tier 3: Hash match (conditional)
-    let should_hash =
-        !systems::expects_serial(rom_info.platform) || force_hash;
+        // Tier 2: Filename match
+        match try_filename_lookup(client, system_id, &rom_info.filename, rom_info.file_size).await {
+            Ok(game) => {
+                if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
+                    warnings.push(format!(
+                        "Filename '{}' matched wrong platform: {}; skipping to next lookup method",
+                        rom_info.filename, warning,
+                    ));
+                } else {
+                    return Ok(LookupResult {
+                        game,
+                        method: LookupMethod::Filename,
+                        warnings,
+                    });
+                }
+            }
+            Err(ScrapeError::NotFound { .. }) => {
+                warnings.push(format!(
+                    "Filename '{}' not found in ScreenScraper",
+                    rom_info.filename
+                ));
+            }
+            Err(e) => return Err(e),
+        }
 
-    if should_hash {
-        if let (Some(crc), Some(md5), Some(sha1)) =
-            (&rom_info.crc32, &rom_info.md5, &rom_info.sha1)
-        {
-            match try_hash_lookup(client, system_id, crc, md5, sha1, &rom_info.filename, rom_info.file_size).await {
-                Ok(game) => {
-                    if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
-                        warnings.push(format!(
-                            "Hash matched wrong platform: {}; no more lookup methods available",
-                            warning,
-                        ));
-                    } else {
-                        return Ok(LookupResult {
-                            game,
-                            method: LookupMethod::Hash,
-                            warnings,
-                        });
+        // Tier 3: Hash match (conditional)
+        let should_hash =
+            !systems::expects_serial(rom_info.platform) || force_hash;
+
+        if should_hash {
+            if let (Some(crc), Some(md5), Some(sha1)) =
+                (&rom_info.crc32, &rom_info.md5, &rom_info.sha1)
+            {
+                match try_hash_lookup(client, system_id, crc, md5, sha1, &rom_info.filename, rom_info.file_size).await {
+                    Ok(game) => {
+                        if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
+                            warnings.push(format!(
+                                "Hash matched wrong platform: {}; no more lookup methods available",
+                                warning,
+                            ));
+                        } else {
+                            return Ok(LookupResult {
+                                game,
+                                method: LookupMethod::Hash,
+                                warnings,
+                            });
+                        }
                     }
+                    Err(ScrapeError::NotFound { .. }) => {
+                        warnings.push("Hash not found in ScreenScraper".to_string());
+                    }
+                    Err(e) => return Err(e),
                 }
-                Err(ScrapeError::NotFound { .. }) => {
-                    warnings.push("Hash not found in ScreenScraper".to_string());
-                }
-                Err(e) => return Err(e),
             }
         }
-    }
 
-    Err(ScrapeError::NotFound { warnings })
+        Err(ScrapeError::NotFound { warnings })
+    })
+    .await
+    .map_err(|_| ScrapeError::Api(format!(
+        "Lookup timed out after {}s", LOOKUP_TIMEOUT.as_secs()
+    )))?
 }
 
 /// Check if the returned game's platform matches the expected system ID.

@@ -12,6 +12,7 @@ use rusqlite::Connection;
 use thiserror::Error;
 
 use crate::progress::ImportProgress;
+use crate::slugify;
 
 #[derive(Debug, Error)]
 pub enum ImportError {
@@ -172,6 +173,7 @@ fn import_game(
             rating: None,
             description: None,
             screenscraper_id: None,
+            scraper_not_found: false,
             created_at: String::new(),
             updated_at: String::new(),
         };
@@ -265,29 +267,6 @@ fn make_release_id(work_id: &str, platform_id: &str, region: &str) -> String {
 fn make_media_id(release_id: &str, rom_name: &str) -> String {
     let slug = slugify(rom_name);
     format!("{release_id}:{slug}")
-}
-
-/// Convert a string to a URL-safe slug.
-fn slugify(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut last_was_separator = false;
-
-    for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            result.push(c.to_ascii_lowercase());
-            last_was_separator = false;
-        } else if !last_was_separator && !result.is_empty() {
-            result.push('-');
-            last_was_separator = true;
-        }
-    }
-
-    // Trim trailing separator
-    if result.ends_with('-') {
-        result.pop();
-    }
-
-    result
 }
 
 /// Map a `DatSource` to the string used in the catalog.

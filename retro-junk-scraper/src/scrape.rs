@@ -10,6 +10,10 @@ use retro_junk_frontend::ScrapedGame;
 use retro_junk_frontend::miximage_layout::MiximageLayout;
 use retro_junk_lib::scanner::{self, GameEntry};
 use tokio::sync::{Mutex, mpsc};
+use tokio::time::Duration;
+
+/// Timeout for acquiring internal mutex locks (should be near-instant).
+const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
 use crate::client::ScreenScraperClient;
 use crate::error::ScrapeError;
@@ -298,10 +302,10 @@ pub async fn scrape_folder(
                     ..
                 } = result
                 {
-                    primary_results
-                        .lock()
-                        .await
-                        .insert(group_idx, scraped.clone());
+                    match tokio::time::timeout(LOCK_TIMEOUT, primary_results.lock()).await {
+                        Ok(mut guard) => { guard.insert(group_idx, scraped.clone()); }
+                        Err(_) => log::warn!("primary_results lock timed out"),
+                    }
                 }
 
                 result
@@ -345,7 +349,9 @@ pub async fn scrape_folder(
     }
 
     // Resolve secondary discs from primary results (no API calls needed)
-    let primary_map = primary_results.lock().await;
+    let primary_map = tokio::time::timeout(LOCK_TIMEOUT, primary_results.lock())
+        .await
+        .map_err(|_| ScrapeError::Api("primary_results lock timed out".to_string()))?;
     for (index, entry, group_idx) in &secondary_items {
         let filename = entry.display_name().to_string();
 

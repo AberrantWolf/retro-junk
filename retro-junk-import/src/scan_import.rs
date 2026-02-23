@@ -310,7 +310,7 @@ fn find_matching_media(
     let candidates = queries::find_media_by_crc32(conn, &hashes.crc32)?;
     for media in candidates {
         // Verify platform via release
-        let release = match get_release_for_media(conn, &media.release_id)? {
+        let release = match queries::get_release_by_id(conn, &media.release_id)? {
             Some(r) => r,
             None => continue,
         };
@@ -332,7 +332,7 @@ fn find_matching_media(
     if let Some(ref sha1) = hashes.sha1 {
         let candidates = queries::find_media_by_sha1(conn, sha1)?;
         for media in candidates {
-            let release = match get_release_for_media(conn, &media.release_id)? {
+            let release = match queries::get_release_by_id(conn, &media.release_id)? {
                 Some(r) => r,
                 None => continue,
             };
@@ -344,44 +344,4 @@ fn find_matching_media(
     }
 
     Ok(None)
-}
-
-/// Look up a release by ID.
-fn get_release_for_media(
-    conn: &Connection,
-    release_id: &str,
-) -> Result<Option<Release>, ScanError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, work_id, platform_id, region, title, alt_title,
-                publisher_id, developer_id, release_date, game_serial,
-                genre, players, rating, description, screenscraper_id,
-                created_at, updated_at
-         FROM releases WHERE id = ?1",
-    )?;
-    let result = stmt.query_row(rusqlite::params![release_id], |row| {
-        Ok(Release {
-            id: row.get(0)?,
-            work_id: row.get(1)?,
-            platform_id: row.get(2)?,
-            region: row.get(3)?,
-            title: row.get(4)?,
-            alt_title: row.get(5)?,
-            publisher_id: row.get(6)?,
-            developer_id: row.get(7)?,
-            release_date: row.get(8)?,
-            game_serial: row.get(9)?,
-            genre: row.get(10)?,
-            players: row.get(11)?,
-            rating: row.get(12)?,
-            description: row.get(13)?,
-            screenscraper_id: row.get(14)?,
-            created_at: row.get(15)?,
-            updated_at: row.get(16)?,
-        })
-    });
-    match result {
-        Ok(r) => Ok(Some(r)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
 }

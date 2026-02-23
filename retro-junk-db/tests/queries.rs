@@ -37,6 +37,7 @@ fn setup_db() -> rusqlite::Connection {
         rating: None,
         description: None,
         screenscraper_id: None,
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -58,6 +59,7 @@ fn setup_db() -> rusqlite::Connection {
         rating: None,
         description: None,
         screenscraper_id: None,
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -250,6 +252,7 @@ fn disagreement_filter_by_platform() {
             rating: None,
             description: None,
             screenscraper_id: None,
+            scraper_not_found: false,
             created_at: String::new(),
             updated_at: String::new(),
         },

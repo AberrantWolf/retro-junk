@@ -3,11 +3,13 @@
 pub use retro_junk_core::*;
 
 // Modules that still live in retro-junk-lib:
+pub mod async_util;
 pub mod context;
 pub mod hasher;
 pub mod rename;
 pub mod repair;
 pub mod scanner;
+pub mod worker_pool;
 
 // Re-export context items at crate root for backwards compatibility.
 pub use context::{AnalysisContext, Console, ConsoleFolder, FolderScanResult, RegisteredConsole};

@@ -36,6 +36,7 @@ fn setup_db_with_release() -> (rusqlite::Connection, String) {
         rating: None,
         description: None,
         screenscraper_id: None,
+        scraper_not_found: false,
         created_at: String::new(),
         updated_at: String::new(),
     };

@@ -155,8 +155,8 @@ pub fn upsert_release(conn: &Connection, release: &Release) -> Result<(), Operat
     conn.execute(
         "INSERT INTO releases (id, work_id, platform_id, region, title, alt_title,
              publisher_id, developer_id, release_date, game_serial, genre, players,
-             rating, description, screenscraper_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             rating, description, screenscraper_id, scraper_not_found)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(id) DO UPDATE SET
              title = excluded.title,
              alt_title = excluded.alt_title,
@@ -169,6 +169,7 @@ pub fn upsert_release(conn: &Connection, release: &Release) -> Result<(), Operat
              rating = excluded.rating,
              description = excluded.description,
              screenscraper_id = excluded.screenscraper_id,
+             scraper_not_found = excluded.scraper_not_found,
              updated_at = datetime('now')",
         params![
             release.id,
@@ -186,6 +187,7 @@ pub fn upsert_release(conn: &Connection, release: &Release) -> Result<(), Operat
             release.rating,
             release.description,
             release.screenscraper_id,
+            release.scraper_not_found,
         ],
     )?;
     Ok(())
@@ -202,7 +204,7 @@ pub fn find_release(
         "SELECT id, work_id, platform_id, region, title, alt_title,
                 publisher_id, developer_id, release_date, game_serial,
                 genre, players, rating, description, screenscraper_id,
-                created_at, updated_at
+                scraper_not_found, created_at, updated_at
          FROM releases WHERE work_id = ?1 AND platform_id = ?2 AND region = ?3",
     )?;
     let result = stmt.query_row(params![work_id, platform_id, region], |row| {
@@ -222,8 +224,9 @@ pub fn find_release(
             rating: row.get(12)?,
             description: row.get(13)?,
             screenscraper_id: row.get(14)?,
-            created_at: row.get(15)?,
-            updated_at: row.get(16)?,
+            scraper_not_found: row.get(15)?,
+            created_at: row.get(16)?,
+            updated_at: row.get(17)?,
         })
     });
     match result {
@@ -254,6 +257,7 @@ pub fn update_release_enrichment(
     conn.execute(
         "UPDATE releases SET
              screenscraper_id = ?2,
+             scraper_not_found = 0,
              release_date = COALESCE(release_date, ?3),
              genre = COALESCE(genre, ?4),
              players = COALESCE(players, ?5),
@@ -284,6 +288,25 @@ pub fn update_release_enrichment(
         )?;
     }
     Ok(())
+}
+
+/// Mark a release as not found on ScreenScraper.
+pub fn mark_release_not_found(conn: &Connection, release_id: &str) -> Result<(), OperationError> {
+    conn.execute(
+        "UPDATE releases SET scraper_not_found = 1, updated_at = datetime('now') WHERE id = ?1",
+        params![release_id],
+    )?;
+    Ok(())
+}
+
+/// Clear all not-found flags for a platform (used with --force).
+pub fn clear_not_found_flags(conn: &Connection, platform_id: &str) -> Result<u64, OperationError> {
+    let changed = conn.execute(
+        "UPDATE releases SET scraper_not_found = 0, updated_at = datetime('now')
+         WHERE platform_id = ?1 AND scraper_not_found = 1",
+        params![platform_id],
+    )?;
+    Ok(changed as u64)
 }
 
 // ── Media Operations ────────────────────────────────────────────────────────

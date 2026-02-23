@@ -12,7 +12,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 1;
+pub const CURRENT_VERSION: i32 = 2;
 
 /// Create all tables and indexes if they don't exist.
 ///
@@ -77,15 +77,28 @@ fn set_schema_version(conn: &Connection, version: i32) -> Result<(), SchemaError
 }
 
 /// Run migrations from `from_version` up to `CURRENT_VERSION`.
-fn migrate(_conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
-    // Future migrations go here as match arms.
-    // For now, version 1 is the only version.
+fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
     if from_version > CURRENT_VERSION {
         return Err(SchemaError::VersionMismatch {
             expected: CURRENT_VERSION,
             found: from_version,
         });
     }
+
+    let mut version = from_version;
+    while version < CURRENT_VERSION {
+        match version {
+            1 => {
+                conn.execute_batch(
+                    "ALTER TABLE releases ADD COLUMN scraper_not_found BOOLEAN NOT NULL DEFAULT 0;",
+                )?;
+            }
+            _ => {}
+        }
+        version += 1;
+        set_schema_version(conn, version)?;
+    }
+
     Ok(())
 }
 
@@ -169,6 +182,7 @@ CREATE TABLE IF NOT EXISTS releases (
     rating REAL,
     description TEXT,
     screenscraper_id TEXT,
+    scraper_not_found BOOLEAN NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
