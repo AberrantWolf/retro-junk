@@ -15,10 +15,10 @@ const MEDIA_COLUMNS: &str =
      crc32, sha1, md5, created_at, updated_at";
 
 const RELEASE_COLUMNS: &str =
-    "id, work_id, platform_id, region, title, alt_title, \
-     publisher_id, developer_id, release_date, game_serial, \
-     genre, players, rating, description, screenscraper_id, \
-     scraper_not_found, created_at, updated_at";
+    "id, work_id, platform_id, region, revision, variant, \
+     title, alt_title, publisher_id, developer_id, release_date, \
+     game_serial, genre, players, rating, description, \
+     screenscraper_id, scraper_not_found, created_at, updated_at";
 
 // ── Media Lookups ───────────────────────────────────────────────────────────
 
@@ -171,10 +171,10 @@ pub fn releases_to_enrich(
         ""
     };
     let sql = format!(
-        "SELECT DISTINCT r.id, r.work_id, r.platform_id, r.region, r.title, r.alt_title, \
-                r.publisher_id, r.developer_id, r.release_date, r.game_serial, \
-                r.genre, r.players, r.rating, r.description, r.screenscraper_id, \
-                r.scraper_not_found, r.created_at, r.updated_at \
+        "SELECT DISTINCT r.id, r.work_id, r.platform_id, r.region, r.revision, r.variant, \
+                r.title, r.alt_title, r.publisher_id, r.developer_id, r.release_date, \
+                r.game_serial, r.genre, r.players, r.rating, r.description, \
+                r.screenscraper_id, r.scraper_not_found, r.created_at, r.updated_at \
          FROM releases r \
          JOIN media m ON m.release_id = r.id \
          WHERE r.platform_id = ?1{extra_filter} \
@@ -823,19 +823,21 @@ fn row_to_release(row: &rusqlite::Row<'_>) -> rusqlite::Result<Release> {
         work_id: row.get(1)?,
         platform_id: row.get(2)?,
         region: row.get(3)?,
-        title: row.get(4)?,
-        alt_title: row.get(5)?,
-        publisher_id: row.get(6)?,
-        developer_id: row.get(7)?,
-        release_date: row.get(8)?,
-        game_serial: row.get(9)?,
-        genre: row.get(10)?,
-        players: row.get(11)?,
-        rating: row.get(12)?,
-        description: row.get(13)?,
-        screenscraper_id: row.get(14)?,
-        scraper_not_found: row.get(15)?,
-        created_at: row.get(16)?,
-        updated_at: row.get(17)?,
+        revision: row.get(4)?,
+        variant: row.get(5)?,
+        title: row.get(6)?,
+        alt_title: row.get(7)?,
+        publisher_id: row.get(8)?,
+        developer_id: row.get(9)?,
+        release_date: row.get(10)?,
+        game_serial: row.get(11)?,
+        genre: row.get(12)?,
+        players: row.get(13)?,
+        rating: row.get(14)?,
+        description: row.get(15)?,
+        screenscraper_id: row.get(16)?,
+        scraper_not_found: row.get(17)?,
+        created_at: row.get(18)?,
+        updated_at: row.get(19)?,
     })
 }

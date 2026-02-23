@@ -153,10 +153,10 @@ pub fn update_work_name(
 /// Insert or update a release.
 pub fn upsert_release(conn: &Connection, release: &Release) -> Result<(), OperationError> {
     conn.execute(
-        "INSERT INTO releases (id, work_id, platform_id, region, title, alt_title,
-             publisher_id, developer_id, release_date, game_serial, genre, players,
-             rating, description, screenscraper_id, scraper_not_found)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+        "INSERT INTO releases (id, work_id, platform_id, region, revision, variant,
+             title, alt_title, publisher_id, developer_id, release_date, game_serial,
+             genre, players, rating, description, screenscraper_id, scraper_not_found)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
          ON CONFLICT(id) DO UPDATE SET
              title = excluded.title,
              alt_title = excluded.alt_title,
@@ -176,6 +176,8 @@ pub fn upsert_release(conn: &Connection, release: &Release) -> Result<(), Operat
             release.work_id,
             release.platform_id,
             release.region,
+            release.revision,
+            release.variant,
             release.title,
             release.alt_title,
             release.publisher_id,
@@ -193,40 +195,46 @@ pub fn upsert_release(conn: &Connection, release: &Release) -> Result<(), Operat
     Ok(())
 }
 
-/// Find a release by work + platform + region (the natural key).
+/// Find a release by the natural key (work + platform + region + revision + variant).
 pub fn find_release(
     conn: &Connection,
     work_id: &str,
     platform_id: &str,
     region: &str,
+    revision: &str,
+    variant: &str,
 ) -> Result<Option<Release>, OperationError> {
     let mut stmt = conn.prepare(
-        "SELECT id, work_id, platform_id, region, title, alt_title,
-                publisher_id, developer_id, release_date, game_serial,
-                genre, players, rating, description, screenscraper_id,
-                scraper_not_found, created_at, updated_at
-         FROM releases WHERE work_id = ?1 AND platform_id = ?2 AND region = ?3",
+        "SELECT id, work_id, platform_id, region, revision, variant,
+                title, alt_title, publisher_id, developer_id, release_date,
+                game_serial, genre, players, rating, description,
+                screenscraper_id, scraper_not_found, created_at, updated_at
+         FROM releases
+         WHERE work_id = ?1 AND platform_id = ?2 AND region = ?3
+           AND revision = ?4 AND variant = ?5",
     )?;
-    let result = stmt.query_row(params![work_id, platform_id, region], |row| {
+    let result = stmt.query_row(params![work_id, platform_id, region, revision, variant], |row| {
         Ok(Release {
             id: row.get(0)?,
             work_id: row.get(1)?,
             platform_id: row.get(2)?,
             region: row.get(3)?,
-            title: row.get(4)?,
-            alt_title: row.get(5)?,
-            publisher_id: row.get(6)?,
-            developer_id: row.get(7)?,
-            release_date: row.get(8)?,
-            game_serial: row.get(9)?,
-            genre: row.get(10)?,
-            players: row.get(11)?,
-            rating: row.get(12)?,
-            description: row.get(13)?,
-            screenscraper_id: row.get(14)?,
-            scraper_not_found: row.get(15)?,
-            created_at: row.get(16)?,
-            updated_at: row.get(17)?,
+            revision: row.get(4)?,
+            variant: row.get(5)?,
+            title: row.get(6)?,
+            alt_title: row.get(7)?,
+            publisher_id: row.get(8)?,
+            developer_id: row.get(9)?,
+            release_date: row.get(10)?,
+            game_serial: row.get(11)?,
+            genre: row.get(12)?,
+            players: row.get(13)?,
+            rating: row.get(14)?,
+            description: row.get(15)?,
+            screenscraper_id: row.get(16)?,
+            scraper_not_found: row.get(17)?,
+            created_at: row.get(18)?,
+            updated_at: row.get(19)?,
         })
     });
     match result {

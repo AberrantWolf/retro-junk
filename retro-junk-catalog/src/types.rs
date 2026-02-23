@@ -111,6 +111,10 @@ pub struct Release {
     pub work_id: String,
     pub platform_id: String,
     pub region: String,
+    /// Software revision identifier: "Rev A", "v1.0", etc. Empty string for original.
+    pub revision: String,
+    /// Marketing/edition label: "Greatest Hits", "Player's Choice", etc. Empty string for standard.
+    pub variant: String,
     pub title: String,
     pub alt_title: Option<String>,
     pub publisher_id: Option<String>,

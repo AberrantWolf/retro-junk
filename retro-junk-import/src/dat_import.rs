@@ -149,19 +149,24 @@ fn import_game(
     // For multi-region games, use the first region as the primary release region
     // (e.g., "USA, Europe" → release for "usa")
     let primary_region = &regions[0];
-    let release_id = make_release_id(&work_id, platform_id, primary_region);
+    let revision = compute_release_revision(&parsed);
+    let variant = compute_release_variant(&parsed);
+    let release_id = make_release_id(&work_id, platform_id, primary_region, &revision, &variant);
 
     // Find or create Release
     let existing_release =
-        operations::find_release(conn, &work_id, platform_id, primary_region)?;
-    if existing_release.is_some() {
+        operations::find_release(conn, &work_id, platform_id, primary_region, &revision, &variant)?;
+    let effective_release_id = if let Some(ref existing) = existing_release {
         stats.releases_existing += 1;
+        existing.id.clone()
     } else {
         let release = Release {
             id: release_id.clone(),
             work_id: work_id.clone(),
             platform_id: platform_id.to_string(),
             region: primary_region.clone(),
+            revision: revision.clone(),
+            variant: variant.clone(),
             title: parsed.title.clone(),
             alt_title: None,
             publisher_id: None,
@@ -179,11 +184,12 @@ fn import_game(
         };
         operations::upsert_release(conn, &release)?;
         stats.releases_created += 1;
-    }
+        release_id.clone()
+    };
 
     // Create Media entries — one per ROM in the DatGame
     for rom in &game.roms {
-        let media_id = make_media_id(&release_id, &rom.name);
+        let media_id = make_media_id(&effective_release_id, &rom.name);
 
         // Check if this media already exists
         let existing = operations::find_media_by_dat_name(conn, &game.name)?;
@@ -203,7 +209,7 @@ fn import_game(
 
         let media = Media {
             id: media_id,
-            release_id: release_id.clone(),
+            release_id: effective_release_id.clone(),
             media_serial: rom.serial.clone(),
             disc_number: parsed.disc_number.map(|n| n as i32),
             disc_label: parsed.disc_label.clone(),
@@ -248,6 +254,31 @@ pub fn log_import(
     Ok(id)
 }
 
+// ── Edition Computation ─────────────────────────────────────────────────
+
+/// Compute the release revision from a parsed DAT name.
+///
+/// Prefers explicit revision (e.g., "Rev A"), falls back to version (e.g., "v1.0").
+fn compute_release_revision(parsed: &name_parser::ParsedDatName) -> String {
+    parsed
+        .revision
+        .clone()
+        .or_else(|| parsed.version.clone())
+        .unwrap_or_default()
+}
+
+/// Compute the release variant from a parsed DAT name.
+///
+/// Flags like "Greatest Hits", "Player's Choice", "Virtual Console", "Proto",
+/// "Beta", etc. all become variant identifiers that distinguish releases.
+fn compute_release_variant(parsed: &name_parser::ParsedDatName) -> String {
+    if parsed.flags.is_empty() {
+        String::new()
+    } else {
+        parsed.flags.join(", ")
+    }
+}
+
 // ── ID Generation ───────────────────────────────────────────────────────────
 
 /// Generate a stable work ID from title and platform.
@@ -258,9 +289,18 @@ fn make_work_id(title: &str, platform_id: &str) -> String {
     format!("{platform_id}:{slug}")
 }
 
-/// Generate a stable release ID from work + platform + region.
-fn make_release_id(work_id: &str, platform_id: &str, region: &str) -> String {
-    format!("{work_id}:{platform_id}:{region}")
+/// Generate a stable release ID from work + platform + region + revision + variant.
+fn make_release_id(work_id: &str, platform_id: &str, region: &str, revision: &str, variant: &str) -> String {
+    let mut id = format!("{work_id}:{platform_id}:{region}");
+    if !revision.is_empty() {
+        id.push(':');
+        id.push_str(&crate::slugify(revision));
+    }
+    if !variant.is_empty() {
+        id.push(':');
+        id.push_str(&crate::slugify(variant));
+    }
+    id
 }
 
 /// Generate a stable media ID from release + ROM name.

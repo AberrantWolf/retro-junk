@@ -104,6 +104,8 @@ fn release_upsert_and_find() {
         work_id: "smb1".to_string(),
         platform_id: "nes".to_string(),
         region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
         title: "Super Mario Bros.".to_string(),
         alt_title: None,
         publisher_id: None,
@@ -121,7 +123,7 @@ fn release_upsert_and_find() {
     };
     upsert_release(&conn, &release).unwrap();
 
-    let found = find_release(&conn, "smb1", "nes", "usa").unwrap();
+    let found = find_release(&conn, "smb1", "nes", "usa", "", "").unwrap();
     assert!(found.is_some());
     let r = found.unwrap();
     assert_eq!(r.title, "Super Mario Bros.");
@@ -139,6 +141,8 @@ fn media_upsert_and_find() {
         work_id: "smb1".to_string(),
         platform_id: "nes".to_string(),
         region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
         title: "Super Mario Bros.".to_string(),
         alt_title: None,
         publisher_id: None,
@@ -255,6 +259,8 @@ fn apply_disagreement_resolution_updates_entity() {
         work_id: "nes:smb".to_string(),
         platform_id: "nes".to_string(),
         region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
         title: "Super Mario Bros.".to_string(),
         alt_title: None,
         publisher_id: None,
@@ -283,7 +289,7 @@ fn apply_disagreement_resolution_updates_entity() {
     .unwrap();
 
     // Verify it was applied
-    let updated = find_release(&conn, "nes:smb", "nes", "usa").unwrap().unwrap();
+    let updated = find_release(&conn, "nes:smb", "nes", "usa", "", "").unwrap().unwrap();
     assert_eq!(updated.release_date.as_deref(), Some("1985-10-18"));
 }
 

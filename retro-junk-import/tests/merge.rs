@@ -25,6 +25,8 @@ fn setup_db_with_release() -> (rusqlite::Connection, String) {
         work_id: "smb1".to_string(),
         platform_id: "nes".to_string(),
         region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
         title: "Super Mario Bros.".to_string(),
         alt_title: None,
         publisher_id: None,
@@ -105,7 +107,7 @@ fn disagreement_recorded_when_values_differ() {
 #[test]
 fn merge_release_counts_disagreements() {
     let (conn, release_id) = setup_db_with_release();
-    let existing = find_release(&conn, "smb1", "nes", "usa").unwrap().unwrap();
+    let existing = find_release(&conn, "smb1", "nes", "usa", "", "").unwrap().unwrap();
 
     let count = merge_release_fields(
         &conn,

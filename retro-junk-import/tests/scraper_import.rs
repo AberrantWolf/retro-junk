@@ -237,6 +237,8 @@ fn enrichment_updates_release_fields() {
         work_id: "nes:super-mario-bros".to_string(),
         platform_id: "nes".to_string(),
         region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
         title: "Super Mario Bros.".to_string(),
         alt_title: None,
         publisher_id: None,
@@ -294,7 +296,7 @@ fn enrichment_updates_release_fields() {
     .unwrap();
 
     // Verify the update
-    let updated = find_release(&conn, "nes:super-mario-bros", "nes", "usa")
+    let updated = find_release(&conn, "nes:super-mario-bros", "nes", "usa", "", "")
         .unwrap()
         .unwrap();
     assert_eq!(updated.screenscraper_id.as_deref(), Some("12345"));
@@ -316,6 +318,8 @@ fn enrichment_preserves_existing_fields() {
         work_id: "nes:zelda".to_string(),
         platform_id: "nes".to_string(),
         region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
         title: "The Legend of Zelda".to_string(),
         alt_title: None,
         publisher_id: None,
@@ -349,7 +353,7 @@ fn enrichment_preserves_existing_fields() {
     )
     .unwrap();
 
-    let updated = find_release(&conn, "nes:zelda", "nes", "usa")
+    let updated = find_release(&conn, "nes:zelda", "nes", "usa", "", "")
         .unwrap()
         .unwrap();
     // screenscraper_id is always updated
@@ -374,6 +378,8 @@ fn releases_to_enrich_query() {
         work_id: "nes:smb".to_string(),
         platform_id: "nes".to_string(),
         region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
         title: "Super Mario Bros.".to_string(),
         alt_title: None,
         publisher_id: None,
@@ -396,6 +402,8 @@ fn releases_to_enrich_query() {
         work_id: "nes:zelda".to_string(),
         platform_id: "nes".to_string(),
         region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
         title: "The Legend of Zelda".to_string(),
         alt_title: None,
         publisher_id: None,
@@ -476,6 +484,8 @@ fn media_for_release_query() {
         work_id: "nes:smb".to_string(),
         platform_id: "nes".to_string(),
         region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
         title: "Super Mario Bros.".to_string(),
         alt_title: None,
         publisher_id: None,

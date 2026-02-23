@@ -101,11 +101,18 @@ fn import_creates_correct_releases() {
     import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
 
     let releases = releases_for_platform(&conn, "nes").unwrap();
-    assert_eq!(releases.len(), 2); // SMB + Zelda (Rev A shares Zelda's release)
+    assert_eq!(releases.len(), 3); // SMB + Zelda + Zelda Rev A (revisions are separate releases)
 
     let titles: Vec<&str> = releases.iter().map(|r| r.title.as_str()).collect();
     assert!(titles.contains(&"Super Mario Bros."));
     assert!(titles.contains(&"The Legend of Zelda"));
+
+    // Zelda Rev A should have revision set on its release
+    let zelda_reva = releases
+        .iter()
+        .find(|r| r.title == "The Legend of Zelda" && r.revision == "Rev A")
+        .expect("should have Zelda Rev A release");
+    assert_eq!(zelda_reva.revision, "Rev A");
 }
 
 #[test]
@@ -136,12 +143,12 @@ fn import_revision_creates_separate_media() {
     assert_eq!(zelda_orig.len(), 1);
     assert_eq!(zelda_reva.len(), 1);
 
-    // Rev A should have revision set
+    // Rev A media should have revision set
     assert_eq!(zelda_reva[0].revision.as_deref(), Some("Rev A"));
     assert!(zelda_orig[0].revision.is_none());
 
-    // Both should share the same release
-    assert_eq!(zelda_orig[0].release_id, zelda_reva[0].release_id);
+    // Revisions now create separate releases
+    assert_ne!(zelda_orig[0].release_id, zelda_reva[0].release_id);
 }
 
 #[test]

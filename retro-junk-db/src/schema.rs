@@ -12,7 +12,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 2;
+pub const CURRENT_VERSION: i32 = 3;
 
 /// Create all tables and indexes if they don't exist.
 ///
@@ -93,6 +93,15 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                     "ALTER TABLE releases ADD COLUMN scraper_not_found BOOLEAN NOT NULL DEFAULT 0;",
                 )?;
             }
+            2 => {
+                conn.execute_batch(
+                    "ALTER TABLE releases ADD COLUMN revision TEXT NOT NULL DEFAULT '';
+                     ALTER TABLE releases ADD COLUMN variant TEXT NOT NULL DEFAULT '';
+                     DROP INDEX IF EXISTS idx_releases_natural;
+                     CREATE UNIQUE INDEX idx_releases_natural
+                         ON releases(work_id, platform_id, region, revision, variant);",
+                )?;
+            }
             _ => {}
         }
         version += 1;
@@ -171,6 +180,8 @@ CREATE TABLE IF NOT EXISTS releases (
     work_id TEXT NOT NULL REFERENCES works(id),
     platform_id TEXT NOT NULL REFERENCES platforms(id),
     region TEXT NOT NULL,
+    revision TEXT NOT NULL DEFAULT '',
+    variant TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL,
     alt_title TEXT,
     publisher_id TEXT REFERENCES companies(id),
@@ -186,7 +197,7 @@ CREATE TABLE IF NOT EXISTS releases (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_releases_natural ON releases(work_id, platform_id, region);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_releases_natural ON releases(work_id, platform_id, region, revision, variant);
 
 -- Physical/digital media artifact
 CREATE TABLE IF NOT EXISTS media (
