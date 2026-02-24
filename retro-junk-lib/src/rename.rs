@@ -78,6 +78,8 @@ pub struct RenameSummary {
     pub m3u_folders_renamed: usize,
     pub m3u_playlists_written: usize,
     pub cue_files_updated: usize,
+    pub m3u_references_updated: usize,
+    pub m3u_playlists_renamed: usize,
 }
 
 /// A file that couldn't be matched by serial or hash.
@@ -168,6 +170,10 @@ pub struct RenamePlan {
     pub m3u_actions: Vec<M3uAction>,
     /// CUE files with broken FILE references (pre-existing from prior renames)
     pub broken_cue_files: Vec<PathBuf>,
+    /// M3U playlist files with broken entries (pre-existing from prior renames)
+    pub broken_m3u_files: Vec<PathBuf>,
+    /// M3U playlist files that need renaming to match their parent .m3u folder
+    pub misnamed_m3u_playlists: Vec<(PathBuf, PathBuf)>,
 }
 
 use retro_junk_core::disc::{extract_disc_number, strip_disc_tag};
@@ -494,8 +500,34 @@ pub fn plan_renames(
         }
     }
 
-    // Detect pre-existing broken CUE file references
+    // Detect .m3u playlist files that don't match their parent folder name.
+    // Skip folders where Step 2 will rewrite the playlist (non-empty playlist_entries).
+    let m3u_write_folders: std::collections::HashSet<PathBuf> = m3u_actions
+        .iter()
+        .filter(|a| !a.playlist_entries.is_empty())
+        .map(|a| a.source_folder.clone())
+        .collect();
+
+    let mut misnamed_m3u_playlists = Vec::new();
+    for action in &m3u_actions {
+        if m3u_write_folders.contains(&action.source_folder) {
+            continue;
+        }
+        let expected_name = format!("{}.m3u", action.game_name);
+        if let Some(pair) = detect_misnamed_m3u(&action.source_folder, &expected_name) {
+            misnamed_m3u_playlists.push(pair);
+        }
+    }
+
+    // Filter phantom m3u_actions: keep only actions with real work
+    // (folder rename or playlist write). Misnamed .m3u files are handled separately.
+    m3u_actions.retain(|action| {
+        action.source_folder != action.target_folder || !action.playlist_entries.is_empty()
+    });
+
+    // Detect pre-existing broken CUE and M3U file references
     let broken_cue_files = detect_broken_cue_files(&files);
+    let broken_m3u_files = detect_broken_m3u_playlists(&files);
 
     Ok(RenamePlan {
         renames: clean_renames,
@@ -506,6 +538,8 @@ pub fn plan_renames(
         serial_warnings,
         m3u_actions,
         broken_cue_files,
+        broken_m3u_files,
+        misnamed_m3u_playlists,
     })
 }
 
@@ -712,6 +746,20 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
             fix_cue_references_in_dir(dir, rename_map, &mut summary.errors);
     }
 
+    // Fix broken M3U playlist entries in affected directories
+    let mut m3u_dirs: std::collections::HashSet<PathBuf> = cue_dirs.clone();
+    for m3u_path in &plan.broken_m3u_files {
+        if let Some(dir) = m3u_path.parent() {
+            m3u_dirs.insert(dir.to_path_buf());
+        }
+    }
+    for dir in &m3u_dirs {
+        let empty_map = HashMap::new();
+        let rename_map = dir_rename_maps.get(dir).unwrap_or(&empty_map);
+        summary.m3u_references_updated +=
+            fix_m3u_references_in_dir(dir, rename_map, &mut summary.errors);
+    }
+
     // Step 2: Write .m3u playlist files (using source folder paths, before folder rename)
     for action in &plan.m3u_actions {
         if action.playlist_entries.is_empty() {
@@ -742,6 +790,24 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
                 summary.errors.push(format!(
                     "Failed to write playlist {}: {}",
                     playlist_path.display(),
+                    e,
+                ));
+            }
+        }
+    }
+
+    // Step 2.5: Rename misnamed .m3u playlist files to match their parent folder
+    for (source, target) in &plan.misnamed_m3u_playlists {
+        if !source.exists() || target.exists() {
+            continue; // Source deleted by Step 2, or target already created
+        }
+        match fs::rename(source, target) {
+            Ok(()) => summary.m3u_playlists_renamed += 1,
+            Err(e) => {
+                summary.errors.push(format!(
+                    "Failed to rename playlist {:?} → {:?}: {}",
+                    source.file_name().unwrap_or_default(),
+                    target.file_name().unwrap_or_default(),
                     e,
                 ));
             }
@@ -1153,4 +1219,283 @@ fn extract_trailing_number(stem: &str) -> Option<u32> {
     } else {
         digits.parse().ok()
     }
+}
+
+// ---------------------------------------------------------------------------
+// M3U playlist reference fixing
+// ---------------------------------------------------------------------------
+
+/// Detect M3U playlist files with broken entries in directories containing
+/// the given files. Returns paths to .m3u files with at least one broken entry.
+fn detect_broken_m3u_playlists(files: &[PathBuf]) -> Vec<PathBuf> {
+    let mut broken = Vec::new();
+    let mut checked_dirs: std::collections::HashSet<PathBuf> =
+        std::collections::HashSet::new();
+
+    for file in files {
+        let dir = match file.parent() {
+            Some(d) => d.to_path_buf(),
+            None => continue,
+        };
+        if !checked_dirs.insert(dir.clone()) {
+            continue;
+        }
+
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            if !ext.eq_ignore_ascii_case("m3u") {
+                continue;
+            }
+
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            if has_broken_m3u_entries(&content, &dir) {
+                broken.push(path);
+            }
+        }
+    }
+
+    broken
+}
+
+/// Detect if a .m3u folder contains a playlist file that doesn't match the expected name.
+///
+/// Returns `Some((current_path, target_path))` if a rename is needed, `None` otherwise.
+/// Only triggers when there's exactly one existing .m3u file with the wrong name.
+fn detect_misnamed_m3u(dir: &Path, expected_name: &str) -> Option<(PathBuf, PathBuf)> {
+    let expected_path = dir.join(expected_name);
+    if expected_path.exists() {
+        return None;
+    }
+
+    let existing: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.is_file() {
+                let ext = p.extension()?.to_str()?;
+                if ext.eq_ignore_ascii_case("m3u") {
+                    return Some(p);
+                }
+            }
+            None
+        })
+        .collect();
+
+    if existing.len() == 1 {
+        Some((existing[0].clone(), expected_path))
+    } else {
+        None
+    }
+}
+
+/// Check if an M3U playlist has any entries that don't resolve to existing files.
+fn has_broken_m3u_entries(content: &str, dir: &Path) -> bool {
+    for line in content.lines() {
+        let entry = line.trim();
+        if entry.is_empty() || entry.starts_with('#') {
+            continue;
+        }
+        if !dir.join(entry).exists() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Fix broken entries in M3U playlist files in a directory.
+///
+/// Returns the number of .m3u files that were updated.
+fn fix_m3u_references_in_dir(
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+    errors: &mut Vec<String>,
+) -> usize {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    let mut updated = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !ext.eq_ignore_ascii_case("m3u") {
+            continue;
+        }
+
+        match fix_single_m3u_file(&path, dir, rename_map) {
+            Ok(true) => updated += 1,
+            Ok(false) => {}
+            Err(e) => errors.push(format!(
+                "M3U fix error for {}: {}",
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?"),
+                e
+            )),
+        }
+    }
+
+    updated
+}
+
+/// Fix broken entries in a single M3U playlist file.
+///
+/// Returns Ok(true) if the file was modified, Ok(false) if no changes were needed.
+fn fix_single_m3u_file(
+    m3u_path: &Path,
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+) -> Result<bool, String> {
+    let content =
+        fs::read_to_string(m3u_path).map_err(|e| format!("read error: {}", e))?;
+
+    let mut new_lines = Vec::new();
+    let mut changed = false;
+    let mut unfixed = Vec::new();
+
+    for line in content.lines() {
+        let entry = line.trim();
+        if entry.is_empty() || entry.starts_with('#') {
+            new_lines.push(line.to_string());
+            continue;
+        }
+
+        if dir.join(entry).exists() {
+            new_lines.push(line.to_string());
+            continue;
+        }
+
+        // Entry is broken — try to find the correct file
+        if let Some(new_entry) = find_correct_m3u_entry(entry, dir, rename_map) {
+            new_lines.push(new_entry);
+            changed = true;
+        } else {
+            unfixed.push(entry.to_string());
+            new_lines.push(line.to_string());
+        }
+    }
+
+    if !unfixed.is_empty() {
+        return Err(format!(
+            "could not resolve entries: {}",
+            unfixed
+                .iter()
+                .map(|f| format!("\"{}\"", f))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    if changed {
+        let new_content = new_lines.join("\n") + "\n";
+        fs::write(m3u_path, new_content).map_err(|e| format!("write error: {}", e))?;
+    }
+
+    Ok(changed)
+}
+
+/// Try to find the correct file for a broken M3U playlist entry.
+///
+/// Strategies:
+/// 1. Check the rename map
+/// 2. Same stem, preferred entry-point extension (.cue > .chd > .iso)
+/// 3. Disc ordinal matching (same as CUE fixing)
+/// 4. Sole candidate with an entry-point extension
+fn find_correct_m3u_entry(
+    old_entry: &str,
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+) -> Option<String> {
+    // Strategy 1: Check rename map
+    if let Some(new_name) = rename_map.get(old_entry) {
+        if dir.join(new_name).exists() {
+            return Some(new_name.clone());
+        }
+    }
+
+    let old_stem = Path::new(old_entry)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    // Strategy 2: Same stem, try preferred entry-point extensions
+    // M3U entries should point to entry-point formats, not raw data files
+    for ext in &["cue", "chd", "iso", "gdi", "cso", "pbp"] {
+        let candidate = format!("{}.{}", old_stem, ext);
+        if dir.join(&candidate).exists() {
+            return Some(candidate);
+        }
+    }
+
+    // Strategy 3: Disc ordinal matching
+    if let Some(old_num) = extract_ordinal_from_filename(old_entry) {
+        // Find entry-point files with matching disc number
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if !is_m3u_entry_point(name) {
+                    continue;
+                }
+                if extract_disc_number(name) == Some(old_num) {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+
+    // Strategy 4: If there's exactly one entry-point file, use it
+    if let Ok(entries) = fs::read_dir(dir) {
+        let candidates: Vec<String> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_file() {
+                    return None;
+                }
+                let name = path.file_name()?.to_str()?;
+                if is_m3u_entry_point(name) {
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if candidates.len() == 1 {
+            return Some(candidates.into_iter().next().unwrap());
+        }
+    }
+
+    None
 }
