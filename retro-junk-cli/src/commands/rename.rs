@@ -158,20 +158,24 @@ pub(crate) fn run_rename(
 
                 print_rename_plan(&plan);
 
-                let has_work =
-                    !plan.renames.is_empty() || !plan.m3u_actions.is_empty();
+                let has_work = !plan.renames.is_empty()
+                    || !plan.m3u_actions.is_empty()
+                    || !plan.broken_cue_files.is_empty();
                 if !dry_run && has_work {
                     // Prompt for confirmation (raw print — user interaction)
                     let m3u_count = plan.m3u_actions.len();
-                    if m3u_count > 0 {
-                        print!(
-                            "\n  Proceed with {} renames and {} m3u updates? [y/N] ",
-                            plan.renames.len(),
-                            m3u_count,
-                        );
-                    } else {
-                        print!("\n  Proceed with {} renames? [y/N] ", plan.renames.len());
+                    let cue_count = plan.broken_cue_files.len();
+                    let mut parts = Vec::new();
+                    if !plan.renames.is_empty() {
+                        parts.push(format!("{} renames", plan.renames.len()));
                     }
+                    if m3u_count > 0 {
+                        parts.push(format!("{} m3u updates", m3u_count));
+                    }
+                    if cue_count > 0 {
+                        parts.push(format!("{} CUE fixes", cue_count));
+                    }
+                    print!("\n  Proceed with {}? [y/N] ", parts.join(" and "));
                     std::io::stdout().flush().unwrap();
 
                     let mut input = String::new();
@@ -201,6 +205,13 @@ pub(crate) fn run_rename(
                                 "  {} {} m3u playlists written",
                                 "\u{2714}".if_supports_color(Stdout, |t| t.green()),
                                 summary.m3u_playlists_written,
+                            );
+                        }
+                        if summary.cue_files_updated > 0 {
+                            log::info!(
+                                "  {} {} CUE file references fixed",
+                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                summary.cue_files_updated,
                             );
                         }
                     } else {
@@ -433,6 +444,21 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
 
     // M3U actions
     print_m3u_actions(&plan.m3u_actions);
+
+    // Broken CUE files
+    if !plan.broken_cue_files.is_empty() {
+        for cue_path in &plan.broken_cue_files {
+            let name = cue_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?");
+            log::info!(
+                "  {} {} (broken FILE references)",
+                "\u{1F527}".if_supports_color(Stdout, |t| t.yellow()),
+                name.if_supports_color(Stdout, |t| t.bold()),
+            );
+        }
+    }
 }
 
 /// Print M3U folder rename and playlist actions.

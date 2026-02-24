@@ -171,6 +171,7 @@ fn main() {
                 language,
                 force_hash,
                 threads,
+                no_reconcile,
             } => {
                 commands::catalog::enrich::run_catalog_enrich(
                     systems,
@@ -183,6 +184,7 @@ fn main() {
                     language,
                     force_hash,
                     threads,
+                    no_reconcile,
                     quiet,
                 );
             }
@@ -242,6 +244,13 @@ fn main() {
                 db,
             } => {
                 commands::catalog::lookup::run_catalog_lookup(query, platform, r#type, manufacturer, crc, sha1, md5, serial, limit, offset, group, db);
+            }
+            CatalogAction::Reconcile {
+                systems,
+                db,
+                dry_run,
+            } => {
+                commands::catalog::reconcile::run_catalog_reconcile(systems, db, dry_run);
             }
             CatalogAction::Stats { db } => {
                 commands::catalog::stats::run_catalog_stats(db);

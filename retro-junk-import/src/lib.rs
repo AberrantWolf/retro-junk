@@ -7,6 +7,7 @@
 pub mod dat_import;
 pub mod merge;
 pub mod progress;
+pub mod reconcile;
 pub mod scan_import;
 pub mod scraper_import;
 
@@ -17,6 +18,7 @@ pub use scan_import::{
     ScanError, ScanOptions, ScanProgress, ScanResult, ScanStats, SilentScanProgress, VerifyStats,
     scan_folder, verify_collection,
 };
+pub use reconcile::{ReconcileError, ReconcileOptions, ReconcileResult, ReconcileStats, reconcile_works};
 pub use scraper_import::{
     EnrichError, EnrichEvent, EnrichOptions, EnrichStats, catalog_region_to_ss, enrich_releases,
     map_game_info, ss_media_type_to_asset_type, ss_region_to_catalog,

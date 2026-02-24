@@ -262,6 +262,10 @@ pub(crate) enum CatalogAction {
         /// Maximum concurrent API threads (default: server-granted max)
         #[arg(long)]
         threads: Option<usize>,
+
+        /// Skip automatic work reconciliation after enrichment
+        #[arg(long)]
+        no_reconcile: bool,
     },
 
     /// Scan a ROM folder and add matched files to collection
@@ -406,6 +410,21 @@ pub(crate) enum CatalogAction {
         /// Path to the catalog database file
         #[arg(long)]
         db: Option<PathBuf>,
+    },
+
+    /// Merge duplicate works that share a ScreenScraper ID
+    Reconcile {
+        /// Systems to reconcile (e.g., nes,snes) or omit for all
+        #[arg(value_delimiter = ',')]
+        systems: Vec<String>,
+
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Show what would be merged without making changes
+        #[arg(short = 'n', long)]
+        dry_run: bool,
     },
 
     /// Show catalog database statistics

@@ -983,6 +983,89 @@ pub fn platform_media_counts(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+// ── Reconciliation Queries ───────────────────────────────────────────────────
+
+/// A group of works that share the same ScreenScraper ID on one platform.
+#[derive(Debug)]
+pub struct ReconcileGroup {
+    pub screenscraper_id: String,
+    pub platform_id: String,
+    pub work_ids: Vec<String>,
+}
+
+/// A collision between two releases that share the same natural key.
+#[derive(Debug)]
+pub struct ReleaseCollision {
+    pub absorbed_release_id: String,
+    pub surviving_release_id: String,
+    pub region: String,
+    pub revision: String,
+    pub variant: String,
+}
+
+/// Find groups of releases sharing a screenscraper_id on the same platform
+/// but belonging to different works.
+pub fn find_reconcilable_works(
+    conn: &Connection,
+) -> Result<Vec<ReconcileGroup>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT r.screenscraper_id, r.platform_id,
+                GROUP_CONCAT(DISTINCT r.work_id) as work_ids
+         FROM releases r
+         WHERE r.screenscraper_id IS NOT NULL
+         GROUP BY r.screenscraper_id, r.platform_id
+         HAVING COUNT(DISTINCT r.work_id) > 1",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        let work_ids_str: String = row.get(2)?;
+        Ok(ReconcileGroup {
+            screenscraper_id: row.get(0)?,
+            platform_id: row.get(1)?,
+            work_ids: work_ids_str.split(',').map(|s| s.to_string()).collect(),
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Check for release collisions between two works — releases that share the
+/// same (platform_id, region, revision, variant) natural key.
+pub fn check_release_collision(
+    conn: &Connection,
+    absorbed_work_id: &str,
+    surviving_work_id: &str,
+) -> Result<Vec<ReleaseCollision>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, s.id, a.region, a.revision, a.variant
+         FROM releases a JOIN releases s
+           ON a.platform_id = s.platform_id AND a.region = s.region
+              AND a.revision = s.revision AND a.variant = s.variant
+         WHERE a.work_id = ?1 AND s.work_id = ?2",
+    )?;
+    let rows = stmt.query_map(params![absorbed_work_id, surviving_work_id], |row| {
+        Ok(ReleaseCollision {
+            absorbed_release_id: row.get(0)?,
+            surviving_release_id: row.get(1)?,
+            region: row.get(2)?,
+            revision: row.get(3)?,
+            variant: row.get(4)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Count releases belonging to a work.
+pub fn count_releases_for_work(
+    conn: &Connection,
+    work_id: &str,
+) -> Result<i64, OperationError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM releases WHERE work_id = ?1",
+        params![work_id],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
 // ── Row Mapping Helpers ─────────────────────────────────────────────────────
 
 fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {

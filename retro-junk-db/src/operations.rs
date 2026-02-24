@@ -670,6 +670,75 @@ pub struct SeedStats {
     pub overrides: usize,
 }
 
+// ── Reconciliation Operations ────────────────────────────────────────────────
+
+/// Move all releases from one work to another.
+pub fn update_releases_work_id(
+    conn: &Connection,
+    old_work_id: &str,
+    new_work_id: &str,
+) -> Result<u64, OperationError> {
+    let changed = conn.execute(
+        "UPDATE releases SET work_id = ?2, updated_at = datetime('now') WHERE work_id = ?1",
+        params![old_work_id, new_work_id],
+    )?;
+    Ok(changed as u64)
+}
+
+/// Move all media from one release to another.
+pub fn move_media_to_release(
+    conn: &Connection,
+    from_release_id: &str,
+    to_release_id: &str,
+) -> Result<u64, OperationError> {
+    let changed = conn.execute(
+        "UPDATE media SET release_id = ?2, updated_at = datetime('now') WHERE release_id = ?1",
+        params![from_release_id, to_release_id],
+    )?;
+    Ok(changed as u64)
+}
+
+/// Move all media assets from one release to another.
+pub fn move_assets_to_release(
+    conn: &Connection,
+    from_release_id: &str,
+    to_release_id: &str,
+) -> Result<u64, OperationError> {
+    let changed = conn.execute(
+        "UPDATE media_assets SET release_id = ?2 WHERE release_id = ?1",
+        params![from_release_id, to_release_id],
+    )?;
+    Ok(changed as u64)
+}
+
+/// Move disagreements referencing one release entity to another.
+pub fn move_disagreements_for_release(
+    conn: &Connection,
+    from_release_id: &str,
+    to_release_id: &str,
+) -> Result<u64, OperationError> {
+    let changed = conn.execute(
+        "UPDATE disagreements SET entity_id = ?2 WHERE entity_type = 'release' AND entity_id = ?1",
+        params![from_release_id, to_release_id],
+    )?;
+    Ok(changed as u64)
+}
+
+/// Delete a single release by ID.
+pub fn delete_release(conn: &Connection, id: &str) -> Result<(), OperationError> {
+    conn.execute("DELETE FROM releases WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+/// Delete works that have no remaining releases.
+pub fn delete_orphan_works(conn: &Connection) -> Result<u64, OperationError> {
+    let changed = conn.execute(
+        "DELETE FROM works WHERE id NOT IN (SELECT DISTINCT work_id FROM releases)",
+        [],
+    )?;
+    Ok(changed as u64)
+}
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn media_type_str(mt: &MediaType) -> &'static str {

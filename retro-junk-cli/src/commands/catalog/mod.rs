@@ -3,6 +3,7 @@ pub(crate) mod enrich;
 pub(crate) mod gaps;
 pub(crate) mod import;
 pub(crate) mod lookup;
+pub(crate) mod reconcile;
 pub(crate) mod reset;
 pub(crate) mod scan;
 pub(crate) mod stats;

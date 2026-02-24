@@ -20,6 +20,7 @@ pub(crate) fn run_catalog_enrich(
     language: String,
     force_hash: bool,
     threads: Option<usize>,
+    no_reconcile: bool,
     quiet: bool,
 ) {
     use retro_junk_import::scraper_import::{self, EnrichEvent, EnrichOptions};
@@ -61,6 +62,8 @@ pub(crate) fn run_catalog_enrich(
         log::warn!("No systems specified.");
         return;
     }
+
+    let reconcile_platform_ids = platform_ids.clone();
 
     let options = EnrichOptions {
         platform_ids,
@@ -182,4 +185,9 @@ pub(crate) fn run_catalog_enrich(
             }
         }
     });
+
+    // Auto-reconcile after enrichment
+    if !no_reconcile {
+        super::reconcile::run_reconcile_on_conn(&conn, &reconcile_platform_ids, false);
+    }
 }

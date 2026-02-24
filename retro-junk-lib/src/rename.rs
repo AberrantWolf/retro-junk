@@ -77,6 +77,7 @@ pub struct RenameSummary {
     pub conflicts: Vec<String>,
     pub m3u_folders_renamed: usize,
     pub m3u_playlists_written: usize,
+    pub cue_files_updated: usize,
 }
 
 /// A file that couldn't be matched by serial or hash.
@@ -165,6 +166,8 @@ pub struct RenamePlan {
     pub serial_warnings: Vec<SerialWarning>,
     /// M3U folder renames and playlist writes
     pub m3u_actions: Vec<M3uAction>,
+    /// CUE files with broken FILE references (pre-existing from prior renames)
+    pub broken_cue_files: Vec<PathBuf>,
 }
 
 use retro_junk_core::disc::{extract_disc_number, strip_disc_tag};
@@ -491,6 +494,9 @@ pub fn plan_renames(
         }
     }
 
+    // Detect pre-existing broken CUE file references
+    let broken_cue_files = detect_broken_cue_files(&files);
+
     Ok(RenamePlan {
         renames: clean_renames,
         already_correct,
@@ -499,6 +505,7 @@ pub fn plan_renames(
         discrepancies,
         serial_warnings,
         m3u_actions,
+        broken_cue_files,
     })
 }
 
@@ -661,6 +668,50 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
         }
     }
 
+    // Step 1.5: Fix CUE file references
+    // Build per-directory rename maps from successful renames
+    let mut dir_rename_maps: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
+    let mut cue_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+    for rename in &plan.renames {
+        if rename.source == rename.target {
+            continue;
+        }
+        let dir = rename.source.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let old_name = rename
+            .source
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let new_name = rename
+            .target
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        dir_rename_maps
+            .entry(dir.clone())
+            .or_default()
+            .insert(old_name, new_name);
+        cue_dirs.insert(dir);
+    }
+
+    // Also include directories containing pre-existing broken CUE files
+    for cue_path in &plan.broken_cue_files {
+        if let Some(dir) = cue_path.parent() {
+            cue_dirs.insert(dir.to_path_buf());
+        }
+    }
+
+    // Fix CUE references in all affected directories
+    for dir in &cue_dirs {
+        let empty_map = HashMap::new();
+        let rename_map = dir_rename_maps.get(dir).unwrap_or(&empty_map);
+        summary.cue_files_updated +=
+            fix_cue_references_in_dir(dir, rename_map, &mut summary.errors);
+    }
+
     // Step 2: Write .m3u playlist files (using source folder paths, before folder rename)
     for action in &plan.m3u_actions {
         if action.playlist_entries.is_empty() {
@@ -733,5 +784,373 @@ pub fn format_match_method(method: &MatchMethod) -> &'static str {
         MatchMethod::Serial => "serial",
         MatchMethod::Crc32 => "CRC32",
         MatchMethod::Sha1 => "SHA1",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CUE file reference fixing
+// ---------------------------------------------------------------------------
+
+/// Detect CUE files with broken FILE references in the directories containing
+/// the given files. Returns paths to .cue files with at least one broken reference.
+fn detect_broken_cue_files(files: &[PathBuf]) -> Vec<PathBuf> {
+    let mut broken = Vec::new();
+    let mut checked_dirs: std::collections::HashSet<PathBuf> =
+        std::collections::HashSet::new();
+
+    for file in files {
+        let dir = match file.parent() {
+            Some(d) => d.to_path_buf(),
+            None => continue,
+        };
+        if !checked_dirs.insert(dir.clone()) {
+            continue;
+        }
+
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            if !ext.eq_ignore_ascii_case("cue") {
+                continue;
+            }
+
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            if has_broken_file_references(&content, &dir) {
+                broken.push(path);
+            }
+        }
+    }
+
+    broken
+}
+
+/// Check if a CUE sheet has any FILE references that don't resolve to existing files.
+fn has_broken_file_references(content: &str, dir: &Path) -> bool {
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !trimmed.to_uppercase().starts_with("FILE ") {
+            continue;
+        }
+
+        if let Some((filename, _)) = parse_cue_file_directive(trimmed) {
+            if !dir.join(&filename).exists() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Parse a CUE FILE directive, returning (filename, file_type).
+///
+/// Handles both quoted and unquoted filenames, case-insensitive keyword:
+///   FILE "filename.bin" BINARY
+///   File filename.bin BINARY
+fn parse_cue_file_directive(line: &str) -> Option<(String, String)> {
+    // Case-insensitive: find "FILE " prefix
+    let upper = line.to_uppercase();
+    if !upper.starts_with("FILE ") {
+        return None;
+    }
+    let rest = &line[5..]; // skip "FILE "
+
+    if rest.starts_with('"') {
+        let end_quote = rest[1..].find('"')?;
+        let filename = rest[1..1 + end_quote].to_string();
+        let remainder = rest[2 + end_quote..].trim().to_string();
+        Some((filename, remainder))
+    } else {
+        let mut parts = rest.splitn(2, ' ');
+        let filename = parts.next()?.to_string();
+        let remainder = parts.next().unwrap_or("").trim().to_string();
+        Some((filename, remainder))
+    }
+}
+
+/// Fix CUE file references in a directory.
+///
+/// For each .cue file, checks if FILE references resolve. Broken references
+/// are fixed using the rename map or filesystem heuristics (stem matching,
+/// track number matching).
+///
+/// Returns the number of .cue files that were updated.
+fn fix_cue_references_in_dir(
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+    errors: &mut Vec<String>,
+) -> usize {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    let mut updated = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        if !ext.eq_ignore_ascii_case("cue") {
+            continue;
+        }
+
+        match fix_single_cue_file(&path, dir, rename_map) {
+            Ok(true) => updated += 1,
+            Ok(false) => {} // no changes needed
+            Err(e) => errors.push(format!(
+                "CUE fix error for {}: {}",
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?"),
+                e
+            )),
+        }
+    }
+
+    updated
+}
+
+/// Fix FILE references in a single CUE file.
+///
+/// Returns Ok(true) if the file was modified, Ok(false) if no changes were needed.
+fn fix_single_cue_file(
+    cue_path: &Path,
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+) -> Result<bool, String> {
+    let content =
+        fs::read_to_string(cue_path).map_err(|e| format!("read error: {}", e))?;
+
+    let cue_stem = cue_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    let mut new_content = String::with_capacity(content.len());
+    let mut changed = false;
+
+    let mut unfixed = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        if trimmed.to_uppercase().starts_with("FILE ") {
+            if let Some((old_filename, file_type)) = parse_cue_file_directive(trimmed) {
+                if !dir.join(&old_filename).exists() {
+                    // Reference is broken — try to find the correct filename
+                    if let Some(new_name) =
+                        find_correct_bin_filename(&old_filename, cue_stem, dir, rename_map)
+                    {
+                        let indent = &line[..line.len() - trimmed.len()];
+                        new_content
+                            .push_str(&format!("{}FILE \"{}\" {}", indent, new_name, file_type));
+                        new_content.push('\n');
+                        changed = true;
+                        continue;
+                    } else {
+                        unfixed.push(old_filename);
+                    }
+                }
+            }
+        }
+
+        new_content.push_str(line);
+        new_content.push('\n');
+    }
+
+    if !unfixed.is_empty() {
+        return Err(format!(
+            "could not resolve FILE references: {}",
+            unfixed
+                .iter()
+                .map(|f| format!("\"{}\"", f))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    if changed {
+        // Preserve original: don't add trailing newline if original didn't have one
+        if !content.ends_with('\n') && new_content.ends_with('\n') {
+            new_content.pop();
+        }
+        fs::write(cue_path, &new_content).map_err(|e| format!("write error: {}", e))?;
+    }
+
+    Ok(changed)
+}
+
+/// Try to find the correct filename for a broken CUE FILE reference.
+///
+/// Strategies (in order):
+/// 1. Check the rename map (covers newly-renamed files)
+/// 2. CUE stem + referenced extension (covers single-bin games)
+/// 3. Track number matching (covers multi-bin/track games)
+/// 4. Disc ordinal matching (e.g., "dragoon1.bin" → "(Disc 1).bin",
+///    "FF8(disc2).iso" → "(Disc 2).iso")
+/// 5. Sole candidate by extension (last resort for single-bin)
+fn find_correct_bin_filename(
+    old_filename: &str,
+    cue_stem: &str,
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+) -> Option<String> {
+    // Strategy 1: Check rename map
+    if let Some(new_name) = rename_map.get(old_filename) {
+        if dir.join(new_name).exists() {
+            return Some(new_name.clone());
+        }
+    }
+
+    let ref_ext = Path::new(old_filename)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin");
+
+    // Strategy 2: CUE stem + referenced file extension
+    // e.g., "Game.cue" references "OldName.bin" → try "Game.bin"
+    let stem_candidate = format!("{}.{}", cue_stem, ref_ext);
+    if dir.join(&stem_candidate).exists() {
+        return Some(stem_candidate);
+    }
+
+    // Collect matching-extension files in the directory (used by strategies 3-5)
+    let bin_files: Vec<String> = fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            let ext = path.extension().and_then(|e| e.to_str())?;
+            if !ext.eq_ignore_ascii_case(ref_ext) {
+                return None;
+            }
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        })
+        .collect();
+
+    // Strategy 3: Match by "(Track N)" pattern
+    // e.g., old "Game (Track 2).bin" → find file with "(Track 2)" in directory
+    if let Some(track_num) = extract_track_number(old_filename) {
+        for name in &bin_files {
+            if extract_track_number(name) == Some(track_num) {
+                return Some(name.clone());
+            }
+        }
+    }
+
+    // Strategy 4: Disc ordinal matching
+    // Extract a disc/ordinal number from the old filename using various patterns:
+    //   "(Disc 1)", "(disc1)", "_disc1", "Disc1", or trailing number like "dragoon1"
+    // Then match against canonical "(Disc N)" in actual files.
+    if let Some(old_num) = extract_ordinal_from_filename(old_filename) {
+        for name in &bin_files {
+            if extract_disc_number(name) == Some(old_num) {
+                return Some(name.clone());
+            }
+        }
+        // Fallback for ambiguous trailing numbers (e.g., "dq71" = DQ7 disc 1):
+        // if the full number didn't match any disc, try just the last digit.
+        if old_num >= 10 {
+            let last_digit = old_num % 10;
+            if last_digit > 0 {
+                for name in &bin_files {
+                    if extract_disc_number(name) == Some(last_digit) {
+                        return Some(name.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Strategy 5: If there's exactly one file with the matching extension, use it
+    if bin_files.len() == 1 {
+        return Some(bin_files.into_iter().next().unwrap());
+    }
+
+    None
+}
+
+/// Extract a track number from a filename like "Game (Track 2).bin".
+fn extract_track_number(filename: &str) -> Option<u32> {
+    let lower = filename.to_lowercase();
+    let start = lower.find("(track ")?;
+    let rest = &lower[start + 7..];
+    let end = rest.find(')')?;
+    rest[..end].trim().parse().ok()
+}
+
+/// Extract a disc/ordinal number from a filename using various common patterns.
+///
+/// Handles (in priority order):
+///   - "(Disc N)" — canonical Redump format
+///   - "disc" followed by digits — e.g., "(disc1)", "_disc2", "Disc3"
+///   - Trailing digits on the stem — e.g., "dragoon1", "dq71"
+fn extract_ordinal_from_filename(filename: &str) -> Option<u32> {
+    // Try canonical "(Disc N)" first
+    if let Some(n) = extract_disc_number(filename) {
+        return Some(n);
+    }
+
+    // Try case-insensitive "disc" followed by digits
+    let lower = filename.to_lowercase();
+    if let Some(pos) = lower.rfind("disc") {
+        let after = &lower[pos + 4..];
+        let digits: String = after
+            .chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if let Ok(n) = digits.parse::<u32>() {
+            if n > 0 {
+                return Some(n);
+            }
+        }
+    }
+
+    // Try trailing number on the stem
+    let stem = Path::new(filename).file_stem()?.to_str()?;
+    extract_trailing_number(stem)
+}
+
+/// Extract trailing digits from a filename stem: "dragoon1" → 1, "disc02" → 2.
+fn extract_trailing_number(stem: &str) -> Option<u32> {
+    let digits: String = stem
+        .chars()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
     }
 }
