@@ -50,9 +50,6 @@ pub(crate) enum Commands {
         roms: RomFilterArgs,
     },
 
-    /// List all supported consoles
-    List,
-
     /// Rename ROM files to NoIntro canonical names
     Rename {
         /// Show planned renames without executing
@@ -361,14 +358,22 @@ pub(crate) enum CatalogAction {
         limit: u32,
     },
 
-    /// Look up games by name, hash, or serial
+    /// Browse, search, and look up games in the catalog database
     Lookup {
-        /// Partial name to search for
+        /// Search query, prefixed ID (plt-X, wrk-X, rel-X, med-X), or omit to list
         query: Option<String>,
 
-        /// Filter by console (e.g., nes, snes, psx)
+        /// Filter by entity type: platforms, works, releases, media
+        #[arg(long, short = 't')]
+        r#type: Option<String>,
+
+        /// Filter by platform short name (e.g., nes, snes, psx)
         #[arg(long)]
-        console: Option<String>,
+        platform: Option<String>,
+
+        /// Filter by manufacturer (e.g., Nintendo, Sega)
+        #[arg(long)]
+        manufacturer: Option<String>,
 
         /// Look up by CRC32 hash
         #[arg(long)]
@@ -389,6 +394,14 @@ pub(crate) enum CatalogAction {
         /// Maximum number of results (default 25)
         #[arg(long, default_value = "25")]
         limit: u32,
+
+        /// Skip this many results (for pagination)
+        #[arg(long, default_value = "0")]
+        offset: u32,
+
+        /// Group results (e.g., platforms by manufacturer)
+        #[arg(long)]
+        group: bool,
 
         /// Path to the catalog database file
         #[arg(long)]

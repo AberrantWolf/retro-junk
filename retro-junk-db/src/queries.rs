@@ -272,6 +272,13 @@ pub struct PlatformRow {
     pub core_platform: Option<String>,
 }
 
+/// A lightweight work row for search results.
+#[derive(Debug)]
+pub struct WorkRow {
+    pub id: String,
+    pub canonical_name: String,
+}
+
 // ── Statistics ──────────────────────────────────────────────────────────────
 
 /// Get overall catalog statistics.
@@ -774,6 +781,206 @@ pub fn asset_coverage_summary(
     let asset_count: i64 = conn.query_row(asset_count_sql, params![platform_id], |r| r.get(0))?;
 
     Ok((total, with_assets, asset_count))
+}
+
+// ── Catalog List Queries ────────────────────────────────────────────────────
+
+/// Search works by canonical name (case-insensitive LIKE).
+pub fn search_works(
+    conn: &Connection,
+    query: &str,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<WorkRow>, OperationError> {
+    let pattern = format!("%{}%", query);
+    let sql = format!(
+        "SELECT id, canonical_name FROM works \
+         WHERE canonical_name LIKE ?1 \
+         ORDER BY canonical_name LIMIT {limit} OFFSET {offset}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![pattern], |row| {
+        Ok(WorkRow {
+            id: row.get(0)?,
+            canonical_name: row.get(1)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Search media by dat_name with optional platform filter and pagination.
+pub fn search_media(
+    conn: &Connection,
+    query: &str,
+    platform_id: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<Media>, OperationError> {
+    let pattern = format!("%{}%", query);
+    let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match platform_id {
+        Some(pid) => (
+            format!(
+                "SELECT {MEDIA_COLUMNS} FROM media m \
+                 JOIN releases r ON m.release_id = r.id \
+                 WHERE m.dat_name LIKE ?1 AND r.platform_id = ?2 \
+                 ORDER BY m.dat_name LIMIT {limit} OFFSET {offset}"
+            ),
+            vec![Box::new(pattern), Box::new(pid.to_string())],
+        ),
+        None => (
+            format!(
+                "SELECT {MEDIA_COLUMNS} FROM media m \
+                 WHERE m.dat_name LIKE ?1 \
+                 ORDER BY m.dat_name LIMIT {limit} OFFSET {offset}"
+            ),
+            vec![Box::new(pattern)],
+        ),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
+    let rows = stmt.query_map(params.as_slice(), row_to_media)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Search releases by title with optional platform filter and pagination.
+pub fn search_releases_paged(
+    conn: &Connection,
+    query: &str,
+    platform_id: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<Release>, OperationError> {
+    let pattern = format!("%{}%", query);
+    let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match platform_id {
+        Some(pid) => (
+            format!(
+                "SELECT {RELEASE_COLUMNS} FROM releases \
+                 WHERE title LIKE ?1 AND platform_id = ?2 \
+                 ORDER BY title LIMIT {limit} OFFSET {offset}"
+            ),
+            vec![Box::new(pattern), Box::new(pid.to_string())],
+        ),
+        None => (
+            format!(
+                "SELECT {RELEASE_COLUMNS} FROM releases \
+                 WHERE title LIKE ?1 ORDER BY title LIMIT {limit} OFFSET {offset}"
+            ),
+            vec![Box::new(pattern)],
+        ),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
+    let rows = stmt.query_map(params.as_slice(), row_to_release)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Get a single work by its ID.
+pub fn get_work_by_id(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<WorkRow>, OperationError> {
+    let result = conn.query_row(
+        "SELECT id, canonical_name FROM works WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(WorkRow {
+                id: row.get(0)?,
+                canonical_name: row.get(1)?,
+            })
+        },
+    );
+    match result {
+        Ok(w) => Ok(Some(w)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Get a single media entry by its ID.
+pub fn get_media_by_id(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<Media>, OperationError> {
+    let sql = format!("SELECT {MEDIA_COLUMNS} FROM media WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let result = stmt.query_row(params![id], row_to_media);
+    match result {
+        Ok(m) => Ok(Some(m)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Get a single platform by its ID.
+pub fn get_platform_by_id(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<PlatformRow>, OperationError> {
+    let result = conn.query_row(
+        "SELECT id, display_name, short_name, manufacturer, generation,
+                media_type, release_year, core_platform
+         FROM platforms WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok(PlatformRow {
+                id: row.get(0)?,
+                display_name: row.get(1)?,
+                short_name: row.get(2)?,
+                manufacturer: row.get(3)?,
+                generation: row.get(4)?,
+                media_type: row.get(5)?,
+                release_year: row.get(6)?,
+                core_platform: row.get(7)?,
+            })
+        },
+    );
+    match result {
+        Ok(p) => Ok(Some(p)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Get all releases for a given work.
+pub fn releases_for_work(
+    conn: &Connection,
+    work_id: &str,
+) -> Result<Vec<Release>, OperationError> {
+    let sql = format!(
+        "SELECT {RELEASE_COLUMNS} FROM releases \
+         WHERE work_id = ?1 ORDER BY platform_id, region"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![work_id], row_to_release)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Count releases grouped by platform.
+pub fn platform_release_counts(
+    conn: &Connection,
+) -> Result<Vec<(String, i64)>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT platform_id, COUNT(*) FROM releases GROUP BY platform_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Count media entries grouped by platform (via releases join).
+pub fn platform_media_counts(
+    conn: &Connection,
+) -> Result<Vec<(String, i64)>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT r.platform_id, COUNT(*) FROM media m \
+         JOIN releases r ON m.release_id = r.id \
+         GROUP BY r.platform_id",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 // ── Row Mapping Helpers ─────────────────────────────────────────────────────

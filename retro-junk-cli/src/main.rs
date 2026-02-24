@@ -85,9 +85,6 @@ fn main() {
         Commands::Analyze { quick, roms } => {
             commands::analyze::run_analyze(&ctx, quick, roms.consoles, roms.limit, cli.root);
         }
-        Commands::List => {
-            commands::list::run_list(&ctx);
-        }
         Commands::Rename {
             dry_run,
             hash,
@@ -232,15 +229,19 @@ fn main() {
             }
             CatalogAction::Lookup {
                 query,
-                console,
+                r#type,
+                platform,
+                manufacturer,
                 crc,
                 sha1,
                 md5,
                 serial,
                 limit,
+                offset,
+                group,
                 db,
             } => {
-                commands::catalog::lookup::run_catalog_lookup(query, console, crc, sha1, md5, serial, limit, db);
+                commands::catalog::lookup::run_catalog_lookup(query, platform, r#type, manufacturer, crc, sha1, md5, serial, limit, offset, group, db);
             }
             CatalogAction::Stats { db } => {
                 commands::catalog::stats::run_catalog_stats(db);
