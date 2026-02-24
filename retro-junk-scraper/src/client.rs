@@ -47,8 +47,8 @@ impl ScreenScraperClient {
             .timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(30))
             .pool_max_idle_per_host(10)
-            .pool_idle_timeout(Duration::from_secs(30))
-            .tcp_keepalive(Duration::from_secs(60))
+            .pool_idle_timeout(Duration::from_secs(10))
+            .tcp_keepalive(Duration::from_secs(30))
             .tcp_nodelay(true)
             .build()?;
 
@@ -203,6 +203,7 @@ impl ScreenScraperClient {
         params: &HashMap<&str, String>,
     ) -> Result<String, ScrapeError> {
         let mut last_error: Option<ScrapeError> = None;
+        let mut consecutive_timeouts: u32 = 0;
 
         for attempt in 0..=MAX_RETRIES {
             // Back off before retries (not before the first attempt)
@@ -271,18 +272,25 @@ impl ScreenScraperClient {
             match result {
                 Ok(Ok(text)) => return Ok(text),
                 Ok(Err(e)) if is_retryable(&e) => {
+                    consecutive_timeouts = 0;
                     log::debug!("Transient error: {}", e);
                     last_error = Some(e);
                     continue;
                 }
                 Ok(Err(e)) => return Err(e),
                 Err(_timeout) => {
+                    consecutive_timeouts += 1;
                     let e = ScrapeError::Api(format!(
                         "API request timed out after {}s",
                         API_TIMEOUT.as_secs()
                     ));
-                    log::debug!("Request timed out");
+                    log::debug!("Request timed out ({} consecutive)", consecutive_timeouts);
                     last_error = Some(e);
+                    // After 2 consecutive timeouts, connections are likely stale
+                    // (e.g., laptop woke from sleep). Stop retrying to recover faster.
+                    if consecutive_timeouts >= 2 {
+                        break;
+                    }
                     continue;
                 }
             }

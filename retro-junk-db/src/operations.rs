@@ -317,6 +317,40 @@ pub fn clear_not_found_flags(conn: &Connection, platform_id: &str) -> Result<u64
     Ok(changed as u64)
 }
 
+/// Clear enrichment status (screenscraper_id and scraper_not_found) for releases.
+///
+/// If `after_title` is provided, only affects releases whose title sorts at or after
+/// that value (case-insensitive). Returns the number of releases updated.
+pub fn unenrich_releases(
+    conn: &Connection,
+    platform_id: &str,
+    after_title: Option<&str>,
+) -> Result<u64, OperationError> {
+    let changed = if let Some(after) = after_title {
+        conn.execute(
+            "UPDATE releases SET
+                 screenscraper_id = NULL,
+                 scraper_not_found = 0,
+                 updated_at = datetime('now')
+             WHERE platform_id = ?1
+               AND (screenscraper_id IS NOT NULL OR scraper_not_found = 1)
+               AND LOWER(title) >= LOWER(?2)",
+            params![platform_id, after],
+        )?
+    } else {
+        conn.execute(
+            "UPDATE releases SET
+                 screenscraper_id = NULL,
+                 scraper_not_found = 0,
+                 updated_at = datetime('now')
+             WHERE platform_id = ?1
+               AND (screenscraper_id IS NOT NULL OR scraper_not_found = 1)",
+            params![platform_id],
+        )?
+    };
+    Ok(changed as u64)
+}
+
 // ── Media Operations ────────────────────────────────────────────────────────
 
 /// Insert or update a media entry.

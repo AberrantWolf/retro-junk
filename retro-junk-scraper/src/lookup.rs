@@ -5,7 +5,7 @@ use tokio::time::Duration;
 
 use crate::client::ScreenScraperClient;
 use crate::error::ScrapeError;
-use crate::systems::{self, acceptable_system_ids};
+use crate::systems::acceptable_system_ids;
 use crate::types::GameInfo;
 
 /// Maximum time for the entire multi-tier lookup (serial + filename + hash).
@@ -69,9 +69,10 @@ pub struct RomInfo {
 /// Look up a game using the tiered strategy.
 ///
 /// 1. Serial match (preferred) — if serial was extracted from ROM header
-/// 2. Filename match — using NoIntro filename + system ID + file size
-/// 3. Hash match (conditional) — only for consoles without expected serials,
-///    or if force_hash is true
+/// 2. Hash match — if CRC32 + MD5 + SHA1 are available (e.g., from DAT entries).
+///    Skipped naturally when hashes are None (e.g., scrape path for serial
+///    consoles that skip hashing for speed).
+/// 3. Filename match — last resort using NoIntro filename + system ID + file size
 ///
 /// Each tier validates that the returned game belongs to the expected platform.
 /// If a result comes back for the wrong platform (e.g., a serial collision),
@@ -80,7 +81,6 @@ pub async fn lookup_game(
     client: &ScreenScraperClient,
     system_id: u32,
     rom_info: &RomInfo,
-    force_hash: bool,
 ) -> Result<LookupResult, ScrapeError> {
     tokio::time::timeout(LOOKUP_TIMEOUT, async {
         let mut warnings = Vec::new();
@@ -127,12 +127,41 @@ pub async fn lookup_game(
             ));
         }
 
-        // Tier 2: Filename match
+        // Tier 2: Hash match — most reliable when hashes are available (e.g.,
+        // from DAT entries). Skipped naturally when hashes are None (e.g., scrape
+        // path for serial consoles that skip hashing for speed).
+        if let (Some(crc), Some(md5), Some(sha1)) =
+            (&rom_info.crc32, &rom_info.md5, &rom_info.sha1)
+        {
+            match try_hash_lookup(client, system_id, crc, md5, sha1, &rom_info.filename, rom_info.file_size).await {
+                Ok(game) => {
+                    if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
+                        warnings.push(format!(
+                            "Hash matched wrong platform: {}; skipping to next lookup method",
+                            warning,
+                        ));
+                    } else {
+                        return Ok(LookupResult {
+                            game,
+                            method: LookupMethod::Hash,
+                            warnings,
+                        });
+                    }
+                }
+                Err(ScrapeError::NotFound { .. }) => {
+                    warnings.push("Hash not found in ScreenScraper".to_string());
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        // Tier 3: Filename match — last resort fallback when serial and hash
+        // lookups fail or aren't available.
         match try_filename_lookup(client, system_id, &rom_info.filename, rom_info.file_size).await {
             Ok(game) => {
                 if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
                     warnings.push(format!(
-                        "Filename '{}' matched wrong platform: {}; skipping to next lookup method",
+                        "Filename '{}' matched wrong platform: {}; no more lookup methods available",
                         rom_info.filename, warning,
                     ));
                 } else {
@@ -150,37 +179,6 @@ pub async fn lookup_game(
                 ));
             }
             Err(e) => return Err(e),
-        }
-
-        // Tier 3: Hash match (conditional)
-        let should_hash =
-            !systems::expects_serial(rom_info.platform) || force_hash;
-
-        if should_hash {
-            if let (Some(crc), Some(md5), Some(sha1)) =
-                (&rom_info.crc32, &rom_info.md5, &rom_info.sha1)
-            {
-                match try_hash_lookup(client, system_id, crc, md5, sha1, &rom_info.filename, rom_info.file_size).await {
-                    Ok(game) => {
-                        if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
-                            warnings.push(format!(
-                                "Hash matched wrong platform: {}; no more lookup methods available",
-                                warning,
-                            ));
-                        } else {
-                            return Ok(LookupResult {
-                                game,
-                                method: LookupMethod::Hash,
-                                warnings,
-                            });
-                        }
-                    }
-                    Err(ScrapeError::NotFound { .. }) => {
-                        warnings.push("Hash not found in ScreenScraper".to_string());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
         }
 
         Err(ScrapeError::NotFound { warnings })

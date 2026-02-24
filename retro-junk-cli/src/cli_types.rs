@@ -255,10 +255,6 @@ pub(crate) enum CatalogAction {
         #[arg(long, default_value = "en")]
         language: String,
 
-        /// Force hash-based lookup even for serial consoles
-        #[arg(long)]
-        force_hash: bool,
-
         /// Maximum concurrent API threads (default: server-granted max)
         #[arg(long)]
         threads: Option<usize>,
@@ -432,6 +428,24 @@ pub(crate) enum CatalogAction {
         /// Path to the catalog database file
         #[arg(long)]
         db: Option<PathBuf>,
+    },
+
+    /// Clear enrichment status for releases (screenscraper_id and scraper_not_found)
+    Unenrich {
+        /// System to unenrich (e.g., nes, snes, n64)
+        system: String,
+
+        /// Only affect releases with titles at or after this value (case-insensitive)
+        #[arg(long)]
+        after: Option<String>,
+
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Confirm the operation (required; without this, shows preview only)
+        #[arg(long)]
+        confirm: bool,
     },
 
     /// Delete and recreate the catalog database

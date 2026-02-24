@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
+use retro_junk_lib::Platform;
 
 use crate::commands::scrape::connect_screenscraper;
 use crate::spinner;
@@ -18,7 +19,6 @@ pub(crate) fn run_catalog_enrich(
     asset_dir: Option<PathBuf>,
     region: String,
     language: String,
-    force_hash: bool,
     threads: Option<usize>,
     no_reconcile: bool,
     quiet: bool,
@@ -41,8 +41,10 @@ pub(crate) fn run_catalog_enrich(
         }
     };
 
-    // Resolve "all" to all platforms with core_platform set
-    let platform_ids = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
+    // Resolve "all" to all platforms with core_platform set,
+    // otherwise parse each system through the Platform enum so aliases
+    // (e.g., "megadrive", "MD", "psx") resolve to canonical DB IDs.
+    let platform_ids: Vec<String> = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
         match retro_junk_db::list_platforms(&conn) {
             Ok(platforms) => platforms
                 .into_iter()
@@ -56,6 +58,15 @@ pub(crate) fn run_catalog_enrich(
         }
     } else {
         systems
+            .iter()
+            .map(|s| {
+                let p: Platform = s.parse().unwrap_or_else(|_| {
+                    log::error!("Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.", s);
+                    std::process::exit(1);
+                });
+                p.short_name().to_string()
+            })
+            .collect()
     };
 
     if platform_ids.is_empty() {
@@ -73,7 +84,6 @@ pub(crate) fn run_catalog_enrich(
         asset_dir,
         preferred_region: region,
         preferred_language: language,
-        force_hash,
     };
 
     let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");

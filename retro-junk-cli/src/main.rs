@@ -169,7 +169,6 @@ fn main() {
                 asset_dir,
                 region,
                 language,
-                force_hash,
                 threads,
                 no_reconcile,
             } => {
@@ -182,7 +181,6 @@ fn main() {
                     asset_dir,
                     region,
                     language,
-                    force_hash,
                     threads,
                     no_reconcile,
                     quiet,
@@ -254,6 +252,14 @@ fn main() {
             }
             CatalogAction::Stats { db } => {
                 commands::catalog::stats::run_catalog_stats(db);
+            }
+            CatalogAction::Unenrich {
+                system,
+                after,
+                db,
+                confirm,
+            } => {
+                commands::catalog::unenrich::run_catalog_unenrich(system, after, db, confirm);
             }
             CatalogAction::Reset { db, confirm } => {
                 commands::catalog::reset::run_catalog_reset(db, confirm);

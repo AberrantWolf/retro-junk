@@ -30,6 +30,12 @@ const WORKER_ITEM_TIMEOUT: Duration = Duration::from_secs(90);
 /// should not exceed this.
 const ASSET_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Watchdog timeout for the Phase 3 event loop.
+/// If no worker result arrives within this duration, all workers are likely stuck
+/// (e.g., after a laptop sleep killed connections). The loop breaks and returns
+/// partial progress so the user can re-run.
+const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(180);
+
 use crate::slugify;
 use rusqlite::Connection;
 use thiserror::Error;
@@ -71,8 +77,6 @@ pub struct EnrichOptions {
     pub preferred_region: String,
     /// Preferred language for descriptions (e.g., "en", "ja").
     pub preferred_language: String,
-    /// Force hash-based lookup even for serial consoles.
-    pub force_hash: bool,
 }
 
 impl Default for EnrichOptions {
@@ -85,7 +89,6 @@ impl Default for EnrichOptions {
             asset_dir: None,
             preferred_region: "us".to_string(),
             preferred_language: "en".to_string(),
-            force_hash: false,
         }
     }
 }
@@ -304,7 +307,6 @@ pub async fn enrich_releases(
 
         // ── Phase 2: Parallel API Lookups via Worker Pool ─────────────
         let cancel = Arc::new(AtomicBool::new(false));
-        let force_hash = options.force_hash;
 
         // Clone shared state for the worker pool closure
         let pool_client = client.clone();
@@ -348,7 +350,7 @@ pub async fn enrich_releases(
 
                 match tokio::time::timeout(
                     WORKER_ITEM_TIMEOUT,
-                    lookup::lookup_game(&client, item.system_id, &rom_info, force_hash),
+                    lookup::lookup_game(&client, item.system_id, &rom_info),
                 ).await {
                     Ok(Ok(result)) => {
                         let mapped = map_game_info(
@@ -396,7 +398,23 @@ pub async fn enrich_releases(
         // ── Phase 3: Apply DB writes as results arrive ──────────────
         let mut fatal_error = None;
 
-        while let Some(outcome) = pool.recv().await {
+        loop {
+            let outcome = match tokio::time::timeout(WATCHDOG_TIMEOUT, pool.recv()).await {
+                Ok(Some(outcome)) => outcome,
+                Ok(None) => break, // channel closed, all workers done
+                Err(_watchdog) => {
+                    let msg = format!(
+                        "Watchdog: no worker result in {}s — workers appear stuck \
+                         (likely after sleep/wake). Stopping with partial progress.",
+                        WATCHDOG_TIMEOUT.as_secs(),
+                    );
+                    let _ = events.send(EnrichEvent::FatalError {
+                        message: msg.clone(),
+                    });
+                    log::debug!("{}", msg);
+                    break;
+                }
+            };
             stats.releases_processed += 1;
 
             match outcome {

@@ -577,7 +577,7 @@ async fn process_single_game(
         file: filename.clone(),
     });
 
-    match lookup::lookup_game(client, system_id, &rom_info, options.force_hash).await {
+    match lookup::lookup_game(client, system_id, &rom_info).await {
         Ok(result) => {
             let game_name = result
                 .game

@@ -1066,6 +1066,36 @@ pub fn count_releases_for_work(
     Ok(count)
 }
 
+/// Count enriched releases for a platform (have screenscraper_id or scraper_not_found).
+///
+/// If `after_title` is provided, only counts releases whose title sorts at or after
+/// that value (case-insensitive).
+pub fn count_enriched_releases(
+    conn: &Connection,
+    platform_id: &str,
+    after_title: Option<&str>,
+) -> Result<u64, OperationError> {
+    let count: i64 = if let Some(after) = after_title {
+        conn.query_row(
+            "SELECT COUNT(*) FROM releases
+             WHERE platform_id = ?1
+               AND (screenscraper_id IS NOT NULL OR scraper_not_found = 1)
+               AND LOWER(title) >= LOWER(?2)",
+            params![platform_id, after],
+            |r| r.get(0),
+        )?
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM releases
+             WHERE platform_id = ?1
+               AND (screenscraper_id IS NOT NULL OR scraper_not_found = 1)",
+            params![platform_id],
+            |r| r.get(0),
+        )?
+    };
+    Ok(count as u64)
+}
+
 // ── Row Mapping Helpers ─────────────────────────────────────────────────────
 
 fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {

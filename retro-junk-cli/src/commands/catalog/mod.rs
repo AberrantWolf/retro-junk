@@ -7,6 +7,7 @@ pub(crate) mod reconcile;
 pub(crate) mod reset;
 pub(crate) mod scan;
 pub(crate) mod stats;
+pub(crate) mod unenrich;
 pub(crate) mod verify;
 
 use std::path::PathBuf;
