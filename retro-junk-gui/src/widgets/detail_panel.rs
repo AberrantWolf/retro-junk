@@ -1,8 +1,8 @@
 use crate::app::RetroJunkApp;
-use crate::state::EntryStatus;
+use crate::state::{self, EntryStatus, DISPLAY_MEDIA_TYPES};
 
 /// Render the detail panel for the focused entry.
-pub fn show(ui: &mut egui::Ui, app: &RetroJunkApp) {
+pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.heading("Details");
     ui.separator();
 
@@ -15,13 +15,45 @@ pub fn show(ui: &mut egui::Ui, app: &RetroJunkApp) {
     };
 
     let console = &app.library.consoles[console_idx];
-    let entry = match console.entries.get(entry_idx) {
-        Some(e) => e,
-        None => {
-            ui.label("Entry not found.");
-            return;
+    if console.entries.get(entry_idx).is_none() {
+        ui.label("Entry not found.");
+        return;
+    }
+
+    // Lazy media discovery: populate media_paths on first focus.
+    // Also registers image bytes with egui's loader (file:// isn't supported,
+    // so we read bytes and use bytes:// URIs).
+    if app.library.consoles[console_idx].entries[entry_idx]
+        .media_paths
+        .is_none()
+    {
+        if let Some(ref root_path) = app.root_path {
+            let folder_name = &app.library.consoles[console_idx].folder_name;
+            if let Some(media_dir) = state::media_dir_for_console(root_path, folder_name) {
+                let rom_stem = app.library.consoles[console_idx].entries[entry_idx]
+                    .game_entry
+                    .rom_stem()
+                    .to_owned();
+                log::debug!("Media discovery: dir={}, stem={}", media_dir.display(), rom_stem);
+                let found = state::collect_existing_media(&media_dir, &rom_stem);
+                // Register image bytes with egui for each discovered file
+                for (_, path) in &found {
+                    let uri = format!("bytes://media/{}", path.display());
+                    if let Ok(bytes) = std::fs::read(path) {
+                        ui.ctx().include_bytes(uri, bytes);
+                    }
+                }
+                log::debug!("Media discovery: found {} files", found.len());
+                app.library.consoles[console_idx].entries[entry_idx].media_paths = Some(found);
+            } else {
+                app.library.consoles[console_idx].entries[entry_idx].media_paths =
+                    Some(std::collections::HashMap::new());
+            }
         }
-    };
+    }
+
+    let console = &app.library.consoles[console_idx];
+    let entry = &console.entries[entry_idx];
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         // Status
@@ -61,6 +93,17 @@ pub fn show(ui: &mut egui::Ui, app: &RetroJunkApp) {
             ui.label("Platform:");
             ui.label(console.platform_name);
         });
+
+        // Region
+        if let Some(ref id) = entry.identification {
+            if !id.regions.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label("Region:");
+                    let regions: Vec<&str> = id.regions.iter().map(|r| r.name()).collect();
+                    ui.label(regions.join(", "));
+                });
+            }
+        }
 
         // Folder
         ui.horizontal(|ui| {
@@ -146,6 +189,36 @@ pub fn show(ui: &mut egui::Ui, app: &RetroJunkApp) {
             ui.add_space(2.0);
             detail_row(ui, "Game", &dm.game_name);
             detail_row(ui, "Method", &format!("{:?}", dm.method));
+        }
+
+        // Media
+        if let Some(ref media) = entry.media_paths {
+            if !media.is_empty() {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.label(egui::RichText::new("Media").strong());
+                ui.add_space(2.0);
+
+                let panel_width = ui.available_width();
+
+                for &mt in DISPLAY_MEDIA_TYPES {
+                    if let Some(path) = media.get(&mt) {
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(mt.to_string()).weak());
+
+                        let uri = format!("bytes://media/{}", path.display());
+                        let image = egui::Image::new(uri)
+                            .fit_to_exact_size(egui::vec2(panel_width, panel_width))
+                            .maintain_aspect_ratio(true)
+                            .rounding(4.0);
+
+                        let response = ui.add(image);
+                        if let Some(path_str) = path.to_str() {
+                            response.on_hover_text(path_str);
+                        }
+                    }
+                }
+            }
         }
     });
 }

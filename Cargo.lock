@@ -3937,6 +3937,7 @@ dependencies = [
  "log",
  "retro-junk-core",
  "retro-junk-dat",
+ "retro-junk-frontend",
  "retro-junk-lib",
  "retro-junk-microsoft",
  "retro-junk-nintendo",

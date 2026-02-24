@@ -1,8 +1,10 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use retro_junk_dat::{DatIndex, FileHashes, MatchMethod, SerialLookupResult};
+use retro_junk_frontend::MediaType;
 use retro_junk_lib::scanner::GameEntry;
 use retro_junk_lib::{AnalysisError, Platform, RomIdentification};
 
@@ -64,6 +66,62 @@ impl Default for DatStatus {
     }
 }
 
+/// Derive the media directory for a console from the root path and folder name.
+///
+/// Convention: `root.parent() / "{root_name}-media" / folder_name`
+/// Example: root=`/roms`, folder=`n64` → `/roms-media/n64/`
+pub fn media_dir_for_console(root_path: &Path, folder_name: &str) -> Option<PathBuf> {
+    let parent = root_path.parent()?;
+    let root_name = root_path.file_name()?.to_str()?;
+    Some(parent.join(format!("{}-media", root_name)).join(folder_name))
+}
+
+/// Subdirectory name for a media type (matches ES-DE layout).
+fn media_subdir(mt: MediaType) -> &'static str {
+    match mt {
+        MediaType::Cover => "covers",
+        MediaType::Cover3D => "3dboxes",
+        MediaType::Screenshot => "screenshots",
+        MediaType::TitleScreen => "titlescreens",
+        MediaType::Marquee => "marquees",
+        MediaType::Video => "videos",
+        MediaType::Fanart => "fanart",
+        MediaType::PhysicalMedia => "physicalmedia",
+        MediaType::Miximage => "miximages",
+    }
+}
+
+/// All displayable media types in preferred display order.
+pub const DISPLAY_MEDIA_TYPES: &[MediaType] = &[
+    MediaType::Cover,
+    MediaType::Cover3D,
+    MediaType::Screenshot,
+    MediaType::TitleScreen,
+    MediaType::Marquee,
+    MediaType::PhysicalMedia,
+    MediaType::Fanart,
+    MediaType::Miximage,
+];
+
+/// Discover media files on disk for a given ROM entry.
+///
+/// Checks each media type subdirectory for a file matching `rom_stem.ext`.
+pub fn collect_existing_media(media_dir: &Path, rom_stem: &str) -> HashMap<MediaType, PathBuf> {
+    let mut found = HashMap::new();
+    for &mt in DISPLAY_MEDIA_TYPES {
+        if mt == MediaType::Video {
+            continue;
+        }
+        let subdir = media_dir.join(media_subdir(mt));
+        let ext = mt.default_extension();
+        let path = subdir.join(format!("{}.{}", rom_stem, ext));
+        if path.exists() {
+            found.insert(mt, path);
+        }
+    }
+    found
+}
+
 pub struct LibraryEntry {
     pub game_entry: GameEntry,
     pub identification: Option<RomIdentification>,
@@ -72,6 +130,8 @@ pub struct LibraryEntry {
     pub status: EntryStatus,
     /// When status is Ambiguous, holds the candidate game names from the DAT.
     pub ambiguous_candidates: Vec<String>,
+    /// Discovered media files on disk. `None` = not yet scanned, `Some(empty)` = scanned but none found.
+    pub media_paths: Option<HashMap<MediaType, PathBuf>>,
 }
 
 #[derive(Debug, Clone)]
@@ -261,6 +321,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage) {
                         dat_match: None,
                         status: EntryStatus::Unknown,
                         ambiguous_candidates: Vec::new(),
+                        media_paths: None,
                     })
                     .collect();
                 console.scan_status = ScanStatus::Scanning;

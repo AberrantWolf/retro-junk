@@ -55,7 +55,8 @@ pub struct RetroJunkApp {
 }
 
 impl RetroJunkApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
         Self {
             context: Arc::new(retro_junk_lib::create_default_context()),
