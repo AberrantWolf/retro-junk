@@ -174,13 +174,7 @@ fn analyze_and_print(
 
 /// Format a byte size as a human-readable string.
 pub(crate) fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0 {
-        format!("{} MB", bytes / (1024 * 1024))
-    } else if bytes >= 1024 && bytes % 1024 == 0 {
-        format!("{} KB", bytes / 1024)
-    } else {
-        format!("{} bytes", bytes)
-    }
+    retro_junk_lib::util::format_bytes(bytes)
 }
 
 // -- Size verdict logic --

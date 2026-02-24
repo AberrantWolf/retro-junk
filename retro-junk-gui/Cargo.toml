@@ -9,7 +9,14 @@ path = "src/main.rs"
 
 [dependencies]
 retro-junk-lib.workspace = true
+retro-junk-dat.workspace = true
+retro-junk-core.workspace = true
 retro-junk-nintendo.workspace = true
 retro-junk-sony.workspace = true
 retro-junk-sega.workspace = true
 retro-junk-microsoft.workspace = true
+eframe = "0.30"
+egui = "0.30"
+egui_extras = { version = "0.30", features = ["image"] }
+rfd = "0.15"
+log.workspace = true

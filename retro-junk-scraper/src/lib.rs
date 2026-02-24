@@ -8,7 +8,7 @@ pub mod scrape;
 pub mod systems;
 pub mod types;
 
-pub use client::ScreenScraperClient;
+pub use client::{ScreenScraperClient, create_client};
 pub use credentials::{
     CredentialSource, CredentialSources, Credentials, config_path, credential_sources,
     has_embedded_dev_credentials, save_to_file,

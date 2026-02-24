@@ -339,6 +339,30 @@ fn is_retryable(e: &ScrapeError) -> bool {
     matches!(e, ScrapeError::ServerError { .. })
 }
 
+/// Load credentials and create a connected ScreenScraper client.
+///
+/// Returns the client and the maximum number of worker threads to use,
+/// computed from the server-granted thread limit, the optional user override,
+/// and the number of available CPU cores.
+pub async fn create_client(
+    threads: Option<usize>,
+) -> Result<(std::sync::Arc<ScreenScraperClient>, usize), ScrapeError> {
+    let creds = Credentials::load().map_err(|e| ScrapeError::Api(format!("Failed to load credentials: {e}")))?;
+
+    let (client, user_info) = ScreenScraperClient::new(creds).await?;
+
+    let ss_max = user_info.max_threads() as usize;
+    let cpu_max = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    let max_workers = threads
+        .map(|t| t.min(ss_max))
+        .unwrap_or_else(|| ss_max.min(cpu_max))
+        .max(1);
+
+    Ok((std::sync::Arc::new(client), max_workers))
+}
+
 /// Redact credential query parameters from error messages that may contain URLs.
 ///
 /// Replaces values for `devpassword`, `sspassword`, `devid`, and `ssid` with `[REDACTED]`.

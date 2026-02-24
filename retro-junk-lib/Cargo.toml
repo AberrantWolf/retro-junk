@@ -6,6 +6,10 @@ edition.workspace = true
 [dependencies]
 retro-junk-core.workspace = true
 retro-junk-dat.workspace = true
+retro-junk-nintendo.workspace = true
+retro-junk-sony.workspace = true
+retro-junk-sega.workspace = true
+retro-junk-microsoft.workspace = true
 thiserror.workspace = true
 crc32fast.workspace = true
 sha1.workspace = true
