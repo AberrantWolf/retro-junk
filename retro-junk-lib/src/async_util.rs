@@ -14,18 +14,42 @@ use tokio::time::{Duration, Instant};
 /// we don't block forever waiting for the channel to close.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Abstraction over bounded and unbounded mpsc receivers.
+///
+/// Allows `run_with_events` to work with both `mpsc::Receiver` (bounded,
+/// used by the enrich path) and `mpsc::UnboundedReceiver` (used by the
+/// scrape path).
+#[allow(async_fn_in_trait)]
+pub trait EventReceiver<E> {
+    /// Receive the next event, returning `None` when the channel is closed.
+    async fn recv(&mut self) -> Option<E>;
+}
+
+impl<E> EventReceiver<E> for mpsc::Receiver<E> {
+    async fn recv(&mut self) -> Option<E> {
+        mpsc::Receiver::recv(self).await
+    }
+}
+
+impl<E> EventReceiver<E> for mpsc::UnboundedReceiver<E> {
+    async fn recv(&mut self) -> Option<E> {
+        mpsc::UnboundedReceiver::recv(self).await
+    }
+}
+
 /// Drive an async task while processing events from its channel.
 ///
 /// Runs `task` to completion, calling `on_event` for each event received on
 /// `event_rx`. Returns the task's result after the channel is fully drained
 /// (or after a timeout if senders are not dropped promptly).
-pub async fn run_with_events<F, E, R>(
+pub async fn run_with_events<F, E, R, Rx>(
     task: F,
-    mut event_rx: mpsc::UnboundedReceiver<E>,
+    mut event_rx: Rx,
     mut on_event: impl FnMut(E),
 ) -> R
 where
     F: Future<Output = R>,
+    Rx: EventReceiver<E> + Unpin,
 {
     tokio::pin!(task);
     let mut result = None;

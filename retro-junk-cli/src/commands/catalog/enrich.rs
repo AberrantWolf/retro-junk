@@ -94,7 +94,7 @@ pub(crate) fn run_catalog_enrich(
         };
 
         let (event_tx, event_rx) =
-            tokio::sync::mpsc::unbounded_channel::<EnrichEvent>();
+            tokio::sync::mpsc::channel::<EnrichEvent>(1024);
 
         let enrich_future = scraper_import::enrich_releases(
             client, &conn, &options, max_workers, event_tx,

@@ -35,6 +35,10 @@
 
 - [ ] **ROM health dashboard** — Aggregate view across all platforms: total ROMs scanned, verified vs. unverified, trimmed/padded/repaired, missing from known sets (have DAT entry but no matching file in collection).
 
-- [ ] **Parallel enrichment improvements** — The enrichment worker pool exists but could benefit from: resume-from-last-position on interrupted runs, per-platform progress persistence, and smarter rate limit backoff when ScreenScraper returns 429s.
-
 - [ ] **Overrides YAML expansion** — The overrides system exists but has limited use. Expand with curated override sets for known problem areas: multi-disc serial mismatches (FF7, etc.), regional title corrections, and publisher name normalization.
+
+## Enrichment Pipeline Hardening
+
+Audit findings from 2026-02-25. Goal: make `catalog enrich` reliable enough to run hands-off on a server for months.
+
+All 15 items resolved — see commit history for details.

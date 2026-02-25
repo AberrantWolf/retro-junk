@@ -186,6 +186,30 @@ pub fn releases_to_enrich(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// Count releases that need ScreenScraper enrichment.
+///
+/// Same filtering logic as `releases_to_enrich` but returns just the count,
+/// used for progress reporting before batched processing begins.
+pub fn count_releases_to_enrich(
+    conn: &Connection,
+    platform_id: &str,
+    skip_existing: bool,
+) -> Result<u32, OperationError> {
+    let extra_filter = if skip_existing {
+        " AND r.screenscraper_id IS NULL AND r.scraper_not_found = 0"
+    } else {
+        ""
+    };
+    let sql = format!(
+        "SELECT COUNT(DISTINCT r.id) \
+         FROM releases r \
+         JOIN media m ON m.release_id = r.id \
+         WHERE r.platform_id = ?1{extra_filter}"
+    );
+    let count: u32 = conn.query_row(&sql, params![platform_id], |row| row.get(0))?;
+    Ok(count)
+}
+
 /// Get a single release by its ID.
 pub fn get_release_by_id(
     conn: &Connection,

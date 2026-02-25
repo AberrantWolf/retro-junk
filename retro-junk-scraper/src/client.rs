@@ -44,10 +44,9 @@ impl ScreenScraperClient {
     pub async fn new(creds: Credentials) -> Result<(Self, UserInfo), ScrapeError> {
         let http = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
             .read_timeout(Duration::from_secs(30))
             .pool_max_idle_per_host(10)
-            .pool_idle_timeout(Duration::from_secs(10))
+            .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(30))
             .tcp_nodelay(true)
             .build()?;
@@ -359,6 +358,16 @@ pub async fn create_client(
         .map(|t| t.min(ss_max))
         .unwrap_or_else(|| ss_max.min(cpu_max))
         .max(1);
+
+    // Seed the quota tracker with data from the initial user info response
+    // so callers can read it immediately without waiting for a lookup.
+    {
+        let mut guard = client.quota.lock().await;
+        *guard = Some(UserQuota {
+            requeststoday: user_info.requeststoday.clone(),
+            maxrequestsperday: user_info.maxrequestsperday.clone(),
+        });
+    }
 
     Ok((std::sync::Arc::new(client), max_workers))
 }

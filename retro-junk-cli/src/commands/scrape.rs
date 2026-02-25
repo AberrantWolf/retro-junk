@@ -15,24 +15,6 @@ pub(crate) async fn connect_screenscraper(
     threads: Option<usize>,
     quiet: bool,
 ) -> Option<(Arc<retro_junk_scraper::ScreenScraperClient>, usize)> {
-    let creds = match retro_junk_scraper::Credentials::load() {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!(
-                "{} Failed to load ScreenScraper credentials: {}",
-                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                e,
-            );
-            log::error!("");
-            log::error!("Set credentials via environment variables:");
-            log::error!("  SCREENSCRAPER_DEVID, SCREENSCRAPER_DEVPASSWORD");
-            log::error!("  SCREENSCRAPER_SSID, SCREENSCRAPER_SSPASSWORD (optional)");
-            log::error!("");
-            log::error!("Or run 'retro-junk config setup' to configure credentials.");
-            return None;
-        }
-    };
-
     let pb = if quiet {
         ProgressBar::hidden()
     } else {
@@ -47,7 +29,7 @@ pub(crate) async fn connect_screenscraper(
         pb
     };
 
-    let (client, user_info) = match retro_junk_scraper::ScreenScraperClient::new(creds).await {
+    let (client, max_workers) = match retro_junk_scraper::client::create_client(threads).await {
         Ok(result) => result,
         Err(e) => {
             pb.finish_and_clear();
@@ -56,31 +38,37 @@ pub(crate) async fn connect_screenscraper(
                 "\u{2718}".if_supports_color(Stdout, |t| t.red()),
                 e,
             );
+            if e.to_string().contains("credentials") {
+                log::error!("");
+                log::error!("Set credentials via environment variables:");
+                log::error!("  SCREENSCRAPER_DEVID, SCREENSCRAPER_DEVPASSWORD");
+                log::error!("  SCREENSCRAPER_SSID, SCREENSCRAPER_SSPASSWORD (optional)");
+                log::error!("");
+                log::error!("Or run 'retro-junk config setup' to configure credentials.");
+            }
             return None;
         }
     };
     pb.finish_and_clear();
 
-    let ss_max = user_info.max_threads() as usize;
-    let cpu_max = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    let max_workers = threads
-        .map(|t| t.min(ss_max))
-        .unwrap_or_else(|| ss_max.min(cpu_max))
-        .max(1);
-
-    log::info!(
-        "{} Connected to ScreenScraper (requests today: {}/{}, max threads: {}, using: {})",
-        "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-        user_info.requests_today(),
-        user_info.max_requests_per_day(),
-        user_info.max_threads(),
-        max_workers,
-    );
+    if let Some(quota) = client.current_quota().await {
+        log::info!(
+            "{} Connected to ScreenScraper (requests today: {}/{}, using: {} workers)",
+            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+            quota.requests_today(),
+            quota.max_requests_per_day(),
+            max_workers,
+        );
+    } else {
+        log::info!(
+            "{} Connected to ScreenScraper (using: {} workers)",
+            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+            max_workers,
+        );
+    }
     log::info!("");
 
-    Some((Arc::new(client), max_workers))
+    Some((client, max_workers))
 }
 
 /// Run the scrape command.
