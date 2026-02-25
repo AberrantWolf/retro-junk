@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-use retro_junk_lib::{AnalysisContext, Platform, RomIdentification};
+use retro_junk_lib::{AnalysisContext, Platform, Region, RomIdentification};
 use retro_junk_dat::FileHashes;
 use retro_junk_lib::scanner::GameEntry;
 
@@ -44,6 +44,8 @@ pub struct CachedEntry {
     pub dat_match: Option<DatMatchInfo>,
     pub status: EntryStatus,
     pub ambiguous_candidates: Vec<String>,
+    #[serde(default)]
+    pub region_override: Option<Region>,
 }
 
 /// Returns `~/.cache/retro-junk/library/`.
@@ -100,6 +102,7 @@ pub fn save_library(root: &Path, library: &Library) -> std::io::Result<()> {
                         dat_match: e.dat_match.clone(),
                         status: e.status,
                         ambiguous_candidates: e.ambiguous_candidates.clone(),
+                        region_override: e.region_override,
                     })
                     .collect(),
                 dat_game_count: match &c.dat_status {
@@ -185,6 +188,7 @@ pub fn load_library(
                     status: ce.status,
                     ambiguous_candidates: ce.ambiguous_candidates,
                     media_paths: None, // re-discovered lazily
+                    region_override: ce.region_override,
                 })
                 .collect();
 

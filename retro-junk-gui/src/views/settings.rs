@@ -87,6 +87,12 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         &mut app.settings.general.auto_scan_on_open,
         "Auto-scan consoles on open",
     );
+
+    // Region override warning toggle
+    ui.checkbox(
+        &mut app.settings.general.warn_on_region_override,
+        "Warn when overriding a specific detected region",
+    );
 }
 
 fn show_cache_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {

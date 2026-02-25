@@ -7,7 +7,7 @@ use std::sync::Arc;
 use retro_junk_dat::{DatIndex, FileHashes, MatchMethod, SerialLookupResult};
 use retro_junk_frontend::MediaType;
 use retro_junk_lib::scanner::GameEntry;
-use retro_junk_lib::{AnalysisError, Platform, RomIdentification};
+use retro_junk_lib::{AnalysisError, Platform, Region, RomIdentification};
 
 use crate::app::RetroJunkApp;
 
@@ -135,6 +135,21 @@ pub struct LibraryEntry {
     pub ambiguous_candidates: Vec<String>,
     /// Discovered media files on disk. `None` = not yet scanned, `Some(empty)` = scanned but none found.
     pub media_paths: Option<HashMap<MediaType, PathBuf>>,
+    /// User-set region override. When set, takes precedence over detected regions.
+    pub region_override: Option<Region>,
+}
+
+impl LibraryEntry {
+    /// Returns the effective region list: the override if set, otherwise the detected regions.
+    pub fn effective_regions(&self) -> Vec<Region> {
+        if let Some(r) = self.region_override {
+            vec![r]
+        } else if let Some(ref id) = self.identification {
+            id.regions.clone()
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,6 +385,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         status: EntryStatus::Unknown,
                         ambiguous_candidates: Vec::new(),
                         media_paths: None,
+                        region_override: None,
                     })
                     .collect();
                 console.scan_status = ScanStatus::Scanning;

@@ -67,9 +67,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 name: entry.game_entry.display_name().to_string(),
                 serial: entry.identification.as_ref().and_then(|id| id.serial_number.clone()),
                 internal_name: entry.identification.as_ref().and_then(|id| id.internal_name.clone()),
-                regions: entry.identification.as_ref().map(|id| {
-                    id.regions.iter().map(|r| r.code()).collect::<Vec<_>>().join(", ")
-                }).unwrap_or_default(),
+                regions: {
+                    let codes: Vec<&str> = entry.effective_regions().iter().map(|r| r.code()).collect();
+                    let text = codes.join(", ");
+                    if entry.region_override.is_some() && !text.is_empty() {
+                        format!("{}*", text)
+                    } else {
+                        text
+                    }
+                },
                 crc32: entry.hashes.as_ref().map(|h| h.crc32.clone()),
                 dat_match: entry.dat_match.as_ref().map(|dm| dm.game_name.clone()),
             }

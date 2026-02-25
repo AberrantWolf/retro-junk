@@ -27,6 +27,8 @@ pub struct RecentRoot {
 pub struct GeneralSettings {
     #[serde(default = "default_true")]
     pub auto_scan_on_open: bool,
+    #[serde(default = "default_true")]
+    pub warn_on_region_override: bool,
 }
 
 fn default_true() -> bool {
@@ -55,6 +57,7 @@ impl Default for GeneralSettings {
     fn default() -> Self {
         Self {
             auto_scan_on_open: true,
+            warn_on_region_override: true,
         }
     }
 }

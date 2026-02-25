@@ -26,6 +26,19 @@ pub enum Region {
 }
 
 impl Region {
+    /// All user-selectable region variants (excludes `Unknown`).
+    pub const ALL: &[Region] = &[
+        Self::Japan,
+        Self::Usa,
+        Self::Europe,
+        Self::Australia,
+        Self::Korea,
+        Self::China,
+        Self::Taiwan,
+        Self::Brazil,
+        Self::World,
+    ];
+
     /// Returns the standard abbreviation for this region.
     pub fn code(&self) -> &'static str {
         match self {

@@ -1,3 +1,5 @@
+use retro_junk_lib::Region;
+
 use crate::app::RetroJunkApp;
 use crate::state::{EntryStatus, DISPLAY_MEDIA_TYPES};
 
@@ -14,8 +16,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
     };
 
-    let console = &app.library.consoles[console_idx];
-    if console.entries.get(entry_idx).is_none() {
+    if app.library.consoles.get(console_idx)
+        .and_then(|c| c.entries.get(entry_idx))
+        .is_none()
+    {
         ui.label("Entry not found.");
         return;
     }
@@ -48,10 +52,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
     }
 
-    let console = &app.library.consoles[console_idx];
-    let entry = &console.entries[entry_idx];
-
     egui::ScrollArea::vertical().show(ui, |ui| {
+        // Borrow console/entry for the read-only section before the region ComboBox.
+        let console = &app.library.consoles[console_idx];
+        let entry = &console.entries[entry_idx];
+
         // Status
         ui.horizontal(|ui| {
             ui.label("Status:");
@@ -90,16 +95,137 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.label(console.platform_name);
         });
 
-        // Region
-        if let Some(ref id) = entry.identification {
-            if !id.regions.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.label("Region:");
-                    let regions: Vec<&str> = id.regions.iter().map(|r| r.name()).collect();
-                    ui.label(regions.join(", "));
+        // Region (ComboBox with override support)
+        // Extract needed data before dropping borrows for potential mutation.
+        let detected_regions: Vec<Region> = entry
+            .identification
+            .as_ref()
+            .map(|id| id.regions.clone())
+            .unwrap_or_default();
+        let effective = entry.effective_regions();
+        let current_override = entry.region_override;
+
+        // Build display text for the current selection
+        let combo_label = if current_override.is_none() {
+            if detected_regions.is_empty() {
+                "Unknown".to_string()
+            } else {
+                let names: Vec<&str> = detected_regions.iter().map(|r| r.name()).collect();
+                format!("Auto-detect ({})", names.join(", "))
+            }
+        } else {
+            effective
+                .first()
+                .map(|r| r.name().to_string())
+                .unwrap_or_else(|| "Unknown".to_string())
+        };
+
+        let mut new_override = current_override;
+
+        ui.horizontal(|ui| {
+            ui.label("Region:");
+            let combo_id = egui::Id::new("region_override_combo")
+                .with(console_idx)
+                .with(entry_idx);
+            egui::ComboBox::from_id_salt(combo_id)
+                .selected_text(&combo_label)
+                .show_ui(ui, |ui| {
+                    // Auto-detect option (clears override)
+                    let auto_label = if detected_regions.is_empty() {
+                        "Auto-detect".to_string()
+                    } else {
+                        let names: Vec<&str> =
+                            detected_regions.iter().map(|r| r.name()).collect();
+                        format!("Auto-detect ({})", names.join(", "))
+                    };
+                    if ui
+                        .selectable_label(current_override.is_none(), &auto_label)
+                        .clicked()
+                    {
+                        new_override = None;
+                    }
+
+                    ui.separator();
+
+                    // If ambiguous (>1 detected), group detected first
+                    if detected_regions.len() > 1 {
+                        ui.label(egui::RichText::new("Detected:").weak().small());
+                        for &r in &detected_regions {
+                            if ui
+                                .selectable_label(current_override == Some(r), r.name())
+                                .clicked()
+                            {
+                                new_override = Some(r);
+                            }
+                        }
+                        ui.separator();
+                        ui.label(egui::RichText::new("Other:").weak().small());
+                        for &r in Region::ALL {
+                            if !detected_regions.contains(&r) {
+                                if ui
+                                    .selectable_label(current_override == Some(r), r.name())
+                                    .clicked()
+                                {
+                                    new_override = Some(r);
+                                }
+                            }
+                        }
+                    } else {
+                        // Specific (1) or none: show all regions flat
+                        for &r in Region::ALL {
+                            if ui
+                                .selectable_label(current_override == Some(r), r.name())
+                                .clicked()
+                            {
+                                new_override = Some(r);
+                            }
+                        }
+                    }
                 });
+        });
+
+        // Apply override change
+        if new_override != current_override {
+            app.library.consoles[console_idx].entries[entry_idx].region_override = new_override;
+            app.save_library_cache();
+        }
+
+        // Warning text
+        if app.settings.general.warn_on_region_override {
+            if let Some(overridden) = new_override {
+                let should_warn = if detected_regions.len() == 1 {
+                    // Specific detection: warn if override differs
+                    detected_regions[0] != overridden
+                } else if detected_regions.len() > 1 {
+                    // Ambiguous: warn if override not in detected set
+                    !detected_regions.contains(&overridden)
+                } else {
+                    false
+                };
+
+                if should_warn {
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "\u{26a0} Overriding detected region ({})",
+                                detected_regions
+                                    .iter()
+                                    .map(|r| r.name())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ))
+                            .small()
+                            .color(egui::Color32::from_rgb(220, 180, 30)),
+                        );
+                    });
+                }
             }
         }
+
+        // Re-borrow after potential mutation
+        let console = &app.library.consoles[console_idx];
+        let entry = &console.entries[entry_idx];
 
         // Folder
         ui.horizontal(|ui| {

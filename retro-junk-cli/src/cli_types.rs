@@ -113,15 +113,15 @@ pub(crate) enum Commands {
         #[arg(long, default_value = "esde")]
         frontend: String,
 
-        /// Preferred region for names/media (e.g., us, eu, jp)
+        /// Fallback region when ROM header detection fails (e.g., us, eu, jp). ROM-detected region is always preferred.
         #[arg(long, default_value = "us")]
         region: String,
 
-        /// Preferred language for descriptions (e.g., en, fr, match)
-        #[arg(long, default_value = "en")]
+        /// Language for descriptions: "match" derives from ROM region (default), or a code like "en", "ja", "fr"
+        #[arg(long, default_value = "match")]
         language: String,
 
-        /// Fallback language when --language match has no data for the matched language
+        /// Fallback language when region-matched language has no data (default: en)
         #[arg(long, default_value = "en")]
         language_fallback: String,
 
