@@ -16,4 +16,3 @@ sha1.workspace = true
 md5.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 log.workspace = true
-async-channel.workspace = true

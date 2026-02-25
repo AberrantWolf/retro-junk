@@ -9,10 +9,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use futures::stream::{self, StreamExt};
 use retro_junk_catalog::types::*;
 use retro_junk_core::Platform;
 use retro_junk_db::{operations, queries};
-use retro_junk_lib::worker_pool::WorkerPool;
 use retro_junk_scraper::client::ScreenScraperClient;
 use retro_junk_scraper::error::ScrapeError;
 use retro_junk_scraper::lookup::{self, LookupMethod, LookupResult, RomInfo};
@@ -20,10 +20,10 @@ use retro_junk_scraper::systems;
 use retro_junk_scraper::types::GameInfo;
 use tokio::time::Duration;
 
-/// Per-item timeout for the worker pool process function.
+/// Per-item timeout wrapping each lookup future.
 /// Covers the entire lookup (serial + filename + hash tiers).
 /// Should be above LOOKUP_TIMEOUT in the scraper crate (60s).
-const WORKER_ITEM_TIMEOUT: Duration = Duration::from_secs(90);
+const ITEM_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Timeout for downloading and cataloging all assets for a single release.
 /// Each individual download has a 120s timeout, but the full batch (~7 assets)
@@ -114,15 +114,6 @@ pub enum EnrichEvent {
         platform_name: String,
         total: usize,
     },
-    ReleaseStarted {
-        index: usize,
-        total: usize,
-        title: String,
-    },
-    ReleaseLookingUp {
-        index: usize,
-        title: String,
-    },
     ReleaseFound {
         index: usize,
         title: String,
@@ -132,11 +123,6 @@ pub enum EnrichEvent {
     ReleaseNotFound {
         index: usize,
         title: String,
-    },
-    ReleaseDownloadingAsset {
-        index: usize,
-        title: String,
-        asset_type: String,
     },
     ReleaseSkipped {
         index: usize,
@@ -305,107 +291,102 @@ pub async fn enrich_releases(
             });
         }
 
-        // ── Phase 2: Parallel API Lookups via Worker Pool ─────────────
+        // ── Phase 2+3: Parallel lookups with inline DB writes ────────
         let cancel = Arc::new(AtomicBool::new(false));
 
-        // Clone shared state for the worker pool closure
         let pool_client = client.clone();
         let pool_cancel = cancel.clone();
-        let pool_events = events.clone();
         let pool_region = options.preferred_region.clone();
         let pool_language = options.preferred_language.clone();
 
-        let mut pool = WorkerPool::start(max_workers, work_items, move |item: EnrichWorkItem| {
-            let client = pool_client.clone();
-            let cancel = pool_cancel.clone();
-            let events = pool_events.clone();
-            let preferred_region = pool_region.clone();
-            let preferred_language = pool_language.clone();
-            async move {
-                let index = item.index;
+        let mut stream = stream::iter(work_items)
+            .map(move |item| {
+                let client = pool_client.clone();
+                let cancel = pool_cancel.clone();
+                let preferred_region = pool_region.clone();
+                let preferred_language = pool_language.clone();
+                // Spawn each lookup as an independent tokio task so it makes
+                // progress regardless of whether the stream is being polled.
+                // buffer_unordered still controls concurrency: it only pulls
+                // (and spawns) a new item when a JoinHandle resolves.
+                tokio::spawn(async move {
+                    if cancel.load(Ordering::Relaxed) {
+                        return LookupOutcome::Skipped { index: item.index };
+                    }
+                    if item.media_entries.is_empty() {
+                        return LookupOutcome::Skipped { index: item.index };
+                    }
 
-                // Check cancel flag
-                if cancel.load(Ordering::Relaxed) {
-                    return LookupOutcome::Skipped { index };
-                }
+                    let best_media = pick_best_media_for_lookup(&item.media_entries);
+                    let rom_info = build_rom_info(best_media, item.core_platform);
 
-                // Skip releases with no media
-                if item.media_entries.is_empty() {
-                    return LookupOutcome::Skipped { index };
-                }
-
-                let _ = events.send(EnrichEvent::ReleaseStarted {
-                    index,
-                    total,
-                    title: item.release.title.clone(),
-                });
-
-                let _ = events.send(EnrichEvent::ReleaseLookingUp {
-                    index,
-                    title: item.release.title.clone(),
-                });
-
-                let best_media = pick_best_media_for_lookup(&item.media_entries);
-                let rom_info = build_rom_info(best_media, item.core_platform);
-
-                match tokio::time::timeout(
-                    WORKER_ITEM_TIMEOUT,
-                    lookup::lookup_game(&client, item.system_id, &rom_info),
-                ).await {
-                    Ok(Ok(result)) => {
-                        let mapped = map_game_info(
-                            &result.game,
-                            &preferred_region,
-                            &preferred_language,
-                        );
-                        LookupOutcome::Found {
-                            index,
+                    match tokio::time::timeout(
+                        ITEM_TIMEOUT,
+                        lookup::lookup_game(&client, item.system_id, &rom_info),
+                    )
+                    .await
+                    {
+                        Ok(Ok(result)) => {
+                            let mapped = map_game_info(
+                                &result.game,
+                                &preferred_region,
+                                &preferred_language,
+                            );
+                            LookupOutcome::Found {
+                                index: item.index,
+                                release: item.release,
+                                result,
+                                mapped,
+                            }
+                        }
+                        Ok(Err(ScrapeError::NotFound { .. })) => LookupOutcome::NotFound {
+                            index: item.index,
                             release: item.release,
-                            result,
-                            mapped,
+                        },
+                        Ok(Err(e @ ScrapeError::QuotaExceeded { .. }))
+                        | Ok(Err(e @ ScrapeError::ServerClosed(_))) => {
+                            cancel.store(true, Ordering::Relaxed);
+                            LookupOutcome::Fatal {
+                                error: EnrichError::Scraper(e),
+                            }
                         }
-                    }
-                    Ok(Err(ScrapeError::NotFound { .. })) => {
-                        LookupOutcome::NotFound {
-                            index,
+                        Ok(Err(e)) => LookupOutcome::Error {
+                            index: item.index,
                             release: item.release,
-                        }
+                            error: e.to_string(),
+                        },
+                        Err(_) => LookupOutcome::Error {
+                            index: item.index,
+                            release: item.release,
+                            error: format!(
+                                "Lookup timed out after {}s",
+                                ITEM_TIMEOUT.as_secs()
+                            ),
+                        },
                     }
-                    Ok(Err(e @ ScrapeError::QuotaExceeded { .. }))
-                    | Ok(Err(e @ ScrapeError::ServerClosed(_))) => {
-                        cancel.store(true, Ordering::Relaxed);
-                        LookupOutcome::Fatal {
-                            error: EnrichError::Scraper(e),
-                        }
-                    }
-                    Ok(Err(e)) => LookupOutcome::Error {
-                        index,
-                        release: item.release,
-                        error: e.to_string(),
-                    },
-                    Err(_timeout) => LookupOutcome::Error {
-                        index,
-                        release: item.release,
-                        error: format!(
-                            "Lookup timed out after {}s",
-                            WORKER_ITEM_TIMEOUT.as_secs()
-                        ),
-                    },
-                }
-            }
-        });
+                })
+            })
+            .buffer_unordered(max_workers);
 
-        // ── Phase 3: Apply DB writes as results arrive ──────────────
+        // Process results as they arrive
         let mut fatal_error = None;
+        let mut consecutive_errors: u32 = 0;
+        const CIRCUIT_BREAKER_THRESHOLD: u32 = 15;
 
         loop {
-            let outcome = match tokio::time::timeout(WATCHDOG_TIMEOUT, pool.recv()).await {
-                Ok(Some(outcome)) => outcome,
-                Ok(None) => break, // channel closed, all workers done
+            let outcome = match tokio::time::timeout(WATCHDOG_TIMEOUT, stream.next()).await {
+                Ok(Some(Ok(outcome))) => outcome,
+                Ok(Some(Err(join_err))) => {
+                    // Spawned task panicked — log and continue
+                    log::debug!("Lookup task panicked: {}", join_err);
+                    stats.releases_processed += 1;
+                    stats.errors += 1;
+                    continue;
+                }
+                Ok(None) => break,
                 Err(_watchdog) => {
                     let msg = format!(
-                        "Watchdog: no worker result in {}s — workers appear stuck \
-                         (likely after sleep/wake). Stopping with partial progress.",
+                        "Watchdog: no result in {}s, stopping with partial progress.",
                         WATCHDOG_TIMEOUT.as_secs(),
                     );
                     let _ = events.send(EnrichEvent::FatalError {
@@ -424,6 +405,7 @@ pub async fn enrich_releases(
                     result,
                     mapped,
                 } => {
+                    consecutive_errors = 0;
                     let game = &result.game;
 
                     // Handle companies (find or create)
@@ -470,11 +452,6 @@ pub async fn enrich_releases(
                     // Download assets if requested
                     if options.download_assets {
                         if let Some(ref asset_dir) = options.asset_dir {
-                            let _ = events.send(EnrichEvent::ReleaseDownloadingAsset {
-                                index,
-                                title: release.title.clone(),
-                                asset_type: "media".to_string(),
-                            });
                             match tokio::time::timeout(
                                 ASSET_DOWNLOAD_TIMEOUT,
                                 download_and_catalog_assets(
@@ -530,6 +507,7 @@ pub async fn enrich_releases(
                     });
                 }
                 LookupOutcome::NotFound { index, release } => {
+                    consecutive_errors = 0;
                     let _ = events.send(EnrichEvent::ReleaseNotFound {
                         index,
                         title: release.title.clone(),
@@ -538,6 +516,8 @@ pub async fn enrich_releases(
                     stats.releases_not_found += 1;
                 }
                 LookupOutcome::Skipped { index } => {
+                    // Skipped items intentionally do no DB write — releases remain
+                    // retryable on the next enrichment run.
                     let _ = events.send(EnrichEvent::ReleaseSkipped { index });
                     stats.releases_skipped += 1;
                 }
@@ -546,6 +526,7 @@ pub async fn enrich_releases(
                     release,
                     error,
                 } => {
+                    consecutive_errors += 1;
                     let _ = events.send(EnrichEvent::ReleaseError {
                         index,
                         title: release.title.clone(),
@@ -553,6 +534,21 @@ pub async fn enrich_releases(
                     });
                     log::debug!("Error enriching '{}': {}", release.title, error);
                     stats.errors += 1;
+
+                    // Circuit breaker: too many consecutive errors means the API
+                    // is likely down. Set cancel flag so remaining items are skipped
+                    // (no DB write → retryable on next run).
+                    if consecutive_errors >= CIRCUIT_BREAKER_THRESHOLD {
+                        cancel.store(true, Ordering::Relaxed);
+                        let msg = format!(
+                            "Circuit breaker: {} consecutive errors, stopping platform",
+                            consecutive_errors,
+                        );
+                        let _ = events.send(EnrichEvent::FatalError {
+                            message: msg.clone(),
+                        });
+                        log::debug!("{}", msg);
+                    }
                 }
                 LookupOutcome::Fatal { error } => {
                     let _ = events.send(EnrichEvent::FatalError {

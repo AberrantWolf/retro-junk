@@ -5,7 +5,6 @@ use owo_colors::Stream::Stdout;
 use retro_junk_lib::Platform;
 
 use crate::commands::scrape::connect_screenscraper;
-use crate::spinner;
 
 use super::default_catalog_db_path;
 
@@ -94,9 +93,6 @@ pub(crate) fn run_catalog_enrich(
             None => std::process::exit(1),
         };
 
-        let mut pool = spinner::SpinnerPool::new(max_workers, quiet, false);
-        let mut platform_total = 0usize;
-
         let (event_tx, event_rx) =
             tokio::sync::mpsc::unbounded_channel::<EnrichEvent>();
 
@@ -107,85 +103,68 @@ pub(crate) fn run_catalog_enrich(
         let enrich_result = retro_junk_lib::async_util::run_with_events(
             enrich_future,
             event_rx,
-            |e| match e {
-                EnrichEvent::PlatformStarted { platform_name, total, .. } => {
-                    pool.clear_all();
-                    platform_total = total;
-                    pool.println(&format!(
-                        "Enriching {} releases for {}",
-                        total,
-                        platform_name.if_supports_color(Stdout, |t| t.bold()),
-                    ));
-                }
-                EnrichEvent::ReleaseStarted { index, total, ref title } => {
-                    pool.claim(index, format!("[{}/{}] {}", index + 1, total, title));
-                }
-                EnrichEvent::ReleaseLookingUp { index, ref title } => {
-                    pool.update(index, format!("[{}/{}] Looking up {}", index + 1, platform_total, title));
-                }
-                EnrichEvent::ReleaseDownloadingAsset { index, ref title, ref asset_type } => {
-                    pool.update(index, format!("[{}/{}] Downloading {} for {}", index + 1, platform_total, asset_type, title));
-                }
-                EnrichEvent::ReleaseFound { index, ref title, ref ss_name, ref method } => {
-                    pool.release_with_message(index, &format!(
-                        "  {} {} (via {}, SS: \"{}\")",
-                        "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                        title.if_supports_color(Stdout, |t| t.bold()),
-                        method,
-                        ss_name,
-                    ));
-                }
-                EnrichEvent::ReleaseNotFound { index, ref title } => {
-                    pool.release_with_message(index, &format!(
-                        "  {} {}",
-                        "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                        title,
-                    ));
-                }
-                EnrichEvent::ReleaseSkipped { index } => {
-                    pool.release(index);
-                }
-                EnrichEvent::ReleaseError { index, ref title, ref error } => {
-                    pool.release_with_message(index, &format!(
-                        "  {} {}: {}",
-                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                        title,
-                        error,
-                    ));
-                }
-                EnrichEvent::FatalError { ref message } => {
-                    pool.clear_all();
-                    pool.println(&format!(
-                        "  {} Fatal: {}",
-                        "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                        message,
-                    ));
-                }
-                EnrichEvent::PlatformDone { .. } => {
-                    pool.clear_all();
-                }
-                EnrichEvent::Done { ref stats } => {
-                    pool.clear_all();
-                    pool.println("");
-                    pool.println(&format!(
-                        "{}",
-                        "Enrichment complete".if_supports_color(Stdout, |t| t.bold()),
-                    ));
-                    pool.println(&format!("  Processed:     {:>6}", stats.releases_processed));
-                    pool.println(&format!("  Enriched:      {:>6}", stats.releases_enriched));
-                    pool.println(&format!("  Not found:     {:>6}", stats.releases_not_found));
-                    pool.println(&format!("  Skipped:       {:>6}", stats.releases_skipped));
-                    pool.println(&format!("  Assets:        {:>6}", stats.assets_downloaded));
-                    pool.println(&format!("  Companies:     {:>6} (new)", stats.companies_created));
-                    pool.println(&format!("  Disagreements: {:>6}", stats.disagreements_found));
-                    if stats.errors > 0 {
-                        pool.println(&format!("  Errors:        {:>6}", stats.errors));
+            |e| {
+                if quiet { return; }
+                match e {
+                    EnrichEvent::PlatformStarted { platform_name, total, .. } => {
+                        println!(
+                            "Enriching {} releases for {}",
+                            total,
+                            platform_name.if_supports_color(Stdout, |t| t.bold()),
+                        );
                     }
+                    EnrichEvent::ReleaseFound { ref title, ref ss_name, ref method, .. } => {
+                        println!(
+                            "  {} {} (via {}, SS: \"{}\")",
+                            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                            title.if_supports_color(Stdout, |t| t.bold()),
+                            method,
+                            ss_name,
+                        );
+                    }
+                    EnrichEvent::ReleaseNotFound { ref title, .. } => {
+                        println!(
+                            "  {} {}",
+                            "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                            title,
+                        );
+                    }
+                    EnrichEvent::ReleaseError { ref title, ref error, .. } => {
+                        println!(
+                            "  {} {}: {}",
+                            "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                            title,
+                            error,
+                        );
+                    }
+                    EnrichEvent::FatalError { ref message } => {
+                        println!(
+                            "  {} Fatal: {}",
+                            "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                            message,
+                        );
+                    }
+                    EnrichEvent::Done { ref stats } => {
+                        println!();
+                        println!(
+                            "{}",
+                            "Enrichment complete".if_supports_color(Stdout, |t| t.bold()),
+                        );
+                        println!("  Processed:     {:>6}", stats.releases_processed);
+                        println!("  Enriched:      {:>6}", stats.releases_enriched);
+                        println!("  Not found:     {:>6}", stats.releases_not_found);
+                        println!("  Skipped:       {:>6}", stats.releases_skipped);
+                        println!("  Assets:        {:>6}", stats.assets_downloaded);
+                        println!("  Companies:     {:>6} (new)", stats.companies_created);
+                        println!("  Disagreements: {:>6}", stats.disagreements_found);
+                        if stats.errors > 0 {
+                            println!("  Errors:        {:>6}", stats.errors);
+                        }
+                    }
+                    _ => {} // PlatformDone, ReleaseSkipped — no output
                 }
             },
         ).await;
-
-        pool.clear_all();
 
         match enrich_result {
             Ok(_) => {}

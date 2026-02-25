@@ -10,7 +10,6 @@ pub mod rename;
 pub mod repair;
 pub mod scanner;
 pub mod util;
-pub mod worker_pool;
 
 // Re-export context items at crate root for backwards compatibility.
 pub use context::{AnalysisContext, Console, ConsoleFolder, FolderScanResult, RegisteredConsole};

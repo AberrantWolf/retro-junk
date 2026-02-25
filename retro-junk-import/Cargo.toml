@@ -14,4 +14,5 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 log = { workspace = true }
 tokio = { workspace = true }
+futures = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
