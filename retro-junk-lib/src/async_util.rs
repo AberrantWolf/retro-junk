@@ -53,20 +53,36 @@ where
 {
     tokio::pin!(task);
     let mut result = None;
+    let mut event_count: u64 = 0;
+
+    log::debug!("run_with_events: starting event loop");
 
     // Phase 1: select between task completion and events
     loop {
         tokio::select! {
             r = &mut task, if result.is_none() => {
+                log::debug!(
+                    "run_with_events: task completed ({} events received so far)",
+                    event_count,
+                );
                 result = Some(r);
                 // Task done — break to drain phase
                 break;
             }
             event = event_rx.recv() => {
                 match event {
-                    Some(e) => on_event(e),
+                    Some(e) => {
+                        event_count += 1;
+                        on_event(e);
+                    }
                     // Channel closed before task finished (unusual but safe)
-                    None => break,
+                    None => {
+                        log::debug!(
+                            "run_with_events: channel closed before task finished ({} events)",
+                            event_count,
+                        );
+                        break;
+                    }
                 }
             }
         }
@@ -74,12 +90,27 @@ where
 
     // Phase 2: drain remaining events with a timeout
     if result.is_some() {
+        log::debug!("run_with_events: draining remaining events (timeout: {}s)", DRAIN_TIMEOUT.as_secs());
         let deadline = Instant::now() + DRAIN_TIMEOUT;
+        let mut drain_count: u64 = 0;
         loop {
             match tokio::time::timeout_at(deadline, event_rx.recv()).await {
-                Ok(Some(e)) => on_event(e),
-                Ok(None) => break,    // channel closed cleanly
-                Err(_) => break,      // drain timeout — senders likely leaked
+                Ok(Some(e)) => {
+                    drain_count += 1;
+                    on_event(e);
+                }
+                Ok(None) => {
+                    log::debug!("run_with_events: drain complete ({} drained, {} total events)", drain_count, event_count + drain_count);
+                    break;
+                }
+                Err(_) => {
+                    log::warn!(
+                        "run_with_events: drain timed out after {}s ({} drained, senders likely leaked)",
+                        DRAIN_TIMEOUT.as_secs(),
+                        drain_count,
+                    );
+                    break;
+                }
             }
         }
     }
@@ -87,6 +118,9 @@ where
     // If channel closed before task completed, await the task directly
     match result {
         Some(r) => r,
-        None => task.await,
+        None => {
+            log::debug!("run_with_events: awaiting task (channel closed first)");
+            task.await
+        }
     }
 }

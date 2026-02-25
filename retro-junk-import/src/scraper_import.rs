@@ -6,8 +6,9 @@
 //! and optionally downloads media assets.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use futures::stream::{self, StreamExt};
 use retro_junk_catalog::types::*;
@@ -18,7 +19,7 @@ use retro_junk_scraper::error::ScrapeError;
 use retro_junk_scraper::lookup::{self, LookupMethod, LookupResult, RomInfo};
 use retro_junk_scraper::systems;
 use retro_junk_scraper::types::GameInfo;
-use tokio::time::Duration;
+use tokio::time::{Duration, Instant};
 
 /// Per-item timeout wrapping each lookup future.
 /// Covers the entire lookup (serial + filename + hash tiers).
@@ -272,11 +273,13 @@ pub async fn enrich_releases(
             None => total_to_enrich,
         };
 
-        let _ = events.try_send(EnrichEvent::PlatformStarted {
+        if let Err(e) = events.try_send(EnrichEvent::PlatformStarted {
             platform_id: platform_id.clone(),
             platform_name: platform_row.display_name.clone(),
             total: reported_total as usize,
-        });
+        }) {
+            log::debug!("Event channel full/closed on PlatformStarted: {}", e);
+        }
 
         // Track how many we've processed for this platform to honor the limit
         let mut platform_processed: u32 = 0;
@@ -309,7 +312,7 @@ pub async fn enrich_releases(
             let total = releases.len();
             platform_processed += total as u32;
 
-            log::debug!(
+            log::info!(
                 "Enriching batch of {} releases for {} ({}/{} total, system {}, {} workers)",
                 total,
                 platform_row.display_name,
@@ -336,10 +339,52 @@ pub async fn enrich_releases(
             // Fresh cancel flag and error counter per batch
             let cancel = Arc::new(AtomicBool::new(false));
 
+            // Wall-clock watchdog: a real OS thread that detects machine sleep.
+            // tokio::time::timeout uses Instant which may not advance during
+            // macOS sleep, so the tokio-based watchdog can fail to fire.
+            // This thread uses std::thread::sleep + SystemTime (both track
+            // real wall-clock time) as a reliable fallback.
+            let wall_clock_activity = Arc::new(AtomicU64::new(epoch_secs()));
+            let wd_activity = wall_clock_activity.clone();
+            let wd_cancel = cancel.clone();
+            let wd_stop = Arc::new(AtomicBool::new(false));
+            let wd_stop_flag = wd_stop.clone();
+            let wd_handle = std::thread::spawn(move || {
+                let check_interval = std::time::Duration::from_secs(15);
+                let threshold = WATCHDOG_TIMEOUT.as_secs();
+                loop {
+                    std::thread::sleep(check_interval);
+                    if wd_stop_flag.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let last = wd_activity.load(Ordering::Acquire);
+                    let now = epoch_secs();
+                    let idle = now.saturating_sub(last);
+                    if idle > threshold {
+                        log::warn!(
+                            "Wall-clock watchdog: {}s since last activity (threshold {}s). \
+                             Machine likely slept. Signaling cancel.",
+                            idle,
+                            threshold,
+                        );
+                        wd_cancel.store(true, Ordering::Release);
+                        break;
+                    } else if idle > 60 {
+                        log::info!(
+                            "Wall-clock watchdog: {}s since last activity (threshold {}s)",
+                            idle,
+                            threshold,
+                        );
+                    }
+                }
+            });
+
             let pool_client = client.clone();
             let pool_cancel = cancel.clone();
             let pool_region = options.preferred_region.clone();
             let pool_language = options.preferred_language.clone();
+
+            let batch_start = Instant::now();
 
             let mut stream = stream::iter(work_items)
                 .map(move |item| {
@@ -352,17 +397,27 @@ pub async fn enrich_releases(
                     // buffer_unordered still controls concurrency: it only pulls
                     // (and spawns) a new item when a JoinHandle resolves.
                     tokio::spawn(async move {
+                        let title = item.release.title.clone();
+                        log::debug!(
+                            "[worker:{}] starting lookup for '{}'",
+                            item.index,
+                            title,
+                        );
+                        let worker_start = Instant::now();
+
                         if cancel.load(Ordering::Acquire) {
+                            log::debug!("[worker:{}] cancelled, skipping '{}'", item.index, title);
                             return LookupOutcome::Skipped { index: item.index };
                         }
                         if item.media_entries.is_empty() {
+                            log::debug!("[worker:{}] no media entries, skipping '{}'", item.index, title);
                             return LookupOutcome::Skipped { index: item.index };
                         }
 
                         let best_media = pick_best_media_for_lookup(&item.media_entries);
                         let rom_info = build_rom_info(best_media, item.core_platform);
 
-                        match tokio::time::timeout(
+                        let outcome = match tokio::time::timeout(
                             ITEM_TIMEOUT,
                             lookup::lookup_game(&client, item.system_id, &rom_info),
                         )
@@ -374,6 +429,14 @@ pub async fn enrich_releases(
                                     &preferred_region,
                                     &preferred_language,
                                 );
+                                log::debug!(
+                                    "[worker:{}] FOUND '{}' via {} (SS id: {}, {}ms)",
+                                    item.index,
+                                    title,
+                                    result.method,
+                                    result.game.id,
+                                    worker_start.elapsed().as_millis(),
+                                );
                                 LookupOutcome::Found {
                                     index: item.index,
                                     release: item.release,
@@ -381,31 +444,66 @@ pub async fn enrich_releases(
                                     mapped,
                                 }
                             }
-                            Ok(Err(ScrapeError::NotFound { .. })) => LookupOutcome::NotFound {
-                                index: item.index,
-                                release: item.release,
-                            },
+                            Ok(Err(ScrapeError::NotFound { .. })) => {
+                                log::debug!(
+                                    "[worker:{}] NOT FOUND '{}' ({}ms)",
+                                    item.index,
+                                    title,
+                                    worker_start.elapsed().as_millis(),
+                                );
+                                LookupOutcome::NotFound {
+                                    index: item.index,
+                                    release: item.release,
+                                }
+                            }
                             Ok(Err(e @ ScrapeError::QuotaExceeded { .. }))
                             | Ok(Err(e @ ScrapeError::ServerClosed(_))) => {
+                                log::warn!(
+                                    "[worker:{}] FATAL error for '{}': {} ({}ms)",
+                                    item.index,
+                                    title,
+                                    e,
+                                    worker_start.elapsed().as_millis(),
+                                );
                                 cancel.store(true, Ordering::Release);
                                 LookupOutcome::Fatal {
                                     error: EnrichError::Scraper(e),
                                 }
                             }
-                            Ok(Err(e)) => LookupOutcome::Error {
-                                index: item.index,
-                                release: item.release,
-                                error: e.to_string(),
-                            },
-                            Err(_) => LookupOutcome::Error {
-                                index: item.index,
-                                release: item.release,
-                                error: format!(
-                                    "Lookup timed out after {}s",
-                                    ITEM_TIMEOUT.as_secs()
-                                ),
-                            },
-                        }
+                            Ok(Err(e)) => {
+                                log::debug!(
+                                    "[worker:{}] ERROR for '{}': {} ({}ms)",
+                                    item.index,
+                                    title,
+                                    e,
+                                    worker_start.elapsed().as_millis(),
+                                );
+                                LookupOutcome::Error {
+                                    index: item.index,
+                                    release: item.release,
+                                    error: e.to_string(),
+                                }
+                            }
+                            Err(_) => {
+                                log::warn!(
+                                    "[worker:{}] TIMEOUT for '{}' after {}s ({}ms elapsed)",
+                                    item.index,
+                                    title,
+                                    ITEM_TIMEOUT.as_secs(),
+                                    worker_start.elapsed().as_millis(),
+                                );
+                                LookupOutcome::Error {
+                                    index: item.index,
+                                    release: item.release,
+                                    error: format!(
+                                        "Lookup timed out after {}s",
+                                        ITEM_TIMEOUT.as_secs()
+                                    ),
+                                }
+                            }
+                        };
+
+                        outcome
                     })
                 })
                 .buffer_unordered(max_workers);
@@ -413,25 +511,60 @@ pub async fn enrich_releases(
             // Process results as they arrive
             let mut fatal_error = None;
             let mut consecutive_errors: u32 = 0;
+            let mut results_received: u32 = 0;
             const CIRCUIT_BREAKER_THRESHOLD: u32 = 15;
 
+            log::debug!(
+                "Phase 3: waiting for results from {} work items (watchdog: {}s)",
+                total,
+                WATCHDOG_TIMEOUT.as_secs(),
+            );
+
         loop {
+            let wait_start = Instant::now();
             let outcome = match tokio::time::timeout(WATCHDOG_TIMEOUT, stream.next()).await {
-                Ok(Some(Ok(outcome))) => outcome,
+                Ok(Some(Ok(outcome))) => {
+                    results_received += 1;
+                    wall_clock_activity.store(epoch_secs(), Ordering::Release);
+                    log::debug!(
+                        "Phase 3: received result {}/{} (waited {}ms, batch elapsed {}s)",
+                        results_received,
+                        total,
+                        wait_start.elapsed().as_millis(),
+                        batch_start.elapsed().as_secs(),
+                    );
+                    outcome
+                }
                 Ok(Some(Err(join_err))) => {
                     // Spawned task panicked — log and continue
-                    log::error!("Lookup task panicked: {}", join_err);
+                    results_received += 1;
+                    log::error!(
+                        "Phase 3: lookup task panicked ({}/{}): {}",
+                        results_received,
+                        total,
+                        join_err,
+                    );
                     consecutive_errors += 1;
                     stats.releases_processed += 1;
                     stats.errors += 1;
                     continue;
                 }
-                Ok(None) => break,
+                Ok(None) => {
+                    log::debug!(
+                        "Phase 3: stream exhausted ({} results in {}s)",
+                        results_received,
+                        batch_start.elapsed().as_secs(),
+                    );
+                    break;
+                }
                 Err(_watchdog) => {
                     cancel.store(true, Ordering::Release);
                     let msg = format!(
-                        "Watchdog: no result in {}s, stopping with partial progress.",
+                        "Watchdog: no result in {}s ({}/{} received, batch running {}s), stopping.",
                         WATCHDOG_TIMEOUT.as_secs(),
+                        results_received,
+                        total,
+                        batch_start.elapsed().as_secs(),
                     );
                     let _ = events.try_send(EnrichEvent::FatalError {
                         message: msg.clone(),
@@ -456,6 +589,11 @@ pub async fn enrich_releases(
                     //    the transaction so network I/O doesn't hold a lock.
                     let downloaded_assets = if options.download_assets {
                         if let Some(ref asset_dir) = options.asset_dir {
+                            log::debug!(
+                                "Downloading assets for '{}' (timeout: {}s)",
+                                release.title,
+                                ASSET_DOWNLOAD_TIMEOUT.as_secs(),
+                            );
                             match tokio::time::timeout(
                                 ASSET_DOWNLOAD_TIMEOUT,
                                 download_assets_only(
@@ -650,6 +788,10 @@ pub async fn enrich_releases(
             }
         }
 
+            // Stop and join the wall-clock watchdog thread for this batch.
+            wd_stop.store(true, Ordering::Release);
+            let _ = wd_handle.join();
+
             if let Some(err) = fatal_error {
                 // Log the fatal error details
                 match &err {
@@ -689,9 +831,10 @@ pub async fn enrich_releases(
             }
 
             log::info!(
-                "Batch complete ({}/{} processed), fetching next batch for {}",
+                "Batch complete ({}/{} processed, {}s), fetching next batch for {}",
                 platform_processed,
                 reported_total,
+                batch_start.elapsed().as_secs(),
                 platform_id,
             );
         } // end batch loop
@@ -914,6 +1057,18 @@ async fn download_assets_only(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Current wall-clock time as seconds since the Unix epoch.
+///
+/// Used by the wall-clock watchdog thread to detect machine sleep.
+/// `SystemTime` uses the real-time clock, which advances during sleep
+/// (unlike `Instant` on some platforms).
+fn epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
 
 /// Map catalog region slug to ScreenScraper region code.
 pub fn catalog_region_to_ss(region: &str) -> &str {

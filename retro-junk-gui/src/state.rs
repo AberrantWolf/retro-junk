@@ -256,6 +256,13 @@ pub enum AppMessage {
         error: String,
     },
 
+    // -- Media --
+    MediaLoaded {
+        folder_name: String,
+        entry_index: usize,
+        media: HashMap<MediaType, PathBuf>,
+    },
+
     // -- Operations --
     OperationProgress {
         op_id: u64,
@@ -273,7 +280,7 @@ pub enum AppMessage {
 
 // -- Message handler --
 
-pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage) {
+pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Context) {
     match msg {
         AppMessage::ConsoleFolderFound {
             platform,
@@ -308,6 +315,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage) {
 
         AppMessage::FolderScanComplete => {
             app.operations.retain(|op| op.description != "Scanning folders...");
+
+            // Auto-scan all unscanned consoles if setting is enabled
+            if app.settings.general.auto_scan_on_open {
+                let unscanned: Vec<usize> = app.library.consoles.iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.scan_status == ScanStatus::NotScanned)
+                    .map(|(i, _)| i)
+                    .collect();
+                for i in unscanned {
+                    crate::backend::scan::quick_scan_console(app, i, ctx);
+                }
+            }
         }
 
         AppMessage::ConsoleScanComplete { folder_name, entries } => {
@@ -400,6 +419,24 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage) {
                         }
                     }
                 }
+
+                // Re-check hash matches for entries that have cached hashes
+                // but weren't resolved by serial alone (e.g. Ambiguous or Unrecognized)
+                for entry in app.library.consoles[ci].entries.iter_mut() {
+                    if entry.status != EntryStatus::Matched {
+                        if let Some(ref hashes) = entry.hashes {
+                            if let Some(m) = index.match_by_hash(hashes.data_size, hashes) {
+                                let game_name = index.games[m.game_index].name.clone();
+                                entry.dat_match = Some(DatMatchInfo {
+                                    game_name,
+                                    method: m.method,
+                                });
+                                entry.status = EntryStatus::Matched;
+                                entry.ambiguous_candidates.clear();
+                            }
+                        }
+                    }
+                }
             }
 
             // Store the DatIndex for later hash matching
@@ -439,6 +476,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage) {
 
         AppMessage::HashFailed { folder_name, index, error } => {
             log::warn!("Hash failed for {} entry {}: {}", folder_name, index, error);
+        }
+
+        AppMessage::MediaLoaded { folder_name, entry_index, media } => {
+            if let Some(ci) = app.library.find_by_folder(&folder_name) {
+                if let Some(entry) = app.library.consoles[ci].entries.get_mut(entry_index) {
+                    entry.media_paths = Some(media);
+                }
+            }
         }
 
         AppMessage::OperationProgress { op_id, current, total } => {

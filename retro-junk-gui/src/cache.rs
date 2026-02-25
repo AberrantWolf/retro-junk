@@ -212,6 +212,10 @@ pub fn load_library(
             .then(a.folder_name.cmp(&b.folder_name))
     });
 
+    if consoles.is_empty() {
+        return None;
+    }
+
     Some((Library { consoles }, stale_folders))
 }
 

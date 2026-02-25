@@ -9,6 +9,7 @@ mod spinner;
 use std::fs;
 use std::io::Write;
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use clap::Parser;
 use log::LevelFilter;
@@ -23,7 +24,22 @@ use cli_types::*;
 
 struct CliLogger {
     level: LevelFilter,
+    verbose: bool,
     logfile: Option<Mutex<fs::File>>,
+}
+
+impl CliLogger {
+    /// Format a timestamp as HH:MM:SS.mmm for log output.
+    fn timestamp() -> String {
+        let now = SystemTime::now();
+        let dur = now.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+        let total_secs = dur.as_secs();
+        let millis = dur.subsec_millis();
+        let hours = (total_secs / 3600) % 24;
+        let minutes = (total_secs / 60) % 60;
+        let seconds = total_secs % 60;
+        format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+    }
 }
 
 impl log::Log for CliLogger {
@@ -37,19 +53,40 @@ impl log::Log for CliLogger {
         }
         let msg = record.args().to_string();
 
-        // Terminal: warn/error to stderr, info to stdout
-        if record.level() <= log::Level::Warn {
-            eprintln!("{}", msg);
+        if self.verbose {
+            // Verbose mode: include timestamp, level, and module
+            let ts = Self::timestamp();
+            let level = record.level();
+            let module = record.module_path().unwrap_or("?");
+            let formatted = format!("[{} {:5} {}] {}", ts, level, module, msg);
+            if record.level() <= log::Level::Warn {
+                eprintln!("{}", formatted);
+            } else {
+                println!("{}", formatted);
+            }
+            // Logfile: ANSI-stripped
+            if let Some(ref file) = self.logfile {
+                let stripped = strip_ansi_escapes::strip(&formatted);
+                let text = String::from_utf8_lossy(&stripped);
+                let mut guard = file.lock().unwrap();
+                let _ = writeln!(guard, "{}", text);
+            }
         } else {
-            println!("{}", msg);
-        }
-
-        // Logfile: ANSI-stripped
-        if let Some(ref file) = self.logfile {
-            let stripped = strip_ansi_escapes::strip(&msg);
-            let text = String::from_utf8_lossy(&stripped);
-            let mut guard = file.lock().unwrap();
-            let _ = writeln!(guard, "{}", text);
+            // Normal mode: no timestamps for terminal
+            if record.level() <= log::Level::Warn {
+                eprintln!("{}", msg);
+            } else {
+                println!("{}", msg);
+            }
+            // Logfile always gets timestamps
+            if let Some(ref file) = self.logfile {
+                let ts = Self::timestamp();
+                let level = record.level();
+                let stripped = strip_ansi_escapes::strip(&msg);
+                let text = String::from_utf8_lossy(&stripped);
+                let mut guard = file.lock().unwrap();
+                let _ = writeln!(guard, "[{} {:5}] {}", ts, level, text);
+            }
         }
     }
 
@@ -65,9 +102,16 @@ impl log::Log for CliLogger {
 fn main() {
     let cli = Cli::parse();
     let quiet = cli.quiet;
+    let verbose = cli.verbose;
 
     // Initialize logger
-    let level = if quiet { LevelFilter::Warn } else { LevelFilter::Info };
+    let level = if quiet {
+        LevelFilter::Warn
+    } else if verbose {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
     let logfile = cli.logfile.map(|p| {
         let file = fs::File::create(&p).unwrap_or_else(|e| {
             eprintln!("Error: could not create logfile {}: {}", p.display(), e);
@@ -75,7 +119,7 @@ fn main() {
         });
         Mutex::new(file)
     });
-    let logger = Box::new(CliLogger { level, logfile });
+    let logger = Box::new(CliLogger { level, verbose, logfile });
     log::set_boxed_logger(logger).expect("Failed to set logger");
     log::set_max_level(level);
 

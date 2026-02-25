@@ -86,7 +86,7 @@ impl RetroJunkApp {
         if let Some(ref root) = app.settings.library.current_root.clone() {
             if root.is_dir() {
                 app.root_path = Some(root.clone());
-                // Try loading from cache
+                // Load cache to restore previously computed work (hashes, DAT matches, etc.)
                 if let Some((library, stale)) =
                     crate::cache::load_library(root, &app.context)
                 {
@@ -109,14 +109,15 @@ impl RetroJunkApp {
                             );
                         }
                     }
-                } else {
-                    // No valid cache — do fresh scan
-                    crate::backend::scan::scan_root_folder(
-                        &mut app,
-                        root.clone(),
-                        &cc.egui_ctx,
-                    );
                 }
+
+                // Always scan disk to discover new/removed console folders.
+                // ConsoleFolderFound handler deduplicates, so cached consoles keep their data.
+                crate::backend::scan::scan_root_folder(
+                    &mut app,
+                    root.clone(),
+                    &cc.egui_ctx,
+                );
             }
         }
 
@@ -124,9 +125,9 @@ impl RetroJunkApp {
     }
 
     /// Drain all pending messages from background threads.
-    fn process_messages(&mut self) {
+    fn process_messages(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.message_rx.try_recv() {
-            crate::state::handle_message(self, msg);
+            crate::state::handle_message(self, msg, ctx);
         }
     }
 
@@ -148,7 +149,7 @@ impl RetroJunkApp {
 impl eframe::App for RetroJunkApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Drain background messages
-        self.process_messages();
+        self.process_messages(ctx);
 
         // Schedule repaint while operations are running
         if self.has_active_operations() {

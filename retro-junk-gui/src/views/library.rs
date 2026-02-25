@@ -142,7 +142,7 @@ pub fn switch_to_root(app: &mut RetroJunkApp, new_root: std::path::PathBuf, ctx:
     // Set new root
     app.root_path = Some(new_root.clone());
 
-    // Try loading cache for new root
+    // Load cache to restore previously computed work (hashes, DAT matches, etc.)
     if let Some((library, stale)) = crate::cache::load_library(&new_root, &app.context) {
         log::info!(
             "Restored {} consoles from cache ({} stale)",
@@ -164,10 +164,12 @@ pub fn switch_to_root(app: &mut RetroJunkApp, new_root: std::path::PathBuf, ctx:
             }
         }
     } else {
-        // No valid cache — fresh scan
         app.library = crate::state::Library::default();
-        backend::scan::scan_root_folder(app, new_root.clone(), ctx);
     }
+
+    // Always scan disk to discover new/removed console folders.
+    // ConsoleFolderFound handler deduplicates, so cached consoles keep their data.
+    backend::scan::scan_root_folder(app, new_root.clone(), ctx);
 
     // Update settings: add/move to front of recent roots
     update_recent_roots(app, &new_root);

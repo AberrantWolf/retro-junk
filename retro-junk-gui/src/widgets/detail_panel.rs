@@ -1,5 +1,5 @@
 use crate::app::RetroJunkApp;
-use crate::state::{self, EntryStatus, DISPLAY_MEDIA_TYPES};
+use crate::state::{EntryStatus, DISPLAY_MEDIA_TYPES};
 
 /// Render the detail panel for the focused entry.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -20,35 +20,31 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         return;
     }
 
-    // Lazy media discovery: populate media_paths on first focus.
-    // Also registers image bytes with egui's loader (file:// isn't supported,
-    // so we read bytes and use bytes:// URIs).
+    // Lazy media discovery: kick off background load on first focus.
+    // Sets an empty sentinel immediately to prevent re-triggering.
     if app.library.consoles[console_idx].entries[entry_idx]
         .media_paths
         .is_none()
     {
+        // Sentinel: mark as "loading" so we don't spawn again next frame
+        app.library.consoles[console_idx].entries[entry_idx].media_paths =
+            Some(std::collections::HashMap::new());
+
         if let Some(ref root_path) = app.root_path {
-            let folder_name = &app.library.consoles[console_idx].folder_name;
-            if let Some(media_dir) = state::media_dir_for_console(root_path, folder_name) {
-                let rom_stem = app.library.consoles[console_idx].entries[entry_idx]
-                    .game_entry
-                    .rom_stem()
-                    .to_owned();
-                log::debug!("Media discovery: dir={}, stem={}", media_dir.display(), rom_stem);
-                let found = state::collect_existing_media(&media_dir, &rom_stem);
-                // Register image bytes with egui for each discovered file
-                for (_, path) in &found {
-                    let uri = format!("bytes://media/{}", path.display());
-                    if let Ok(bytes) = std::fs::read(path) {
-                        ui.ctx().include_bytes(uri, bytes);
-                    }
-                }
-                log::debug!("Media discovery: found {} files", found.len());
-                app.library.consoles[console_idx].entries[entry_idx].media_paths = Some(found);
-            } else {
-                app.library.consoles[console_idx].entries[entry_idx].media_paths =
-                    Some(std::collections::HashMap::new());
-            }
+            let folder_name = app.library.consoles[console_idx].folder_name.clone();
+            let rom_stem = app.library.consoles[console_idx].entries[entry_idx]
+                .game_entry
+                .rom_stem()
+                .to_owned();
+
+            crate::backend::media::load_media_for_entry(
+                app.message_tx.clone(),
+                ui.ctx().clone(),
+                root_path.clone(),
+                folder_name,
+                entry_idx,
+                rom_stem,
+            );
         }
     }
 

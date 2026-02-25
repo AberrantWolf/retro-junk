@@ -18,6 +18,10 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub quiet: bool,
 
+    /// Enable verbose/debug logging (timestamps + debug-level messages)
+    #[arg(short, long, global = true)]
+    pub verbose: bool,
+
     /// Write log output to a file (ANSI codes stripped)
     #[arg(long, global = true)]
     pub logfile: Option<PathBuf>,

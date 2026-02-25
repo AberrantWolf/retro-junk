@@ -82,12 +82,21 @@ pub async fn lookup_game(
     system_id: u32,
     rom_info: &RomInfo,
 ) -> Result<LookupResult, ScrapeError> {
+    let filename = &rom_info.filename;
+    log::debug!(
+        "lookup_game: '{}' (system {}, timeout {}s)",
+        filename,
+        system_id,
+        LOOKUP_TIMEOUT.as_secs(),
+    );
+
     tokio::time::timeout(LOOKUP_TIMEOUT, async {
         let mut warnings = Vec::new();
 
         // Tier 1: Serial match — try scraper serial first, then raw serial
         let attempts = serial_attempts(&rom_info.serial, &rom_info.scraper_serial);
         if !attempts.is_empty() {
+            log::debug!("Tier 1 (serial): trying {} attempt(s) for '{}'", attempts.len(), filename);
             for attempt in &attempts {
                 match try_serial_lookup(client, system_id, attempt).await {
                     Ok(game) => {
@@ -133,6 +142,7 @@ pub async fn lookup_game(
         if let (Some(crc), Some(md5), Some(sha1)) =
             (&rom_info.crc32, &rom_info.md5, &rom_info.sha1)
         {
+            log::debug!("Tier 2 (hash): trying for '{}'", filename);
             match try_hash_lookup(client, system_id, crc, md5, sha1, &rom_info.filename, rom_info.file_size).await {
                 Ok(game) => {
                     if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
@@ -157,6 +167,7 @@ pub async fn lookup_game(
 
         // Tier 3: Filename match — last resort fallback when serial and hash
         // lookups fail or aren't available.
+        log::debug!("Tier 3 (filename): trying for '{}'", filename);
         match try_filename_lookup(client, system_id, &rom_info.filename, rom_info.file_size).await {
             Ok(game) => {
                 if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {

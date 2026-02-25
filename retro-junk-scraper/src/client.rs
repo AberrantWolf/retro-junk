@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::SystemTime;
 
 use tokio::sync::Mutex;
 use tokio::time::Duration;
@@ -6,6 +7,8 @@ use tokio::time::Duration;
 use crate::credentials::Credentials;
 use crate::error::ScrapeError;
 use crate::types::{JeuInfosResponse, UserInfo, UserInfoResponse, UserQuota};
+
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 const BASE_URL: &str = "https://api.screenscraper.fr/api2";
 const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(1200);
@@ -34,6 +37,8 @@ pub struct ScreenScraperClient {
     http: reqwest::Client,
     creds: Credentials,
     quota: Mutex<Option<UserQuota>>,
+    /// Monotonic request counter for correlating log lines.
+    request_counter: AtomicU64,
 }
 
 impl ScreenScraperClient {
@@ -55,6 +60,7 @@ impl ScreenScraperClient {
             http,
             creds,
             quota: Mutex::new(None),
+            request_counter: AtomicU64::new(0),
         };
 
         let user_info = client.get_user_info().await?;
@@ -201,21 +207,37 @@ impl ScreenScraperClient {
         url: &str,
         params: &HashMap<&str, String>,
     ) -> Result<String, ScrapeError> {
+        let req_id = self.request_counter.fetch_add(1, AtomicOrdering::Relaxed);
+        let endpoint = extract_endpoint(url);
         let mut last_error: Option<ScrapeError> = None;
         let mut consecutive_timeouts: u32 = 0;
+
+        log::debug!(
+            "[req:{}] {} starting (params: {})",
+            req_id,
+            endpoint,
+            summarize_params(params),
+        );
+
+        let request_start = tokio::time::Instant::now();
 
         for attempt in 0..=MAX_RETRIES {
             // Back off before retries (not before the first attempt)
             if attempt > 0 {
                 let backoff = INITIAL_BACKOFF * 2u32.pow(attempt - 1);
-                log::debug!(
-                    "Retrying request (attempt {}/{}) after {}s backoff",
+                log::info!(
+                    "[req:{}] {} retry {}/{} after {}s backoff",
+                    req_id,
+                    endpoint,
                     attempt + 1,
                     MAX_RETRIES + 1,
                     backoff.as_secs(),
                 );
                 tokio::time::sleep(backoff).await;
             }
+
+            let attempt_start = tokio::time::Instant::now();
+            let wall_start = SystemTime::now();
 
             let result = tokio::time::timeout(API_TIMEOUT, async {
                 let resp = self
@@ -264,30 +286,83 @@ impl ScreenScraperClient {
             })
             .await;
 
+            let attempt_elapsed = attempt_start.elapsed();
+            let wall_elapsed = wall_start.elapsed().unwrap_or_default();
+
+            // Detect machine sleep: if wall-clock time advanced much more
+            // than the tokio Instant-based elapsed, the machine likely slept.
+            if wall_elapsed > attempt_elapsed + std::time::Duration::from_secs(10) {
+                log::warn!(
+                    "[req:{}] {} clock drift: wall={}s vs tokio={}ms (machine likely slept)",
+                    req_id,
+                    endpoint,
+                    wall_elapsed.as_secs(),
+                    attempt_elapsed.as_millis(),
+                );
+            }
+
             // Rate limit: sleep after each request so this worker doesn't
             // fire another request too quickly.
             tokio::time::sleep(MIN_REQUEST_INTERVAL).await;
 
             match result {
-                Ok(Ok(text)) => return Ok(text),
+                Ok(Ok(text)) => {
+                    let total_elapsed = request_start.elapsed();
+                    log::debug!(
+                        "[req:{}] {} OK (attempt took {}ms, total {}ms, {}B)",
+                        req_id,
+                        endpoint,
+                        attempt_elapsed.as_millis(),
+                        total_elapsed.as_millis(),
+                        text.len(),
+                    );
+                    return Ok(text);
+                }
                 Ok(Err(e)) if is_retryable(&e) => {
                     consecutive_timeouts = 0;
-                    log::debug!("Transient error: {}", e);
+                    log::info!(
+                        "[req:{}] {} transient error after {}ms: {}",
+                        req_id,
+                        endpoint,
+                        attempt_elapsed.as_millis(),
+                        e,
+                    );
                     last_error = Some(e);
                     continue;
                 }
-                Ok(Err(e)) => return Err(e),
+                Ok(Err(e)) => {
+                    log::debug!(
+                        "[req:{}] {} non-retryable error after {}ms: {}",
+                        req_id,
+                        endpoint,
+                        attempt_elapsed.as_millis(),
+                        e,
+                    );
+                    return Err(e);
+                }
                 Err(_timeout) => {
                     consecutive_timeouts += 1;
                     let e = ScrapeError::Api(format!(
                         "API request timed out after {}s",
                         API_TIMEOUT.as_secs()
                     ));
-                    log::debug!("Request timed out ({} consecutive)", consecutive_timeouts);
+                    log::warn!(
+                        "[req:{}] {} TIMEOUT after {}ms ({} consecutive)",
+                        req_id,
+                        endpoint,
+                        attempt_elapsed.as_millis(),
+                        consecutive_timeouts,
+                    );
                     last_error = Some(e);
                     // After 2 consecutive timeouts, connections are likely stale
                     // (e.g., laptop woke from sleep). Stop retrying to recover faster.
                     if consecutive_timeouts >= 2 {
+                        log::warn!(
+                            "[req:{}] {} aborting after {} consecutive timeouts (stale connections?)",
+                            req_id,
+                            endpoint,
+                            consecutive_timeouts,
+                        );
                         break;
                     }
                     continue;
@@ -295,6 +370,13 @@ impl ScreenScraperClient {
             }
         }
 
+        let total_elapsed = request_start.elapsed();
+        log::warn!(
+            "[req:{}] {} FAILED after {}ms (all retries exhausted)",
+            req_id,
+            endpoint,
+            total_elapsed.as_millis(),
+        );
         Err(last_error.unwrap_or_else(|| ScrapeError::Api("All retries exhausted".to_string())))
     }
 
@@ -370,6 +452,37 @@ pub async fn create_client(
     }
 
     Ok((std::sync::Arc::new(client), max_workers))
+}
+
+/// Extract the API endpoint name from a full URL (e.g., "jeuInfos" from ".../jeuInfos.php").
+fn extract_endpoint(url: &str) -> &str {
+    url.rsplit('/')
+        .next()
+        .and_then(|s| s.strip_suffix(".php"))
+        .unwrap_or("unknown")
+}
+
+/// Summarize query params for logging, excluding credentials.
+fn summarize_params(params: &HashMap<&str, String>) -> String {
+    let mut parts: Vec<String> = params
+        .iter()
+        .filter(|(k, _)| {
+            !matches!(
+                **k,
+                "devid" | "devpassword" | "ssid" | "sspassword" | "softname" | "output"
+            )
+        })
+        .map(|(k, v)| {
+            // Truncate long values (hashes, filenames)
+            if v.len() > 40 {
+                format!("{}={}...", k, &v[..37])
+            } else {
+                format!("{}={}", k, v)
+            }
+        })
+        .collect();
+    parts.sort();
+    parts.join(", ")
 }
 
 /// Redact credential query parameters from error messages that may contain URLs.
