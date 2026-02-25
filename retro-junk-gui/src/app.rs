@@ -86,30 +86,27 @@ impl RetroJunkApp {
         if let Some(ref root) = app.settings.library.current_root.clone() {
             if root.is_dir() {
                 app.root_path = Some(root.clone());
-                // Load cache to restore previously computed work (hashes, DAT matches, etc.)
-                if let Some((library, stale)) =
-                    crate::cache::load_library(root, &app.context)
-                {
-                    log::info!(
-                        "Restored {} consoles from cache ({} stale)",
-                        library.consoles.len(),
-                        stale.len()
-                    );
-                    app.library = library;
 
-                    // Auto-trigger DAT loads for consoles that had DATs loaded
-                    for console in &app.library.consoles {
-                        if matches!(console.dat_status, crate::state::DatStatus::Loaded { .. }) {
-                            crate::backend::dat::load_dat_for_console(
-                                app.message_tx.clone(),
-                                app.context.clone(),
-                                console.platform,
-                                console.folder_name.clone(),
-                                cc.egui_ctx.clone(),
-                            );
-                        }
+                // Load cache on a background thread so the window appears immediately.
+                // The CacheLoaded handler merges restored data with any consoles
+                // already discovered by the folder scan.
+                let tx = app.message_tx.clone();
+                let context = app.context.clone();
+                let root_bg = root.clone();
+                let ctx_bg = cc.egui_ctx.clone();
+                std::thread::spawn(move || {
+                    if let Some((library, stale)) =
+                        crate::cache::load_library(&root_bg, &context)
+                    {
+                        log::info!(
+                            "Restored {} consoles from cache ({} stale)",
+                            library.consoles.len(),
+                            stale.len()
+                        );
+                        let _ = tx.send(crate::state::AppMessage::CacheLoaded { library });
+                        ctx_bg.request_repaint();
                     }
-                }
+                });
 
                 // Always scan disk to discover new/removed console folders.
                 // ConsoleFolderFound handler deduplicates, so cached consoles keep their data.

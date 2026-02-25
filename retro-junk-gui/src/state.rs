@@ -44,6 +44,8 @@ pub struct ConsoleState {
     pub scan_status: ScanStatus,
     pub entries: Vec<LibraryEntry>,
     pub dat_status: DatStatus,
+    /// Cached folder fingerprint (avoids recomputing on every save).
+    pub fingerprint: Option<crate::cache::FolderFingerprint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -162,6 +164,26 @@ impl EntryStatus {
             EntryStatus::Matched => egui::Color32::from_rgb(50, 180, 50),
         }
     }
+
+    /// Human-readable tooltip explaining this status.
+    pub fn tooltip(&self) -> &'static str {
+        match self {
+            EntryStatus::Unknown => "Not yet analyzed",
+            EntryStatus::Unrecognized => "Not recognized \u{2013} no serial or hash match found",
+            EntryStatus::Ambiguous => "Possible match \u{2013} hash verification needed to confirm",
+            EntryStatus::Matched => "Verified match in database",
+        }
+    }
+
+    /// Severity ranking (higher = worse). Used to find the worst status in a folder.
+    pub fn severity(&self) -> u8 {
+        match self {
+            EntryStatus::Matched => 0,
+            EntryStatus::Ambiguous => 1,
+            EntryStatus::Unknown => 2,
+            EntryStatus::Unrecognized => 3,
+        }
+    }
 }
 
 // -- Background operations --
@@ -263,6 +285,11 @@ pub enum AppMessage {
         media: HashMap<MediaType, PathBuf>,
     },
 
+    // -- Cache --
+    CacheLoaded {
+        library: Library,
+    },
+
     // -- Operations --
     OperationProgress {
         op_id: u64,
@@ -304,6 +331,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 scan_status: ScanStatus::NotScanned,
                 entries: Vec::new(),
                 dat_status: DatStatus::NotLoaded,
+                fingerprint: None,
             });
             // Sort by manufacturer then platform name then folder name
             app.library.consoles.sort_by(|a, b| {
@@ -371,7 +399,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::ConsoleScanDone { folder_name } => {
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                app.library.consoles[ci].scan_status = ScanStatus::Scanned;
+                let console = &mut app.library.consoles[ci];
+                console.scan_status = ScanStatus::Scanned;
+                // Cache fingerprint so save_library doesn't need to recompute
+                console.fingerprint =
+                    Some(crate::cache::compute_fingerprint(&console.folder_path));
             }
             let desc_match = format!("Scanning ");
             app.operations.retain(|op| {
@@ -482,6 +514,39 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 if let Some(entry) = app.library.consoles[ci].entries.get_mut(entry_index) {
                     entry.media_paths = Some(media);
+                }
+            }
+        }
+
+        AppMessage::CacheLoaded { library } => {
+            // Merge cached consoles with any already discovered from folder scan.
+            // Consoles that have already started scanning are not replaced.
+            for cached_console in library.consoles {
+                if let Some(ci) = app.library.find_by_folder(&cached_console.folder_name) {
+                    if app.library.consoles[ci].scan_status == ScanStatus::NotScanned {
+                        app.library.consoles[ci] = cached_console;
+                    }
+                } else {
+                    app.library.consoles.push(cached_console);
+                }
+            }
+            app.library.consoles.sort_by(|a, b| {
+                a.manufacturer
+                    .cmp(&b.manufacturer)
+                    .then(a.platform_name.cmp(&b.platform_name))
+                    .then(a.folder_name.cmp(&b.folder_name))
+            });
+
+            // Trigger DAT loads for consoles that previously had DATs loaded
+            for console in &app.library.consoles {
+                if matches!(console.dat_status, DatStatus::Loaded { .. }) {
+                    crate::backend::dat::load_dat_for_console(
+                        app.message_tx.clone(),
+                        app.context.clone(),
+                        console.platform,
+                        console.folder_name.clone(),
+                        ctx.clone(),
+                    );
                 }
             }
         }

@@ -10,7 +10,7 @@ use crate::state::{
     ConsoleState, DatMatchInfo, DatStatus, EntryStatus, Library, LibraryEntry, ScanStatus,
 };
 
-const LIBRARY_CACHE_VERSION: u32 = 1;
+const LIBRARY_CACHE_VERSION: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LibraryCache {
@@ -30,10 +30,10 @@ pub struct CachedConsole {
     pub dat_game_count: Option<usize>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderFingerprint {
-    pub file_count: usize,
-    pub total_size: u64,
+    /// Hash of sorted filenames in the folder (no metadata/stat calls needed).
+    pub name_hash: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -86,7 +86,10 @@ pub fn save_library(root: &Path, library: &Library) -> std::io::Result<()> {
                 platform: c.platform,
                 folder_name: c.folder_name.clone(),
                 folder_path: c.folder_path.clone(),
-                fingerprint: compute_fingerprint(&c.folder_path),
+                fingerprint: c
+                    .fingerprint
+                    .clone()
+                    .unwrap_or_else(|| compute_fingerprint(&c.folder_path)),
                 entries: c
                     .entries
                     .iter()
@@ -153,8 +156,7 @@ pub fn load_library(
         };
 
         let current_fp = compute_fingerprint(&cc.folder_path);
-        let is_stale = current_fp.file_count != cc.fingerprint.file_count
-            || current_fp.total_size != cc.fingerprint.total_size;
+        let is_stale = current_fp.name_hash != cc.fingerprint.name_hash;
 
         if is_stale {
             stale_folders.push(cc.folder_name.clone());
@@ -169,6 +171,7 @@ pub fn load_library(
                 scan_status: ScanStatus::NotScanned,
                 entries: Vec::new(),
                 dat_status: DatStatus::NotLoaded,
+                fingerprint: None,
             });
         } else {
             let entries = cc
@@ -200,6 +203,7 @@ pub fn load_library(
                 scan_status: ScanStatus::Scanned,
                 entries,
                 dat_status,
+                fingerprint: Some(current_fp),
             });
         }
     }
@@ -252,37 +256,38 @@ pub fn list_caches() -> Vec<(PathBuf, u64)> {
         .collect()
 }
 
-/// Compute a quick fingerprint of a folder (file count + total size).
+/// Compute a quick fingerprint of a folder by hashing sorted filenames.
+///
+/// Only uses `read_dir` + `file_type()` (no `metadata()`/`stat()` calls),
+/// so this is fast even for folders with thousands of entries.
 pub fn compute_fingerprint(path: &Path) -> FolderFingerprint {
-    let mut file_count = 0usize;
-    let mut total_size = 0u64;
+    let mut names = Vec::new();
 
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
-            if let Ok(meta) = entry.metadata() {
-                if meta.is_file() {
-                    file_count += 1;
-                    total_size += meta.len();
-                } else if meta.is_dir() {
-                    // Count files in subdirectories (for .m3u folders)
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Check subdirectories using file_type() (free on macOS/Linux via d_type)
+            if let Ok(ft) = entry.file_type() {
+                if ft.is_dir() {
                     if let Ok(sub_entries) = std::fs::read_dir(entry.path()) {
                         for sub in sub_entries.flatten() {
-                            if let Ok(sub_meta) = sub.metadata() {
-                                if sub_meta.is_file() {
-                                    file_count += 1;
-                                    total_size += sub_meta.len();
-                                }
-                            }
+                            names.push(format!(
+                                "{}/{}",
+                                name,
+                                sub.file_name().to_string_lossy()
+                            ));
                         }
                     }
                 }
             }
+            names.push(name);
         }
     }
 
+    names.sort();
+    let hash = Sha256::digest(names.join("\n").as_bytes());
     FolderFingerprint {
-        file_count,
-        total_size,
+        name_hash: hex_encode(&hash[..8]),
     }
 }
 

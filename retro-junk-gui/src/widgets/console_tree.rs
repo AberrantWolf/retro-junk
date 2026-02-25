@@ -1,6 +1,7 @@
 use crate::app::RetroJunkApp;
 use crate::backend;
 use crate::state::ScanStatus;
+use crate::widgets::status_badge;
 
 /// Render the manufacturer-grouped console tree.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
@@ -41,7 +42,29 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         }
                     };
 
-                    if ui.selectable_label(is_selected, &label).clicked() && !is_selected {
+                    // Compute worst status across all entries (only for scanned consoles)
+                    let worst_status = if console.scan_status == ScanStatus::Scanned
+                        && !console.entries.is_empty()
+                    {
+                        console
+                            .entries
+                            .iter()
+                            .map(|e| e.status)
+                            .max_by_key(|s| s.severity())
+                    } else {
+                        None
+                    };
+
+                    let clicked = ui
+                        .horizontal(|ui| {
+                            if let Some(status) = worst_status {
+                                status_badge::show(ui, status);
+                            }
+                            ui.selectable_label(is_selected, &label).clicked()
+                        })
+                        .inner;
+
+                    if clicked && !is_selected {
                         app.selected_console = Some(i);
                         app.focused_entry = None;
                         app.selected_entries.clear();
