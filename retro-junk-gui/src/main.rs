@@ -5,6 +5,8 @@
 
 mod app;
 mod backend;
+mod cache;
+mod settings;
 mod state;
 mod views;
 mod widgets;

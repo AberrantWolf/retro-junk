@@ -541,14 +541,14 @@ fn to_identification(
     // Expected checksums
     id.expected_checksums.push(
         ExpectedChecksum::new(
-            ChecksumAlgorithm::PlatformSpecific("GB Header"),
+            ChecksumAlgorithm::PlatformSpecific("GB Header".to_string()),
             vec![header.header_checksum],
         )
         .with_description("Header checksum (0x014D)"),
     );
     id.expected_checksums.push(
         ExpectedChecksum::new(
-            ChecksumAlgorithm::PlatformSpecific("GB Global"),
+            ChecksumAlgorithm::PlatformSpecific("GB Global".to_string()),
             header.global_checksum.to_be_bytes().to_vec(),
         )
         .with_description("Global checksum (0x014E-0x014F)"),

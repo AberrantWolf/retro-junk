@@ -503,7 +503,7 @@ fn test_expected_checksums_present() {
     assert_eq!(result.expected_checksums.len(), 1);
     assert_eq!(
         result.expected_checksums[0].algorithm,
-        ChecksumAlgorithm::PlatformSpecific("SNES Internal")
+        ChecksumAlgorithm::PlatformSpecific("SNES Internal".to_string())
     );
 }
 

@@ -1,9 +1,10 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::dat::{DatFile, DatGame};
 
 /// Hash results for a file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileHashes {
     pub crc32: String,
     pub sha1: Option<String>,
@@ -13,7 +14,7 @@ pub struct FileHashes {
 }
 
 /// How a match was determined.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatchMethod {
     /// Matched by serial number from the ROM header
     Serial,

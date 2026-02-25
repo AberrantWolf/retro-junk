@@ -305,7 +305,7 @@ fn to_identification(
     // Expected checksums
     id.expected_checksums.push(
         ExpectedChecksum::new(
-            ChecksumAlgorithm::PlatformSpecific("GBA Complement"),
+            ChecksumAlgorithm::PlatformSpecific("GBA Complement".to_string()),
             vec![header.header_checksum],
         )
         .with_description("Header complement check (0xBD)"),

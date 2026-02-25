@@ -11,6 +11,7 @@ retro-junk-sony.workspace = true
 retro-junk-sega.workspace = true
 retro-junk-microsoft.workspace = true
 thiserror.workspace = true
+serde.workspace = true
 crc32fast.workspace = true
 sha1.workspace = true
 md5.workspace = true

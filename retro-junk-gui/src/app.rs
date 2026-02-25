@@ -6,6 +6,7 @@ use std::time::Duration;
 use retro_junk_dat::DatIndex;
 use retro_junk_lib::AnalysisContext;
 
+use crate::settings::AppSettings;
 use crate::state::{AppMessage, BackgroundOperation, Library, View};
 use crate::views;
 use crate::widgets;
@@ -52,14 +53,20 @@ pub struct RetroJunkApp {
 
     /// Whether the detail panel is visible.
     pub detail_panel_open: bool,
+
+    /// Persistent settings (library roots, preferences).
+    pub settings: AppSettings,
 }
 
 impl RetroJunkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
-        Self {
-            context: Arc::new(retro_junk_lib::create_default_context()),
+        let context = Arc::new(retro_junk_lib::create_default_context());
+        let settings = crate::settings::load_settings();
+
+        let mut app = Self {
+            context,
             current_view: View::Library,
             root_path: None,
             library: Library::default(),
@@ -72,7 +79,48 @@ impl RetroJunkApp {
             selected_entries: std::collections::HashSet::new(),
             filter_text: String::new(),
             detail_panel_open: true,
+            settings,
+        };
+
+        // Restore last open root from settings
+        if let Some(ref root) = app.settings.library.current_root.clone() {
+            if root.is_dir() {
+                app.root_path = Some(root.clone());
+                // Try loading from cache
+                if let Some((library, stale)) =
+                    crate::cache::load_library(root, &app.context)
+                {
+                    log::info!(
+                        "Restored {} consoles from cache ({} stale)",
+                        library.consoles.len(),
+                        stale.len()
+                    );
+                    app.library = library;
+
+                    // Auto-trigger DAT loads for consoles that had DATs loaded
+                    for console in &app.library.consoles {
+                        if matches!(console.dat_status, crate::state::DatStatus::Loaded { .. }) {
+                            crate::backend::dat::load_dat_for_console(
+                                app.message_tx.clone(),
+                                app.context.clone(),
+                                console.platform,
+                                console.folder_name.clone(),
+                                cc.egui_ctx.clone(),
+                            );
+                        }
+                    }
+                } else {
+                    // No valid cache — do fresh scan
+                    crate::backend::scan::scan_root_folder(
+                        &mut app,
+                        root.clone(),
+                        &cc.egui_ctx,
+                    );
+                }
+            }
         }
+
+        app
     }
 
     /// Drain all pending messages from background threads.
@@ -85,6 +133,15 @@ impl RetroJunkApp {
     /// Returns true if any background operations are active.
     fn has_active_operations(&self) -> bool {
         !self.operations.is_empty()
+    }
+
+    /// Save the current library state to disk cache.
+    pub fn save_library_cache(&self) {
+        if let Some(ref root) = self.root_path {
+            if let Err(e) = crate::cache::save_library(root, &self.library) {
+                log::warn!("Failed to save library cache: {}", e);
+            }
+        }
     }
 }
 
@@ -125,9 +182,20 @@ impl eframe::App for RetroJunkApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.current_view {
                 View::Library => views::library::show(ui, self, ctx),
-                View::Settings => views::settings::show(ui),
+                View::Settings => views::settings::show(ui, self),
                 View::Tools => views::tools::show(ui),
             }
         });
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Save settings
+        self.settings.library.current_root = self.root_path.clone();
+        if let Err(e) = crate::settings::save_settings(&self.settings) {
+            log::warn!("Failed to save settings on exit: {}", e);
+        }
+
+        // Save library cache
+        self.save_library_cache();
     }
 }

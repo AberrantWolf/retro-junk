@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// Checksum algorithms that ROMs may use for self-verification.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ChecksumAlgorithm {
     /// CRC-16 (used by some older systems)
     Crc16,
@@ -14,7 +16,7 @@ pub enum ChecksumAlgorithm {
     /// Simple additive checksum (platform-specific)
     Additive,
     /// Platform-specific checksum algorithm
-    PlatformSpecific(&'static str),
+    PlatformSpecific(String),
 }
 
 impl ChecksumAlgorithm {
@@ -32,7 +34,7 @@ impl ChecksumAlgorithm {
 }
 
 /// A checksum value expected by the ROM for self-verification.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExpectedChecksum {
     /// The algorithm used for this checksum
     pub algorithm: ChecksumAlgorithm,

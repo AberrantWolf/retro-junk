@@ -3,12 +3,13 @@
 //! Handles both flat file layouts and ES-DE `.m3u` multi-disc directories.
 //! Used by both the CLI analyze and scraper commands.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// A logical game entry — either a single file or a multi-disc set from an .m3u folder.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameEntry {
     /// A single ROM file at the top level.
     SingleFile(PathBuf),

@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek};
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -44,7 +45,7 @@ impl AnalysisOptions {
 }
 
 /// Information extracted from analyzing a ROM or disc image.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RomIdentification {
     /// Serial number (e.g., "SLUS-00123" for PS1, "NUS-NSME-USA" for N64)
     pub serial_number: Option<String>,
@@ -109,7 +110,7 @@ impl RomIdentification {
 /// Both sources use the LibRetro enhanced DAT repository on GitHub:
 /// - No-Intro DATs for cartridge-based consoles (`metadat/no-intro/`)
 /// - Redump DATs for disc-based consoles (`metadat/redump/`)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatSource {
     /// No-Intro DATs (cartridge-based consoles: NES, SNES, N64, GB, GBA, etc.)
     NoIntro,

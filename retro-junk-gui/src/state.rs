@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -45,14 +46,14 @@ pub struct ConsoleState {
     pub dat_status: DatStatus,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScanStatus {
     NotScanned,
     Scanning,
     Scanned,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatStatus {
     NotLoaded,
     Loading,
@@ -134,13 +135,13 @@ pub struct LibraryEntry {
     pub media_paths: Option<HashMap<MediaType, PathBuf>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatMatchInfo {
     pub game_name: String,
     pub method: MatchMethod,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EntryStatus {
     /// Not yet analyzed / DAT not loaded
     Unknown,
@@ -361,6 +362,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage) {
                     .and_then(|ci| Some(op.description.contains(app.library.consoles[ci].platform_name)))
                     .unwrap_or(false)
             });
+            app.save_library_cache();
         }
 
         AppMessage::DatLoaded { folder_name, platform, index } => {
@@ -404,6 +406,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage) {
             app.dat_indices.insert(folder_name.clone(), index);
 
             app.operations.retain(|op| !op.description.contains("Loading DAT"));
+            app.save_library_cache();
         }
 
         AppMessage::DatLoadFailed { folder_name, error } => {
@@ -431,6 +434,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage) {
                     entry.hashes = Some(hashes);
                 }
             }
+            app.save_library_cache();
         }
 
         AppMessage::HashFailed { folder_name, index, error } => {

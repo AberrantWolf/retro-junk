@@ -3861,6 +3861,7 @@ dependencies = [
 name = "retro-junk-core"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "thiserror 2.0.18",
 ]
 
@@ -3906,6 +3907,8 @@ dependencies = [
 name = "retro-junk-gui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "dirs",
  "eframe",
  "egui",
  "egui_extras",
@@ -3919,6 +3922,10 @@ dependencies = [
  "retro-junk-sega",
  "retro-junk-sony",
  "rfd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "toml",
 ]
 
 [[package]]
@@ -3952,6 +3959,7 @@ dependencies = [
  "retro-junk-nintendo",
  "retro-junk-sega",
  "retro-junk-sony",
+ "serde",
  "sha1",
  "thiserror 2.0.18",
  "tokio",

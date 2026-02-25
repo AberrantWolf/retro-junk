@@ -870,7 +870,7 @@ fn to_identification(
     // Expected checksum
     id.expected_checksums.push(
         ExpectedChecksum::new(
-            ChecksumAlgorithm::PlatformSpecific("SNES Internal"),
+            ChecksumAlgorithm::PlatformSpecific("SNES Internal".to_string()),
             header.checksum.to_le_bytes().to_vec(),
         )
         .with_description(format!("0x{:04X}", header.checksum)),

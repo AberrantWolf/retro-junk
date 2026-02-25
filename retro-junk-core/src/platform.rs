@@ -1,8 +1,12 @@
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
 /// Platform/console identifiers for all supported systems.
 ///
 /// This enum centralizes console identity — short names, display names,
 /// manufacturer, and aliases — in one place, replacing ad-hoc string
 /// matching throughout the codebase.
+///
+/// Serializes to `short_name()`, deserializes via `FromStr` (case-insensitive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Platform {
     // Nintendo
@@ -244,6 +248,19 @@ impl std::str::FromStr for Platform {
             }
         }
         Err(PlatformParseError(s.to_string()))
+    }
+}
+
+impl Serialize for Platform {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.short_name())
+    }
+}
+
+impl<'de> Deserialize<'de> for Platform {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse::<Platform>().map_err(serde::de::Error::custom)
     }
 }
 

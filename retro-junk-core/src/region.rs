@@ -1,5 +1,7 @@
+use serde::{Deserialize, Serialize};
+
 /// Geographic regions for ROM releases.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Region {
     /// Japan
     Japan,
