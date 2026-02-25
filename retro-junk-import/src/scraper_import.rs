@@ -340,13 +340,22 @@ pub async fn enrich_releases(
             let cancel = Arc::new(AtomicBool::new(false));
 
             // Wall-clock watchdog: a real OS thread that detects machine sleep.
+            //
             // tokio::time::timeout uses Instant which may not advance during
             // macOS sleep, so the tokio-based watchdog can fail to fire.
             // This thread uses std::thread::sleep + SystemTime (both track
             // real wall-clock time) as a reliable fallback.
+            //
+            // When triggered, it:
+            //  1. Sets the cancel flag (so new workers skip immediately)
+            //  2. Notifies the Phase 3 loop via tokio::sync::Notify (so it
+            //     wakes from the stream.next() await even when tokio timers
+            //     are frozen)
             let wall_clock_activity = Arc::new(AtomicU64::new(epoch_secs()));
             let wd_activity = wall_clock_activity.clone();
             let wd_cancel = cancel.clone();
+            let wd_notify = Arc::new(tokio::sync::Notify::new());
+            let wd_notify_trigger = wd_notify.clone();
             let wd_stop = Arc::new(AtomicBool::new(false));
             let wd_stop_flag = wd_stop.clone();
             let wd_handle = std::thread::spawn(move || {
@@ -368,6 +377,9 @@ pub async fn enrich_releases(
                             threshold,
                         );
                         wd_cancel.store(true, Ordering::Release);
+                        // Wake the Phase 3 loop — it may be stuck on
+                        // stream.next() behind a frozen tokio timer.
+                        wd_notify_trigger.notify_one();
                         break;
                     } else if idle > 60 {
                         log::info!(
@@ -522,7 +534,38 @@ pub async fn enrich_releases(
 
         loop {
             let wait_start = Instant::now();
-            let outcome = match tokio::time::timeout(WATCHDOG_TIMEOUT, stream.next()).await {
+
+            // Select between:
+            //  - stream.next() wrapped in a tokio timer watchdog
+            //  - wall-clock watchdog notification (from the OS thread)
+            //
+            // The tokio timer may not fire after machine sleep, so
+            // the wall-clock watchdog acts as a reliable fallback by
+            // notifying us directly via Notify.
+            let stream_result = tokio::select! {
+                biased; // check watchdog notification first
+
+                _ = wd_notify.notified() => {
+                    // Wall-clock watchdog fired — cancel already set by the thread.
+                    let msg = format!(
+                        "Wall-clock watchdog triggered ({}/{} received, batch running {}s), stopping.",
+                        results_received,
+                        total,
+                        batch_start.elapsed().as_secs(),
+                    );
+                    let _ = events.try_send(EnrichEvent::FatalError {
+                        message: msg.clone(),
+                    });
+                    log::warn!("{}", msg);
+                    break;
+                }
+
+                result = tokio::time::timeout(WATCHDOG_TIMEOUT, stream.next()) => {
+                    result
+                }
+            };
+
+            let outcome = match stream_result {
                 Ok(Some(Ok(outcome))) => {
                     results_received += 1;
                     wall_clock_activity.store(epoch_secs(), Ordering::Release);
@@ -560,7 +603,7 @@ pub async fn enrich_releases(
                 Err(_watchdog) => {
                     cancel.store(true, Ordering::Release);
                     let msg = format!(
-                        "Watchdog: no result in {}s ({}/{} received, batch running {}s), stopping.",
+                        "Tokio watchdog: no result in {}s ({}/{} received, batch running {}s), stopping.",
                         WATCHDOG_TIMEOUT.as_secs(),
                         results_received,
                         total,
