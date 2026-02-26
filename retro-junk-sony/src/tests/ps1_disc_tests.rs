@@ -390,3 +390,167 @@ fn test_file_not_found_in_root() {
     let pvd = read_pvd(&mut cursor, DiscFormat::Iso2048).unwrap();
     assert!(find_file_in_root(&mut cursor, DiscFormat::Iso2048, &pvd, "NONEXIST.TXT").is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Multi-track BIN hashing tests
+// ---------------------------------------------------------------------------
+
+/// Build a synthetic multi-track raw BIN: `data_sectors` data sectors (with
+/// CD sync pattern) followed by `audio_sectors` audio sectors (random-ish
+/// bytes, no sync pattern).
+fn make_multi_track_bin(data_sectors: usize, audio_sectors: usize) -> Vec<u8> {
+    let mut bin = Vec::with_capacity((data_sectors + audio_sectors) * RAW_SECTOR_SIZE as usize);
+    for i in 0..data_sectors {
+        let mut sector = [0u8; RAW_SECTOR_SIZE as usize];
+        sector[0..12].copy_from_slice(&CD_SYNC_PATTERN);
+        sector[15] = 0x02; // Mode 2
+        // Fill user data area with a deterministic pattern
+        for (j, byte) in sector[24..2072].iter_mut().enumerate() {
+            *byte = ((i * 251 + j * 97) & 0xFF) as u8;
+        }
+        bin.extend_from_slice(&sector);
+    }
+    for i in 0..audio_sectors {
+        let mut sector = [0u8; RAW_SECTOR_SIZE as usize];
+        // Audio sectors: no sync pattern, fill with deterministic audio-like data
+        for (j, byte) in sector.iter_mut().enumerate() {
+            *byte = ((i * 173 + j * 59 + 0xAA) & 0xFF) as u8;
+        }
+        // Ensure byte 0 is NOT 0x00 (first byte of sync pattern) to be safe
+        sector[0] = 0xAA;
+        bin.extend_from_slice(&sector);
+    }
+    bin
+}
+
+/// Compute CRC32/SHA1/MD5 of a byte slice directly (reference implementation).
+fn reference_hashes(data: &[u8]) -> (String, String, String) {
+    use sha1::Digest;
+
+    let crc = {
+        let mut h = crc32fast::Hasher::new();
+        h.update(data);
+        format!("{:08x}", h.finalize())
+    };
+    let sha1 = {
+        let mut h = sha1::Sha1::new();
+        h.update(data);
+        format!("{:x}", h.finalize())
+    };
+    let md5 = {
+        let mut ctx = md5::Context::new();
+        ctx.consume(data);
+        format!("{:x}", ctx.compute())
+    };
+    (crc, sha1, md5)
+}
+
+#[test]
+fn test_find_raw_bin_data_track_boundary() {
+    // 10 data sectors + 5 audio sectors
+    let bin = make_multi_track_bin(10, 5);
+    let mut cursor = Cursor::new(bin);
+
+    let result = find_raw_bin_data_track_size(&mut cursor).unwrap();
+    assert_eq!(result, Some(10 * RAW_SECTOR_SIZE));
+}
+
+#[test]
+fn test_find_raw_bin_data_track_single_track() {
+    // All data, no audio — should return None (no trimming needed)
+    let bin = make_multi_track_bin(10, 0);
+    let mut cursor = Cursor::new(bin);
+
+    let result = find_raw_bin_data_track_size(&mut cursor).unwrap();
+    assert_eq!(result, None);
+}
+
+#[test]
+fn test_multi_track_bin_hashes_data_only() {
+    let data_sectors = 20;
+    let audio_sectors = 8;
+    let bin = make_multi_track_bin(data_sectors, audio_sectors);
+
+    // Compute reference hashes from just the data track portion
+    let data_track_bytes = data_sectors * RAW_SECTOR_SIZE as usize;
+    let (expected_crc, expected_sha1, expected_md5) = reference_hashes(&bin[..data_track_bytes]);
+
+    // Now run the analyzer's compute_container_hashes
+    let mut cursor = Cursor::new(bin);
+    let analyzer = crate::ps1::Ps1Analyzer;
+    let algorithms = retro_junk_core::HashAlgorithms {
+        crc32: true,
+        sha1: true,
+        md5: true,
+    };
+    use retro_junk_core::RomAnalyzer;
+    let result = analyzer
+        .compute_container_hashes(&mut cursor, algorithms)
+        .expect("compute_container_hashes failed");
+
+    let hashes = result.expect("Expected Some(hashes) for multi-track BIN");
+    assert_eq!(hashes.crc32, expected_crc, "CRC32 mismatch");
+    assert_eq!(
+        hashes.sha1.as_deref(),
+        Some(expected_sha1.as_str()),
+        "SHA1 mismatch"
+    );
+    assert_eq!(
+        hashes.md5.as_deref(),
+        Some(expected_md5.as_str()),
+        "MD5 mismatch"
+    );
+    assert_eq!(
+        hashes.data_size, data_track_bytes as u64,
+        "data_size mismatch"
+    );
+}
+
+#[test]
+fn test_single_track_bin_returns_none() {
+    // A single-track BIN (all data) should return None from compute_container_hashes,
+    // meaning the standard hasher path should be used (which hashes the whole file).
+    let bin = make_multi_track_bin(20, 0);
+    let mut cursor = Cursor::new(bin);
+    let analyzer = crate::ps1::Ps1Analyzer;
+    let algorithms = retro_junk_core::HashAlgorithms {
+        crc32: true,
+        sha1: true,
+        md5: true,
+    };
+    use retro_junk_core::RomAnalyzer;
+    let result = analyzer
+        .compute_container_hashes(&mut cursor, algorithms)
+        .expect("compute_container_hashes failed");
+
+    assert!(result.is_none(), "Single-track BIN should return None");
+}
+
+// ---------------------------------------------------------------------------
+// CHD metadata parsing tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_parse_meta_field_basic() {
+    let text = "TRACK:1 TYPE:MODE2_RAW SUBTYPE:NONE FRAMES:229020 PREFRAMES:150";
+    assert_eq!(parse_meta_field(text, "TRACK"), Some("1"));
+    assert_eq!(parse_meta_field(text, "TYPE"), Some("MODE2_RAW"));
+    assert_eq!(parse_meta_field(text, "FRAMES"), Some("229020"));
+    assert_eq!(parse_meta_field(text, "PREFRAMES"), Some("150"));
+    assert_eq!(parse_meta_field(text, "SUBTYPE"), Some("NONE"));
+}
+
+#[test]
+fn test_parse_meta_field_missing() {
+    let text = "TRACK:1 TYPE:AUDIO SUBTYPE:NONE FRAMES:18995";
+    assert_eq!(parse_meta_field(text, "POSTGAP"), None);
+    assert_eq!(parse_meta_field(text, "PREGAP"), None);
+}
+
+#[test]
+fn test_parse_meta_field_audio_track() {
+    let text = "TRACK:2 TYPE:AUDIO SUBTYPE:NONE FRAMES:18995 PREFRAMES:150";
+    assert_eq!(parse_meta_field(text, "TRACK"), Some("2"));
+    assert_eq!(parse_meta_field(text, "TYPE"), Some("AUDIO"));
+    assert_eq!(parse_meta_field(text, "FRAMES"), Some("18995"));
+}

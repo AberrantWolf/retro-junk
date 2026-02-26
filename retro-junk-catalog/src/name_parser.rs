@@ -294,6 +294,58 @@ fn classify_bracket_tag(content: &str, result: &mut ParsedDatName) {
     }
 }
 
+/// Map a catalog region slug back to its Redump display format.
+///
+/// Returns the display string (e.g., "USA", "Japan", "Europe").
+/// Unknown slugs are returned title-cased.
+pub fn region_slug_to_display(slug: &str) -> String {
+    match slug {
+        "usa" => "USA".to_string(),
+        "japan" => "Japan".to_string(),
+        "europe" => "Europe".to_string(),
+        "world" => "World".to_string(),
+        "australia" => "Australia".to_string(),
+        "korea" => "Korea".to_string(),
+        "china" => "China".to_string(),
+        "taiwan" => "Taiwan".to_string(),
+        "brazil" => "Brazil".to_string(),
+        "france" => "France".to_string(),
+        "germany" => "Germany".to_string(),
+        "spain" => "Spain".to_string(),
+        "italy" => "Italy".to_string(),
+        "netherlands" => "Netherlands".to_string(),
+        "sweden" => "Sweden".to_string(),
+        "norway" => "Norway".to_string(),
+        "denmark" => "Denmark".to_string(),
+        "finland" => "Finland".to_string(),
+        "portugal" => "Portugal".to_string(),
+        "russia" => "Russia".to_string(),
+        "hong-kong" => "Hong Kong".to_string(),
+        "asia" => "Asia".to_string(),
+        "canada" => "Canada".to_string(),
+        "united-kingdom" => "United Kingdom".to_string(),
+        "scandinavia" => "Scandinavia".to_string(),
+        "latin-america" => "Latin America".to_string(),
+        other => {
+            // Title-case: uppercase first char of each word
+            other
+                .split('-')
+                .map(|word| {
+                    let mut chars = word.chars();
+                    match chars.next() {
+                        Some(c) => {
+                            let upper: String = c.to_uppercase().collect();
+                            format!("{upper}{}", chars.as_str())
+                        }
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    }
+}
+
 /// Map a No-Intro/Redump region string to a lowercase slug used in the catalog.
 ///
 /// Returns the canonical region slug (e.g., "usa", "japan", "europe").

@@ -16,6 +16,9 @@ pub use platform::{Platform, PlatformParseError};
 pub use progress::AnalysisProgress;
 pub use region::Region;
 
+// Re-export hash types used across crate boundaries
+// (FileHashes is used in trait methods, HashAlgorithms is a parameter type)
+
 /// Result type for chunk normalizers used during ROM hashing.
 pub type ChunkNormalizerResult = Result<Option<Box<dyn FnMut(&mut [u8])>>, AnalysisError>;
 
@@ -141,6 +144,24 @@ impl DatSource {
             DatSource::Redump => "Redump",
         }
     }
+}
+
+/// Hash results for a file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileHashes {
+    pub crc32: String,
+    pub sha1: Option<String>,
+    pub md5: Option<String>,
+    /// Size of the data that was hashed (after header stripping or container extraction)
+    pub data_size: u64,
+}
+
+/// Which hash algorithms to compute.
+#[derive(Debug, Clone, Copy)]
+pub struct HashAlgorithms {
+    pub crc32: bool,
+    pub sha1: bool,
+    pub md5: bool,
 }
 
 /// A reader that implements both Read and Seek.
@@ -269,6 +290,23 @@ pub trait RomAnalyzer: Send + Sync {
         _file_size: u64,
     ) -> Result<u64, AnalysisError> {
         Ok(0)
+    }
+
+    /// Compute hashes directly from a container format (e.g., CHD disc images).
+    ///
+    /// For container formats like CHD, the file bytes are a compressed wrapper
+    /// around the actual ROM/disc data. Standard file hashing would hash the
+    /// container, not the content. This method lets analyzers decompress and
+    /// hash the inner data to match DAT checksums.
+    ///
+    /// Returns `Ok(Some(hashes))` if the analyzer handled hashing internally,
+    /// or `Ok(None)` to fall through to the default streaming hasher.
+    fn compute_container_hashes(
+        &self,
+        _reader: &mut dyn ReadSeek,
+        _algorithms: HashAlgorithms,
+    ) -> Result<Option<FileHashes>, AnalysisError> {
+        Ok(None)
     }
 
     /// Returns a closure that normalizes each chunk of ROM data before hashing.

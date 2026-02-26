@@ -4033,6 +4033,7 @@ dependencies = [
  "egui_extras",
  "env_logger",
  "log",
+ "retro-junk-catalog",
  "retro-junk-core",
  "retro-junk-dat",
  "retro-junk-db",
@@ -4138,7 +4139,11 @@ name = "retro-junk-sony"
 version = "0.1.0"
 dependencies = [
  "chd",
+ "crc32fast",
+ "log",
+ "md5",
  "retro-junk-core",
+ "sha1",
  "thiserror 2.0.18",
 ]
 

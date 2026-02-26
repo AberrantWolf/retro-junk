@@ -7,10 +7,11 @@ use retro_junk_lib::scanner::GameEntry;
 use retro_junk_lib::{AnalysisContext, Platform, Region, RomIdentification};
 
 use crate::state::{
-    ConsoleState, DatMatchInfo, DatStatus, EntryStatus, Library, LibraryEntry, ScanStatus,
+    ConsoleState, DatMatchInfo, DatStatus, DiscIdentification, EntryStatus, Library, LibraryEntry,
+    ScanStatus,
 };
 
-const LIBRARY_CACHE_VERSION: u32 = 4;
+const LIBRARY_CACHE_VERSION: u32 = 5;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LibraryCache {
@@ -50,6 +51,8 @@ pub struct CachedEntry {
     pub cover_title: Option<String>,
     #[serde(default)]
     pub screen_title: Option<String>,
+    #[serde(default)]
+    pub disc_identifications: Option<Vec<DiscIdentification>>,
 }
 
 /// Returns `~/.cache/retro-junk/library/`.
@@ -129,6 +132,7 @@ pub fn save_library(root: &Path, library: &Library) -> std::io::Result<()> {
                         region_override: e.region_override,
                         cover_title: e.cover_title.clone(),
                         screen_title: e.screen_title.clone(),
+                        disc_identifications: e.disc_identifications.clone(),
                     })
                     .collect(),
                 dat_game_count: match &c.dat_status {
@@ -208,6 +212,7 @@ pub fn load_library(root: &Path, context: &AnalysisContext) -> Option<(Library, 
                     region_override: ce.region_override,
                     cover_title: ce.cover_title,
                     screen_title: ce.screen_title,
+                    disc_identifications: ce.disc_identifications,
                 })
                 .collect();
 

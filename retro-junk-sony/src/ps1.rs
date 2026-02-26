@@ -11,7 +11,8 @@ use std::io::SeekFrom;
 use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, FileHashes, HashAlgorithms, Platform,
+    RomAnalyzer, RomIdentification,
 };
 
 use crate::ps1_disc::{self, DiscFormat};
@@ -285,6 +286,44 @@ impl RomAnalyzer for Ps1Analyzer {
         retro_junk_core::DatSource::Redump
     }
 
+    fn compute_container_hashes(
+        &self,
+        reader: &mut dyn ReadSeek,
+        algorithms: HashAlgorithms,
+    ) -> Result<Option<FileHashes>, AnalysisError> {
+        let format = ps1_disc::detect_disc_format(reader)?;
+
+        match format {
+            ps1_disc::DiscFormat::Chd => {
+                log::info!("PS1 compute_container_hashes: CHD detected");
+                let hashes = ps1_disc::hash_chd_raw_sectors(reader, algorithms)?;
+                log::info!(
+                    "PS1 compute_container_hashes: done, crc32={}, data_size={}",
+                    hashes.crc32,
+                    hashes.data_size
+                );
+                Ok(Some(hashes))
+            }
+            ps1_disc::DiscFormat::RawSector2352 => {
+                // Multi-track BIN files contain data + audio tracks concatenated.
+                // Redump DATs hash only Track 1 (data), so detect the boundary.
+                if let Some(data_size) = ps1_disc::find_raw_bin_data_track_size(reader)? {
+                    log::info!(
+                        "PS1 compute_container_hashes: raw BIN, hashing Track 1 ({} bytes)",
+                        data_size
+                    );
+                    let hashes = hash_raw_bin_track1(reader, algorithms, data_size)?;
+                    Ok(Some(hashes))
+                } else {
+                    // Single-track BIN — let the standard hasher handle it
+                    Ok(None)
+                }
+            }
+            // CUE sheets and ISOs: let the standard hasher handle them
+            _ => Ok(None),
+        }
+    }
+
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sony - PlayStation"]
     }
@@ -305,6 +344,63 @@ impl RomAnalyzer for Ps1Analyzer {
         // Redump DATs use the full serial (e.g., "SLUS-01234")
         Some(serial.to_string())
     }
+}
+
+/// Hash the first `data_size` bytes of a raw 2352-byte sector BIN file.
+fn hash_raw_bin_track1(
+    reader: &mut dyn ReadSeek,
+    algorithms: HashAlgorithms,
+    data_size: u64,
+) -> Result<FileHashes, AnalysisError> {
+    use sha1::Digest;
+
+    reader.seek(SeekFrom::Start(0))?;
+
+    let mut crc = if algorithms.crc32 {
+        Some(crc32fast::Hasher::new())
+    } else {
+        None
+    };
+    let mut sha = if algorithms.sha1 {
+        Some(sha1::Sha1::new())
+    } else {
+        None
+    };
+    let mut md5_ctx = if algorithms.md5 {
+        Some(md5::Context::new())
+    } else {
+        None
+    };
+
+    let mut buf = [0u8; 64 * 1024];
+    let mut remaining = data_size;
+
+    while remaining > 0 {
+        let to_read = remaining.min(buf.len() as u64) as usize;
+        let n = reader.read(&mut buf[..to_read])?;
+        if n == 0 {
+            break;
+        }
+        if let Some(ref mut h) = crc {
+            h.update(&buf[..n]);
+        }
+        if let Some(ref mut h) = sha {
+            h.update(&buf[..n]);
+        }
+        if let Some(ref mut h) = md5_ctx {
+            h.consume(&buf[..n]);
+        }
+        remaining -= n as u64;
+    }
+
+    Ok(FileHashes {
+        crc32: crc
+            .map(|h| format!("{:08x}", h.finalize()))
+            .unwrap_or_default(),
+        sha1: sha.map(|h| format!("{:x}", h.finalize())),
+        md5: md5_ctx.map(|h| format!("{:x}", h.compute())),
+        data_size,
+    })
 }
 
 #[cfg(test)]

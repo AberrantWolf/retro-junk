@@ -22,6 +22,7 @@ retro-junk-sega.workspace = true
 retro-junk-microsoft.workspace = true
 retro-junk-frontend.workspace = true
 retro-junk-db.workspace = true
+retro-junk-catalog.workspace = true
 eframe = "0.30"
 egui = "0.30"
 egui_extras = { version = "0.30", features = ["image"] }

@@ -238,8 +238,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         // File info
         ui.horizontal(|ui| {
             ui.label("File:");
-            let path = entry.game_entry.analysis_path();
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            let name = match &entry.game_entry {
+                retro_junk_lib::scanner::GameEntry::MultiDisc { name, .. } => name.clone(),
+                _ => {
+                    let path = entry.game_entry.analysis_path();
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("?")
+                        .to_string()
+                }
+            };
             ui.label(name);
         });
 
@@ -289,8 +297,67 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             }
         }
 
-        // Hashes
-        if let Some(ref hashes) = entry.hashes {
+        // Disc details for multi-disc entries
+        if let Some(ref discs) = entry.disc_identifications
+            && !discs.is_empty()
+        {
+            ui.add_space(4.0);
+            ui.separator();
+            ui.label(egui::RichText::new("Disc Details").strong());
+            ui.add_space(2.0);
+
+            for (i, disc) in discs.iter().enumerate() {
+                let filename = disc
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?");
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("Disc {}:", i + 1)).weak());
+                    ui.label(filename);
+                });
+                if let Some(ref serial) = disc.identification.serial_number {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("Serial:").weak());
+                        ui.label(serial);
+                    });
+                }
+                if let Some(ref name) = disc.identification.internal_name {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("Internal:").weak());
+                        ui.label(name);
+                    });
+                }
+                if let Some(ref hashes) = disc.hashes {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("CRC32:").weak());
+                        ui.label(&hashes.crc32);
+                    });
+                    if let Some(ref sha1) = hashes.sha1 {
+                        ui.horizontal(|ui| {
+                            ui.add_space(16.0);
+                            ui.label(egui::RichText::new("SHA1:").weak());
+                            ui.label(sha1);
+                        });
+                    }
+                }
+                if let Some(ref dm) = disc.dat_match {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("DAT:").weak());
+                        ui.label(&dm.rom_name);
+                    });
+                }
+            }
+        }
+
+        // Hashes (single-file entries only; multi-disc hashes shown per-disc above)
+        if entry.disc_identifications.is_none()
+            && let Some(ref hashes) = entry.hashes
+        {
             ui.add_space(4.0);
             ui.separator();
             ui.label(egui::RichText::new("Hashes").strong());

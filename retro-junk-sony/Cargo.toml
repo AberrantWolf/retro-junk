@@ -7,3 +7,7 @@ edition.workspace = true
 retro-junk-core.workspace = true
 thiserror.workspace = true
 chd.workspace = true
+crc32fast.workspace = true
+sha1.workspace = true
+md5.workspace = true
+log.workspace = true

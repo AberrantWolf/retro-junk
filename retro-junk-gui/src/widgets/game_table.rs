@@ -92,7 +92,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 serial: entry
                     .identification
                     .as_ref()
-                    .and_then(|id| id.serial_number.clone()),
+                    .and_then(|id| id.serial_number.clone())
+                    .or_else(|| {
+                        entry
+                            .disc_identifications
+                            .as_ref()?
+                            .iter()
+                            .find_map(|d| d.identification.serial_number.clone())
+                    }),
                 internal_name: entry
                     .identification
                     .as_ref()

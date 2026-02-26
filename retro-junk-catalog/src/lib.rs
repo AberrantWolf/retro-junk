@@ -8,6 +8,8 @@ pub mod name_parser;
 pub mod types;
 pub mod yaml;
 
-pub use name_parser::{DumpStatus, ParsedDatName, parse_dat_name, region_to_slug};
+pub use name_parser::{
+    DumpStatus, ParsedDatName, parse_dat_name, region_slug_to_display, region_to_slug,
+};
 pub use types::*;
 pub use yaml::{load_catalog, load_companies, load_overrides, load_platforms};

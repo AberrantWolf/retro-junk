@@ -3,15 +3,7 @@ use std::collections::HashMap;
 
 use crate::dat::{DatFile, DatGame};
 
-/// Hash results for a file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileHashes {
-    pub crc32: String,
-    pub sha1: Option<String>,
-    pub md5: Option<String>,
-    /// Size of the data that was hashed (after header stripping)
-    pub data_size: u64,
-}
+pub use retro_junk_core::FileHashes;
 
 /// How a match was determined.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

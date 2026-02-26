@@ -157,19 +157,29 @@ pub struct DiscMatchData {
 
 /// Plan M3U actions for a multi-disc set given pre-resolved disc data.
 ///
+/// When `game_name_override` is `Some`, uses that name directly instead of
+/// deriving it from per-disc DAT names. This is used by the GUI when the
+/// catalog DB has already resolved the canonical game name.
+///
 /// Returns `None` if the folder and playlist are already correct.
 pub fn plan_m3u_action(
     source_folder: &Path,
     discs: &[DiscMatchData],
     existing_m3u_contents: Option<&str>,
+    game_name_override: Option<&str>,
 ) -> Option<M3uAction> {
     if discs.is_empty() {
         return None;
     }
 
-    // Derive base game name from the collection of game names
-    let game_names: Vec<&str> = discs.iter().map(|d| d.game_name.as_str()).collect();
-    let base_game_name = derive_base_game_name(&game_names);
+    // Use override if provided, otherwise derive from per-disc DAT names
+    let base_game_name = match game_name_override {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => {
+            let game_names: Vec<&str> = discs.iter().map(|d| d.game_name.as_str()).collect();
+            derive_base_game_name(&game_names)
+        }
+    };
     if base_game_name.is_empty() {
         return None;
     }
@@ -595,7 +605,7 @@ pub fn plan_renames(
                 None => continue,
             };
 
-            if let Some(action) = plan_m3u_action(&source_folder, &discs, None) {
+            if let Some(action) = plan_m3u_action(&source_folder, &discs, None, None) {
                 m3u_actions.push(action);
             }
         }
@@ -1004,7 +1014,7 @@ fn parse_cue_file_directive(line: &str) -> Option<(String, String)> {
 /// track number matching).
 ///
 /// Returns the number of .cue files that were updated.
-fn fix_cue_references_in_dir(
+pub fn fix_cue_references_in_dir(
     dir: &Path,
     rename_map: &HashMap<String, String>,
     errors: &mut Vec<String>,
@@ -1312,7 +1322,7 @@ fn detect_broken_m3u_playlists(files: &[PathBuf]) -> Vec<PathBuf> {
 ///
 /// Returns `Some((current_path, target_path))` if a rename is needed, `None` otherwise.
 /// Only triggers when there's exactly one existing .m3u file with the wrong name.
-fn detect_misnamed_m3u(dir: &Path, expected_name: &str) -> Option<(PathBuf, PathBuf)> {
+pub fn detect_misnamed_m3u(dir: &Path, expected_name: &str) -> Option<(PathBuf, PathBuf)> {
     let expected_path = dir.join(expected_name);
     if expected_path.exists() {
         return None;
@@ -1357,7 +1367,7 @@ fn has_broken_m3u_entries(content: &str, dir: &Path) -> bool {
 /// Fix broken entries in M3U playlist files in a directory.
 ///
 /// Returns the number of .m3u files that were updated.
-fn fix_m3u_references_in_dir(
+pub fn fix_m3u_references_in_dir(
     dir: &Path,
     rename_map: &HashMap<String, String>,
     errors: &mut Vec<String>,

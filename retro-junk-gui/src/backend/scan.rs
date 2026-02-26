@@ -113,23 +113,54 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
                 break;
             }
 
-            let path = entry.analysis_path();
-            let result = match std::fs::File::open(path) {
-                Ok(mut file) => {
-                    let file_options = AnalysisOptions {
-                        file_path: Some(path.to_path_buf()),
-                        ..options.clone()
+            match entry {
+                scanner::GameEntry::SingleFile(_) => {
+                    let path = entry.analysis_path();
+                    let result = match std::fs::File::open(path) {
+                        Ok(mut file) => {
+                            let file_options = AnalysisOptions {
+                                file_path: Some(path.to_path_buf()),
+                                ..options.clone()
+                            };
+                            registered.analyzer.analyze(&mut file, &file_options)
+                        }
+                        Err(e) => Err(retro_junk_lib::AnalysisError::Io(e)),
                     };
-                    registered.analyzer.analyze(&mut file, &file_options)
-                }
-                Err(e) => Err(retro_junk_lib::AnalysisError::Io(e)),
-            };
 
-            let _ = tx.send(AppMessage::EntryAnalyzed {
-                folder_name: folder_name.clone(),
-                index: i,
-                result,
-            });
+                    let _ = tx.send(AppMessage::EntryAnalyzed {
+                        folder_name: folder_name.clone(),
+                        index: i,
+                        result,
+                    });
+                }
+                scanner::GameEntry::MultiDisc { files, .. } => {
+                    let disc_results: Vec<(
+                        std::path::PathBuf,
+                        Result<retro_junk_lib::RomIdentification, retro_junk_lib::AnalysisError>,
+                    )> = files
+                        .iter()
+                        .map(|path| {
+                            let result = match std::fs::File::open(path) {
+                                Ok(mut file) => {
+                                    let file_options = AnalysisOptions {
+                                        file_path: Some(path.to_path_buf()),
+                                        ..options.clone()
+                                    };
+                                    registered.analyzer.analyze(&mut file, &file_options)
+                                }
+                                Err(e) => Err(retro_junk_lib::AnalysisError::Io(e)),
+                            };
+                            (path.clone(), result)
+                        })
+                        .collect();
+
+                    let _ = tx.send(AppMessage::MultiDiscAnalyzed {
+                        folder_name: folder_name.clone(),
+                        index: i,
+                        disc_results,
+                    });
+                }
+            }
 
             let _ = tx.send(AppMessage::OperationProgress {
                 op_id,

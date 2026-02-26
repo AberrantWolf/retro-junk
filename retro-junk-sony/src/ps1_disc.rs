@@ -30,7 +30,7 @@ const MODE2_FORM1_DATA_OFFSET: u64 = 24;
 const PVD_SECTOR: u64 = 16;
 
 /// CHD file magic bytes.
-const CHD_MAGIC: &[u8; 8] = b"MComprHD";
+pub const CHD_MAGIC: &[u8; 8] = b"MComprHD";
 
 /// CD sector size within CHD: raw sector (2352) + subchannel (96) = 2448.
 const CHD_CD_SECTOR_SIZE: u32 = 2448;
@@ -777,6 +777,241 @@ fn read_file_from_chd(
     }
 
     Ok(result)
+}
+
+// ---------------------------------------------------------------------------
+// Raw BIN data track detection
+// ---------------------------------------------------------------------------
+
+/// Find the byte length of the data track (Track 1) in a raw 2352-byte sector BIN file.
+///
+/// Data sectors have the 12-byte CD sync pattern at the start; audio sectors do not.
+/// Uses binary search to efficiently find the boundary between data and audio.
+/// Returns `None` if the file doesn't start with raw sectors or is entirely data.
+pub fn find_raw_bin_data_track_size(
+    reader: &mut dyn retro_junk_core::ReadSeek,
+) -> Result<Option<u64>, AnalysisError> {
+    let file_size = reader.seek(SeekFrom::End(0))?;
+    if file_size < RAW_SECTOR_SIZE {
+        return Ok(None);
+    }
+
+    let total_sectors = file_size / RAW_SECTOR_SIZE;
+
+    // Verify sector 0 is a data sector
+    if !is_data_sector(reader, 0)? {
+        return Ok(None);
+    }
+
+    // If the last sector is also data, the whole file is the data track
+    if is_data_sector(reader, total_sectors - 1)? {
+        return Ok(None); // no trimming needed — single-track or data-only
+    }
+
+    // Binary search for the boundary: last data sector
+    let mut lo: u64 = 0;
+    let mut hi = total_sectors - 1;
+
+    while lo < hi {
+        let mid = lo + (hi - lo + 1) / 2;
+        if is_data_sector(reader, mid)? {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    // lo is the last data sector index; data track size = (lo + 1) sectors
+    let data_track_size = (lo + 1) * RAW_SECTOR_SIZE;
+    log::info!(
+        "Raw BIN: data track = {} sectors ({} bytes), total = {} sectors ({} bytes)",
+        lo + 1,
+        data_track_size,
+        total_sectors,
+        file_size
+    );
+
+    Ok(Some(data_track_size))
+}
+
+/// Check if a sector at the given index has the CD sync pattern (i.e., is a data sector).
+fn is_data_sector(
+    reader: &mut dyn retro_junk_core::ReadSeek,
+    sector_index: u64,
+) -> Result<bool, AnalysisError> {
+    let offset = sector_index * RAW_SECTOR_SIZE;
+    reader.seek(SeekFrom::Start(offset))?;
+    let mut sync = [0u8; 12];
+    let n = reader.read(&mut sync)?;
+    Ok(n == 12 && sync == CD_SYNC_PATTERN)
+}
+
+// ---------------------------------------------------------------------------
+// CHD raw-sector hashing (for Redump DAT verification)
+// ---------------------------------------------------------------------------
+
+/// Hash Track 1 (data track) raw sectors from a CHD disc image, extracting
+/// the 2352-byte raw sector data and stripping the 96-byte subchannel from
+/// each 2448-byte CHD sector. Only Track 1 is hashed because Redump/LibRetro
+/// DAT entries contain per-track hashes, and the data track is Track 1.
+pub fn hash_chd_raw_sectors(
+    reader: &mut dyn retro_junk_core::ReadSeek,
+    algorithms: retro_junk_core::HashAlgorithms,
+) -> Result<retro_junk_core::FileHashes, AnalysisError> {
+    use sha1::Digest;
+
+    reader.seek(SeekFrom::Start(0))?;
+
+    let mut chd = chd::Chd::open(reader, None)
+        .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {}", e)))?;
+
+    // Parse track metadata to find Track 1's sector count.
+    // Must collect before borrowing chd for hunk reads.
+    let track1_frames = parse_chd_track1_frames(&mut chd)?;
+
+    let hunk_size = chd.header().hunk_size() as usize;
+    let logical_bytes = chd.header().logical_bytes();
+    let total_disc_sectors = logical_bytes / CHD_CD_SECTOR_SIZE as u64;
+    let sectors_per_hunk = hunk_size / CHD_CD_SECTOR_SIZE as usize;
+    let total_hunks = chd.header().hunk_count();
+
+    // Hash only Track 1 sectors. Fall back to all sectors if metadata unavailable.
+    let sectors_to_hash = track1_frames.unwrap_or_else(|| {
+        log::warn!(
+            "CHD: no track metadata found, hashing all {} sectors",
+            total_disc_sectors
+        );
+        total_disc_sectors as usize
+    });
+    let data_size = sectors_to_hash as u64 * RAW_SECTOR_SIZE;
+
+    log::info!(
+        "CHD hashing: track1={} sectors ({} bytes), total_disc={} sectors",
+        sectors_to_hash,
+        data_size,
+        total_disc_sectors
+    );
+
+    let mut crc = if algorithms.crc32 {
+        Some(crc32fast::Hasher::new())
+    } else {
+        None
+    };
+    let mut sha = if algorithms.sha1 {
+        Some(sha1::Sha1::new())
+    } else {
+        None
+    };
+    let mut md5_ctx = if algorithms.md5 {
+        Some(md5::Context::new())
+    } else {
+        None
+    };
+
+    let mut hunk_buf = chd.get_hunksized_buffer();
+    let mut cmp_buf = Vec::new();
+    let mut sectors_remaining = sectors_to_hash;
+
+    for hunk_num in 0..total_hunks {
+        if sectors_remaining == 0 {
+            break;
+        }
+
+        let mut hunk = chd.hunk(hunk_num).map_err(|e| {
+            AnalysisError::other(format!("Failed to get CHD hunk {}: {}", hunk_num, e))
+        })?;
+
+        hunk.read_hunk_in(&mut cmp_buf, &mut hunk_buf)
+            .map_err(|e| {
+                AnalysisError::other(format!("Failed to decompress CHD hunk {}: {}", hunk_num, e))
+            })?;
+
+        let sectors_in_hunk = sectors_remaining.min(sectors_per_hunk);
+
+        for s in 0..sectors_in_hunk {
+            let offset = s * CHD_CD_SECTOR_SIZE as usize;
+            let raw_sector = &hunk_buf[offset..offset + RAW_SECTOR_SIZE as usize];
+
+            if let Some(ref mut h) = crc {
+                h.update(raw_sector);
+            }
+            if let Some(ref mut h) = sha {
+                h.update(raw_sector);
+            }
+            if let Some(ref mut h) = md5_ctx {
+                h.consume(raw_sector);
+            }
+        }
+
+        sectors_remaining -= sectors_in_hunk;
+    }
+
+    Ok(retro_junk_core::FileHashes {
+        crc32: crc
+            .map(|h| format!("{:08x}", h.finalize()))
+            .unwrap_or_default(),
+        sha1: sha.map(|h| format!("{:x}", h.finalize())),
+        md5: md5_ctx.map(|h| format!("{:x}", h.compute())),
+        data_size,
+    })
+}
+
+/// Parse CHD track metadata (CHTR or CHT2) to find the number of frames
+/// (sectors) in Track 1. Returns `None` if no track metadata is found.
+///
+/// CHD CD-ROM track metadata is stored as text strings like:
+///   `TRACK:1 TYPE:MODE2_RAW SUBTYPE:NONE FRAMES:229020 PREFRAMES:150`
+fn parse_chd_track1_frames<F: std::io::Read + std::io::Seek>(
+    chd: &mut chd::Chd<F>,
+) -> Result<Option<usize>, AnalysisError> {
+    use chd::metadata::{KnownMetadata, MetadataTag};
+
+    // Collect metadata refs first, then read them.
+    let meta_refs: Vec<_> = chd.metadata_refs().collect();
+
+    for meta_ref in &meta_refs {
+        let tag = meta_ref.metatag();
+        if tag != KnownMetadata::CdRomTrack as u32 && tag != KnownMetadata::CdRomTrack2 as u32 {
+            continue;
+        }
+
+        // Read the metadata entry — needs mutable borrow to the underlying file
+        let meta = meta_ref
+            .read(chd.inner())
+            .map_err(|e| AnalysisError::other(format!("Failed to read CHD metadata: {}", e)))?;
+
+        let text = String::from_utf8_lossy(&meta.value);
+
+        // Parse "TRACK:N ... FRAMES:N"
+        if let Some(track_num) = parse_meta_field(&text, "TRACK") {
+            if track_num == "1" {
+                if let Some(frames_str) = parse_meta_field(&text, "FRAMES") {
+                    let frames: usize = frames_str.parse().map_err(|_| {
+                        AnalysisError::other(format!(
+                            "Invalid FRAMES value in CHD metadata: {}",
+                            frames_str
+                        ))
+                    })?;
+                    log::info!("CHD track metadata: Track 1 has {} frames", frames);
+                    return Ok(Some(frames));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Extract a field value from CHD metadata text (e.g., "FRAMES" from
+/// `"TRACK:1 TYPE:MODE2_RAW SUBTYPE:NONE FRAMES:229020"`).
+fn parse_meta_field<'a>(text: &'a str, field: &str) -> Option<&'a str> {
+    let prefix = format!("{}:", field);
+    for token in text.split_whitespace() {
+        if let Some(value) = token.strip_prefix(&prefix) {
+            return Some(value);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

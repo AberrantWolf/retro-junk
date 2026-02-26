@@ -28,6 +28,8 @@ struct M3uJob {
     resolved_discs: Vec<DiscMatchData>,
     /// File paths that still need hash-based resolution
     unresolved_files: Vec<PathBuf>,
+    /// Pre-resolved game name from catalog DB (skips derive_base_game_name)
+    game_name_override: Option<String>,
 }
 
 /// Rename selected entries to their DAT-matched filenames.
@@ -97,32 +99,33 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     continue;
                 };
 
-                // Build what we can from the cached dat_match (primary disc only)
+                // Build what we can from per-disc cached dat_match (set by serial or hash matching)
                 let mut resolved = Vec::new();
                 let mut unresolved = Vec::new();
 
-                // The primary disc has the cached dat_match
-                let analysis_path = entry.game_entry.analysis_path().to_path_buf();
-                if let Some(ref dm) = entry.dat_match {
-                    resolved.push(DiscMatchData {
-                        file_path: analysis_path.clone(),
-                        game_name: dm.game_name.clone(),
-                        target_filename: dm.rom_name.clone(),
-                    });
+                let mut disc_resolved: std::collections::HashMap<
+                    std::path::PathBuf,
+                    DiscMatchData,
+                > = std::collections::HashMap::new();
+                if let Some(ref discs) = entry.disc_identifications {
+                    for disc in discs {
+                        if let Some(ref dm) = disc.dat_match {
+                            disc_resolved.insert(
+                                disc.path.clone(),
+                                DiscMatchData {
+                                    file_path: disc.path.clone(),
+                                    game_name: dm.game_name.clone(),
+                                    target_filename: dm.rom_name.clone(),
+                                },
+                            );
+                        }
+                    }
                 }
 
-                // Other disc files need background resolution
                 for f in files {
-                    if *f == analysis_path {
-                        if entry.dat_match.is_none() {
-                            unresolved.push(f.clone());
-                        }
+                    if let Some(disc_data) = disc_resolved.remove(f) {
+                        resolved.push(disc_data);
                     } else {
-                        // Try hash lookup for files we already have hashes for
-                        if let Some(ref hashes) = entry.hashes {
-                            // Hashes are for the analysis_path only, not other disc files
-                            let _ = hashes;
-                        }
                         unresolved.push(f.clone());
                     }
                 }
@@ -145,6 +148,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     files: files.clone(),
                     resolved_discs: resolved,
                     unresolved_files: unresolved,
+                    game_name_override: entry.dat_match.as_ref().map(|dm| dm.game_name.clone()),
                 });
             }
         }
@@ -261,29 +265,71 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 None => continue,
             };
 
+            let mut rename_map = std::collections::HashMap::new();
             for disc in &all_discs {
                 let target = source_folder.join(&disc.target_filename);
                 if disc.file_path == target {
                     continue; // Already correctly named
                 }
+                let old_name = disc
+                    .file_path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 if let Err(e) = std::fs::rename(&disc.file_path, &target) {
                     disc_rename_errors.push(format!(
                         "Failed to rename '{}': {}",
                         disc.file_path.display(),
                         e
                     ));
+                } else {
+                    rename_map.insert(old_name, disc.target_filename.clone());
                 }
             }
 
+            // Fix CUE file references broken by the renames above
+            retro_junk_lib::rename::fix_cue_references_in_dir(
+                &source_folder,
+                &rename_map,
+                &mut disc_rename_errors,
+            );
+
+            // Fix M3U playlist entries broken by the renames above
+            retro_junk_lib::rename::fix_m3u_references_in_dir(
+                &source_folder,
+                &rename_map,
+                &mut disc_rename_errors,
+            );
+
             // Plan and execute M3U action (folder rename + playlist)
             let mut m3u_errors = Vec::new();
-            if let Some(action) =
-                retro_junk_lib::rename::plan_m3u_action(&source_folder, &all_discs, None)
-            {
+            if let Some(action) = retro_junk_lib::rename::plan_m3u_action(
+                &source_folder,
+                &all_discs,
+                None,
+                m3u_job.game_name_override.as_deref(),
+            ) {
+                // If playlist_entries is empty (e.g., CUE/BIN where .bin isn't an
+                // entry point), rename any misnamed inner .m3u file before the
+                // folder rename moves it.
+                if action.playlist_entries.is_empty() {
+                    let expected = format!("{}.m3u", action.game_name);
+                    if let Some((src, dst)) =
+                        retro_junk_lib::rename::detect_misnamed_m3u(&source_folder, &expected)
+                    {
+                        if let Err(e) = std::fs::rename(&src, &dst) {
+                            m3u_errors.push(format!("Failed to rename inner playlist: {}", e));
+                        }
+                    }
+                }
+
                 let m3u_result =
                     retro_junk_lib::rename::execute_m3u_action(&action, &mut m3u_errors);
 
-                // Determine the final folder path for reporting
+                // If playlist was written, the inner .m3u is correct. If not
+                // (CUE/BIN case), and the folder was renamed, fix the inner .m3u
+                // name inside the new folder.
                 let final_folder = if m3u_result.folder_renamed {
                     action.target_folder.clone()
                 } else {

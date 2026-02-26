@@ -2,7 +2,7 @@ use std::io::SeekFrom;
 
 use sha1::Digest;
 
-use retro_junk_core::{ReadSeek, RomAnalyzer};
+use retro_junk_core::{HashAlgorithms, ReadSeek, RomAnalyzer};
 use retro_junk_dat::error::DatError;
 pub use retro_junk_dat::matcher::FileHashes;
 
@@ -14,6 +14,18 @@ pub fn compute_crc32(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
 ) -> Result<FileHashes, DatError> {
+    let algorithms = HashAlgorithms {
+        crc32: true,
+        sha1: false,
+        md5: false,
+    };
+    if let Some(hashes) = analyzer
+        .compute_container_hashes(reader, algorithms)
+        .map_err(|e| DatError::cache(e.to_string()))?
+    {
+        return Ok(hashes);
+    }
+
     let file_size = reader.seek(SeekFrom::End(0))?;
     let skip = analyzer
         .dat_header_size(reader, file_size)
@@ -51,6 +63,18 @@ pub fn compute_crc32_sha1(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
 ) -> Result<FileHashes, DatError> {
+    let algorithms = HashAlgorithms {
+        crc32: true,
+        sha1: true,
+        md5: false,
+    };
+    if let Some(hashes) = analyzer
+        .compute_container_hashes(reader, algorithms)
+        .map_err(|e| DatError::cache(e.to_string()))?
+    {
+        return Ok(hashes);
+    }
+
     let file_size = reader.seek(SeekFrom::End(0))?;
     let skip = analyzer
         .dat_header_size(reader, file_size)
@@ -92,6 +116,18 @@ pub fn compute_crc32_with_progress(
     analyzer: &dyn RomAnalyzer,
     progress: &dyn Fn(u64, u64),
 ) -> Result<FileHashes, DatError> {
+    let algorithms = HashAlgorithms {
+        crc32: true,
+        sha1: false,
+        md5: false,
+    };
+    if let Some(hashes) = analyzer
+        .compute_container_hashes(reader, algorithms)
+        .map_err(|e| DatError::cache(e.to_string()))?
+    {
+        return Ok(hashes);
+    }
+
     let file_size = reader.seek(SeekFrom::End(0))?;
     let skip = analyzer
         .dat_header_size(reader, file_size)
@@ -212,6 +248,18 @@ pub fn compute_all_hashes(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
 ) -> Result<FileHashes, DatError> {
+    let algorithms = HashAlgorithms {
+        crc32: true,
+        sha1: true,
+        md5: true,
+    };
+    if let Some(hashes) = analyzer
+        .compute_container_hashes(reader, algorithms)
+        .map_err(|e| DatError::cache(e.to_string()))?
+    {
+        return Ok(hashes);
+    }
+
     let file_size = reader.seek(SeekFrom::End(0))?;
     let skip = analyzer
         .dat_header_size(reader, file_size)
