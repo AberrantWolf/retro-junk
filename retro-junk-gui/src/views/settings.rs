@@ -9,6 +9,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     egui::ScrollArea::vertical().show(ui, |ui| {
         show_library_section(ui, app);
         ui.add_space(16.0);
+        show_output_directories_section(ui, app);
+        ui.add_space(16.0);
         show_cache_section(ui, app);
     });
 }
@@ -93,6 +95,45 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         &mut app.settings.general.warn_on_region_override,
         "Warn when overriding a specific detected region",
     );
+}
+
+fn show_output_directories_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    ui.strong("Output Directories");
+    ui.add_space(4.0);
+
+    let mut changed = false;
+
+    ui.horizontal(|ui| {
+        ui.label("Metadata directory:");
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut app.settings.general.metadata_dir).desired_width(200.0),
+        );
+        if response.lost_focus() || response.changed() {
+            changed = true;
+        }
+    });
+    ui.indent("metadata_hint", |ui| {
+        ui.weak("Relative to ROM root. Use \".\" for inline with ROMs (ES-DE legacy mode).");
+    });
+
+    ui.add_space(4.0);
+
+    ui.horizontal(|ui| {
+        ui.label("Media directory:");
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut app.settings.general.media_dir).desired_width(200.0),
+        );
+        if response.lost_focus() || response.changed() {
+            changed = true;
+        }
+    });
+    ui.indent("media_hint", |ui| {
+        ui.weak("Relative to ROM root. Leave empty for \"{root}-media\" sibling convention.");
+    });
+
+    if changed {
+        let _ = crate::settings::save_settings(&app.settings);
+    }
 }
 
 fn show_cache_section(ui: &mut egui::Ui, _app: &mut RetroJunkApp) {

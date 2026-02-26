@@ -1,6 +1,7 @@
 use crate::app::RetroJunkApp;
 use crate::backend;
 use crate::state::ScanStatus;
+use crate::util;
 use crate::widgets::status_badge;
 
 /// Render the manufacturer-grouped console tree.
@@ -55,16 +56,20 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         None
                     };
 
-                    let clicked = ui
-                        .horizontal(|ui| {
-                            if let Some(status) = worst_status {
-                                status_badge::show(ui, status);
-                            }
-                            ui.selectable_label(is_selected, &label).clicked()
-                        })
-                        .inner;
+                    let folder_path = console.folder_path.clone();
+                    let entry_count = console.entries.len();
+                    let is_scanned = console.scan_status == ScanStatus::Scanned;
 
-                    if clicked && !is_selected {
+                    let resp = ui.horizontal(|ui| {
+                        if let Some(status) = worst_status {
+                            status_badge::show(ui, status);
+                        }
+                        ui.selectable_label(is_selected, &label)
+                    });
+
+                    let label_resp = resp.inner;
+
+                    if label_resp.clicked() && !is_selected {
                         app.selected_console = Some(i);
                         app.focused_entry = None;
                         app.selected_entries.clear();
@@ -75,7 +80,85 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             backend::scan::quick_scan_console(app, i, ctx);
                         }
                     }
+
+                    // Context menu on the selectable label
+                    label_resp.context_menu(|ui| {
+                        show_console_context_menu(
+                            ui,
+                            app,
+                            ctx,
+                            i,
+                            &folder_path,
+                            entry_count,
+                            is_scanned,
+                        );
+                    });
                 }
             });
+    }
+}
+
+/// Render the context menu for a console tree entry.
+fn show_console_context_menu(
+    ui: &mut egui::Ui,
+    app: &mut RetroJunkApp,
+    ctx: &egui::Context,
+    console_idx: usize,
+    folder_path: &std::path::Path,
+    entry_count: usize,
+    is_scanned: bool,
+) {
+    if ui.button("Rescan").clicked() {
+        // Reset scan status to allow re-scanning
+        app.library.consoles[console_idx].scan_status = ScanStatus::NotScanned;
+        backend::scan::quick_scan_console(app, console_idx, ctx);
+        ui.close_menu();
+    }
+
+    if ui
+        .add_enabled(
+            is_scanned && entry_count > 0,
+            egui::Button::new("Calculate All Hashes"),
+        )
+        .clicked()
+    {
+        // Select all entries, then compute hashes
+        app.selected_entries = (0..entry_count).collect();
+        backend::hash::compute_hashes_for_selection(app, console_idx);
+        ui.close_menu();
+    }
+
+    if ui
+        .add_enabled(
+            is_scanned && entry_count > 0,
+            egui::Button::new("Re-scrape All Media"),
+        )
+        .clicked()
+    {
+        app.selected_entries = (0..entry_count).collect();
+        backend::media::rescrape_media_for_selection(app, console_idx, ctx);
+        ui.close_menu();
+    }
+
+    ui.separator();
+
+    ui.menu_button("Export", |ui| {
+        if ui
+            .add_enabled(
+                is_scanned && entry_count > 0,
+                egui::Button::new("gamelist.xml (ES-DE)"),
+            )
+            .clicked()
+        {
+            backend::export::generate_gamelist(app, console_idx, ctx);
+            ui.close_menu();
+        }
+    });
+
+    ui.separator();
+
+    if ui.button(util::REVEAL_LABEL).clicked() {
+        util::reveal_in_file_manager(folder_path);
+        ui.close_menu();
     }
 }

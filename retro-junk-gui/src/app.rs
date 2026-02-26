@@ -7,7 +7,7 @@ use retro_junk_dat::DatIndex;
 use retro_junk_lib::AnalysisContext;
 
 use crate::settings::AppSettings;
-use crate::state::{AppMessage, BackgroundOperation, Library, View};
+use crate::state::{AppMessage, BackgroundOperation, Library, RenameOutcome, RenameResult, View};
 use crate::views;
 use crate::widgets;
 
@@ -28,7 +28,7 @@ pub struct RetroJunkApp {
     /// Loaded DAT indices, keyed by folder_name.
     /// Stored separately from ConsoleState because hash matching needs
     /// immutable access to the index while mutating entries.
-    pub dat_indices: HashMap<String, DatIndex>,
+    pub dat_indices: HashMap<String, Arc<DatIndex>>,
 
     /// Active background operations (shown in activity bar).
     pub operations: Vec<BackgroundOperation>,
@@ -60,6 +60,9 @@ pub struct RetroJunkApp {
     /// Connection to the catalog database (for cover/screen title enrichment).
     /// `None` if the catalog DB doesn't exist yet (user hasn't run catalog import).
     pub catalog_db: Option<retro_junk_db::Connection>,
+
+    /// Results from the last rename operation. When `Some`, the rename results dialog is shown.
+    pub rename_results: Option<Vec<crate::state::RenameResult>>,
 }
 
 impl RetroJunkApp {
@@ -93,9 +96,16 @@ impl RetroJunkApp {
             detail_panel_open: true,
             settings,
             catalog_db,
+            rename_results: None,
         };
 
         // Restore last open root from settings
+        if let Some(ref root) = app.settings.library.current_root.clone() {
+            log::info!("Settings current_root: {}", root.display());
+            if !root.is_dir() {
+                log::warn!("current_root is not a directory, skipping auto-load");
+            }
+        }
         if let Some(ref root) = app.settings.library.current_root.clone()
             && root.is_dir()
         {
@@ -188,16 +198,134 @@ impl eframe::App for RetroJunkApp {
             View::Settings => views::settings::show(ui, self),
             View::Tools => views::tools::show(ui),
         });
+
+        // Rename results modal dialog
+        if self.rename_results.is_some() {
+            show_rename_results_dialog(ctx, &mut self.rename_results);
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        log::info!(
+            "on_exit: saving state ({} consoles)",
+            self.library.consoles.len()
+        );
+
+        // Save library cache first — if the process is killed between the two,
+        // we'd rather lose settings than lose the library cache.
+        self.save_library_cache();
+
         // Save settings
         self.settings.library.current_root = self.root_path.clone();
         if let Err(e) = crate::settings::save_settings(&self.settings) {
             log::warn!("Failed to save settings on exit: {}", e);
         }
+    }
+}
 
-        // Save library cache
-        self.save_library_cache();
+/// Modal dialog showing the results of a rename operation.
+fn show_rename_results_dialog(ctx: &egui::Context, results: &mut Option<Vec<RenameResult>>) {
+    let Some(ref items) = *results else { return };
+
+    let renamed = items
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.outcome,
+                RenameOutcome::Renamed { .. } | RenameOutcome::M3uRenamed { .. }
+            )
+        })
+        .count();
+    let already = items
+        .iter()
+        .filter(|r| matches!(r.outcome, RenameOutcome::AlreadyCorrect))
+        .count();
+    let failed = items
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.outcome,
+                RenameOutcome::NoMatch { .. } | RenameOutcome::Error { .. }
+            )
+        })
+        .count();
+
+    let mut dismiss = false;
+    let mut open = true;
+    egui::Window::new("Rename Results")
+        .collapsible(false)
+        .resizable(true)
+        .open(&mut open)
+        .default_width(500.0)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "{} renamed, {} already correct, {} failed",
+                renamed, already, failed
+            ));
+            ui.separator();
+
+            egui::ScrollArea::vertical()
+                .max_height(400.0)
+                .show(ui, |ui| {
+                    for item in items {
+                        ui.horizontal(|ui| match &item.outcome {
+                            RenameOutcome::Renamed { source, target } => {
+                                ui.colored_label(egui::Color32::from_rgb(50, 180, 50), "Renamed");
+                                ui.label(format!(
+                                    "{} -> {}",
+                                    source.file_name().unwrap_or_default().to_string_lossy(),
+                                    target.file_name().unwrap_or_default().to_string_lossy()
+                                ));
+                            }
+                            RenameOutcome::AlreadyCorrect => {
+                                ui.colored_label(egui::Color32::GRAY, "OK");
+                                ui.label(format!("Entry {} already correct", item.entry_index));
+                            }
+                            RenameOutcome::NoMatch { reason } => {
+                                ui.colored_label(egui::Color32::from_rgb(220, 180, 30), "No match");
+                                ui.label(reason);
+                            }
+                            RenameOutcome::Error { message } => {
+                                ui.colored_label(egui::Color32::from_rgb(220, 50, 50), "Error");
+                                ui.label(message);
+                            }
+                            RenameOutcome::M3uRenamed {
+                                target_folder,
+                                discs_renamed,
+                                playlist_written,
+                                folder_renamed,
+                                errors,
+                                ..
+                            } => {
+                                ui.colored_label(egui::Color32::from_rgb(50, 180, 50), "M3U");
+                                let folder_name = target_folder
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy();
+                                let mut parts = Vec::new();
+                                parts.push(format!("{} discs", discs_renamed));
+                                if *playlist_written {
+                                    parts.push("playlist written".to_string());
+                                }
+                                if *folder_renamed {
+                                    parts.push(format!("folder -> {}", folder_name));
+                                }
+                                if !errors.is_empty() {
+                                    parts.push(format!("{} errors", errors.len()));
+                                }
+                                ui.label(parts.join(", "));
+                            }
+                        });
+                    }
+                });
+
+            ui.separator();
+            if ui.button("OK").clicked() {
+                dismiss = true;
+            }
+        });
+
+    if dismiss || !open {
+        *results = None;
     }
 }

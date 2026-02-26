@@ -145,6 +145,167 @@ pub struct M3uAction {
     pub playlist_entries: Vec<String>,
 }
 
+/// Input data for a single disc in a multi-disc set, used by `plan_m3u_action()`.
+#[derive(Debug, Clone)]
+pub struct DiscMatchData {
+    pub file_path: PathBuf,
+    /// DatGame.name (e.g., "Final Fantasy VII (USA) (Disc 1)")
+    pub game_name: String,
+    /// DatRom.name — what the file should be renamed to (e.g., "Final Fantasy VII (USA) (Disc 1).chd")
+    pub target_filename: String,
+}
+
+/// Plan M3U actions for a multi-disc set given pre-resolved disc data.
+///
+/// Returns `None` if the folder and playlist are already correct.
+pub fn plan_m3u_action(
+    source_folder: &Path,
+    discs: &[DiscMatchData],
+    existing_m3u_contents: Option<&str>,
+) -> Option<M3uAction> {
+    if discs.is_empty() {
+        return None;
+    }
+
+    // Derive base game name from the collection of game names
+    let game_names: Vec<&str> = discs.iter().map(|d| d.game_name.as_str()).collect();
+    let base_game_name = derive_base_game_name(&game_names);
+    if base_game_name.is_empty() {
+        return None;
+    }
+
+    // Target folder: parent / "{base_game_name}.m3u"
+    let target_folder = match source_folder.parent() {
+        Some(p) => p.join(format!("{}.m3u", base_game_name)),
+        None => return None,
+    };
+
+    // Build playlist entries: target filenames for entry-point files, sorted by disc number
+    // or alphabetically if no disc numbers are present.
+    let mut playlist_entries: Vec<(Option<u32>, String)> = discs
+        .iter()
+        .filter(|d| is_m3u_entry_point(&d.target_filename))
+        .map(|d| (extract_disc_number(&d.game_name), d.target_filename.clone()))
+        .collect();
+    if playlist_entries.iter().any(|(d, _)| d.is_some()) {
+        playlist_entries.sort_by_key(|(disc, _)| disc.unwrap_or(u32::MAX));
+    } else {
+        playlist_entries.sort_by(|(_, a), (_, b)| a.cmp(b));
+    }
+    let playlist_entries: Vec<String> =
+        playlist_entries.into_iter().map(|(_, name)| name).collect();
+
+    // Check if everything is already correct
+    let folder_correct = source_folder == target_folder;
+    let existing_m3u_correct = if folder_correct {
+        if let Some(contents) = existing_m3u_contents {
+            let existing_lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+            existing_lines
+                == playlist_entries
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+        } else {
+            // Check for the expected .m3u file on disk
+            let expected_m3u_path = source_folder.join(format!("{}.m3u", base_game_name));
+            if expected_m3u_path.exists() {
+                let contents = fs::read_to_string(&expected_m3u_path).unwrap_or_default();
+                let existing_lines: Vec<&str> =
+                    contents.lines().filter(|l| !l.is_empty()).collect();
+                existing_lines
+                    == playlist_entries
+                        .iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+            } else {
+                false
+            }
+        }
+    } else {
+        false
+    };
+
+    if folder_correct && existing_m3u_correct {
+        return None;
+    }
+
+    Some(M3uAction {
+        source_folder: source_folder.to_path_buf(),
+        target_folder,
+        game_name: base_game_name,
+        playlist_entries,
+    })
+}
+
+/// Result of executing a single M3U action.
+#[derive(Debug, Default)]
+pub struct M3uExecutionResult {
+    pub playlist_written: bool,
+    pub folder_renamed: bool,
+}
+
+/// Execute a single M3U action: write playlist file, rename folder.
+///
+/// This does NOT rename individual disc files — the caller is responsible for that.
+/// Execution order: write playlist first (using source_folder path), then rename folder.
+pub fn execute_m3u_action(action: &M3uAction, errors: &mut Vec<String>) -> M3uExecutionResult {
+    let mut result = M3uExecutionResult::default();
+
+    // Write .m3u playlist file (using source folder path, before folder rename)
+    if !action.playlist_entries.is_empty() {
+        // Delete any existing .m3u files inside the folder
+        if let Ok(entries) = fs::read_dir(&action.source_folder) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                    && ext.eq_ignore_ascii_case("m3u")
+                {
+                    let _ = fs::remove_file(&path);
+                }
+            }
+        }
+
+        let playlist_name = format!("{}.m3u", action.game_name);
+        let playlist_path = action.source_folder.join(&playlist_name);
+        let contents = action.playlist_entries.join("\n") + "\n";
+        match fs::write(&playlist_path, contents) {
+            Ok(()) => result.playlist_written = true,
+            Err(e) => {
+                errors.push(format!(
+                    "Failed to write playlist {}: {}",
+                    playlist_path.display(),
+                    e,
+                ));
+            }
+        }
+    }
+
+    // Rename .m3u folder (last, so playlist write used valid path)
+    if action.source_folder != action.target_folder {
+        if action.target_folder.exists() {
+            errors.push(format!(
+                "Target folder already exists: {}",
+                action.target_folder.display()
+            ));
+        } else {
+            match fs::rename(&action.source_folder, &action.target_folder) {
+                Ok(()) => result.folder_renamed = true,
+                Err(e) => {
+                    errors.push(format!(
+                        "Failed to rename folder {:?} -> {:?}: {}",
+                        action.source_folder.file_name().unwrap_or_default(),
+                        action.target_folder.file_name().unwrap_or_default(),
+                        e,
+                    ));
+                }
+            }
+        }
+    }
+
+    result
+}
+
 /// Result of planning renames for a single console folder.
 #[derive(Debug)]
 pub struct RenamePlan {
@@ -166,11 +327,11 @@ pub struct RenamePlan {
     pub misnamed_m3u_playlists: Vec<(PathBuf, PathBuf)>,
 }
 
-use retro_junk_core::disc::{extract_disc_number, strip_disc_tag};
+use retro_junk_core::disc::{derive_base_game_name, extract_disc_number};
 
 /// Returns true for file extensions that are M3U entry points (playable disc images).
 /// Returns false for companion data files (.bin, .img) that shouldn't appear in playlists.
-fn is_m3u_entry_point(filename: &str) -> bool {
+pub fn is_m3u_entry_point(filename: &str) -> bool {
     let ext = Path::new(filename)
         .extension()
         .and_then(|e| e.to_str())
@@ -410,22 +571,23 @@ pub fn plan_renames(
     let mut m3u_actions = Vec::new();
     for entry in &game_entries {
         if let crate::scanner::GameEntry::MultiDisc { name: _, files } = entry {
-            // Collect game names for all matched files in this folder
-            let matched: Vec<(&PathBuf, &str, &str)> = files
+            // Collect DiscMatchData for all matched files in this folder
+            let discs: Vec<DiscMatchData> = files
                 .iter()
                 .filter_map(|f| {
-                    file_game_names.get(f).map(|(game_name, target_name)| {
-                        (f, game_name.as_str(), target_name.as_str())
-                    })
+                    file_game_names
+                        .get(f)
+                        .map(|(game_name, target_name)| DiscMatchData {
+                            file_path: f.clone(),
+                            game_name: game_name.clone(),
+                            target_filename: target_name.clone(),
+                        })
                 })
                 .collect();
 
-            if matched.is_empty() {
+            if discs.is_empty() {
                 continue;
             }
-
-            // Derive base game name: strip disc tag from the first matched game
-            let base_game_name = strip_disc_tag(matched[0].1);
 
             // The source folder is the parent of any file in this multi-disc set
             let source_folder = match files[0].parent() {
@@ -433,54 +595,8 @@ pub fn plan_renames(
                 None => continue,
             };
 
-            // Target folder: parent of source_folder + base_game_name.m3u
-            let target_folder = match source_folder.parent() {
-                Some(p) => p.join(format!("{}.m3u", base_game_name)),
-                None => continue,
-            };
-
-            // Build playlist entries: target filenames for entry-point files, sorted by disc number
-            let mut playlist_entries: Vec<(u32, String)> = matched
-                .iter()
-                .filter(|(_, _, target_name)| is_m3u_entry_point(target_name))
-                .map(|(_, game_name, target_name)| {
-                    let disc = extract_disc_number(game_name).unwrap_or(0);
-                    (disc, target_name.to_string())
-                })
-                .collect();
-            playlist_entries.sort_by_key(|(disc, _)| *disc);
-            let playlist_entries: Vec<String> =
-                playlist_entries.into_iter().map(|(_, name)| name).collect();
-
-            // Check if everything is already correct
-            let folder_correct = source_folder == target_folder;
-            let existing_m3u_correct = if folder_correct {
-                // Check if there's already a correct .m3u file inside
-                let expected_m3u_name = format!("{}.m3u", base_game_name);
-                let expected_m3u_path = source_folder.join(&expected_m3u_name);
-                if expected_m3u_path.exists() {
-                    let contents = fs::read_to_string(&expected_m3u_path).unwrap_or_default();
-                    let existing_lines: Vec<&str> =
-                        contents.lines().filter(|l| !l.is_empty()).collect();
-                    existing_lines
-                        == playlist_entries
-                            .iter()
-                            .map(|s| s.as_str())
-                            .collect::<Vec<_>>()
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            if !folder_correct || !existing_m3u_correct {
-                m3u_actions.push(M3uAction {
-                    source_folder,
-                    target_folder,
-                    game_name: base_game_name,
-                    playlist_entries,
-                });
+            if let Some(action) = plan_m3u_action(&source_folder, &discs, None) {
+                m3u_actions.push(action);
             }
         }
     }
@@ -749,38 +865,14 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
             fix_m3u_references_in_dir(dir, rename_map, &mut summary.errors);
     }
 
-    // Step 2: Write .m3u playlist files (using source folder paths, before folder rename)
+    // Step 2+3: Execute M3U actions (write playlists + rename folders)
     for action in &plan.m3u_actions {
-        if action.playlist_entries.is_empty() {
-            continue;
+        let result = execute_m3u_action(action, &mut summary.errors);
+        if result.playlist_written {
+            summary.m3u_playlists_written += 1;
         }
-
-        // Delete any existing .m3u files inside the folder
-        if let Ok(entries) = fs::read_dir(&action.source_folder) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file()
-                    && let Some(ext) = path.extension().and_then(|e| e.to_str())
-                    && ext.eq_ignore_ascii_case("m3u")
-                {
-                    let _ = fs::remove_file(&path);
-                }
-            }
-        }
-
-        // Write new .m3u playlist file
-        let playlist_name = format!("{}.m3u", action.game_name);
-        let playlist_path = action.source_folder.join(&playlist_name);
-        let contents = action.playlist_entries.join("\n") + "\n";
-        match fs::write(&playlist_path, contents) {
-            Ok(()) => summary.m3u_playlists_written += 1,
-            Err(e) => {
-                summary.errors.push(format!(
-                    "Failed to write playlist {}: {}",
-                    playlist_path.display(),
-                    e,
-                ));
-            }
+        if result.folder_renamed {
+            summary.m3u_folders_renamed += 1;
         }
     }
 
@@ -796,33 +888,6 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
                     "Failed to rename playlist {:?} → {:?}: {}",
                     source.file_name().unwrap_or_default(),
                     target.file_name().unwrap_or_default(),
-                    e,
-                ));
-            }
-        }
-    }
-
-    // Step 3: Rename .m3u folders (last, so steps 1-2 used valid paths)
-    for action in &plan.m3u_actions {
-        if action.source_folder == action.target_folder {
-            continue;
-        }
-
-        if action.target_folder.exists() {
-            summary.errors.push(format!(
-                "Target folder already exists: {}",
-                action.target_folder.display()
-            ));
-            continue;
-        }
-
-        match fs::rename(&action.source_folder, &action.target_folder) {
-            Ok(()) => summary.m3u_folders_renamed += 1,
-            Err(e) => {
-                summary.errors.push(format!(
-                    "Failed to rename folder {:?} -> {:?}: {}",
-                    action.source_folder.file_name().unwrap_or_default(),
-                    action.target_folder.file_name().unwrap_or_default(),
                     e,
                 ));
             }

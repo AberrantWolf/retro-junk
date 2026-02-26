@@ -5,6 +5,7 @@
 //! (progress updates, results) from library-level async operations.
 
 use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
@@ -34,6 +35,24 @@ impl<E> EventReceiver<E> for mpsc::Receiver<E> {
 impl<E> EventReceiver<E> for mpsc::UnboundedReceiver<E> {
     async fn recv(&mut self) -> Option<E> {
         mpsc::UnboundedReceiver::recv(self).await
+    }
+}
+
+/// Resolves when the cancel flag is set. Polls every 100ms.
+pub async fn wait_for_cancel(cancel: &AtomicBool) {
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Run a future to completion, or return `None` if cancelled.
+pub async fn cancellable<F: Future>(future: F, cancel: &AtomicBool) -> Option<F::Output> {
+    tokio::select! {
+        result = future => Some(result),
+        _ = wait_for_cancel(cancel) => None,
     }
 }
 

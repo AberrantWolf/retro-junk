@@ -107,3 +107,89 @@ fn detect_disc_groups_out_of_order_discs() {
     // Members sorted by disc number: disc 1 (idx 1), disc 2 (idx 2), disc 3 (idx 0)
     assert_eq!(groups[0].member_indices, vec![1, 2, 0]);
 }
+
+#[test]
+fn extract_disc_number_none_for_scenario_names() {
+    // Scenario-named discs (e.g., Resident Evil 2 dual-scenario) have no "(Disc N)" tag
+    assert_eq!(
+        extract_disc_number("Resident Evil 2 (USA) (Leon Hen)"),
+        None
+    );
+    assert_eq!(
+        extract_disc_number("Resident Evil 2 (USA) (Claire Hen)"),
+        None
+    );
+}
+
+#[test]
+fn strip_disc_tag_leaves_scenario_names_unchanged() {
+    assert_eq!(
+        strip_disc_tag("Resident Evil 2 (USA) (Leon Hen)"),
+        "Resident Evil 2 (USA) (Leon Hen)"
+    );
+    assert_eq!(
+        strip_disc_tag("Resident Evil 2 (USA) (Claire Hen)"),
+        "Resident Evil 2 (USA) (Claire Hen)"
+    );
+}
+
+// -- derive_base_game_name tests --
+
+#[test]
+fn derive_base_game_name_empty() {
+    assert_eq!(derive_base_game_name(&[]), "");
+}
+
+#[test]
+fn derive_base_game_name_single_with_disc_tag() {
+    assert_eq!(
+        derive_base_game_name(&["Final Fantasy VII (USA) (Disc 1)"]),
+        "Final Fantasy VII (USA)"
+    );
+}
+
+#[test]
+fn derive_base_game_name_single_without_disc_tag() {
+    assert_eq!(
+        derive_base_game_name(&["Crash Bandicoot (USA)"]),
+        "Crash Bandicoot (USA)"
+    );
+}
+
+#[test]
+fn derive_base_game_name_numbered_discs() {
+    assert_eq!(
+        derive_base_game_name(&["FF7 (USA) (Disc 1)", "FF7 (USA) (Disc 2)"]),
+        "FF7 (USA)"
+    );
+}
+
+#[test]
+fn derive_base_game_name_scenario_discs() {
+    assert_eq!(
+        derive_base_game_name(&[
+            "Resident Evil 2 (Japan) (Leon Hen)",
+            "Resident Evil 2 (Japan) (Claire Hen)"
+        ]),
+        "Resident Evil 2 (Japan)"
+    );
+}
+
+#[test]
+fn derive_base_game_name_japanese_scenario() {
+    assert_eq!(
+        derive_base_game_name(&[
+            "Biohazard 2 - Dual Shock Ver. (Japan) (Leon Hen)",
+            "Biohazard 2 - Dual Shock Ver. (Japan) (Claire Hen)"
+        ]),
+        "Biohazard 2 - Dual Shock Ver. (Japan)"
+    );
+}
+
+#[test]
+fn derive_base_game_name_divergent_last_group() {
+    assert_eq!(
+        derive_base_game_name(&["Game (USA) (A Disc)", "Game (USA) (B Disc)"]),
+        "Game (USA)"
+    );
+}

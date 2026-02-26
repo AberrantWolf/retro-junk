@@ -51,6 +51,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 folder_name,
                 entry_idx,
                 rom_stem,
+                app.settings.general.media_dir.clone(),
             );
         }
     }

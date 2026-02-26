@@ -10,7 +10,7 @@ use crate::state::{
     ConsoleState, DatMatchInfo, DatStatus, EntryStatus, Library, LibraryEntry, ScanStatus,
 };
 
-const LIBRARY_CACHE_VERSION: u32 = 3;
+const LIBRARY_CACHE_VERSION: u32 = 4;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LibraryCache {
@@ -74,7 +74,29 @@ fn cache_path(root: &Path) -> PathBuf {
 }
 
 /// Save the current library state to a cache file.
+///
+/// Refuses to overwrite an existing non-empty cache with an empty console list,
+/// which can happen if `on_exit` fires before any scans have completed.
 pub fn save_library(root: &Path, library: &Library) -> std::io::Result<()> {
+    let scanned_count = library
+        .consoles
+        .iter()
+        .filter(|c| c.scan_status == ScanStatus::Scanned)
+        .count();
+
+    if scanned_count == 0 {
+        let existing = cache_path(root);
+        if existing.exists() {
+            log::info!(
+                "Skipping cache save: no scanned consoles and cache already exists at {}",
+                existing.display()
+            );
+            return Ok(());
+        }
+    }
+
+    log::info!("Saving library cache: {} scanned consoles", scanned_count);
+
     let dir = cache_dir();
     std::fs::create_dir_all(&dir)?;
 

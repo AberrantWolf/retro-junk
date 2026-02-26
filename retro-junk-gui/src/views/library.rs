@@ -80,7 +80,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
         // Game table
         if app.selected_console.is_some() {
-            widgets::game_table::show(ui, app);
+            widgets::game_table::show(ui, app, ctx);
         } else {
             ui.centered_and_justified(|ui| {
                 ui.label("Select a console from the tree to view its games.");

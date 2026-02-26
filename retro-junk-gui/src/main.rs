@@ -9,10 +9,12 @@ mod cache;
 mod fonts;
 mod settings;
 mod state;
+mod util;
 mod views;
 mod widgets;
 
 fn main() -> eframe::Result {
+    env_logger::init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])

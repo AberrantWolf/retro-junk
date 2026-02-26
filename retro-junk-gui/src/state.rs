@@ -69,18 +69,52 @@ pub enum DatStatus {
     },
 }
 
-/// Derive the media directory for a console from the root path and folder name.
+/// Derive the media directory for a console from the root path, folder name, and user setting.
 ///
-/// Convention: `root.parent() / "{root_name}-media" / folder_name`
-/// Example: root=`/roms`, folder=`n64` → `/roms-media/n64/`
-pub fn media_dir_for_console(root_path: &Path, folder_name: &str) -> Option<PathBuf> {
-    let parent = root_path.parent()?;
-    let root_name = root_path.file_name()?.to_str()?;
-    Some(
-        parent
-            .join(format!("{}-media", root_name))
-            .join(folder_name),
-    )
+/// If `setting` is empty, uses the legacy `{root}-media` sibling convention.
+/// Otherwise, the setting is treated as a path (absolute or relative to `root_path`).
+pub fn media_dir_for_console(
+    root_path: &Path,
+    folder_name: &str,
+    setting: &str,
+) -> Option<PathBuf> {
+    if setting.is_empty() {
+        // Legacy default: {root}-media sibling
+        let parent = root_path.parent()?;
+        let root_name = root_path.file_name()?.to_str()?;
+        Some(
+            parent
+                .join(format!("{}-media", root_name))
+                .join(folder_name),
+        )
+    } else {
+        Some(resolve_dir(root_path, setting).join(folder_name))
+    }
+}
+
+/// Derive the metadata directory for a console from the root path, folder name, and user setting.
+///
+/// The setting is treated as a path (absolute or relative to `root_path`).
+/// Default setting `"."` places metadata inline with ROMs (ES-DE legacy mode).
+pub fn metadata_dir_for_console(
+    root_path: &Path,
+    folder_name: &str,
+    setting: &str,
+) -> Option<PathBuf> {
+    Some(resolve_dir(root_path, setting).join(folder_name))
+}
+
+/// Resolve a directory setting to an absolute path.
+///
+/// - Absolute paths are used as-is.
+/// - Relative paths are resolved from `root_path`.
+fn resolve_dir(root_path: &Path, setting: &str) -> PathBuf {
+    let p = Path::new(setting);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        root_path.join(p)
+    }
 }
 
 /// Subdirectory name for a media type (matches ES-DE layout).
@@ -163,6 +197,9 @@ impl LibraryEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatMatchInfo {
     pub game_name: String,
+    /// Individual ROM filename from the DAT (e.g., "Game Name (USA).chd").
+    #[serde(default)]
+    pub rom_name: String,
     pub method: MatchMethod,
 }
 
@@ -207,6 +244,34 @@ impl EntryStatus {
             EntryStatus::Unrecognized => 3,
         }
     }
+}
+
+// -- Rename results --
+
+pub struct RenameResult {
+    pub entry_index: usize,
+    pub outcome: RenameOutcome,
+}
+
+pub enum RenameOutcome {
+    Renamed {
+        source: PathBuf,
+        target: PathBuf,
+    },
+    AlreadyCorrect,
+    NoMatch {
+        reason: String,
+    },
+    Error {
+        message: String,
+    },
+    M3uRenamed {
+        target_folder: PathBuf,
+        discs_renamed: usize,
+        playlist_written: bool,
+        folder_renamed: bool,
+        errors: Vec<String>,
+    },
 }
 
 // -- Background operations --
@@ -328,11 +393,20 @@ pub enum AppMessage {
         error: String,
     },
 
-    // -- Media --
+    // -- Media / Scraping --
     MediaLoaded {
         folder_name: String,
         entry_index: usize,
         media: HashMap<MediaType, PathBuf>,
+    },
+    ScrapeEntryFailed {
+        folder_name: String,
+        entry_index: usize,
+        error: String,
+    },
+    ScrapeFatalError {
+        message: String,
+        op_id: u64,
     },
 
     // -- Cache --
@@ -344,6 +418,18 @@ pub enum AppMessage {
     /// to kick off the folder scan. This ensures the cache is merged before
     /// any scan can overwrite it.
     StartFolderScan,
+
+    // -- Export --
+    ExportComplete {
+        folder_name: String,
+        result: Result<String, String>,
+    },
+
+    // -- Rename --
+    RenameComplete {
+        folder_name: String,
+        results: Vec<RenameResult>,
+    },
 
     // -- Operations --
     OperationProgress {
@@ -399,6 +485,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         AppMessage::FolderScanComplete => {
             app.operations
                 .retain(|op| op.description != "Scanning folders...");
+
+            log::info!(
+                "Folder scan complete: {} consoles discovered",
+                app.library.consoles.len()
+            );
 
             // Auto-scan all unscanned consoles if setting is enabled
             if app.settings.general.auto_scan_on_open {
@@ -539,8 +630,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             match index.match_by_serial(serial, game_code.as_deref()) {
                                 SerialLookupResult::Match(m) => {
                                     let game_name = index.games[m.game_index].name.clone();
+                                    let rom_name =
+                                        index.games[m.game_index].roms[m.rom_index].name.clone();
                                     entry.dat_match = Some(DatMatchInfo {
                                         game_name,
+                                        rom_name,
                                         method: m.method,
                                     });
                                     entry.status = EntryStatus::Matched;
@@ -566,8 +660,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         && let Some(m) = index.match_by_hash(hashes.data_size, hashes)
                     {
                         let game_name = index.games[m.game_index].name.clone();
+                        let rom_name = index.games[m.game_index].roms[m.rom_index].name.clone();
                         entry.dat_match = Some(DatMatchInfo {
                             game_name,
+                            rom_name,
                             method: m.method,
                         });
                         entry.status = EntryStatus::Matched;
@@ -586,7 +682,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
 
             // Store the DatIndex for later hash matching
-            app.dat_indices.insert(folder_name.clone(), index);
+            app.dat_indices.insert(folder_name.clone(), Arc::new(index));
 
             app.operations
                 .retain(|op| !op.description.contains("Loading DAT"));
@@ -614,8 +710,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     && let Some(m) = dat_index.match_by_hash(hashes.data_size, &hashes)
                 {
                     let game_name = dat_index.games[m.game_index].name.clone();
+                    let rom_name = dat_index.games[m.game_index].roms[m.rom_index].name.clone();
                     entry.dat_match = Some(DatMatchInfo {
                         game_name,
+                        rom_name,
                         method: m.method,
                     });
                     entry.status = EntryStatus::Matched;
@@ -647,8 +745,41 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             if let Some(ci) = app.library.find_by_folder(&folder_name)
                 && let Some(entry) = app.library.consoles[ci].entries.get_mut(entry_index)
             {
+                // Invalidate stale cached textures when a media path changes
+                if let Some(ref old_media) = entry.media_paths {
+                    for (mt, old_path) in old_media {
+                        let new_path = media.get(mt);
+                        if new_path != Some(old_path) {
+                            let old_uri = format!("bytes://media/{}", old_path.display());
+                            ctx.forget_image(&old_uri);
+                        }
+                    }
+                }
                 entry.media_paths = Some(media);
             }
+        }
+
+        AppMessage::ScrapeEntryFailed {
+            folder_name,
+            entry_index,
+            error,
+        } => {
+            log::warn!(
+                "Scrape failed for {} entry {}: {}",
+                folder_name,
+                entry_index,
+                error
+            );
+            if let Some(ci) = app.library.find_by_folder(&folder_name)
+                && let Some(entry) = app.library.consoles[ci].entries.get_mut(entry_index)
+            {
+                entry.media_paths = Some(HashMap::new());
+            }
+        }
+
+        AppMessage::ScrapeFatalError { message, op_id } => {
+            log::error!("Scrape fatal error: {}", message);
+            app.operations.retain(|op| op.id != op_id);
         }
 
         AppMessage::CacheLoaded { library } => {
@@ -699,6 +830,99 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             if let Some(ref root) = app.root_path.clone() {
                 crate::backend::scan::scan_root_folder(app, root.clone(), ctx);
             }
+        }
+
+        AppMessage::ExportComplete {
+            folder_name,
+            result,
+        } => match result {
+            Ok(path) => {
+                log::info!("Exported gamelist.xml for {}: {}", folder_name, path);
+            }
+            Err(error) => {
+                log::warn!("Export failed for {}: {}", folder_name, error);
+            }
+        },
+
+        AppMessage::RenameComplete {
+            folder_name,
+            results,
+        } => {
+            let mut renamed = 0usize;
+            let mut already = 0usize;
+            let mut failed = 0usize;
+
+            if let Some(ci) = app.library.find_by_folder(&folder_name) {
+                for r in &results {
+                    match &r.outcome {
+                        RenameOutcome::Renamed { target, .. } => {
+                            renamed += 1;
+                            // Update the GameEntry path to reflect the new filename
+                            if let Some(entry) =
+                                app.library.consoles[ci].entries.get_mut(r.entry_index)
+                            {
+                                entry.game_entry =
+                                    retro_junk_lib::scanner::GameEntry::SingleFile(target.clone());
+                            }
+                        }
+                        RenameOutcome::M3uRenamed {
+                            target_folder,
+                            discs_renamed,
+                            errors: m3u_errors,
+                            ..
+                        } => {
+                            renamed += discs_renamed;
+                            failed += m3u_errors.len();
+                            // Update the MultiDisc GameEntry to reflect the new folder
+                            if let Some(entry) =
+                                app.library.consoles[ci].entries.get_mut(r.entry_index)
+                            {
+                                if let retro_junk_lib::scanner::GameEntry::MultiDisc {
+                                    ref mut name,
+                                    ref mut files,
+                                } = entry.game_entry
+                                {
+                                    // Update folder name from the target folder
+                                    if let Some(folder_stem) =
+                                        target_folder.file_name().and_then(|n| n.to_str())
+                                    {
+                                        *name = folder_stem.to_string();
+                                    }
+                                    // Re-enumerate disc files in the new folder
+                                    if let Ok(entries) = std::fs::read_dir(target_folder) {
+                                        let mut new_files: Vec<PathBuf> = entries
+                                            .flatten()
+                                            .map(|e| e.path())
+                                            .filter(|p| {
+                                                p.is_file()
+                                                    && p.extension()
+                                                        .and_then(|e| e.to_str())
+                                                        .map(|e| !e.eq_ignore_ascii_case("m3u"))
+                                                        .unwrap_or(true)
+                                            })
+                                            .collect();
+                                        new_files.sort();
+                                        *files = new_files;
+                                    }
+                                }
+                            }
+                        }
+                        RenameOutcome::AlreadyCorrect => already += 1,
+                        RenameOutcome::NoMatch { .. } | RenameOutcome::Error { .. } => {
+                            failed += 1;
+                        }
+                    }
+                }
+            }
+            log::info!(
+                "Rename {}: {} renamed, {} already correct, {} failed",
+                folder_name,
+                renamed,
+                already,
+                failed
+            );
+            app.rename_results = Some(results);
+            app.save_library_cache();
         }
 
         AppMessage::OperationProgress {

@@ -87,6 +87,73 @@ pub fn detect_disc_groups(entries: &[(usize, &str)]) -> Vec<DiscGroup> {
     result
 }
 
+/// Derive the base game name from a collection of DAT game names for a multi-disc set.
+///
+/// - 0 names → `""`
+/// - 1 name → `strip_disc_tag()` (handles "(Disc N)"; no-ops on others)
+/// - 2+ names → if `strip_disc_tag` changes the first name, use that (fast path for
+///   numbered discs). Otherwise, compute the longest common prefix trimmed to a clean
+///   parenthesized-group boundary (handles scenario-named discs like "Leon Hen"/"Claire Hen").
+pub fn derive_base_game_name(names: &[&str]) -> String {
+    match names.len() {
+        0 => String::new(),
+        1 => strip_disc_tag(names[0]),
+        _ => {
+            let stripped = strip_disc_tag(names[0]);
+            if stripped != names[0] {
+                // Fast path: numbered discs — strip_disc_tag handled it
+                stripped
+            } else {
+                // Scenario discs: find the longest common prefix across all names
+                let prefix = longest_common_prefix(names);
+                trim_to_paren_boundary(&prefix)
+            }
+        }
+    }
+}
+
+/// Compute the longest common prefix of a slice of strings.
+fn longest_common_prefix(strings: &[&str]) -> String {
+    if strings.is_empty() {
+        return String::new();
+    }
+    let first = strings[0].as_bytes();
+    let mut len = first.len();
+    for s in &strings[1..] {
+        len = len.min(s.len());
+        for (i, &b) in first[..len].iter().enumerate() {
+            if s.as_bytes()[i] != b {
+                len = i;
+                break;
+            }
+        }
+    }
+    strings[0][..len].to_string()
+}
+
+/// Trim a string to the last complete parenthesized group boundary.
+///
+/// Strips any trailing incomplete `" (..."` fragment and trailing whitespace.
+/// - `"RE2 (JP) ("` → `"RE2 (JP)"`
+/// - `"RE2 (JP) (Cla"` → `"RE2 (JP)"`
+/// - `"RE2 (JP)"` → `"RE2 (JP)"` (already clean)
+fn trim_to_paren_boundary(s: &str) -> String {
+    let trimmed = s.trim_end();
+    // Count open/close parens to check if balanced
+    let open = trimmed.chars().filter(|&c| c == '(').count();
+    let close = trimmed.chars().filter(|&c| c == ')').count();
+    if open == close {
+        // Already balanced — return as-is (trimmed)
+        return trimmed.to_string();
+    }
+    // There's an incomplete trailing group — find the last " (" that starts it
+    if let Some(pos) = trimmed.rfind(" (") {
+        trimmed[..pos].trim_end().to_string()
+    } else {
+        trimmed.trim_end().to_string()
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/disc_tests.rs"]
 mod tests;

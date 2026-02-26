@@ -33,3 +33,6 @@ toml.workspace = true
 dirs.workspace = true
 sha2.workspace = true
 chrono.workspace = true
+retro-junk-scraper.workspace = true
+tokio.workspace = true
+env_logger.workspace = true
