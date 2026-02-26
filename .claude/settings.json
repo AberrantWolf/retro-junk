@@ -8,6 +8,11 @@
             "type": "command",
             "command": "cargo fmt",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "cargo clippy --workspace --quiet 2>&1 | head -20",
+            "timeout": 120
           }
         ]
       }
