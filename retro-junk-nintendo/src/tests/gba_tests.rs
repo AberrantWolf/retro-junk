@@ -274,7 +274,10 @@ fn test_quick_mode_skips_save_type() {
     rom[0x1000..0x1000 + magic.len()].copy_from_slice(magic);
 
     let analyzer = GbaAnalyzer::new();
-    let options = AnalysisOptions { quick: true, ..Default::default() };
+    let options = AnalysisOptions {
+        quick: true,
+        ..Default::default()
+    };
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert!(result.extra.get("save_type").is_none());
 }

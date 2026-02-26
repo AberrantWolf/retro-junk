@@ -1,4 +1,4 @@
-use retro_junk_catalog::name_parser::{parse_dat_name, region_to_slug, DumpStatus};
+use retro_junk_catalog::name_parser::{DumpStatus, parse_dat_name, region_to_slug};
 
 #[test]
 fn simple_usa_game() {
@@ -108,9 +108,7 @@ fn overdump_status() {
 
 #[test]
 fn complex_name() {
-    let p = parse_dat_name(
-        "Legend of Zelda, The - Ocarina of Time (USA) (Rev B) (En,Fr) [!]",
-    );
+    let p = parse_dat_name("Legend of Zelda, The - Ocarina of Time (USA) (Rev B) (En,Fr) [!]");
     assert_eq!(p.title, "Legend of Zelda, The - Ocarina of Time");
     assert_eq!(p.regions, vec!["USA"]);
     assert_eq!(p.revision, Some("Rev B".to_string()));

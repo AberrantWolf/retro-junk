@@ -856,8 +856,8 @@ fn to_identification(
         // size mismatch when the file is genuinely too small or too large —
         // not when it's a valid ROM size between adjacent powers of 2.
         if rom_data_size != header.rom_size {
-            let is_valid_multi_chip = rom_data_size > header.rom_size / 2
-                && rom_data_size < header.rom_size;
+            let is_valid_multi_chip =
+                rom_data_size > header.rom_size / 2 && rom_data_size < header.rom_size;
             if !is_valid_multi_chip {
                 id.expected_size = Some(header.rom_size + copier);
             }

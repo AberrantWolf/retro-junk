@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::stream::{self, StreamExt};
 use retro_junk_core::disc;
@@ -60,14 +60,14 @@ pub struct ScrapeOptions {
 impl ScrapeOptions {
     /// Create default options for a root path.
     pub fn new(root: PathBuf) -> Self {
-        let metadata_dir = root
-            .parent()
-            .unwrap_or(&root)
-            .join(format!("{}-metadata", root.file_name().unwrap_or_default().to_string_lossy()));
-        let media_dir = root
-            .parent()
-            .unwrap_or(&root)
-            .join(format!("{}-media", root.file_name().unwrap_or_default().to_string_lossy()));
+        let metadata_dir = root.parent().unwrap_or(&root).join(format!(
+            "{}-metadata",
+            root.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let media_dir = root.parent().unwrap_or(&root).join(format!(
+            "{}-media",
+            root.file_name().unwrap_or_default().to_string_lossy()
+        ));
 
         Self {
             root,
@@ -103,15 +103,35 @@ pub enum ScrapeEvent {
     /// Downloading media for a game.
     GameDownloading { index: usize, file: String },
     /// Downloading a specific media type for a game.
-    GameDownloadingMedia { index: usize, file: String, media_type: String },
+    GameDownloadingMedia {
+        index: usize,
+        file: String,
+        media_type: String,
+    },
     /// Game was skipped (existing media, dry run, etc.).
-    GameSkipped { index: usize, file: String, reason: String },
+    GameSkipped {
+        index: usize,
+        file: String,
+        reason: String,
+    },
     /// Game was successfully scraped.
-    GameCompleted { index: usize, file: String, game_name: String },
+    GameCompleted {
+        index: usize,
+        file: String,
+        game_name: String,
+    },
     /// Game lookup failed (non-fatal).
-    GameFailed { index: usize, file: String, reason: String },
+    GameFailed {
+        index: usize,
+        file: String,
+        reason: String,
+    },
     /// A secondary disc was grouped with its primary.
-    GameGrouped { index: usize, file: String, primary_file: String },
+    GameGrouped {
+        index: usize,
+        file: String,
+        primary_file: String,
+    },
     /// A fatal error occurred (quota, auth, server closed). Scraping will stop.
     FatalError { message: String },
     /// All games processed.
@@ -192,8 +212,9 @@ pub async fn scrape_folder(
 ) -> Result<ScrapeResult, ScrapeError> {
     let platform = analyzer.platform();
     let short_name = platform.short_name();
-    let system_id = systems::screenscraper_system_id(platform)
-        .ok_or_else(|| ScrapeError::Config(format!("No ScreenScraper system ID for '{}'", short_name)))?;
+    let system_id = systems::screenscraper_system_id(platform).ok_or_else(|| {
+        ScrapeError::Config(format!("No ScreenScraper system ID for '{}'", short_name))
+    })?;
 
     let extensions = scanner::extension_set(analyzer.file_extensions());
 
@@ -303,7 +324,9 @@ pub async fn scrape_folder(
                 } = result
                 {
                     match tokio::time::timeout(LOCK_TIMEOUT, primary_results.lock()).await {
-                        Ok(mut guard) => { guard.insert(group_idx, scraped.clone()); }
+                        Ok(mut guard) => {
+                            guard.insert(group_idx, scraped.clone());
+                        }
                         Err(_) => log::warn!("primary_results lock timed out"),
                     }
                 }
@@ -328,9 +351,7 @@ pub async fn scrape_folder(
                 log.add(log_entry);
             }
             GameResult::Skipped {
-                scraped,
-                log_entry,
-                ..
+                scraped, log_entry, ..
             } => {
                 if let Some(s) = scraped {
                     games.push(s);
@@ -417,11 +438,8 @@ async fn process_single_game(
 
     // Check if we can skip ScreenScraper entirely using existing media
     if !options.force_redownload {
-        let existing = media::collect_existing_media(
-            &options.media_selection,
-            system_media_dir,
-            rom_stem,
-        );
+        let existing =
+            media::collect_existing_media(&options.media_selection, system_media_dir, rom_stem);
 
         let has_screenshot = existing.contains_key(&retro_junk_frontend::MediaType::Screenshot);
         let has_miximage = miximage_path(system_media_dir, rom_stem).exists();
@@ -432,13 +450,7 @@ async fn process_single_game(
 
             if needs_miximage {
                 let layout = options.miximage_layout.as_ref().unwrap();
-                try_generate_miximage(
-                    &mut media_map,
-                    system_media_dir,
-                    rom_stem,
-                    layout,
-                    false,
-                );
+                try_generate_miximage(&mut media_map, system_media_dir, rom_stem, layout, false);
             } else if has_miximage {
                 media_map.insert(
                     retro_junk_frontend::MediaType::Miximage,
@@ -481,27 +493,26 @@ async fn process_single_game(
 
     // Analyze the ROM to extract serial and regions
     let analysis_opts = AnalysisOptions::new().quick(true).file_path(rom_path);
-    let (serial, rom_regions): (Option<String>, Vec<Region>) =
-        match std::fs::File::open(rom_path) {
-            Ok(mut f) => match analyzer.analyze(&mut f, &analysis_opts) {
-                Ok(info) => (info.serial_number, info.regions),
-                Err(_) => (None, Vec::new()),
-            },
-            Err(e) => {
-                let message = format!("Failed to open file: {}", e);
-                let _ = events.send(ScrapeEvent::GameFailed {
-                    index,
-                    file: filename.clone(),
-                    reason: message.clone(),
-                });
-                return GameResult::Failed {
-                    log_entry: LogEntry::Error {
-                        file: filename,
-                        message,
-                    },
-                };
-            }
-        };
+    let (serial, rom_regions): (Option<String>, Vec<Region>) = match std::fs::File::open(rom_path) {
+        Ok(mut f) => match analyzer.analyze(&mut f, &analysis_opts) {
+            Ok(info) => (info.serial_number, info.regions),
+            Err(_) => (None, Vec::new()),
+        },
+        Err(e) => {
+            let message = format!("Failed to open file: {}", e);
+            let _ = events.send(ScrapeEvent::GameFailed {
+                index,
+                file: filename.clone(),
+                reason: message.clone(),
+            });
+            return GameResult::Failed {
+                log_entry: LogEntry::Error {
+                    file: filename,
+                    message,
+                },
+            };
+        }
+    };
 
     let file_size = rom_path.metadata().map(|m| m.len()).unwrap_or(0);
 
@@ -640,7 +651,11 @@ async fn process_single_game(
             let description = result
                 .game
                 .synopsis_for_language(&effective_language)
-                .or_else(|| result.game.synopsis_for_language(&options.language_fallback))
+                .or_else(|| {
+                    result
+                        .game
+                        .synopsis_for_language(&options.language_fallback)
+                })
                 .or_else(|| result.game.synopsis_for_language("en"))
                 .map(|s| s.to_string());
 

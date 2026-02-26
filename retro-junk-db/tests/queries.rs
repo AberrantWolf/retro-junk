@@ -106,11 +106,7 @@ fn find_by_crc32() {
 #[test]
 fn find_by_sha1() {
     let conn = setup_db();
-    let results = find_media_by_sha1(
-        &conn,
-        "ea343f4e445a9050d4b4fbac2c77d0693b1d0922",
-    )
-    .unwrap();
+    let results = find_media_by_sha1(&conn, "ea343f4e445a9050d4b4fbac2c77d0693b1d0922").unwrap();
     assert_eq!(results.len(), 1);
 }
 
@@ -408,8 +404,7 @@ fn assets_for_release_returns_all() {
 fn asset_coverage_summary_counts() {
     let conn = setup_db_with_assets();
 
-    let (total, with_assets, asset_count) =
-        asset_coverage_summary(&conn, "nes", false).unwrap();
+    let (total, with_assets, asset_count) = asset_coverage_summary(&conn, "nes", false).unwrap();
     assert_eq!(total, 2); // SMB + Zelda
     assert_eq!(with_assets, 1); // Only SMB has assets
     assert_eq!(asset_count, 2); // 2 assets for SMB
@@ -470,8 +465,7 @@ fn asset_queries_with_collection_filter() {
     .unwrap();
 
     // Collection-only coverage: only SMB is in collection
-    let (total, with_assets, _) =
-        asset_coverage_summary(&conn, "nes", true).unwrap();
+    let (total, with_assets, _) = asset_coverage_summary(&conn, "nes", true).unwrap();
     assert_eq!(total, 1); // Only SMB in collection
     assert_eq!(with_assets, 1); // SMB has assets
 

@@ -179,15 +179,14 @@ fn build_strategies(
                 fill_byte: 0x00,
             },
             method_fn: RepairMethod::prepend,
-            description: format!(
-                "prepend {} CD pregap of 0x00",
-                format_bytes(CD_PREGAP_SIZE)
-            ),
+            description: format!("prepend {} CD pregap of 0x00", format_bytes(CD_PREGAP_SIZE)),
         });
     }
 
     // No-Intro cartridge ROMs: if no expected size, try padding to next power of 2
-    if expected_data_size.is_none() && dat_source == DatSource::NoIntro && !is_power_of_two(data_size)
+    if expected_data_size.is_none()
+        && dat_source == DatSource::NoIntro
+        && !is_power_of_two(data_size)
     {
         let next_pow2 = data_size.next_power_of_two();
         let diff = next_pow2 - data_size;
@@ -360,11 +359,7 @@ pub fn plan_repairs(
                 }
             };
 
-            match hasher::compute_crc32_sha1_with_padding(
-                &mut file,
-                analyzer,
-                &strategy.padding,
-            ) {
+            match hasher::compute_crc32_sha1_with_padding(&mut file, analyzer, &strategy.padding) {
                 Ok(hashes) => {
                     if let Some(result) = index.match_by_hash(hashes.data_size, &hashes) {
                         let game = &index.games[result.game_index];
@@ -497,33 +492,29 @@ pub fn execute_repairs(plan: &RepairPlan, create_backup: bool) -> RepairSummary 
             RepairMethod::AppendPadding {
                 fill_byte,
                 bytes_added,
-            } => {
-                match append_to_file(&action.file_path, *fill_byte, *bytes_added) {
-                    Ok(()) => summary.repaired += 1,
-                    Err(e) => {
-                        summary.errors.push(format!(
-                            "Failed to repair {}: {}",
-                            action.file_path.display(),
-                            e,
-                        ));
-                    }
+            } => match append_to_file(&action.file_path, *fill_byte, *bytes_added) {
+                Ok(()) => summary.repaired += 1,
+                Err(e) => {
+                    summary.errors.push(format!(
+                        "Failed to repair {}: {}",
+                        action.file_path.display(),
+                        e,
+                    ));
                 }
-            }
+            },
             RepairMethod::PrependPadding {
                 fill_byte,
                 bytes_added,
-            } => {
-                match prepend_to_file(&action.file_path, *fill_byte, *bytes_added) {
-                    Ok(()) => summary.repaired += 1,
-                    Err(e) => {
-                        summary.errors.push(format!(
-                            "Failed to repair {}: {}",
-                            action.file_path.display(),
-                            e,
-                        ));
-                    }
+            } => match prepend_to_file(&action.file_path, *fill_byte, *bytes_added) {
+                Ok(()) => summary.repaired += 1,
+                Err(e) => {
+                    summary.errors.push(format!(
+                        "Failed to repair {}: {}",
+                        action.file_path.display(),
+                        e,
+                    ));
                 }
-            }
+            },
         }
     }
 
@@ -601,7 +592,8 @@ mod tests {
     #[test]
     fn test_build_strategies_with_expected_size() {
         // File is 2 MB, expected 4 MB — should get append 0x00 and 0xFF strategies
-        let strategies = build_strategies(2 * 1024 * 1024, Some(4 * 1024 * 1024), DatSource::NoIntro);
+        let strategies =
+            build_strategies(2 * 1024 * 1024, Some(4 * 1024 * 1024), DatSource::NoIntro);
         assert_eq!(strategies.len(), 2);
         assert_eq!(strategies[0].padding.append_size, 2 * 1024 * 1024);
         assert_eq!(strategies[0].padding.fill_byte, 0x00);
@@ -637,11 +629,7 @@ mod tests {
     #[test]
     fn test_build_strategies_expected_plus_redump() {
         // Redump with expected size: should get append strategies + pregap strategy
-        let strategies = build_strategies(
-            600_000_000,
-            Some(650_000_000),
-            DatSource::Redump,
-        );
+        let strategies = build_strategies(600_000_000, Some(650_000_000), DatSource::Redump);
         assert_eq!(strategies.len(), 3); // append 0x00, append 0xFF, prepend pregap
     }
 

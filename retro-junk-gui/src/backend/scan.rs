@@ -1,9 +1,9 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use retro_junk_lib::scanner;
 use retro_junk_lib::AnalysisOptions;
+use retro_junk_lib::scanner;
 
 use crate::app::RetroJunkApp;
 use crate::state::{AppMessage, BackgroundOperation, next_operation_id};
@@ -143,7 +143,9 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
             }
         }
 
-        let _ = tx.send(AppMessage::ConsoleScanDone { folder_name: folder_name.clone() });
+        let _ = tx.send(AppMessage::ConsoleScanDone {
+            folder_name: folder_name.clone(),
+        });
         let _ = tx.send(AppMessage::OperationComplete { op_id });
         ctx.request_repaint();
 

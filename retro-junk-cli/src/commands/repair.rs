@@ -138,8 +138,7 @@ pub(crate) fn run_repair(
             Ok(plan) => {
                 pb.finish_and_clear();
 
-                let has_issues =
-                    !plan.no_match.is_empty() || !plan.errors.is_empty();
+                let has_issues = !plan.no_match.is_empty() || !plan.errors.is_empty();
                 let header_level = if has_issues { Level::Warn } else { Level::Info };
                 log::log!(
                     header_level,
@@ -154,10 +153,7 @@ pub(crate) fn run_repair(
                 print_repair_plan(&plan);
 
                 if !dry_run && !plan.repairable.is_empty() {
-                    print!(
-                        "\n  Proceed with {} repairs? [y/N] ",
-                        plan.repairable.len(),
-                    );
+                    print!("\n  Proceed with {} repairs? [y/N] ", plan.repairable.len(),);
                     std::io::stdout().flush().unwrap();
 
                     let mut input = String::new();
@@ -257,7 +253,10 @@ pub(crate) fn print_repair_plan(plan: &RepairPlan) {
             file_name.if_supports_color(Stdout, |t| t.bold()),
             "\u{2192}".if_supports_color(Stdout, |t| t.green()),
             action.game_name,
-            action.method.description().if_supports_color(Stdout, |t| t.dimmed()),
+            action
+                .method
+                .description()
+                .if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
 

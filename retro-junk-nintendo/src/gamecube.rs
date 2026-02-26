@@ -63,7 +63,6 @@ impl RomAnalyzer for GameCubeAnalyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Nintendo - GameCube"]
     }
-
 }
 
 #[cfg(test)]

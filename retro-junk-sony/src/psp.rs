@@ -62,5 +62,4 @@ impl RomAnalyzer for PspAnalyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sony - PlayStation Portable"]
     }
-
 }

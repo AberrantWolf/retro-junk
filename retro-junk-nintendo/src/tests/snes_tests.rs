@@ -454,8 +454,7 @@ fn test_copier_header_detection() {
 #[test]
 fn test_detect_mapping_lorom() {
     let rom = make_snes_rom();
-    let (offset, has_copier) =
-        detect_mapping(&mut Cursor::new(&rom), rom.len() as u64).unwrap();
+    let (offset, has_copier) = detect_mapping(&mut Cursor::new(&rom), rom.len() as u64).unwrap();
     assert_eq!(offset, LOROM_HEADER_BASE);
     assert!(!has_copier);
 }
@@ -463,8 +462,7 @@ fn test_detect_mapping_lorom() {
 #[test]
 fn test_detect_mapping_hirom() {
     let rom = make_snes_hirom();
-    let (offset, has_copier) =
-        detect_mapping(&mut Cursor::new(&rom), rom.len() as u64).unwrap();
+    let (offset, has_copier) = detect_mapping(&mut Cursor::new(&rom), rom.len() as u64).unwrap();
     assert_eq!(offset, HIROM_HEADER_BASE);
     assert!(!has_copier);
 }

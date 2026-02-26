@@ -61,5 +61,4 @@ impl RomAnalyzer for DreamcastAnalyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sega - Dreamcast"]
     }
-
 }

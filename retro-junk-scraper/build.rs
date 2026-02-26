@@ -12,10 +12,7 @@ fn main() {
     let key: &[u8] = b"rj-ss-obfuscation-9f3a7c1b";
 
     let mut code = String::new();
-    code.push_str(&format!(
-        "const OBFUSCATION_KEY: &[u8] = &{:?};\n\n",
-        key
-    ));
+    code.push_str(&format!("const OBFUSCATION_KEY: &[u8] = &{:?};\n\n", key));
 
     // Only embed if BOTH are provided
     match (&dev_id, &dev_password) {

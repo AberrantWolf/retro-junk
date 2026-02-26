@@ -26,7 +26,10 @@ pub(crate) fn run_catalog_verify(
     let console = match ctx.get_by_short_name(&system) {
         Some(c) => c,
         None => {
-            log::error!("Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.", system);
+            log::error!(
+                "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
+                system
+            );
             std::process::exit(1);
         }
     };

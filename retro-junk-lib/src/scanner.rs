@@ -34,10 +34,7 @@ impl GameEntry {
     /// The display name for this entry (filename or .m3u dir name).
     pub fn display_name(&self) -> &str {
         match self {
-            GameEntry::SingleFile(p) => p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("?"),
+            GameEntry::SingleFile(p) => p.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
             GameEntry::MultiDisc { name, .. } => name,
         }
     }
@@ -47,10 +44,7 @@ impl GameEntry {
     /// the full entry name, e.g. `game.m3u.png` for `./game.m3u`).
     pub fn rom_stem(&self) -> &str {
         match self {
-            GameEntry::SingleFile(p) => p
-                .file_stem()
-                .and_then(|n| n.to_str())
-                .unwrap_or("?"),
+            GameEntry::SingleFile(p) => p.file_stem().and_then(|n| n.to_str()).unwrap_or("?"),
             GameEntry::MultiDisc { name, .. } => name,
         }
     }
@@ -97,9 +91,7 @@ pub fn scan_game_entries(
     extensions: &HashSet<String>,
 ) -> std::io::Result<Vec<GameEntry>> {
     let mut game_entries: Vec<GameEntry> = Vec::new();
-    let mut dir_entries: Vec<std::fs::DirEntry> = std::fs::read_dir(folder)?
-        .flatten()
-        .collect();
+    let mut dir_entries: Vec<std::fs::DirEntry> = std::fs::read_dir(folder)?.flatten().collect();
     dir_entries.sort_by_key(|e| e.path());
 
     for entry in &dir_entries {
@@ -190,7 +182,11 @@ fn collect_cue_stems(files: &[PathBuf]) -> HashSet<String> {
                 .map(|e| e.eq_ignore_ascii_case("cue"))
                 .unwrap_or(false)
         })
-        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_lowercase()))
+        .filter_map(|p| {
+            p.file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_lowercase())
+        })
         .collect()
 }
 

@@ -169,7 +169,10 @@ fn test_analyze_iso_basic() {
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.platform.as_deref(), Some("PlayStation"));
     assert_eq!(result.internal_name.as_deref(), Some("TEST_VOLUME"));
-    assert_eq!(result.extra.get("format").map(|s| s.as_str()), Some("ISO 9660"));
+    assert_eq!(
+        result.extra.get("format").map(|s| s.as_str()),
+        Some("ISO 9660")
+    );
 }
 
 #[test]
@@ -253,11 +256,26 @@ fn test_analyze_cue_basic() {
     let analyzer = Ps1Analyzer::new();
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.extra.get("format").map(|s| s.as_str()), Some("CUE Sheet"));
-    assert_eq!(result.extra.get("total_tracks").map(|s| s.as_str()), Some("1"));
-    assert_eq!(result.extra.get("data_tracks").map(|s| s.as_str()), Some("1"));
-    assert_eq!(result.extra.get("audio_tracks").map(|s| s.as_str()), Some("0"));
-    assert_eq!(result.extra.get("bin_file").map(|s| s.as_str()), Some("game.bin"));
+    assert_eq!(
+        result.extra.get("format").map(|s| s.as_str()),
+        Some("CUE Sheet")
+    );
+    assert_eq!(
+        result.extra.get("total_tracks").map(|s| s.as_str()),
+        Some("1")
+    );
+    assert_eq!(
+        result.extra.get("data_tracks").map(|s| s.as_str()),
+        Some("1")
+    );
+    assert_eq!(
+        result.extra.get("audio_tracks").map(|s| s.as_str()),
+        Some("0")
+    );
+    assert_eq!(
+        result.extra.get("bin_file").map(|s| s.as_str()),
+        Some("game.bin")
+    );
 }
 
 #[test]
@@ -276,9 +294,18 @@ fn test_analyze_cue_multi_track() {
     let analyzer = Ps1Analyzer::new();
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.extra.get("total_tracks").map(|s| s.as_str()), Some("3"));
-    assert_eq!(result.extra.get("data_tracks").map(|s| s.as_str()), Some("1"));
-    assert_eq!(result.extra.get("audio_tracks").map(|s| s.as_str()), Some("2"));
+    assert_eq!(
+        result.extra.get("total_tracks").map(|s| s.as_str()),
+        Some("3")
+    );
+    assert_eq!(
+        result.extra.get("data_tracks").map(|s| s.as_str()),
+        Some("1")
+    );
+    assert_eq!(
+        result.extra.get("audio_tracks").map(|s| s.as_str()),
+        Some("2")
+    );
 }
 
 // -- DAT methods --

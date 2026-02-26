@@ -78,12 +78,7 @@ impl Ps1Analyzer {
         id.expected_size = Some(pvd.volume_space_size as u64 * sector_size);
 
         // Read SYSTEM.CNF for serial and region (fast: just 1-2 sector reads)
-        if let Ok(content) = ps1_disc::find_file_in_root(
-            reader,
-            format,
-            &pvd,
-            "SYSTEM.CNF",
-        ) {
+        if let Ok(content) = ps1_disc::find_file_in_root(reader, format, &pvd, "SYSTEM.CNF") {
             self.apply_system_cnf(&content, &mut id);
         }
 
@@ -129,11 +124,9 @@ impl Ps1Analyzer {
         // Store referenced filenames
         let filenames: Vec<&str> = sheet.files.iter().map(|f| f.filename.as_str()).collect();
         if filenames.len() == 1 {
-            id.extra
-                .insert("bin_file".into(), filenames[0].to_string());
+            id.extra.insert("bin_file".into(), filenames[0].to_string());
         } else {
-            id.extra
-                .insert("bin_files".into(), filenames.join(", "));
+            id.extra.insert("bin_files".into(), filenames.join(", "));
         }
 
         // Open the first data track BIN and extract serial/volume ID
@@ -142,7 +135,9 @@ impl Ps1Analyzer {
             if let Some(parent) = file_path.parent() {
                 // Find the first file with a data track
                 if let Some(first_data_file) = sheet.files.iter().find(|f| {
-                    f.tracks.iter().any(|t| t.mode.to_uppercase().contains("MODE"))
+                    f.tracks
+                        .iter()
+                        .any(|t| t.mode.to_uppercase().contains("MODE"))
                 }) {
                     let bin_path = parent.join(&first_data_file.filename);
                     if bin_path.exists() {
@@ -156,8 +151,7 @@ impl Ps1Analyzer {
                                 if let Ok(pvd) = ps1_disc::read_pvd(&mut bin_file, bin_format) {
                                     if pvd.system_identifier.starts_with("PLAYSTATION") {
                                         if !pvd.volume_identifier.is_empty() {
-                                            id.internal_name =
-                                                Some(pvd.volume_identifier.clone());
+                                            id.internal_name = Some(pvd.volume_identifier.clone());
                                         }
                                         if let Ok(content) = ps1_disc::find_file_in_root(
                                             &mut bin_file,
@@ -219,8 +213,7 @@ impl Ps1Analyzer {
     fn apply_system_cnf(&self, content: &[u8], id: &mut RomIdentification) {
         let text = String::from_utf8_lossy(content);
         if let Ok(cnf) = ps1_disc::parse_system_cnf(&text) {
-            id.extra
-                .insert("boot_path".into(), cnf.boot_path.clone());
+            id.extra.insert("boot_path".into(), cnf.boot_path.clone());
             if let Some(ref vmode) = cnf.vmode {
                 id.extra.insert("vmode".into(), vmode.clone());
             }

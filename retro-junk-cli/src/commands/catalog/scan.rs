@@ -34,7 +34,10 @@ pub(crate) fn run_catalog_scan(
     let console = match ctx.get_by_short_name(&system) {
         Some(c) => c,
         None => {
-            log::error!("Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.", system);
+            log::error!(
+                "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
+                system
+            );
             std::process::exit(1);
         }
     };
@@ -47,9 +50,7 @@ pub(crate) fn run_catalog_scan(
         }
     };
 
-    let options = ScanOptions {
-        user_id,
-    };
+    let options = ScanOptions { user_id };
 
     struct CliScanProgress {
         quiet: bool,
@@ -137,7 +138,10 @@ pub(crate) fn run_catalog_scan(
                 for f in &result.unmatched {
                     log::info!(
                         "  {} (CRC32: {}, size: {})",
-                        f.path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
+                        f.path
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default(),
                         f.crc32,
                         f.file_size,
                     );

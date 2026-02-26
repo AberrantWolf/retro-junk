@@ -64,5 +64,4 @@ impl RomAnalyzer for WiiAnalyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Nintendo - Wii"]
     }
-
 }

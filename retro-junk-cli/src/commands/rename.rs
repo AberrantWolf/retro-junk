@@ -264,7 +264,11 @@ pub(crate) fn run_rename(
         for console in ctx.consoles() {
             let dat_names = console.analyzer.dat_names();
             if !dat_names.is_empty() {
-                log::info!("  {} [{}]", console.metadata.short_name, dat_names.join(", "));
+                log::info!(
+                    "  {} [{}]",
+                    console.metadata.short_name,
+                    dat_names.join(", ")
+                );
             }
         }
         return;
@@ -393,13 +397,11 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
         let hash_suffix = match (&w.crc32, w.matched_by_hash) {
             (Some(crc), true) => format!(
                 " {}",
-                format!("(matched by CRC32: {crc})")
-                    .if_supports_color(Stdout, |t| t.dimmed()),
+                format!("(matched by CRC32: {crc})").if_supports_color(Stdout, |t| t.dimmed()),
             ),
             (Some(crc), false) => format!(
                 " {}",
-                format!("(CRC32: {crc}, no DAT match)")
-                    .if_supports_color(Stdout, |t| t.dimmed()),
+                format!("(CRC32: {crc}, no DAT match)").if_supports_color(Stdout, |t| t.dimmed()),
             ),
             _ => String::new(),
         };
@@ -461,10 +463,7 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
 
     // Broken CUE files
     for cue_path in &plan.broken_cue_files {
-        let name = cue_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
+        let name = cue_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         log::info!(
             "  {} {} (broken FILE references)",
             "\u{1F527}".if_supports_color(Stdout, |t| t.yellow()),
@@ -474,10 +473,7 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
 
     // Broken M3U playlists
     for m3u_path in &plan.broken_m3u_files {
-        let name = m3u_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
+        let name = m3u_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         log::info!(
             "  {} {} (broken playlist entries)",
             "\u{1F527}".if_supports_color(Stdout, |t| t.yellow()),
@@ -487,14 +483,8 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
 
     // Misnamed M3U playlists
     for (source, target) in &plan.misnamed_m3u_playlists {
-        let source_name = source
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
-        let target_name = target
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
+        let source_name = source.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let target_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         log::info!(
             "  {} {} {} {} {}",
             "\u{2192}".if_supports_color(Stdout, |t| t.green()),

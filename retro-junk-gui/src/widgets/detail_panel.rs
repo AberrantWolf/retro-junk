@@ -1,7 +1,7 @@
 use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
-use crate::state::{EntryStatus, DISPLAY_MEDIA_TYPES};
+use crate::state::{DISPLAY_MEDIA_TYPES, EntryStatus};
 
 /// Render the detail panel for the focused entry.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -16,7 +16,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
     };
 
-    if app.library.consoles.get(console_idx)
+    if app
+        .library
+        .consoles
+        .get(console_idx)
         .and_then(|c| c.entries.get(entry_idx))
         .is_none()
     {
@@ -134,8 +137,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     let auto_label = if detected_regions.is_empty() {
                         "Auto-detect".to_string()
                     } else {
-                        let names: Vec<&str> =
-                            detected_regions.iter().map(|r| r.name()).collect();
+                        let names: Vec<&str> = detected_regions.iter().map(|r| r.name()).collect();
                         format!("Auto-detect ({})", names.join(", "))
                     };
                     if ui
@@ -300,7 +302,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             if let Some(ref md5) = hashes.md5 {
                 detail_row(ui, "MD5", md5);
             }
-            detail_row(ui, "Data Size", &retro_junk_lib::util::format_bytes(hashes.data_size));
+            detail_row(
+                ui,
+                "Data Size",
+                &retro_junk_lib::util::format_bytes(hashes.data_size),
+            );
         }
 
         // DAT match

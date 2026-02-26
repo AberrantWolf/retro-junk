@@ -51,9 +51,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
     // Status summary
     let total = console.entries.len();
-    let matched = console.entries.iter().filter(|e| e.status == EntryStatus::Matched).count();
-    let ambiguous = console.entries.iter().filter(|e| e.status == EntryStatus::Ambiguous).count();
-    let unrecognized = console.entries.iter().filter(|e| e.status == EntryStatus::Unrecognized).count();
+    let matched = console
+        .entries
+        .iter()
+        .filter(|e| e.status == EntryStatus::Matched)
+        .count();
+    let ambiguous = console
+        .entries
+        .iter()
+        .filter(|e| e.status == EntryStatus::Ambiguous)
+        .count();
+    let unrecognized = console
+        .entries
+        .iter()
+        .filter(|e| e.status == EntryStatus::Unrecognized)
+        .count();
     let showing = filtered_indices.len();
 
     // Pre-extract row data to avoid borrowing issues
@@ -65,10 +77,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 entry_idx: i,
                 status: entry.status,
                 name: entry.game_entry.display_name().to_string(),
-                serial: entry.identification.as_ref().and_then(|id| id.serial_number.clone()),
-                internal_name: entry.identification.as_ref().and_then(|id| id.internal_name.clone()),
+                serial: entry
+                    .identification
+                    .as_ref()
+                    .and_then(|id| id.serial_number.clone()),
+                internal_name: entry
+                    .identification
+                    .as_ref()
+                    .and_then(|id| id.internal_name.clone()),
                 regions: {
-                    let codes: Vec<&str> = entry.effective_regions().iter().map(|r| r.code()).collect();
+                    let codes: Vec<&str> =
+                        entry.effective_regions().iter().map(|r| r.code()).collect();
                     let text = codes.join(", ");
                     if entry.region_override.is_some() && !text.is_empty() {
                         format!("{}*", text)
@@ -103,25 +122,39 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             .striped(true)
             .resizable(true)
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::exact(20.0))          // Status badge
-            .column(Column::initial(280.0).at_least(100.0))  // Name
-            .column(Column::initial(120.0).at_least(60.0))   // Serial
-            .column(Column::initial(140.0).at_least(60.0))   // Internal Name
-            .column(Column::initial(80.0).at_least(40.0))    // Region
-            .column(Column::initial(80.0).at_least(60.0))    // CRC32
-            .column(Column::initial(200.0).at_least(80.0))   // DAT Match
+            .column(Column::exact(20.0)) // Status badge
+            .column(Column::initial(280.0).at_least(100.0)) // Name
+            .column(Column::initial(120.0).at_least(60.0)) // Serial
+            .column(Column::initial(140.0).at_least(60.0)) // Internal Name
+            .column(Column::initial(80.0).at_least(40.0)) // Region
+            .column(Column::initial(80.0).at_least(60.0)) // CRC32
+            .column(Column::initial(200.0).at_least(80.0)) // DAT Match
             .min_scrolled_height(0.0)
             .max_scroll_height(available_height);
 
         table
             .header(20.0, |mut header| {
-                header.col(|ui| { ui.strong(""); });
-                header.col(|ui| { ui.strong("Name"); });
-                header.col(|ui| { ui.strong("Serial"); });
-                header.col(|ui| { ui.strong("Internal Name"); });
-                header.col(|ui| { ui.strong("Region"); });
-                header.col(|ui| { ui.strong("CRC32"); });
-                header.col(|ui| { ui.strong("DAT Match"); });
+                header.col(|ui| {
+                    ui.strong("");
+                });
+                header.col(|ui| {
+                    ui.strong("Name");
+                });
+                header.col(|ui| {
+                    ui.strong("Serial");
+                });
+                header.col(|ui| {
+                    ui.strong("Internal Name");
+                });
+                header.col(|ui| {
+                    ui.strong("Region");
+                });
+                header.col(|ui| {
+                    ui.strong("CRC32");
+                });
+                header.col(|ui| {
+                    ui.strong("DAT Match");
+                });
             })
             .body(|body| {
                 body.rows(text_height, row_data.len(), |mut row| {
@@ -148,55 +181,60 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
                     // Name
                     row.col(|ui| {
-                        let response = ui.add(
-                            egui::Label::new(&data.name).sense(egui::Sense::click()),
-                        );
-                        if response.clicked() { clicked = true; }
+                        let response =
+                            ui.add(egui::Label::new(&data.name).sense(egui::Sense::click()));
+                        if response.clicked() {
+                            clicked = true;
+                        }
                     });
 
                     // Serial
                     row.col(|ui| {
                         let text = data.serial.as_deref().unwrap_or("");
-                        let response = ui.add(
-                            egui::Label::new(text).sense(egui::Sense::click()),
-                        );
-                        if response.clicked() { clicked = true; }
+                        let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                        if response.clicked() {
+                            clicked = true;
+                        }
                     });
 
                     // Internal Name
                     row.col(|ui| {
                         let text = data.internal_name.as_deref().unwrap_or("");
-                        let response = ui.add(
-                            egui::Label::new(text).sense(egui::Sense::click()),
-                        );
-                        if response.clicked() { clicked = true; }
+                        let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                        if response.clicked() {
+                            clicked = true;
+                        }
                     });
 
                     // Region
                     row.col(|ui| {
-                        let text = if data.regions.is_empty() { "" } else { &data.regions };
-                        let response = ui.add(
-                            egui::Label::new(text).sense(egui::Sense::click()),
-                        );
-                        if response.clicked() { clicked = true; }
+                        let text = if data.regions.is_empty() {
+                            ""
+                        } else {
+                            &data.regions
+                        };
+                        let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                        if response.clicked() {
+                            clicked = true;
+                        }
                     });
 
                     // CRC32
                     row.col(|ui| {
                         let text = data.crc32.as_deref().unwrap_or("");
-                        let response = ui.add(
-                            egui::Label::new(text).sense(egui::Sense::click()),
-                        );
-                        if response.clicked() { clicked = true; }
+                        let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                        if response.clicked() {
+                            clicked = true;
+                        }
                     });
 
                     // DAT Match
                     row.col(|ui| {
                         let text = data.dat_match.as_deref().unwrap_or("");
-                        let response = ui.add(
-                            egui::Label::new(text).sense(egui::Sense::click()),
-                        );
-                        if response.clicked() { clicked = true; }
+                        let response = ui.add(egui::Label::new(text).sense(egui::Sense::click()));
+                        if response.clicked() {
+                            clicked = true;
+                        }
                     });
 
                     if clicked {

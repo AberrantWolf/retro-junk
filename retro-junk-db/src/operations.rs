@@ -1,7 +1,7 @@
 //! CRUD operations for all catalog entity types.
 
 use retro_junk_catalog::types::*;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -17,7 +17,10 @@ pub enum OperationError {
 // ── Platform Operations ─────────────────────────────────────────────────────
 
 /// Insert or update a platform from catalog data.
-pub fn upsert_platform(conn: &Connection, platform: &CatalogPlatform) -> Result<(), OperationError> {
+pub fn upsert_platform(
+    conn: &Connection,
+    platform: &CatalogPlatform,
+) -> Result<(), OperationError> {
     conn.execute(
         "INSERT INTO platforms (id, display_name, short_name, manufacturer, generation, media_type, release_year, description, core_platform)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -94,9 +97,8 @@ pub fn find_company_by_alias(
     conn: &Connection,
     alias: &str,
 ) -> Result<Option<String>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT company_id FROM company_aliases WHERE LOWER(alias) = LOWER(?1) LIMIT 1",
-    )?;
+    let mut stmt = conn
+        .prepare("SELECT company_id FROM company_aliases WHERE LOWER(alias) = LOWER(?1) LIMIT 1")?;
     let result = stmt.query_row(params![alias], |row| row.get::<_, String>(0));
     match result {
         Ok(id) => Ok(Some(id)),
@@ -108,7 +110,11 @@ pub fn find_company_by_alias(
 // ── Work Operations ─────────────────────────────────────────────────────────
 
 /// Insert a new work. Returns the generated ID.
-pub fn insert_work(conn: &Connection, id: &str, canonical_name: &str) -> Result<(), OperationError> {
+pub fn insert_work(
+    conn: &Connection,
+    id: &str,
+    canonical_name: &str,
+) -> Result<(), OperationError> {
     conn.execute(
         "INSERT INTO works (id, canonical_name) VALUES (?1, ?2)",
         params![id, canonical_name],
@@ -118,9 +124,7 @@ pub fn insert_work(conn: &Connection, id: &str, canonical_name: &str) -> Result<
 
 /// Find a work by canonical name (exact match).
 pub fn find_work_by_name(conn: &Connection, name: &str) -> Result<Option<String>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id FROM works WHERE canonical_name = ?1 LIMIT 1",
-    )?;
+    let mut stmt = conn.prepare("SELECT id FROM works WHERE canonical_name = ?1 LIMIT 1")?;
     let result = stmt.query_row(params![name], |row| row.get::<_, String>(0));
     match result {
         Ok(id) => Ok(Some(id)),
@@ -219,32 +223,35 @@ pub fn find_release(
          WHERE work_id = ?1 AND platform_id = ?2 AND region = ?3
            AND revision = ?4 AND variant = ?5",
     )?;
-    let result = stmt.query_row(params![work_id, platform_id, region, revision, variant], |row| {
-        Ok(Release {
-            id: row.get(0)?,
-            work_id: row.get(1)?,
-            platform_id: row.get(2)?,
-            region: row.get(3)?,
-            revision: row.get(4)?,
-            variant: row.get(5)?,
-            title: row.get(6)?,
-            alt_title: row.get(7)?,
-            publisher_id: row.get(8)?,
-            developer_id: row.get(9)?,
-            release_date: row.get(10)?,
-            game_serial: row.get(11)?,
-            genre: row.get(12)?,
-            players: row.get(13)?,
-            rating: row.get(14)?,
-            description: row.get(15)?,
-            screen_title: row.get(16)?,
-            cover_title: row.get(17)?,
-            screenscraper_id: row.get(18)?,
-            scraper_not_found: row.get(19)?,
-            created_at: row.get(20)?,
-            updated_at: row.get(21)?,
-        })
-    });
+    let result = stmt.query_row(
+        params![work_id, platform_id, region, revision, variant],
+        |row| {
+            Ok(Release {
+                id: row.get(0)?,
+                work_id: row.get(1)?,
+                platform_id: row.get(2)?,
+                region: row.get(3)?,
+                revision: row.get(4)?,
+                variant: row.get(5)?,
+                title: row.get(6)?,
+                alt_title: row.get(7)?,
+                publisher_id: row.get(8)?,
+                developer_id: row.get(9)?,
+                release_date: row.get(10)?,
+                game_serial: row.get(11)?,
+                genre: row.get(12)?,
+                players: row.get(13)?,
+                rating: row.get(14)?,
+                description: row.get(15)?,
+                screen_title: row.get(16)?,
+                cover_title: row.get(17)?,
+                screenscraper_id: row.get(18)?,
+                scraper_not_found: row.get(19)?,
+                created_at: row.get(20)?,
+                updated_at: row.get(21)?,
+            })
+        },
+    );
     match result {
         Ok(r) => Ok(Some(r)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -448,10 +455,7 @@ fn row_to_media(
 // ── Media Asset Operations ──────────────────────────────────────────────────
 
 /// Insert a media asset.
-pub fn insert_media_asset(
-    conn: &Connection,
-    asset: &MediaAsset,
-) -> Result<i64, OperationError> {
+pub fn insert_media_asset(conn: &Connection, asset: &MediaAsset) -> Result<i64, OperationError> {
     conn.execute(
         "INSERT INTO media_assets (release_id, media_id, asset_type, region, source,
              file_path, source_url, scraped, file_hash, width, height)
@@ -529,10 +533,7 @@ pub fn insert_import_log(conn: &Connection, log: &ImportLog) -> Result<i64, Oper
 // ── Disagreement Operations ─────────────────────────────────────────────────
 
 /// Insert a disagreement record.
-pub fn insert_disagreement(
-    conn: &Connection,
-    d: &Disagreement,
-) -> Result<i64, OperationError> {
+pub fn insert_disagreement(conn: &Connection, d: &Disagreement) -> Result<i64, OperationError> {
     conn.execute(
         "INSERT INTO disagreements (entity_type, entity_id, field, source_a, value_a,
              source_b, value_b)
@@ -611,9 +612,8 @@ pub fn apply_disagreement_resolution(
         }
     };
 
-    let sql = format!(
-        "UPDATE {table} SET {field} = ?1, updated_at = datetime('now') WHERE id = ?2"
-    );
+    let sql =
+        format!("UPDATE {table} SET {field} = ?1, updated_at = datetime('now') WHERE id = ?2");
 
     let changed = conn.execute(&sql, params![value, entity_id])?;
     if changed == 0 {
@@ -664,8 +664,8 @@ pub fn seed_from_catalog(
     conn: &Connection,
     catalog_dir: &std::path::Path,
 ) -> Result<SeedStats, OperationError> {
-    let (platforms, companies, overrides) =
-        retro_junk_catalog::yaml::load_catalog(catalog_dir).map_err(|e| {
+    let (platforms, companies, overrides) = retro_junk_catalog::yaml::load_catalog(catalog_dir)
+        .map_err(|e| {
             OperationError::Sqlite(rusqlite::Error::InvalidParameterName(e.to_string()))
         })?;
 

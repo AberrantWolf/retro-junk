@@ -62,7 +62,11 @@ impl ScrapeLog {
         let mut summary = LogSummary::default();
         for entry in &self.entries {
             match entry {
-                LogEntry::Success { method, media_downloaded, .. } => {
+                LogEntry::Success {
+                    method,
+                    media_downloaded,
+                    ..
+                } => {
                     summary.total_success += 1;
                     summary.media_downloaded += media_downloaded.len();
                     match method {
@@ -88,11 +92,18 @@ impl ScrapeLog {
         let summary = self.summary();
 
         writeln!(file, "=== Scrape Log ===")?;
-        writeln!(file, "Date: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))?;
+        writeln!(
+            file,
+            "Date: {}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+        )?;
         writeln!(file)?;
         writeln!(file, "--- Summary ---")?;
-        writeln!(file, "Successful: {} (serial: {}, filename: {}, hash: {})",
-            summary.total_success, summary.by_serial, summary.by_filename, summary.by_hash)?;
+        writeln!(
+            file,
+            "Successful: {} (serial: {}, filename: {}, hash: {})",
+            summary.total_success, summary.by_serial, summary.by_filename, summary.by_hash
+        )?;
         writeln!(file, "Grouped discs: {}", summary.total_grouped)?;
         writeln!(file, "Partial: {}", summary.total_partial)?;
         writeln!(file, "Unidentified: {}", summary.total_unidentified)?;
@@ -104,19 +115,42 @@ impl ScrapeLog {
 
         for entry in &self.entries {
             match entry {
-                LogEntry::Success { file: f, game_name, method, media_downloaded } => {
-                    writeln!(file, "[OK] {} -> \"{}\" (matched by {})", f, game_name, method)?;
+                LogEntry::Success {
+                    file: f,
+                    game_name,
+                    method,
+                    media_downloaded,
+                } => {
+                    writeln!(
+                        file,
+                        "[OK] {} -> \"{}\" (matched by {})",
+                        f, game_name, method
+                    )?;
                     if !media_downloaded.is_empty() {
                         writeln!(file, "     Media: {}", media_downloaded.join(", "))?;
                     }
                 }
-                LogEntry::Partial { file: f, game_name, warnings } => {
+                LogEntry::Partial {
+                    file: f,
+                    game_name,
+                    warnings,
+                } => {
                     writeln!(file, "[PARTIAL] {} -> \"{}\"", f, game_name)?;
                     for w in warnings {
                         writeln!(file, "     Warning: {}", w)?;
                     }
                 }
-                LogEntry::Unidentified { file: f, serial_tried, scraper_serial_tried, filename_tried, hashes_tried, crc32, md5, sha1, errors } => {
+                LogEntry::Unidentified {
+                    file: f,
+                    serial_tried,
+                    scraper_serial_tried,
+                    filename_tried,
+                    hashes_tried,
+                    crc32,
+                    md5,
+                    sha1,
+                    errors,
+                } => {
                     writeln!(file, "[UNIDENTIFIED] {}", f)?;
                     if let Some(serial) = serial_tried {
                         writeln!(file, "     ROM serial: {}", serial)?;
@@ -143,8 +177,16 @@ impl ScrapeLog {
                         writeln!(file, "     Error: {}", e)?;
                     }
                 }
-                LogEntry::GroupedDisc { file: f, primary_file, game_name } => {
-                    writeln!(file, "[GROUPED] {} -> \"{}\" (grouped with {})", f, game_name, primary_file)?;
+                LogEntry::GroupedDisc {
+                    file: f,
+                    primary_file,
+                    game_name,
+                } => {
+                    writeln!(
+                        file,
+                        "[GROUPED] {} -> \"{}\" (grouped with {})",
+                        f, game_name, primary_file
+                    )?;
                 }
                 LogEntry::Error { file: f, message } => {
                     writeln!(file, "[ERROR] {}: {}", f, message)?;

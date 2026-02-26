@@ -68,10 +68,7 @@ pub struct DatIndex {
 /// spaces (e.g., "SLPS 00700") vs dashes (e.g., "SLPS-00700"), so we
 /// strip both for reliable matching.
 fn normalize_serial(serial: &str) -> String {
-    serial
-        .to_uppercase()
-        .replace(' ', "")
-        .replace('-', "")
+    serial.to_uppercase().replace(' ', "").replace('-', "")
 }
 
 impl DatIndex {
@@ -175,11 +172,7 @@ impl DatIndex {
     /// The `game_code` parameter is the platform-specific extracted code
     /// (e.g., `NSME` from `NUS-NSME-USA`), provided by the analyzer's
     /// `extract_dat_game_code()` method.
-    pub fn match_by_serial(
-        &self,
-        serial: &str,
-        game_code: Option<&str>,
-    ) -> SerialLookupResult {
+    pub fn match_by_serial(&self, serial: &str, game_code: Option<&str>) -> SerialLookupResult {
         let norm = normalize_serial(serial);
 
         // Try exact match first
@@ -223,11 +216,7 @@ impl DatIndex {
     /// - Multiple entries but a `-0` suffix resolves uniquely → use that
     ///   (preserves multi-disc behavior where bare serial is shared)
     /// - Multiple entries with no suffix resolution → Ambiguous
-    fn resolve_serial_entries(
-        &self,
-        entries: &[(usize, usize)],
-        norm: &str,
-    ) -> SerialLookupResult {
+    fn resolve_serial_entries(&self, entries: &[(usize, usize)], norm: &str) -> SerialLookupResult {
         if entries.len() == 1 {
             let (gi, ri) = entries[0];
             // Check if a "-0" suffixed entry exists — if so, the bare serial

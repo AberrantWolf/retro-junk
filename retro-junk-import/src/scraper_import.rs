@@ -6,8 +6,8 @@
 //! and optionally downloads media assets.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use futures::stream::{self, StreamExt};
@@ -298,12 +298,8 @@ pub async fn enrich_releases(
             };
 
             // ── Phase 1: DB Read — pre-fetch releases + media ──────────────
-            let releases = queries::releases_to_enrich(
-                conn,
-                platform_id,
-                options.skip_existing,
-                batch_limit,
-            )?;
+            let releases =
+                queries::releases_to_enrich(conn, platform_id, options.skip_existing, batch_limit)?;
 
             if releases.is_empty() {
                 break;
@@ -410,11 +406,7 @@ pub async fn enrich_releases(
                     // (and spawns) a new item when a JoinHandle resolves.
                     tokio::spawn(async move {
                         let title = item.release.title.clone();
-                        log::debug!(
-                            "[worker:{}] starting lookup for '{}'",
-                            item.index,
-                            title,
-                        );
+                        log::debug!("[worker:{}] starting lookup for '{}'", item.index, title,);
                         let worker_start = Instant::now();
 
                         if cancel.load(Ordering::Acquire) {
@@ -422,7 +414,11 @@ pub async fn enrich_releases(
                             return LookupOutcome::Skipped { index: item.index };
                         }
                         if item.media_entries.is_empty() {
-                            log::debug!("[worker:{}] no media entries, skipping '{}'", item.index, title);
+                            log::debug!(
+                                "[worker:{}] no media entries, skipping '{}'",
+                                item.index,
+                                title
+                            );
                             return LookupOutcome::Skipped { index: item.index };
                         }
 
@@ -532,304 +528,300 @@ pub async fn enrich_releases(
                 WATCHDOG_TIMEOUT.as_secs(),
             );
 
-        loop {
-            let wait_start = Instant::now();
+            loop {
+                let wait_start = Instant::now();
 
-            // Select between:
-            //  - stream.next() wrapped in a tokio timer watchdog
-            //  - wall-clock watchdog notification (from the OS thread)
-            //
-            // The tokio timer may not fire after machine sleep, so
-            // the wall-clock watchdog acts as a reliable fallback by
-            // notifying us directly via Notify.
-            let stream_result = tokio::select! {
-                biased; // check watchdog notification first
+                // Select between:
+                //  - stream.next() wrapped in a tokio timer watchdog
+                //  - wall-clock watchdog notification (from the OS thread)
+                //
+                // The tokio timer may not fire after machine sleep, so
+                // the wall-clock watchdog acts as a reliable fallback by
+                // notifying us directly via Notify.
+                let stream_result = tokio::select! {
+                    biased; // check watchdog notification first
 
-                _ = wd_notify.notified() => {
-                    // Wall-clock watchdog fired — cancel already set by the thread.
-                    let msg = format!(
-                        "Wall-clock watchdog triggered ({}/{} received, batch running {}s), stopping.",
-                        results_received,
-                        total,
-                        batch_start.elapsed().as_secs(),
-                    );
-                    let _ = events.try_send(EnrichEvent::FatalError {
-                        message: msg.clone(),
-                    });
-                    log::warn!("{}", msg);
-                    break;
-                }
-
-                result = tokio::time::timeout(WATCHDOG_TIMEOUT, stream.next()) => {
-                    result
-                }
-            };
-
-            let outcome = match stream_result {
-                Ok(Some(Ok(outcome))) => {
-                    results_received += 1;
-                    wall_clock_activity.store(epoch_secs(), Ordering::Release);
-                    log::debug!(
-                        "Phase 3: received result {}/{} (waited {}ms, batch elapsed {}s)",
-                        results_received,
-                        total,
-                        wait_start.elapsed().as_millis(),
-                        batch_start.elapsed().as_secs(),
-                    );
-                    outcome
-                }
-                Ok(Some(Err(join_err))) => {
-                    // Spawned task panicked — log and continue
-                    results_received += 1;
-                    log::error!(
-                        "Phase 3: lookup task panicked ({}/{}): {}",
-                        results_received,
-                        total,
-                        join_err,
-                    );
-                    consecutive_errors += 1;
-                    stats.releases_processed += 1;
-                    stats.errors += 1;
-                    continue;
-                }
-                Ok(None) => {
-                    log::debug!(
-                        "Phase 3: stream exhausted ({} results in {}s)",
-                        results_received,
-                        batch_start.elapsed().as_secs(),
-                    );
-                    break;
-                }
-                Err(_watchdog) => {
-                    cancel.store(true, Ordering::Release);
-                    let msg = format!(
-                        "Tokio watchdog: no result in {}s ({}/{} received, batch running {}s), stopping.",
-                        WATCHDOG_TIMEOUT.as_secs(),
-                        results_received,
-                        total,
-                        batch_start.elapsed().as_secs(),
-                    );
-                    let _ = events.try_send(EnrichEvent::FatalError {
-                        message: msg.clone(),
-                    });
-                    log::warn!("{}", msg);
-                    break;
-                }
-            };
-            stats.releases_processed += 1;
-
-            match outcome {
-                LookupOutcome::Found {
-                    index,
-                    release,
-                    result,
-                    mapped,
-                } => {
-                    consecutive_errors = 0;
-                    let game = &result.game;
-
-                    // 1. Download assets (async, no DB) — do this before
-                    //    the transaction so network I/O doesn't hold a lock.
-                    let downloaded_assets = if options.download_assets {
-                        if let Some(ref asset_dir) = options.asset_dir {
-                            log::debug!(
-                                "Downloading assets for '{}' (timeout: {}s)",
-                                release.title,
-                                ASSET_DOWNLOAD_TIMEOUT.as_secs(),
-                            );
-                            match tokio::time::timeout(
-                                ASSET_DOWNLOAD_TIMEOUT,
-                                download_assets_only(
-                                    &client,
-                                    game,
-                                    &release.id,
-                                    asset_dir,
-                                    &options.preferred_region,
-                                ),
-                            )
-                            .await
-                            {
-                                Ok(Ok(assets)) => assets,
-                                Ok(Err(e)) => {
-                                    log::warn!(
-                                        "Asset download failed for '{}': {}",
-                                        release.title, e
-                                    );
-                                    vec![]
-                                }
-                                Err(_timeout) => {
-                                    log::warn!(
-                                        "Asset download timed out after {}s for '{}'",
-                                        ASSET_DOWNLOAD_TIMEOUT.as_secs(),
-                                        release.title,
-                                    );
-                                    vec![]
-                                }
-                            }
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        vec![]
-                    };
-
-                    // 2. All DB writes in one transaction (sync)
-                    let tx_result: Result<u32, EnrichError> = (|| {
-                        conn.execute_batch("BEGIN")?;
-
-                        let publisher_id = if let Some(ref pub_name) = mapped.publisher {
-                            Some(find_or_create_company(conn, pub_name, &mut stats)?)
-                        } else {
-                            None
-                        };
-                        let developer_id = if let Some(ref dev_name) = mapped.developer {
-                            Some(find_or_create_company(conn, dev_name, &mut stats)?)
-                        } else {
-                            None
-                        };
-
-                        let disagreement_count = merge::merge_release_fields(
-                            conn,
-                            &release.id,
-                            &release,
-                            "screenscraper",
-                            mapped.title.as_deref(),
-                            mapped.release_date.as_deref(),
-                            mapped.genre.as_deref(),
-                            mapped.players.as_deref(),
-                            mapped.description.as_deref(),
-                        )?;
-
-                        operations::update_release_enrichment(
-                            conn,
-                            &release.id,
-                            &game.id,
-                            mapped.title.as_deref(),
-                            mapped.release_date.as_deref(),
-                            mapped.genre.as_deref(),
-                            mapped.players.as_deref(),
-                            mapped.rating,
-                            mapped.description.as_deref(),
-                            publisher_id.as_deref(),
-                            developer_id.as_deref(),
-                        )?;
-
-                        for asset in &downloaded_assets {
-                            let media_asset = MediaAsset {
-                                id: 0,
-                                release_id: Some(release.id.clone()),
-                                media_id: None,
-                                asset_type: asset.asset_type.clone(),
-                                region: Some(asset.region.clone()),
-                                source: "screenscraper".to_string(),
-                                file_path: Some(
-                                    asset.file_path.to_string_lossy().to_string(),
-                                ),
-                                source_url: Some(asset.source_url.clone()),
-                                scraped: true,
-                                file_hash: None,
-                                width: None,
-                                height: None,
-                                created_at: String::new(),
-                            };
-                            operations::insert_media_asset(conn, &media_asset)?;
-                        }
-
-                        conn.execute_batch("COMMIT")?;
-                        Ok(disagreement_count)
-                    })();
-
-                    match tx_result {
-                        Ok(disagreement_count) => {
-                            stats.disagreements_found += disagreement_count as u64;
-                            stats.assets_downloaded += downloaded_assets.len() as u64;
-                            stats.releases_enriched += 1;
-
-                            let ss_name = result
-                                .game
-                                .name_for_region("us")
-                                .unwrap_or(&release.title)
-                                .to_string();
-
-                            log::debug!(
-                                "Enriched '{}' via {} (SS id: {}, {} disagreements)",
-                                release.title,
-                                result.method,
-                                result.game.id,
-                                disagreement_count,
-                            );
-
-                            let _ = events.try_send(EnrichEvent::ReleaseFound {
-                                index,
-                                title: release.title.clone(),
-                                ss_name,
-                                method: result.method,
-                            });
-                        }
-                        Err(e) => {
-                            let _ = conn.execute_batch("ROLLBACK");
-                            log::warn!(
-                                "Transaction failed for '{}': {}",
-                                release.title, e
-                            );
-                            stats.errors += 1;
-                        }
-                    }
-                }
-                LookupOutcome::NotFound { index, release } => {
-                    consecutive_errors = 0;
-                    let _ = events.try_send(EnrichEvent::ReleaseNotFound {
-                        index,
-                        title: release.title.clone(),
-                    });
-                    operations::mark_release_not_found(conn, &release.id)?;
-                    stats.releases_not_found += 1;
-                }
-                LookupOutcome::Skipped { index } => {
-                    // Skipped items intentionally do no DB write — releases remain
-                    // retryable on the next enrichment run.
-                    let _ = events.try_send(EnrichEvent::ReleaseSkipped { index });
-                    stats.releases_skipped += 1;
-                }
-                LookupOutcome::Error {
-                    index,
-                    release,
-                    error,
-                } => {
-                    consecutive_errors += 1;
-                    let _ = events.try_send(EnrichEvent::ReleaseError {
-                        index,
-                        title: release.title.clone(),
-                        error: error.clone(),
-                    });
-                    log::warn!("Error enriching '{}': {}", release.title, error);
-                    stats.errors += 1;
-
-                    // Circuit breaker: too many consecutive errors means the API
-                    // is likely down. Set cancel flag so remaining items are skipped
-                    // (no DB write → retryable on next run).
-                    if consecutive_errors >= CIRCUIT_BREAKER_THRESHOLD {
-                        cancel.store(true, Ordering::Release);
+                    _ = wd_notify.notified() => {
+                        // Wall-clock watchdog fired — cancel already set by the thread.
                         let msg = format!(
-                            "Circuit breaker: {} consecutive errors, stopping platform",
-                            consecutive_errors,
+                            "Wall-clock watchdog triggered ({}/{} received, batch running {}s), stopping.",
+                            results_received,
+                            total,
+                            batch_start.elapsed().as_secs(),
                         );
                         let _ = events.try_send(EnrichEvent::FatalError {
                             message: msg.clone(),
                         });
                         log::warn!("{}", msg);
+                        break;
+                    }
+
+                    result = tokio::time::timeout(WATCHDOG_TIMEOUT, stream.next()) => {
+                        result
+                    }
+                };
+
+                let outcome = match stream_result {
+                    Ok(Some(Ok(outcome))) => {
+                        results_received += 1;
+                        wall_clock_activity.store(epoch_secs(), Ordering::Release);
+                        log::debug!(
+                            "Phase 3: received result {}/{} (waited {}ms, batch elapsed {}s)",
+                            results_received,
+                            total,
+                            wait_start.elapsed().as_millis(),
+                            batch_start.elapsed().as_secs(),
+                        );
+                        outcome
+                    }
+                    Ok(Some(Err(join_err))) => {
+                        // Spawned task panicked — log and continue
+                        results_received += 1;
+                        log::error!(
+                            "Phase 3: lookup task panicked ({}/{}): {}",
+                            results_received,
+                            total,
+                            join_err,
+                        );
+                        consecutive_errors += 1;
+                        stats.releases_processed += 1;
+                        stats.errors += 1;
+                        continue;
+                    }
+                    Ok(None) => {
+                        log::debug!(
+                            "Phase 3: stream exhausted ({} results in {}s)",
+                            results_received,
+                            batch_start.elapsed().as_secs(),
+                        );
+                        break;
+                    }
+                    Err(_watchdog) => {
+                        cancel.store(true, Ordering::Release);
+                        let msg = format!(
+                            "Tokio watchdog: no result in {}s ({}/{} received, batch running {}s), stopping.",
+                            WATCHDOG_TIMEOUT.as_secs(),
+                            results_received,
+                            total,
+                            batch_start.elapsed().as_secs(),
+                        );
+                        let _ = events.try_send(EnrichEvent::FatalError {
+                            message: msg.clone(),
+                        });
+                        log::warn!("{}", msg);
+                        break;
+                    }
+                };
+                stats.releases_processed += 1;
+
+                match outcome {
+                    LookupOutcome::Found {
+                        index,
+                        release,
+                        result,
+                        mapped,
+                    } => {
+                        consecutive_errors = 0;
+                        let game = &result.game;
+
+                        // 1. Download assets (async, no DB) — do this before
+                        //    the transaction so network I/O doesn't hold a lock.
+                        let downloaded_assets = if options.download_assets {
+                            if let Some(ref asset_dir) = options.asset_dir {
+                                log::debug!(
+                                    "Downloading assets for '{}' (timeout: {}s)",
+                                    release.title,
+                                    ASSET_DOWNLOAD_TIMEOUT.as_secs(),
+                                );
+                                match tokio::time::timeout(
+                                    ASSET_DOWNLOAD_TIMEOUT,
+                                    download_assets_only(
+                                        &client,
+                                        game,
+                                        &release.id,
+                                        asset_dir,
+                                        &options.preferred_region,
+                                    ),
+                                )
+                                .await
+                                {
+                                    Ok(Ok(assets)) => assets,
+                                    Ok(Err(e)) => {
+                                        log::warn!(
+                                            "Asset download failed for '{}': {}",
+                                            release.title,
+                                            e
+                                        );
+                                        vec![]
+                                    }
+                                    Err(_timeout) => {
+                                        log::warn!(
+                                            "Asset download timed out after {}s for '{}'",
+                                            ASSET_DOWNLOAD_TIMEOUT.as_secs(),
+                                            release.title,
+                                        );
+                                        vec![]
+                                    }
+                                }
+                            } else {
+                                vec![]
+                            }
+                        } else {
+                            vec![]
+                        };
+
+                        // 2. All DB writes in one transaction (sync)
+                        let tx_result: Result<u32, EnrichError> = (|| {
+                            conn.execute_batch("BEGIN")?;
+
+                            let publisher_id = if let Some(ref pub_name) = mapped.publisher {
+                                Some(find_or_create_company(conn, pub_name, &mut stats)?)
+                            } else {
+                                None
+                            };
+                            let developer_id = if let Some(ref dev_name) = mapped.developer {
+                                Some(find_or_create_company(conn, dev_name, &mut stats)?)
+                            } else {
+                                None
+                            };
+
+                            let disagreement_count = merge::merge_release_fields(
+                                conn,
+                                &release.id,
+                                &release,
+                                "screenscraper",
+                                mapped.title.as_deref(),
+                                mapped.release_date.as_deref(),
+                                mapped.genre.as_deref(),
+                                mapped.players.as_deref(),
+                                mapped.description.as_deref(),
+                            )?;
+
+                            operations::update_release_enrichment(
+                                conn,
+                                &release.id,
+                                &game.id,
+                                mapped.title.as_deref(),
+                                mapped.release_date.as_deref(),
+                                mapped.genre.as_deref(),
+                                mapped.players.as_deref(),
+                                mapped.rating,
+                                mapped.description.as_deref(),
+                                publisher_id.as_deref(),
+                                developer_id.as_deref(),
+                            )?;
+
+                            for asset in &downloaded_assets {
+                                let media_asset = MediaAsset {
+                                    id: 0,
+                                    release_id: Some(release.id.clone()),
+                                    media_id: None,
+                                    asset_type: asset.asset_type.clone(),
+                                    region: Some(asset.region.clone()),
+                                    source: "screenscraper".to_string(),
+                                    file_path: Some(asset.file_path.to_string_lossy().to_string()),
+                                    source_url: Some(asset.source_url.clone()),
+                                    scraped: true,
+                                    file_hash: None,
+                                    width: None,
+                                    height: None,
+                                    created_at: String::new(),
+                                };
+                                operations::insert_media_asset(conn, &media_asset)?;
+                            }
+
+                            conn.execute_batch("COMMIT")?;
+                            Ok(disagreement_count)
+                        })();
+
+                        match tx_result {
+                            Ok(disagreement_count) => {
+                                stats.disagreements_found += disagreement_count as u64;
+                                stats.assets_downloaded += downloaded_assets.len() as u64;
+                                stats.releases_enriched += 1;
+
+                                let ss_name = result
+                                    .game
+                                    .name_for_region("us")
+                                    .unwrap_or(&release.title)
+                                    .to_string();
+
+                                log::debug!(
+                                    "Enriched '{}' via {} (SS id: {}, {} disagreements)",
+                                    release.title,
+                                    result.method,
+                                    result.game.id,
+                                    disagreement_count,
+                                );
+
+                                let _ = events.try_send(EnrichEvent::ReleaseFound {
+                                    index,
+                                    title: release.title.clone(),
+                                    ss_name,
+                                    method: result.method,
+                                });
+                            }
+                            Err(e) => {
+                                let _ = conn.execute_batch("ROLLBACK");
+                                log::warn!("Transaction failed for '{}': {}", release.title, e);
+                                stats.errors += 1;
+                            }
+                        }
+                    }
+                    LookupOutcome::NotFound { index, release } => {
+                        consecutive_errors = 0;
+                        let _ = events.try_send(EnrichEvent::ReleaseNotFound {
+                            index,
+                            title: release.title.clone(),
+                        });
+                        operations::mark_release_not_found(conn, &release.id)?;
+                        stats.releases_not_found += 1;
+                    }
+                    LookupOutcome::Skipped { index } => {
+                        // Skipped items intentionally do no DB write — releases remain
+                        // retryable on the next enrichment run.
+                        let _ = events.try_send(EnrichEvent::ReleaseSkipped { index });
+                        stats.releases_skipped += 1;
+                    }
+                    LookupOutcome::Error {
+                        index,
+                        release,
+                        error,
+                    } => {
+                        consecutive_errors += 1;
+                        let _ = events.try_send(EnrichEvent::ReleaseError {
+                            index,
+                            title: release.title.clone(),
+                            error: error.clone(),
+                        });
+                        log::warn!("Error enriching '{}': {}", release.title, error);
+                        stats.errors += 1;
+
+                        // Circuit breaker: too many consecutive errors means the API
+                        // is likely down. Set cancel flag so remaining items are skipped
+                        // (no DB write → retryable on next run).
+                        if consecutive_errors >= CIRCUIT_BREAKER_THRESHOLD {
+                            cancel.store(true, Ordering::Release);
+                            let msg = format!(
+                                "Circuit breaker: {} consecutive errors, stopping platform",
+                                consecutive_errors,
+                            );
+                            let _ = events.try_send(EnrichEvent::FatalError {
+                                message: msg.clone(),
+                            });
+                            log::warn!("{}", msg);
+                        }
+                    }
+                    LookupOutcome::Fatal { error } => {
+                        let _ = events.try_send(EnrichEvent::FatalError {
+                            message: error.to_string(),
+                        });
+                        log::warn!("Fatal error during enrichment: {}", error);
+                        fatal_error = Some(error);
+                        break;
                     }
                 }
-                LookupOutcome::Fatal { error } => {
-                    let _ = events.try_send(EnrichEvent::FatalError {
-                        message: error.to_string(),
-                    });
-                    log::warn!("Fatal error during enrichment: {}", error);
-                    fatal_error = Some(error);
-                    break;
-                }
             }
-        }
 
             // Stop and join the wall-clock watchdog thread for this batch.
             wd_stop.store(true, Ordering::Release);
@@ -949,11 +941,7 @@ fn pick_best_media_for_lookup(media: &[Media]) -> &Media {
 
 /// Build a RomInfo struct from catalog Media data.
 fn build_rom_info(media: &Media, platform: Platform) -> RomInfo {
-    let filename = media
-        .dat_name
-        .as_deref()
-        .unwrap_or("")
-        .to_string();
+    let filename = media.dat_name.as_deref().unwrap_or("").to_string();
 
     RomInfo {
         serial: media.media_serial.clone(),

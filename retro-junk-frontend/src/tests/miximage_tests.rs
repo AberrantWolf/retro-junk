@@ -103,7 +103,16 @@ fn test_sample_edge_color_mixed() {
     }
     // Set all edge pixels to white (center pixel at 1,1 is not an edge)
     // Edge pixels: (0,0), (1,0), (2,0), (0,1), (2,1), (0,2), (1,2), (2,2)
-    for &(x, y) in &[(0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (1, 2), (2, 2)] {
+    for &(x, y) in &[
+        (0, 0),
+        (1, 0),
+        (2, 0),
+        (0, 1),
+        (2, 1),
+        (0, 2),
+        (1, 2),
+        (2, 2),
+    ] {
         img.put_pixel(x, y, Rgba([200, 100, 50, 255]));
     }
     let color = sample_edge_color(&img);

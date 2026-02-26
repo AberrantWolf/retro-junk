@@ -14,8 +14,8 @@ pub use credentials::{
     has_embedded_dev_credentials, save_to_file,
 };
 pub use error::ScrapeError;
+pub use log::{LogEntry, ScrapeLog};
 pub use lookup::{LookupMethod, LookupResult};
 pub use media::{MediaSelection, media_subdir};
 pub use scrape::{ScrapeEvent, ScrapeOptions, ScrapeResult, scrape_folder};
-pub use log::{LogEntry, ScrapeLog};
 pub use systems::{expects_serial, region_to_language, region_to_ss_code, screenscraper_system_id};

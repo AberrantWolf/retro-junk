@@ -3,19 +3,17 @@
 //! Provides lookup by hash, serial, platform, search, and listing.
 
 use retro_junk_catalog::types::*;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::operations::OperationError;
 
 // ── Column Constants ────────────────────────────────────────────────────────
 
-const MEDIA_COLUMNS: &str =
-    "id, release_id, media_serial, disc_number, disc_label, \
+const MEDIA_COLUMNS: &str = "id, release_id, media_serial, disc_number, disc_label, \
      revision, status, dat_name, dat_source, file_size, \
      crc32, sha1, md5, created_at, updated_at";
 
-const RELEASE_COLUMNS: &str =
-    "id, work_id, platform_id, region, revision, variant, \
+const RELEASE_COLUMNS: &str = "id, work_id, platform_id, region, revision, variant, \
      title, alt_title, publisher_id, developer_id, release_date, \
      game_serial, genre, players, rating, description, \
      screen_title, cover_title, \
@@ -36,34 +34,22 @@ fn query_media(
 }
 
 /// Find media entries by CRC32 hash.
-pub fn find_media_by_crc32(
-    conn: &Connection,
-    crc32: &str,
-) -> Result<Vec<Media>, OperationError> {
+pub fn find_media_by_crc32(conn: &Connection, crc32: &str) -> Result<Vec<Media>, OperationError> {
     query_media(conn, "crc32 = ?1", crc32)
 }
 
 /// Find media entries by SHA1 hash.
-pub fn find_media_by_sha1(
-    conn: &Connection,
-    sha1: &str,
-) -> Result<Vec<Media>, OperationError> {
+pub fn find_media_by_sha1(conn: &Connection, sha1: &str) -> Result<Vec<Media>, OperationError> {
     query_media(conn, "sha1 = ?1", sha1)
 }
 
 /// Find media entries by MD5 hash.
-pub fn find_media_by_md5(
-    conn: &Connection,
-    md5: &str,
-) -> Result<Vec<Media>, OperationError> {
+pub fn find_media_by_md5(conn: &Connection, md5: &str) -> Result<Vec<Media>, OperationError> {
     query_media(conn, "md5 = ?1", md5)
 }
 
 /// Find media entries by serial number.
-pub fn find_media_by_serial(
-    conn: &Connection,
-    serial: &str,
-) -> Result<Vec<Media>, OperationError> {
+pub fn find_media_by_serial(conn: &Connection, serial: &str) -> Result<Vec<Media>, OperationError> {
     query_media(conn, "media_serial = ?1", serial)
 }
 
@@ -104,10 +90,7 @@ pub fn releases_for_platform(
 }
 
 /// Search releases by title (case-insensitive LIKE).
-pub fn search_releases(
-    conn: &Connection,
-    query: &str,
-) -> Result<Vec<Release>, OperationError> {
+pub fn search_releases(conn: &Connection, query: &str) -> Result<Vec<Release>, OperationError> {
     let pattern = format!("%{}%", query);
     query_releases(conn, "title LIKE ?1 ORDER BY title LIMIT 100", &pattern)
 }
@@ -127,10 +110,7 @@ pub fn search_releases_filtered(
                  WHERE title LIKE ?1 AND platform_id = ?2 \
                  ORDER BY title LIMIT {limit}"
             ),
-            vec![
-                Box::new(pattern),
-                Box::new(pid.to_string()),
-            ],
+            vec![Box::new(pattern), Box::new(pid.to_string())],
         ),
         None => (
             format!(
@@ -141,7 +121,8 @@ pub fn search_releases_filtered(
         ),
     };
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|v| v.as_ref()).collect();
     let rows = stmt.query_map(params.as_slice(), row_to_release)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
@@ -213,10 +194,7 @@ pub fn count_releases_to_enrich(
 }
 
 /// Get a single release by its ID.
-pub fn get_release_by_id(
-    conn: &Connection,
-    id: &str,
-) -> Result<Option<Release>, OperationError> {
+pub fn get_release_by_id(conn: &Connection, id: &str) -> Result<Option<Release>, OperationError> {
     let sql = format!("SELECT {RELEASE_COLUMNS} FROM releases WHERE id = ?1");
     let mut stmt = conn.prepare(&sql)?;
     let result = stmt.query_row(params![id], row_to_release);
@@ -315,11 +293,10 @@ pub fn catalog_stats(conn: &Connection) -> Result<CatalogStats, OperationError> 
     let releases: i64 = conn.query_row("SELECT COUNT(*) FROM releases", [], |r| r.get(0))?;
     let media: i64 = conn.query_row("SELECT COUNT(*) FROM media", [], |r| r.get(0))?;
     let assets: i64 = conn.query_row("SELECT COUNT(*) FROM media_assets", [], |r| r.get(0))?;
-    let collection: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM collection WHERE owned = 1",
-        [],
-        |r| r.get(0),
-    )?;
+    let collection: i64 =
+        conn.query_row("SELECT COUNT(*) FROM collection WHERE owned = 1", [], |r| {
+            r.get(0)
+        })?;
     let unresolved: i64 = conn.query_row(
         "SELECT COUNT(*) FROM disagreements WHERE resolved = 0",
         [],
@@ -407,7 +384,8 @@ pub fn list_unresolved_disagreements(
     );
 
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|v| v.as_ref()).collect();
     let rows = stmt.query_map(params.as_slice(), |row| {
         Ok(Disagreement {
             id: row.get(0)?,
@@ -515,7 +493,8 @@ pub fn list_collection(
     };
 
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|v| v.as_ref()).collect();
     let rows = stmt.query_map(params.as_slice(), |row| {
         Ok(CollectionRow {
             collection_id: row.get(0)?,
@@ -863,7 +842,8 @@ pub fn search_media(
         ),
     };
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|v| v.as_ref()).collect();
     let rows = stmt.query_map(params.as_slice(), row_to_media)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
@@ -895,16 +875,14 @@ pub fn search_releases_paged(
         ),
     };
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|v| v.as_ref()).collect();
     let rows = stmt.query_map(params.as_slice(), row_to_release)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 /// Get a single work by its ID.
-pub fn get_work_by_id(
-    conn: &Connection,
-    id: &str,
-) -> Result<Option<WorkRow>, OperationError> {
+pub fn get_work_by_id(conn: &Connection, id: &str) -> Result<Option<WorkRow>, OperationError> {
     let result = conn.query_row(
         "SELECT id, canonical_name FROM works WHERE id = ?1",
         params![id],
@@ -923,10 +901,7 @@ pub fn get_work_by_id(
 }
 
 /// Get a single media entry by its ID.
-pub fn get_media_by_id(
-    conn: &Connection,
-    id: &str,
-) -> Result<Option<Media>, OperationError> {
+pub fn get_media_by_id(conn: &Connection, id: &str) -> Result<Option<Media>, OperationError> {
     let sql = format!("SELECT {MEDIA_COLUMNS} FROM media WHERE id = ?1");
     let mut stmt = conn.prepare(&sql)?;
     let result = stmt.query_row(params![id], row_to_media);
@@ -968,10 +943,7 @@ pub fn get_platform_by_id(
 }
 
 /// Get all releases for a given work.
-pub fn releases_for_work(
-    conn: &Connection,
-    work_id: &str,
-) -> Result<Vec<Release>, OperationError> {
+pub fn releases_for_work(conn: &Connection, work_id: &str) -> Result<Vec<Release>, OperationError> {
     let sql = format!(
         "SELECT {RELEASE_COLUMNS} FROM releases \
          WHERE work_id = ?1 ORDER BY platform_id, region"
@@ -982,12 +954,9 @@ pub fn releases_for_work(
 }
 
 /// Count releases grouped by platform.
-pub fn platform_release_counts(
-    conn: &Connection,
-) -> Result<Vec<(String, i64)>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT platform_id, COUNT(*) FROM releases GROUP BY platform_id",
-    )?;
+pub fn platform_release_counts(conn: &Connection) -> Result<Vec<(String, i64)>, OperationError> {
+    let mut stmt =
+        conn.prepare("SELECT platform_id, COUNT(*) FROM releases GROUP BY platform_id")?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })?;
@@ -995,9 +964,7 @@ pub fn platform_release_counts(
 }
 
 /// Count media entries grouped by platform (via releases join).
-pub fn platform_media_counts(
-    conn: &Connection,
-) -> Result<Vec<(String, i64)>, OperationError> {
+pub fn platform_media_counts(conn: &Connection) -> Result<Vec<(String, i64)>, OperationError> {
     let mut stmt = conn.prepare(
         "SELECT r.platform_id, COUNT(*) FROM media m \
          JOIN releases r ON m.release_id = r.id \
@@ -1031,9 +998,7 @@ pub struct ReleaseCollision {
 
 /// Find groups of releases sharing a screenscraper_id on the same platform
 /// but belonging to different works.
-pub fn find_reconcilable_works(
-    conn: &Connection,
-) -> Result<Vec<ReconcileGroup>, OperationError> {
+pub fn find_reconcilable_works(conn: &Connection) -> Result<Vec<ReconcileGroup>, OperationError> {
     let mut stmt = conn.prepare(
         "SELECT r.screenscraper_id, r.platform_id,
                 GROUP_CONCAT(DISTINCT r.work_id) as work_ids
@@ -1080,10 +1045,7 @@ pub fn check_release_collision(
 }
 
 /// Count releases belonging to a work.
-pub fn count_releases_for_work(
-    conn: &Connection,
-    work_id: &str,
-) -> Result<i64, OperationError> {
+pub fn count_releases_for_work(conn: &Connection, work_id: &str) -> Result<i64, OperationError> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM releases WHERE work_id = ?1",
         params![work_id],

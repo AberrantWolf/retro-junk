@@ -308,8 +308,8 @@ mod tests {
             append_size: 4,
             fill_byte: 0x00,
         };
-        let padded = compute_crc32_sha1_with_padding(&mut file_cursor, &NullAnalyzer, &padding)
-            .unwrap();
+        let padded =
+            compute_crc32_sha1_with_padding(&mut file_cursor, &NullAnalyzer, &padding).unwrap();
 
         assert_eq!(padded.crc32, expected.crc32);
         assert_eq!(padded.sha1, expected.sha1);
@@ -333,8 +333,8 @@ mod tests {
             append_size: 0,
             fill_byte: 0xFF,
         };
-        let padded = compute_crc32_sha1_with_padding(&mut file_cursor, &NullAnalyzer, &padding)
-            .unwrap();
+        let padded =
+            compute_crc32_sha1_with_padding(&mut file_cursor, &NullAnalyzer, &padding).unwrap();
 
         assert_eq!(padded.crc32, expected.crc32);
         assert_eq!(padded.sha1, expected.sha1);
@@ -357,8 +357,8 @@ mod tests {
             append_size: 8,
             fill_byte: 0x00,
         };
-        let padded = compute_crc32_sha1_with_padding(&mut file_cursor, &NullAnalyzer, &padding)
-            .unwrap();
+        let padded =
+            compute_crc32_sha1_with_padding(&mut file_cursor, &NullAnalyzer, &padding).unwrap();
 
         assert_eq!(padded.crc32, expected.crc32);
         assert_eq!(padded.sha1, expected.sha1);
@@ -378,8 +378,8 @@ mod tests {
             append_size: 0,
             fill_byte: 0x00,
         };
-        let padded = compute_crc32_sha1_with_padding(&mut cursor2, &NullAnalyzer, &padding)
-            .unwrap();
+        let padded =
+            compute_crc32_sha1_with_padding(&mut cursor2, &NullAnalyzer, &padding).unwrap();
 
         assert_eq!(padded.crc32, normal.crc32);
         assert_eq!(padded.sha1, normal.sha1);
@@ -404,8 +404,8 @@ mod tests {
             append_size,
             fill_byte: 0xFF,
         };
-        let padded = compute_crc32_sha1_with_padding(&mut file_cursor, &NullAnalyzer, &padding)
-            .unwrap();
+        let padded =
+            compute_crc32_sha1_with_padding(&mut file_cursor, &NullAnalyzer, &padding).unwrap();
 
         assert_eq!(padded.crc32, expected.crc32);
         assert_eq!(padded.sha1, expected.sha1);

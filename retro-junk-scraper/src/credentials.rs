@@ -179,9 +179,8 @@ pub fn config_path() -> Option<PathBuf> {
 /// (no point persisting what's already in the binary).
 /// Returns the path the file was written to.
 pub fn save_to_file(creds: &Credentials) -> Result<PathBuf, ScrapeError> {
-    let path = config_path().ok_or_else(|| {
-        ScrapeError::Config("Could not determine config directory".to_string())
-    })?;
+    let path = config_path()
+        .ok_or_else(|| ScrapeError::Config("Could not determine config directory".to_string()))?;
 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -253,11 +252,7 @@ pub fn credential_sources() -> CredentialSources {
 
     let soft_name = if std::env::var("SCREENSCRAPER_SOFTNAME").is_ok() {
         CredentialSource::EnvVar("SCREENSCRAPER_SOFTNAME")
-    } else if config
-        .as_ref()
-        .and_then(|c| c.soft_name.as_ref())
-        .is_some()
-    {
+    } else if config.as_ref().and_then(|c| c.soft_name.as_ref()).is_some() {
         CredentialSource::ConfigFile
     } else {
         CredentialSource::Default

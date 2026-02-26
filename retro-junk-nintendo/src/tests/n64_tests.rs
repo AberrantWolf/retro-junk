@@ -369,7 +369,10 @@ fn test_both_crc_mismatch() {
 fn test_quick_mode_still_computes_crc() {
     let rom = make_n64_rom();
     let analyzer = N64Analyzer::new();
-    let options = AnalysisOptions { quick: true, ..Default::default() };
+    let options = AnalysisOptions {
+        quick: true,
+        ..Default::default()
+    };
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     let status = result.extra.get("checksum_status:N64 CRC").unwrap();
     assert!(

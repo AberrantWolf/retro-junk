@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use retro_junk_dat::DatIndex;
@@ -95,9 +95,7 @@ impl RetroJunkApp {
                 let root_bg = root.clone();
                 let ctx_bg = cc.egui_ctx.clone();
                 std::thread::spawn(move || {
-                    if let Some((library, stale)) =
-                        crate::cache::load_library(&root_bg, &context)
-                    {
+                    if let Some((library, stale)) = crate::cache::load_library(&root_bg, &context) {
                         log::info!(
                             "Restored {} consoles from cache ({} stale)",
                             library.consoles.len(),
@@ -110,11 +108,7 @@ impl RetroJunkApp {
 
                 // Always scan disk to discover new/removed console folders.
                 // ConsoleFolderFound handler deduplicates, so cached consoles keep their data.
-                crate::backend::scan::scan_root_folder(
-                    &mut app,
-                    root.clone(),
-                    &cc.egui_ctx,
-                );
+                crate::backend::scan::scan_root_folder(&mut app, root.clone(), &cc.egui_ctx);
             }
         }
 
@@ -177,12 +171,10 @@ impl eframe::App for RetroJunkApp {
         }
 
         // Main content
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.current_view {
-                View::Library => views::library::show(ui, self, ctx),
-                View::Settings => views::settings::show(ui, self),
-                View::Tools => views::tools::show(ui),
-            }
+        egui::CentralPanel::default().show(ctx, |ui| match self.current_view {
+            View::Library => views::library::show(ui, self, ctx),
+            View::Settings => views::settings::show(ui, self),
+            View::Tools => views::tools::show(ui),
         });
     }
 

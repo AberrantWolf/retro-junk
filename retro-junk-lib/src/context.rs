@@ -135,8 +135,7 @@ impl AnalysisContext {
         let mut matches = Vec::new();
         let mut unrecognized = Vec::new();
 
-        let mut dir_entries: Vec<std::fs::DirEntry> =
-            std::fs::read_dir(root)?.flatten().collect();
+        let mut dir_entries: Vec<std::fs::DirEntry> = std::fs::read_dir(root)?.flatten().collect();
         dir_entries.sort_by_key(|e| e.path());
 
         for entry in dir_entries {
@@ -202,4 +201,3 @@ pub struct FolderScanResult {
     /// Non-hidden folder names that didn't match any console.
     pub unrecognized: Vec<String>,
 }
-

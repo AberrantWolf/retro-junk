@@ -6,11 +6,7 @@ use owo_colors::Stream::Stdout;
 use super::default_catalog_db_path;
 
 /// Run the `catalog reconcile` command.
-pub(crate) fn run_catalog_reconcile(
-    systems: Vec<String>,
-    db_path: Option<PathBuf>,
-    dry_run: bool,
-) {
+pub(crate) fn run_catalog_reconcile(systems: Vec<String>, db_path: Option<PathBuf>, dry_run: bool) {
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
 
     if !db_path.exists() {
@@ -62,7 +58,8 @@ pub(crate) fn run_reconcile_on_conn(
     }
 
     // Group details by platform
-    let mut by_platform: std::collections::BTreeMap<&str, Vec<_>> = std::collections::BTreeMap::new();
+    let mut by_platform: std::collections::BTreeMap<&str, Vec<_>> =
+        std::collections::BTreeMap::new();
     for detail in &result.details {
         by_platform
             .entry(&detail.platform_id)
@@ -79,17 +76,15 @@ pub(crate) fn run_reconcile_on_conn(
             details.len(),
         );
         for detail in details {
-            let all_names: Vec<&str> = detail
-                .absorbed_names
-                .iter()
-                .map(|s| s.as_str())
-                .collect();
+            let all_names: Vec<&str> = detail.absorbed_names.iter().map(|s| s.as_str()).collect();
             log::info!(
                 "    {} \"{}\" + \"{}\" -> \"{}\" ({} releases)",
                 verb,
                 all_names.join("\", \""),
                 detail.surviving_name,
-                detail.surviving_name.if_supports_color(Stdout, |t| t.green()),
+                detail
+                    .surviving_name
+                    .if_supports_color(Stdout, |t| t.green()),
                 detail.total_releases,
             );
         }
@@ -110,7 +105,10 @@ pub(crate) fn run_reconcile_on_conn(
     log::info!("  Groups found:     {:>6}", result.stats.groups_found);
     log::info!("  Works merged:     {:>6}", result.stats.works_merged);
     log::info!("  Works deleted:    {:>6}", result.stats.works_deleted);
-    log::info!("  Releases moved:   {:>6}", result.stats.releases_reassigned);
+    log::info!(
+        "  Releases moved:   {:>6}",
+        result.stats.releases_reassigned
+    );
     log::info!("  Collisions:       {:>6}", result.stats.releases_merged);
     if result.stats.media_moved > 0 {
         log::info!("  Media moved:      {:>6}", result.stats.media_moved);

@@ -301,10 +301,7 @@ fn test_serial_space_dash_normalization() {
 
     // Query with dash should match DAT with space
     let result = expect_match(index.match_by_serial("SLPS-00700", None));
-    assert_eq!(
-        index.games[result.game_index].name,
-        "Some Game (Japan)"
-    );
+    assert_eq!(index.games[result.game_index].name, "Some Game (Japan)");
 }
 
 #[test]
@@ -463,10 +460,7 @@ fn test_normal_game_unaffected_by_suffix_logic() {
     let index = DatIndex::from_dat(dat);
 
     let result = expect_match(index.match_by_serial("SCUS-94900", None));
-    assert_eq!(
-        index.games[result.game_index].name,
-        "Crash Bandicoot (USA)"
-    );
+    assert_eq!(index.games[result.game_index].name, "Crash Bandicoot (USA)");
 }
 
 // --- Ambiguity tests ---
@@ -617,9 +611,7 @@ fn test_multi_disc_shared_bare_serial_resolves_via_suffix() {
     // uniquely identifies Disc 1 — should resolve, not be ambiguous
     let result = expect_match(index.match_by_serial("SLUS-12345", None));
     assert!(
-        index.games[result.game_index]
-            .name
-            .contains("Disc 1"),
+        index.games[result.game_index].name.contains("Disc 1"),
         "Expected Disc 1 match via suffix, got: {}",
         index.games[result.game_index].name
     );
@@ -665,8 +657,5 @@ fn test_same_name_entries_resolve_as_match() {
 
     // Both entries have the same name — should match, not be ambiguous
     let result = expect_match(index.match_by_serial("AMTE", None));
-    assert_eq!(
-        index.games[result.game_index].name,
-        "Metroid Fusion (USA)"
-    );
+    assert_eq!(index.games[result.game_index].name, "Metroid Fusion (USA)");
 }

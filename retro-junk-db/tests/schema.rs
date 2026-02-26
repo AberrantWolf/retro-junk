@@ -1,5 +1,5 @@
 use retro_junk_db::open_memory;
-use retro_junk_db::schema::{create_schema, CURRENT_VERSION};
+use retro_junk_db::schema::{CURRENT_VERSION, create_schema};
 
 #[test]
 fn create_schema_in_memory() {

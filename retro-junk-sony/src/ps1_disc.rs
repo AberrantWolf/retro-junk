@@ -12,7 +12,9 @@ use retro_junk_core::{AnalysisError, Region};
 // ---------------------------------------------------------------------------
 
 /// CD sync pattern at the start of every raw (2352-byte) sector.
-const CD_SYNC_PATTERN: [u8; 12] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
+const CD_SYNC_PATTERN: [u8; 12] = [
+    0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
+];
 
 /// Standard ISO 9660 sector size (user data only).
 const ISO_SECTOR_SIZE: u64 = 2048;
@@ -62,7 +64,9 @@ impl DiscFormat {
 }
 
 /// Detect the disc image format by examining the reader content.
-pub fn detect_disc_format(reader: &mut dyn retro_junk_core::ReadSeek) -> Result<DiscFormat, AnalysisError> {
+pub fn detect_disc_format(
+    reader: &mut dyn retro_junk_core::ReadSeek,
+) -> Result<DiscFormat, AnalysisError> {
     reader.seek(SeekFrom::Start(0))?;
 
     let mut buf = [0u8; 16];
@@ -119,7 +123,9 @@ fn looks_like_cue(reader: &mut dyn retro_junk_core::ReadSeek) -> Result<bool, An
 
     // CUE files are text; check for non-text bytes (ignoring common whitespace)
     let slice = &buf[..n];
-    let has_binary = slice.iter().any(|&b| b < 0x09 || (b > 0x0D && b < 0x20 && b != 0x1A));
+    let has_binary = slice
+        .iter()
+        .any(|&b| b < 0x09 || (b > 0x0D && b < 0x20 && b != 0x1A));
     if has_binary {
         return Ok(false);
     }
@@ -457,10 +463,19 @@ fn is_ps1_serial_prefix(prefix: &str) -> bool {
     let upper = prefix.to_uppercase();
     matches!(
         upper.as_str(),
-        "SLUS" | "SCUS" | "SLPS" | "SCPS" | "SLPM"
-            | "SLES" | "SCES" | "SCED"
-            | "SLKA" | "SCKA"
-            | "PAPX" | "PCPX" | "SIPS"
+        "SLUS"
+            | "SCUS"
+            | "SLPS"
+            | "SCPS"
+            | "SLPM"
+            | "SLES"
+            | "SCES"
+            | "SCED"
+            | "SLKA"
+            | "SCKA"
+            | "PAPX"
+            | "PCPX"
+            | "SIPS"
     )
 }
 
@@ -547,7 +562,9 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
     }
 
     if files.is_empty() {
-        return Err(AnalysisError::invalid_format("CUE sheet contains no FILE entries"));
+        return Err(AnalysisError::invalid_format(
+            "CUE sheet contains no FILE entries",
+        ));
     }
 
     Ok(CueSheet { files })
@@ -568,10 +585,7 @@ fn parse_cue_file_line(line: &str) -> Result<(String, String), AnalysisError> {
     } else {
         // Unquoted filename (space-delimited)
         let mut parts = rest.splitn(2, ' ');
-        let filename = parts
-            .next()
-            .unwrap_or("")
-            .to_string();
+        let filename = parts.next().unwrap_or("").to_string();
         let remainder = parts.next().unwrap_or("").trim().to_string();
         (filename, remainder)
     };
@@ -608,9 +622,8 @@ pub fn read_chd_sector(
 ) -> Result<[u8; 2048], AnalysisError> {
     reader.seek(SeekFrom::Start(0))?;
 
-    let mut chd = chd::Chd::open(reader, None).map_err(|e| {
-        AnalysisError::other(format!("Failed to open CHD: {}", e))
-    })?;
+    let mut chd = chd::Chd::open(reader, None)
+        .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {}", e)))?;
 
     let hunk_size = chd.header().hunk_size() as u64;
 
@@ -626,13 +639,14 @@ pub fn read_chd_sector(
     let mut hunk_buf = chd.get_hunksized_buffer();
     let mut cmp_buf = Vec::new();
 
-    let mut hunk = chd.hunk(hunk_num as u32).map_err(|e| {
-        AnalysisError::other(format!("Failed to get CHD hunk {}: {}", hunk_num, e))
-    })?;
+    let mut hunk = chd
+        .hunk(hunk_num as u32)
+        .map_err(|e| AnalysisError::other(format!("Failed to get CHD hunk {}: {}", hunk_num, e)))?;
 
-    hunk.read_hunk_in(&mut cmp_buf, &mut hunk_buf).map_err(|e| {
-        AnalysisError::other(format!("Failed to decompress CHD hunk {}: {}", hunk_num, e))
-    })?;
+    hunk.read_hunk_in(&mut cmp_buf, &mut hunk_buf)
+        .map_err(|e| {
+            AnalysisError::other(format!("Failed to decompress CHD hunk {}: {}", hunk_num, e))
+        })?;
 
     // Within the raw sector (2352 bytes), user data starts at offset 24
     // (12 sync + 4 header + 8 subheader)
@@ -658,14 +672,11 @@ pub struct ChdInfo {
 }
 
 /// Extract basic CHD file information without full decompression.
-pub fn read_chd_info(
-    reader: &mut dyn retro_junk_core::ReadSeek,
-) -> Result<ChdInfo, AnalysisError> {
+pub fn read_chd_info(reader: &mut dyn retro_junk_core::ReadSeek) -> Result<ChdInfo, AnalysisError> {
     reader.seek(SeekFrom::Start(0))?;
 
-    let chd = chd::Chd::open(reader, None).map_err(|e| {
-        AnalysisError::other(format!("Failed to open CHD: {}", e))
-    })?;
+    let chd = chd::Chd::open(reader, None)
+        .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {}", e)))?;
 
     let header = chd.header();
 
@@ -920,14 +931,20 @@ mod tests {
     fn test_detect_iso_format() {
         let data = make_iso("PLAYSTATION");
         let mut cursor = Cursor::new(data);
-        assert_eq!(detect_disc_format(&mut cursor).unwrap(), DiscFormat::Iso2048);
+        assert_eq!(
+            detect_disc_format(&mut cursor).unwrap(),
+            DiscFormat::Iso2048
+        );
     }
 
     #[test]
     fn test_detect_raw_bin_format() {
         let data = make_raw_bin("PLAYSTATION");
         let mut cursor = Cursor::new(data);
-        assert_eq!(detect_disc_format(&mut cursor).unwrap(), DiscFormat::RawSector2352);
+        assert_eq!(
+            detect_disc_format(&mut cursor).unwrap(),
+            DiscFormat::RawSector2352
+        );
     }
 
     #[test]
@@ -947,7 +964,9 @@ mod tests {
 
     #[test]
     fn test_detect_invalid_data() {
-        let data = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let data = vec![
+            0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
         let mut cursor = Cursor::new(data);
         assert!(detect_disc_format(&mut cursor).is_err());
     }
@@ -1132,7 +1151,8 @@ FILE "game (Track 2).bin" BINARY
         let data = make_iso_with_system_cnf("SLUS_012.34");
         let mut cursor = Cursor::new(data);
         let pvd = read_pvd(&mut cursor, DiscFormat::Iso2048).unwrap();
-        let content = find_file_in_root(&mut cursor, DiscFormat::Iso2048, &pvd, "SYSTEM.CNF").unwrap();
+        let content =
+            find_file_in_root(&mut cursor, DiscFormat::Iso2048, &pvd, "SYSTEM.CNF").unwrap();
         let text = String::from_utf8_lossy(&content);
         assert!(text.contains("SLUS_012.34"));
     }
@@ -1142,7 +1162,8 @@ FILE "game (Track 2).bin" BINARY
         let data = make_iso_with_system_cnf("SLUS_012.34");
         let mut cursor = Cursor::new(data);
         let pvd = read_pvd(&mut cursor, DiscFormat::Iso2048).unwrap();
-        let content = find_file_in_root(&mut cursor, DiscFormat::Iso2048, &pvd, "SYSTEM.CNF").unwrap();
+        let content =
+            find_file_in_root(&mut cursor, DiscFormat::Iso2048, &pvd, "SYSTEM.CNF").unwrap();
         let text = String::from_utf8_lossy(&content);
         let cnf = parse_system_cnf(&text).unwrap();
         let serial = extract_serial(&cnf.boot_path).unwrap();

@@ -117,10 +117,7 @@ mod tests {
 
     #[test]
     fn strip_disc_tag_disc_at_end() {
-        assert_eq!(
-            strip_disc_tag("Some Game (Disc 1)"),
-            "Some Game"
-        );
+        assert_eq!(strip_disc_tag("Some Game (Disc 1)"), "Some Game");
     }
 
     #[test]
@@ -161,10 +158,7 @@ mod tests {
 
     #[test]
     fn detect_disc_groups_ignores_single_disc() {
-        let entries = vec![
-            (0, "Some Game (Disc 1)"),
-            (1, "Another Game (USA)"),
-        ];
+        let entries = vec![(0, "Some Game (Disc 1)"), (1, "Another Game (USA)")];
         let groups = detect_disc_groups(&entries);
         assert!(groups.is_empty());
     }

@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use retro_junk_dat::{DatIndex, FileHashes, MatchMethod, SerialLookupResult};
 use retro_junk_frontend::MediaType;
@@ -30,7 +30,9 @@ pub struct Library {
 impl Library {
     /// Find a console by folder_name. Returns the index.
     pub fn find_by_folder(&self, folder_name: &str) -> Option<usize> {
-        self.consoles.iter().position(|c| c.folder_name == folder_name)
+        self.consoles
+            .iter()
+            .position(|c| c.folder_name == folder_name)
     }
 }
 
@@ -76,7 +78,11 @@ impl Default for DatStatus {
 pub fn media_dir_for_console(root_path: &Path, folder_name: &str) -> Option<PathBuf> {
     let parent = root_path.parent()?;
     let root_name = root_path.file_name()?.to_str()?;
-    Some(parent.join(format!("{}-media", root_name)).join(folder_name))
+    Some(
+        parent
+            .join(format!("{}-media", root_name))
+            .join(folder_name),
+    )
 }
 
 /// Subdirectory name for a media type (matches ES-DE layout).
@@ -333,7 +339,12 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             short_name,
         } => {
             // Avoid duplicates (keyed on folder_name, which is unique per directory)
-            if app.library.consoles.iter().any(|c| c.folder_name == folder_name) {
+            if app
+                .library
+                .consoles
+                .iter()
+                .any(|c| c.folder_name == folder_name)
+            {
                 return;
             }
             app.library.consoles.push(ConsoleState {
@@ -350,18 +361,23 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             });
             // Sort by manufacturer then platform name then folder name
             app.library.consoles.sort_by(|a, b| {
-                a.manufacturer.cmp(&b.manufacturer)
+                a.manufacturer
+                    .cmp(&b.manufacturer)
                     .then(a.platform_name.cmp(&b.platform_name))
                     .then(a.folder_name.cmp(&b.folder_name))
             });
         }
 
         AppMessage::FolderScanComplete => {
-            app.operations.retain(|op| op.description != "Scanning folders...");
+            app.operations
+                .retain(|op| op.description != "Scanning folders...");
 
             // Auto-scan all unscanned consoles if setting is enabled
             if app.settings.general.auto_scan_on_open {
-                let unscanned: Vec<usize> = app.library.consoles.iter()
+                let unscanned: Vec<usize> = app
+                    .library
+                    .consoles
+                    .iter()
                     .enumerate()
                     .filter(|(_, c)| c.scan_status == ScanStatus::NotScanned)
                     .map(|(i, _)| i)
@@ -372,7 +388,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
         }
 
-        AppMessage::ConsoleScanComplete { folder_name, entries } => {
+        AppMessage::ConsoleScanComplete {
+            folder_name,
+            entries,
+        } => {
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 let console = &mut app.library.consoles[ci];
                 console.entries = entries
@@ -392,7 +411,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
         }
 
-        AppMessage::EntryAnalyzed { folder_name, index, result } => {
+        AppMessage::EntryAnalyzed {
+            folder_name,
+            index,
+            result,
+        } => {
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 if let Some(entry) = app.library.consoles[ci].entries.get_mut(index) {
                     match result {
@@ -418,21 +441,31 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 let console = &mut app.library.consoles[ci];
                 console.scan_status = ScanStatus::Scanned;
                 // Cache fingerprint so save_library doesn't need to recompute
-                console.fingerprint =
-                    Some(crate::cache::compute_fingerprint(&console.folder_path));
+                console.fingerprint = Some(crate::cache::compute_fingerprint(&console.folder_path));
             }
             let desc_match = format!("Scanning ");
             app.operations.retain(|op| {
                 // Match operations like "Scanning Super Nintendo..."
                 !(op.description.starts_with(&desc_match))
-                || !app.library.find_by_folder(&folder_name)
-                    .and_then(|ci| Some(op.description.contains(app.library.consoles[ci].platform_name)))
-                    .unwrap_or(false)
+                    || !app
+                        .library
+                        .find_by_folder(&folder_name)
+                        .and_then(|ci| {
+                            Some(
+                                op.description
+                                    .contains(app.library.consoles[ci].platform_name),
+                            )
+                        })
+                        .unwrap_or(false)
             });
             app.save_library_cache();
         }
 
-        AppMessage::DatLoaded { folder_name, platform, index } => {
+        AppMessage::DatLoaded {
+            folder_name,
+            platform,
+            index,
+        } => {
             let game_count = index.game_count();
 
             // Run serial matching for this specific console's entries
@@ -490,7 +523,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             // Store the DatIndex for later hash matching
             app.dat_indices.insert(folder_name.clone(), index);
 
-            app.operations.retain(|op| !op.description.contains("Loading DAT"));
+            app.operations
+                .retain(|op| !op.description.contains("Loading DAT"));
             app.save_library_cache();
         }
 
@@ -498,10 +532,15 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 app.library.consoles[ci].dat_status = DatStatus::Unavailable { reason: error };
             }
-            app.operations.retain(|op| !op.description.contains("Loading DAT"));
+            app.operations
+                .retain(|op| !op.description.contains("Loading DAT"));
         }
 
-        AppMessage::HashComplete { folder_name, index, hashes } => {
+        AppMessage::HashComplete {
+            folder_name,
+            index,
+            hashes,
+        } => {
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 if let Some(entry) = app.library.consoles[ci].entries.get_mut(index) {
                     // Try hash matching against the loaded DAT
@@ -522,11 +561,19 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             app.save_library_cache();
         }
 
-        AppMessage::HashFailed { folder_name, index, error } => {
+        AppMessage::HashFailed {
+            folder_name,
+            index,
+            error,
+        } => {
             log::warn!("Hash failed for {} entry {}: {}", folder_name, index, error);
         }
 
-        AppMessage::MediaLoaded { folder_name, entry_index, media } => {
+        AppMessage::MediaLoaded {
+            folder_name,
+            entry_index,
+            media,
+        } => {
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 if let Some(entry) = app.library.consoles[ci].entries.get_mut(entry_index) {
                     entry.media_paths = Some(media);
@@ -567,7 +614,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
         }
 
-        AppMessage::OperationProgress { op_id, current, total } => {
+        AppMessage::OperationProgress {
+            op_id,
+            current,
+            total,
+        } => {
             if let Some(op) = app.operations.iter_mut().find(|op| op.id == op_id) {
                 op.progress_current = current;
                 op.progress_total = total;

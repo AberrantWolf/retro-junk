@@ -17,7 +17,10 @@ pub(crate) fn run_catalog_unenrich(
     let core_platform: Platform = match system.parse() {
         Ok(p) => p,
         Err(_) => {
-            log::error!("Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.", system);
+            log::error!(
+                "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
+                system
+            );
             std::process::exit(1);
         }
     };
@@ -64,7 +67,10 @@ pub(crate) fn run_catalog_unenrich(
     };
 
     if count == 0 {
-        log::info!("No enriched releases found for {} matching criteria.", platform.display_name);
+        log::info!(
+            "No enriched releases found for {} matching criteria.",
+            platform.display_name
+        );
         return;
     }
 
@@ -78,7 +84,9 @@ pub(crate) fn run_catalog_unenrich(
         log::info!(
             "Would clear enrichment status for {} {} releases ({}).",
             count.if_supports_color(Stdout, |t| t.bold()),
-            platform.display_name.if_supports_color(Stdout, |t| t.bold()),
+            platform
+                .display_name
+                .if_supports_color(Stdout, |t| t.bold()),
             scope,
         );
         log::info!("Re-run with --confirm to proceed:");
@@ -101,7 +109,10 @@ pub(crate) fn run_catalog_unenrich(
                 platform.display_name,
                 scope,
             );
-            log::info!("Run 'retro-junk catalog enrich {}' to re-enrich.", short_name);
+            log::info!(
+                "Run 'retro-junk catalog enrich {}' to re-enrich.",
+                short_name
+            );
         }
         Err(e) => {
             log::error!("Failed to unenrich releases: {}", e);

@@ -109,18 +109,20 @@ fn disagreement_recorded_when_values_differ() {
 #[test]
 fn merge_release_counts_disagreements() {
     let (conn, release_id) = setup_db_with_release();
-    let existing = find_release(&conn, "smb1", "nes", "usa", "", "").unwrap().unwrap();
+    let existing = find_release(&conn, "smb1", "nes", "usa", "", "")
+        .unwrap()
+        .unwrap();
 
     let count = merge_release_fields(
         &conn,
         &release_id,
         &existing,
         "screenscraper",
-        Some("Super Mario Bros"),  // slightly different title (no period)
-        Some("1985-09-13"),        // different date
-        Some("Platform"),          // same genre
-        Some("1-2"),               // new players field (was None)
-        None,                      // no description
+        Some("Super Mario Bros"), // slightly different title (no period)
+        Some("1985-09-13"),       // different date
+        Some("Platform"),         // same genre
+        Some("1-2"),              // new players field (was None)
+        None,                     // no description
     )
     .unwrap();
 

@@ -156,8 +156,14 @@ fn import_game(
     let release_id = make_release_id(&work_id, platform_id, primary_region, &revision, &variant);
 
     // Find or create Release
-    let existing_release =
-        operations::find_release(conn, &work_id, platform_id, primary_region, &revision, &variant)?;
+    let existing_release = operations::find_release(
+        conn,
+        &work_id,
+        platform_id,
+        primary_region,
+        &revision,
+        &variant,
+    )?;
     let effective_release_id = if let Some(ref existing) = existing_release {
         stats.releases_existing += 1;
         existing.id.clone()
@@ -294,7 +300,13 @@ fn make_work_id(title: &str, platform_id: &str) -> String {
 }
 
 /// Generate a stable release ID from work + platform + region + revision + variant.
-fn make_release_id(work_id: &str, platform_id: &str, region: &str, revision: &str, variant: &str) -> String {
+fn make_release_id(
+    work_id: &str,
+    platform_id: &str,
+    region: &str,
+    revision: &str,
+    variant: &str,
+) -> String {
     let mut id = format!("{work_id}:{platform_id}:{region}");
     if !revision.is_empty() {
         id.push(':');

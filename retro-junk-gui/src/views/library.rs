@@ -46,14 +46,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     egui::CentralPanel::default().show_inside(ui, |ui| {
         // Toolbar
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut app.filter_text)
-                .hint_text("Filter...")
-                .desired_width(200.0));
+            ui.add(
+                egui::TextEdit::singleline(&mut app.filter_text)
+                    .hint_text("Filter...")
+                    .desired_width(200.0),
+            );
 
             ui.separator();
 
             let has_selection = !app.selected_entries.is_empty();
-            if ui.add_enabled(has_selection, egui::Button::new("Calculate Hashes")).clicked() {
+            if ui
+                .add_enabled(has_selection, egui::Button::new("Calculate Hashes"))
+                .clicked()
+            {
                 if let Some(ci) = app.selected_console {
                     backend::hash::compute_hashes_for_selection(app, ci);
                 }
@@ -62,7 +67,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             ui.separator();
 
             // Toggle detail panel
-            let label = if app.detail_panel_open { "Hide Detail" } else { "Show Detail" };
+            let label = if app.detail_panel_open {
+                "Hide Detail"
+            } else {
+                "Show Detail"
+            };
             if ui.button(label).clicked() {
                 app.detail_panel_open = !app.detail_panel_open;
             }
@@ -87,7 +96,9 @@ fn show_welcome(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) 
         ui.heading("retro-junk Library Manager");
         ui.add_space(16.0);
         ui.label("Open a folder containing your ROM collection to get started.");
-        ui.label("The folder should contain subfolders named after consoles (e.g., snes, n64, ps1).");
+        ui.label(
+            "The folder should contain subfolders named after consoles (e.g., snes, n64, ps1).",
+        );
         ui.add_space(16.0);
         if ui.button("Open Folder...").clicked() {
             open_folder(app, ctx);

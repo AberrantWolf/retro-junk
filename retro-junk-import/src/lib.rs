@@ -16,11 +16,13 @@ pub use dat_import::{ImportError, ImportStats, dat_source_str, import_dat, log_i
 pub use gdb_import::{GdbEnrichOptions, GdbEnrichStats, enrich_gdb};
 pub use merge::{apply_overrides, check_field, merge_release_fields};
 pub use progress::{ImportProgress, LogProgress, SilentProgress};
+pub use reconcile::{
+    ReconcileError, ReconcileOptions, ReconcileResult, ReconcileStats, reconcile_works,
+};
 pub use scan_import::{
     ScanError, ScanOptions, ScanProgress, ScanResult, ScanStats, SilentScanProgress, VerifyStats,
     scan_folder, verify_collection,
 };
-pub use reconcile::{ReconcileError, ReconcileOptions, ReconcileResult, ReconcileStats, reconcile_works};
 pub use scraper_import::{
     EnrichError, EnrichEvent, EnrichOptions, EnrichStats, catalog_region_to_ss, enrich_releases,
     map_game_info, ss_media_type_to_asset_type, ss_region_to_catalog,

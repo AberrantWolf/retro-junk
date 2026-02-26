@@ -946,7 +946,10 @@ impl RomAnalyzer for NesAnalyzer {
     }
 
     fn gdb_csv_names(&self) -> &'static [&'static str] {
-        &["console_nintendo_famicom_nes", "console_nintendo_famicomdisksystem"]
+        &[
+            "console_nintendo_famicom_nes",
+            "console_nintendo_famicomdisksystem",
+        ]
     }
 
     fn dat_header_size(

@@ -21,8 +21,7 @@ use crate::gdb_index::GdbIndex;
 const GDB_CACHE_VERSION: u32 = 1;
 
 /// Base URL for downloading GDB CSV files from GitHub.
-const GDB_BASE_URL: &str =
-    "https://raw.githubusercontent.com/PigSaint/GameDataBase/main/";
+const GDB_BASE_URL: &str = "https://raw.githubusercontent.com/PigSaint/GameDataBase/main/";
 
 /// Metadata about a cached GDB CSV file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,9 +116,8 @@ pub fn fetch_gdb(csv_name: &str) -> Result<PathBuf, DatError> {
         fs::create_dir_all(parent)?;
     }
 
-    let response = reqwest::blocking::get(&url).map_err(|e| {
-        DatError::download(format!("Failed to download GDB CSV '{csv_name}': {e}"))
-    })?;
+    let response = reqwest::blocking::get(&url)
+        .map_err(|e| DatError::download(format!("Failed to download GDB CSV '{csv_name}': {e}")))?;
 
     if !response.status().is_success() {
         return Err(DatError::download(format!(

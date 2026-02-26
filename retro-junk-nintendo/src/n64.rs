@@ -379,8 +379,11 @@ fn to_identification(
     crc_bytes.extend_from_slice(&header.crc1.to_be_bytes());
     crc_bytes.extend_from_slice(&header.crc2.to_be_bytes());
     id.expected_checksums.push(
-        ExpectedChecksum::new(ChecksumAlgorithm::PlatformSpecific("N64 CRC".to_string()), crc_bytes)
-            .with_description("CRC1+CRC2 from header (0x10-0x17)"),
+        ExpectedChecksum::new(
+            ChecksumAlgorithm::PlatformSpecific("N64 CRC".to_string()),
+            crc_bytes,
+        )
+        .with_description("CRC1+CRC2 from header (0x10-0x17)"),
     );
 
     // Checksum status

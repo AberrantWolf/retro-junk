@@ -106,10 +106,7 @@ pub(crate) fn run_catalog_enrich_gdb(
                     stats.disagreements,
                 );
                 if stats.companies_created > 0 {
-                    println!(
-                        "    {} new companies created",
-                        stats.companies_created,
-                    );
+                    println!("    {} new companies created", stats.companies_created,);
                 }
                 if stats.skipped_no_hash > 0 {
                     println!(

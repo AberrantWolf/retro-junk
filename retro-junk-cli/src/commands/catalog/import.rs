@@ -24,7 +24,11 @@ pub(crate) fn run_catalog_import(
     let conn = match retro_junk_db::open_database(&db_path) {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Failed to open catalog database at {}: {}", db_path.display(), e);
+            log::error!(
+                "Failed to open catalog database at {}: {}",
+                db_path.display(),
+                e
+            );
             std::process::exit(1);
         }
     };
@@ -92,8 +96,12 @@ pub(crate) fn run_catalog_import(
 
     log::info!(
         "{}",
-        format!("Importing {} system(s) into {}", to_import.len(), db_path.display())
-            .if_supports_color(Stdout, |t| t.bold()),
+        format!(
+            "Importing {} system(s) into {}",
+            to_import.len(),
+            db_path.display()
+        )
+        .if_supports_color(Stdout, |t| t.bold()),
     );
 
     let mut total_stats = ImportStats::default();
@@ -128,7 +136,13 @@ pub(crate) fn run_catalog_import(
         // Import each DAT
         for dat in &dats {
             let progress = CliImportProgress::new(short_name);
-            let stats = match import_dat(&conn, dat, console.metadata.platform, source_str, Some(&progress)) {
+            let stats = match import_dat(
+                &conn,
+                dat,
+                console.metadata.platform,
+                source_str,
+                Some(&progress),
+            ) {
                 Ok(s) => s,
                 Err(e) => {
                     log::warn!(

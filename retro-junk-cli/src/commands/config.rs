@@ -53,29 +53,35 @@ pub(crate) fn run_config_show() {
     // Resolve values per-field (Credentials::load() would fail if required fields are missing)
     let creds = retro_junk_scraper::Credentials::load().ok();
 
-    let get_value =
-        |source: &CredentialSource, from_creds: Option<String>, is_secret: bool| -> Option<String> {
-            match source {
-                CredentialSource::Missing => None,
-                CredentialSource::Default => Some("retro-junk".to_string()),
-                CredentialSource::Embedded => {
-                    from_creds.map(|v| if is_secret { mask_value(&v) } else { v })
-                }
-                CredentialSource::EnvVar(var) => {
-                    let v = std::env::var(var).ok()?;
-                    Some(if is_secret { mask_value(&v) } else { v })
-                }
-                CredentialSource::ConfigFile => {
-                    from_creds.map(|v| if is_secret { mask_value(&v) } else { v })
-                }
+    let get_value = |source: &CredentialSource,
+                     from_creds: Option<String>,
+                     is_secret: bool|
+     -> Option<String> {
+        match source {
+            CredentialSource::Missing => None,
+            CredentialSource::Default => Some("retro-junk".to_string()),
+            CredentialSource::Embedded => {
+                from_creds.map(|v| if is_secret { mask_value(&v) } else { v })
             }
-        };
+            CredentialSource::EnvVar(var) => {
+                let v = std::env::var(var).ok()?;
+                Some(if is_secret { mask_value(&v) } else { v })
+            }
+            CredentialSource::ConfigFile => {
+                from_creds.map(|v| if is_secret { mask_value(&v) } else { v })
+            }
+        }
+    };
 
     let fields: &[(&str, &CredentialSource, Option<String>)] = &[
         (
             "dev_id",
             &sources.dev_id,
-            get_value(&sources.dev_id, creds.as_ref().map(|c| c.dev_id.clone()), false),
+            get_value(
+                &sources.dev_id,
+                creds.as_ref().map(|c| c.dev_id.clone()),
+                false,
+            ),
         ),
         (
             "dev_password",
@@ -200,12 +206,8 @@ pub(crate) fn run_config_setup() {
             "  {}",
             "Developer credentials (required):".if_supports_color(Stdout, |t| t.dimmed()),
         );
-        let dev_id = read_line(
-            "dev_id",
-            existing.as_ref().map(|c| c.dev_id.as_str()),
-            true,
-        )
-        .unwrap();
+        let dev_id =
+            read_line("dev_id", existing.as_ref().map(|c| c.dev_id.as_str()), true).unwrap();
         let dev_password = read_line(
             "dev_password",
             existing.as_ref().map(|c| c.dev_password.as_str()),
@@ -218,7 +220,8 @@ pub(crate) fn run_config_setup() {
     println!();
     println!(
         "  {}",
-        "User credentials (optional, press Enter to skip):".if_supports_color(Stdout, |t| t.dimmed()),
+        "User credentials (optional, press Enter to skip):"
+            .if_supports_color(Stdout, |t| t.dimmed()),
     );
     let user_id = read_line(
         "user_id",
@@ -227,9 +230,7 @@ pub(crate) fn run_config_setup() {
     );
     let user_password = read_line(
         "user_password",
-        existing
-            .as_ref()
-            .and_then(|c| c.user_password.as_deref()),
+        existing.as_ref().and_then(|c| c.user_password.as_deref()),
         false,
     );
 

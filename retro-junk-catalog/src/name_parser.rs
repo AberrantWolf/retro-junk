@@ -193,7 +193,9 @@ fn is_region_string(s: &str) -> bool {
     // Check if every comma-separated part is a known region
     s.split(',').all(|part| {
         let trimmed = part.trim();
-        KNOWN_REGIONS.iter().any(|r| r.eq_ignore_ascii_case(trimmed))
+        KNOWN_REGIONS
+            .iter()
+            .any(|r| r.eq_ignore_ascii_case(trimmed))
     })
 }
 
@@ -273,7 +275,8 @@ fn looks_like_language_list(s: &str) -> bool {
     }
     parts.iter().all(|p| {
         let t = p.trim();
-        (2..=3).contains(&t.len()) && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        (2..=3).contains(&t.len())
+            && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
             && t.chars().skip(1).all(|c| c.is_ascii_lowercase())
     })
 }

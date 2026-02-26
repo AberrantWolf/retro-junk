@@ -43,7 +43,8 @@ pub(crate) fn run_catalog_enrich(
     // Resolve "all" to all platforms with core_platform set,
     // otherwise parse each system through the Platform enum so aliases
     // (e.g., "megadrive", "MD", "psx") resolve to canonical DB IDs.
-    let platform_ids: Vec<String> = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
+    let platform_ids: Vec<String> = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all")
+    {
         match retro_junk_db::list_platforms(&conn) {
             Ok(platforms) => platforms
                 .into_iter()
@@ -60,7 +61,10 @@ pub(crate) fn run_catalog_enrich(
             .iter()
             .map(|s| {
                 let p: Platform = s.parse().unwrap_or_else(|_| {
-                    log::error!("Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.", s);
+                    log::error!(
+                        "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
+                        s
+                    );
                     std::process::exit(1);
                 });
                 p.short_name().to_string()
@@ -93,27 +97,34 @@ pub(crate) fn run_catalog_enrich(
             None => std::process::exit(1),
         };
 
-        let (event_tx, event_rx) =
-            tokio::sync::mpsc::channel::<EnrichEvent>(1024);
+        let (event_tx, event_rx) = tokio::sync::mpsc::channel::<EnrichEvent>(1024);
 
-        let enrich_future = scraper_import::enrich_releases(
-            client, &conn, &options, max_workers, event_tx,
-        );
+        let enrich_future =
+            scraper_import::enrich_releases(client, &conn, &options, max_workers, event_tx);
 
-        let enrich_result = retro_junk_lib::async_util::run_with_events(
-            enrich_future,
-            event_rx,
-            |e| {
-                if quiet { return; }
+        let enrich_result =
+            retro_junk_lib::async_util::run_with_events(enrich_future, event_rx, |e| {
+                if quiet {
+                    return;
+                }
                 match e {
-                    EnrichEvent::PlatformStarted { platform_name, total, .. } => {
+                    EnrichEvent::PlatformStarted {
+                        platform_name,
+                        total,
+                        ..
+                    } => {
                         println!(
                             "Enriching {} releases for {}",
                             total,
                             platform_name.if_supports_color(Stdout, |t| t.bold()),
                         );
                     }
-                    EnrichEvent::ReleaseFound { ref title, ref ss_name, ref method, .. } => {
+                    EnrichEvent::ReleaseFound {
+                        ref title,
+                        ref ss_name,
+                        ref method,
+                        ..
+                    } => {
                         println!(
                             "  {} {} (via {}, SS: \"{}\")",
                             "\u{2714}".if_supports_color(Stdout, |t| t.green()),
@@ -129,7 +140,11 @@ pub(crate) fn run_catalog_enrich(
                             title,
                         );
                     }
-                    EnrichEvent::ReleaseError { ref title, ref error, .. } => {
+                    EnrichEvent::ReleaseError {
+                        ref title,
+                        ref error,
+                        ..
+                    } => {
                         println!(
                             "  {} {}: {}",
                             "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
@@ -163,8 +178,8 @@ pub(crate) fn run_catalog_enrich(
                     }
                     _ => {} // PlatformDone, ReleaseSkipped — no output
                 }
-            },
-        ).await;
+            })
+            .await;
 
         match enrich_result {
             Ok(_) => {}

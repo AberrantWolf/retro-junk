@@ -61,5 +61,4 @@ impl RomAnalyzer for Ps3Analyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sony - PlayStation 3"]
     }
-
 }

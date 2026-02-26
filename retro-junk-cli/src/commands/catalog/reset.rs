@@ -25,9 +25,7 @@ pub(crate) fn run_catalog_reset(db_path: Option<PathBuf>, confirm: bool) {
         return;
     }
 
-    let file_size = std::fs::metadata(&db_path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let file_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
     match std::fs::remove_file(&db_path) {
         Ok(()) => {

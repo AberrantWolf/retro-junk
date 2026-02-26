@@ -82,8 +82,12 @@ impl ScreenScraperClient {
             return Err(e);
         }
 
-        let info: UserInfoResponse =
-            serde_json::from_str(&text).map_err(|e| ScrapeError::Api(format!("Failed to parse user info: {e}. Response: {}", &text[..text.len().min(200)])))?;
+        let info: UserInfoResponse = serde_json::from_str(&text).map_err(|e| {
+            ScrapeError::Api(format!(
+                "Failed to parse user info: {e}. Response: {}",
+                &text[..text.len().min(200)]
+            ))
+        })?;
 
         Ok(info.response.ssuser)
     }
@@ -138,10 +142,7 @@ impl ScreenScraperClient {
         if text.contains("Erreur") {
             return Err(ScrapeError::ServerError {
                 status: 200,
-                message: format!(
-                    "ScreenScraper error: {}",
-                    &text[..text.len().min(200)]
-                ),
+                message: format!("ScreenScraper error: {}", &text[..text.len().min(200)]),
             });
         }
 
@@ -266,13 +267,13 @@ impl ScreenScraperClient {
                     });
                 }
 
-                let text = resp
-                    .text()
-                    .await
-                    .map_err(|e| ScrapeError::ServerError {
-                        status: 200,
-                        message: format!("Failed to read response body: {}", redact_credentials(&e.to_string())),
-                    })?;
+                let text = resp.text().await.map_err(|e| ScrapeError::ServerError {
+                    status: 200,
+                    message: format!(
+                        "Failed to read response body: {}",
+                        redact_credentials(&e.to_string())
+                    ),
+                })?;
 
                 // Detect HTML error pages returned with 200 status (CDN/proxy errors)
                 if looks_like_html_error(&text) {
@@ -428,7 +429,8 @@ fn is_retryable(e: &ScrapeError) -> bool {
 pub async fn create_client(
     threads: Option<usize>,
 ) -> Result<(std::sync::Arc<ScreenScraperClient>, usize), ScrapeError> {
-    let creds = Credentials::load().map_err(|e| ScrapeError::Api(format!("Failed to load credentials: {e}")))?;
+    let creds = Credentials::load()
+        .map_err(|e| ScrapeError::Api(format!("Failed to load credentials: {e}")))?;
 
     let (client, user_info) = ScreenScraperClient::new(creds).await?;
 

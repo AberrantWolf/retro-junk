@@ -200,8 +200,11 @@ fn merge_work_into(
 
     for collision in &collisions {
         // Move media, assets, and disagreements from absorbed release to surviving
-        let media_moved =
-            operations::move_media_to_release(conn, &collision.absorbed_release_id, &collision.surviving_release_id)?;
+        let media_moved = operations::move_media_to_release(
+            conn,
+            &collision.absorbed_release_id,
+            &collision.surviving_release_id,
+        )?;
         operations::move_assets_to_release(
             conn,
             &collision.absorbed_release_id,
@@ -231,10 +234,7 @@ fn merge_work_into(
 ///
 /// Prefers `alt_title` (set by ScreenScraper) from a USA release, falling back
 /// to any release with an alt_title, then the existing title.
-fn pick_canonical_name(
-    conn: &Connection,
-    work_id: &str,
-) -> Result<Option<String>, ReconcileError> {
+fn pick_canonical_name(conn: &Connection, work_id: &str) -> Result<Option<String>, ReconcileError> {
     // Try USA alt_title first
     let result: Result<String, _> = conn.query_row(
         "SELECT alt_title FROM releases WHERE work_id = ?1 AND alt_title IS NOT NULL AND region = 'USA' LIMIT 1",

@@ -61,5 +61,4 @@ impl RomAnalyzer for Xbox360Analyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Microsoft - Xbox 360"]
     }
-
 }

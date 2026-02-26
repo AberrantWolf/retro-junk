@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
-use retro_junk_lib::{AnalysisContext, Platform, Region, RomIdentification};
 use retro_junk_dat::FileHashes;
 use retro_junk_lib::scanner::GameEntry;
+use retro_junk_lib::{AnalysisContext, Platform, Region, RomIdentification};
 
 use crate::state::{
     ConsoleState, DatMatchInfo, DatStatus, EntryStatus, Library, LibraryEntry, ScanStatus,
@@ -56,9 +56,7 @@ pub fn cache_dir() -> PathBuf {
 
 /// SHA-256 of canonical path, truncated to 16 hex chars.
 pub fn cache_key(root: &Path) -> String {
-    let canonical = root
-        .canonicalize()
-        .unwrap_or_else(|_| root.to_path_buf());
+    let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let hash = Sha256::digest(canonical.to_string_lossy().as_bytes());
     hex_encode(&hash[..8])
 }
@@ -124,10 +122,7 @@ pub fn save_library(root: &Path, library: &Library) -> std::io::Result<()> {
 
 /// Load a cached library. Returns the library and a list of stale folder names
 /// that need re-scanning due to changed fingerprints.
-pub fn load_library(
-    root: &Path,
-    context: &AnalysisContext,
-) -> Option<(Library, Vec<String>)> {
+pub fn load_library(root: &Path, context: &AnalysisContext) -> Option<(Library, Vec<String>)> {
     let path = cache_path(root);
     let contents = std::fs::read_to_string(&path).ok()?;
     let cached: LibraryCache = serde_json::from_str(&contents).ok()?;
@@ -275,11 +270,7 @@ pub fn compute_fingerprint(path: &Path) -> FolderFingerprint {
                 if ft.is_dir() {
                     if let Ok(sub_entries) = std::fs::read_dir(entry.path()) {
                         for sub in sub_entries.flatten() {
-                            names.push(format!(
-                                "{}/{}",
-                                name,
-                                sub.file_name().to_string_lossy()
-                            ));
+                            names.push(format!("{}/{}", name, sub.file_name().to_string_lossy()));
                         }
                     }
                 }

@@ -1,5 +1,5 @@
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 
 use retro_junk_dat::{DatIndex, cache};
 use retro_junk_lib::{AnalysisContext, Platform};

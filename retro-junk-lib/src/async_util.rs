@@ -90,7 +90,10 @@ where
 
     // Phase 2: drain remaining events with a timeout
     if result.is_some() {
-        log::debug!("run_with_events: draining remaining events (timeout: {}s)", DRAIN_TIMEOUT.as_secs());
+        log::debug!(
+            "run_with_events: draining remaining events (timeout: {}s)",
+            DRAIN_TIMEOUT.as_secs()
+        );
         let deadline = Instant::now() + DRAIN_TIMEOUT;
         let mut drain_count: u64 = 0;
         loop {
@@ -100,7 +103,11 @@ where
                     on_event(e);
                 }
                 Ok(None) => {
-                    log::debug!("run_with_events: drain complete ({} drained, {} total events)", drain_count, event_count + drain_count);
+                    log::debug!(
+                        "run_with_events: drain complete ({} drained, {} total events)",
+                        drain_count,
+                        event_count + drain_count
+                    );
                     break;
                 }
                 Err(_) => {

@@ -154,11 +154,17 @@ pub(crate) fn run_scrape(
     }
     log::info!(
         "Metadata: {}",
-        options.metadata_dir.display().if_supports_color(Stdout, |t| t.dimmed()),
+        options
+            .metadata_dir
+            .display()
+            .if_supports_color(Stdout, |t| t.dimmed()),
     );
     log::info!(
         "Media:    {}",
-        options.media_dir.display().if_supports_color(Stdout, |t| t.dimmed()),
+        options
+            .media_dir
+            .display()
+            .if_supports_color(Stdout, |t| t.dimmed()),
     );
     log::info!("");
 
@@ -222,10 +228,8 @@ pub(crate) fn run_scrape(
                 event_tx,
             );
 
-            let scrape_result = retro_junk_lib::async_util::run_with_events(
-                scrape_future,
-                event_rx,
-                |e| match e {
+            let scrape_result =
+                retro_junk_lib::async_util::run_with_events(scrape_future, event_rx, |e| match e {
                     retro_junk_scraper::ScrapeEvent::Scanning => {
                         pool.claim(usize::MAX, "Scanning for ROM files...".into());
                     }
@@ -237,24 +241,81 @@ pub(crate) fn run_scrape(
                         pool.claim(index, format!("[{}/{}] {}", index + 1, scan_total, file));
                     }
                     retro_junk_scraper::ScrapeEvent::GameLookingUp { index, ref file } => {
-                        pool.update(index, format!("[{}/{}] Looking up {}", index + 1, scan_total, file));
+                        pool.update(
+                            index,
+                            format!("[{}/{}] Looking up {}", index + 1, scan_total, file),
+                        );
                     }
                     retro_junk_scraper::ScrapeEvent::GameDownloading { index, ref file } => {
-                        pool.update(index, format!("[{}/{}] Downloading media for {}", index + 1, scan_total, file));
+                        pool.update(
+                            index,
+                            format!(
+                                "[{}/{}] Downloading media for {}",
+                                index + 1,
+                                scan_total,
+                                file
+                            ),
+                        );
                     }
-                    retro_junk_scraper::ScrapeEvent::GameDownloadingMedia { index, ref file, ref media_type } => {
-                        pool.update(index, format!("[{}/{}] Downloading {} for {}", index + 1, scan_total, media_type, file));
+                    retro_junk_scraper::ScrapeEvent::GameDownloadingMedia {
+                        index,
+                        ref file,
+                        ref media_type,
+                    } => {
+                        pool.update(
+                            index,
+                            format!(
+                                "[{}/{}] Downloading {} for {}",
+                                index + 1,
+                                scan_total,
+                                media_type,
+                                file
+                            ),
+                        );
                     }
-                    retro_junk_scraper::ScrapeEvent::GameSkipped { index, ref file, ref reason } => {
-                        pool.update(index, format!("[{}/{}] Skipped {}: {}", index + 1, scan_total, file, reason));
+                    retro_junk_scraper::ScrapeEvent::GameSkipped {
+                        index,
+                        ref file,
+                        ref reason,
+                    } => {
+                        pool.update(
+                            index,
+                            format!(
+                                "[{}/{}] Skipped {}: {}",
+                                index + 1,
+                                scan_total,
+                                file,
+                                reason
+                            ),
+                        );
                         pool.release(index);
                     }
-                    retro_junk_scraper::ScrapeEvent::GameCompleted { index, ref file, ref game_name } => {
-                        pool.update(index, format!("[{}/{}] {} -> \"{}\"", index + 1, scan_total, file, game_name));
+                    retro_junk_scraper::ScrapeEvent::GameCompleted {
+                        index,
+                        ref file,
+                        ref game_name,
+                    } => {
+                        pool.update(
+                            index,
+                            format!(
+                                "[{}/{}] {} -> \"{}\"",
+                                index + 1,
+                                scan_total,
+                                file,
+                                game_name
+                            ),
+                        );
                         pool.release(index);
                     }
-                    retro_junk_scraper::ScrapeEvent::GameFailed { index, ref file, ref reason } => {
-                        pool.update(index, format!("[{}/{}] {} failed: {}", index + 1, scan_total, file, reason));
+                    retro_junk_scraper::ScrapeEvent::GameFailed {
+                        index,
+                        ref file,
+                        ref reason,
+                    } => {
+                        pool.update(
+                            index,
+                            format!("[{}/{}] {} failed: {}", index + 1, scan_total, file, reason),
+                        );
                         pool.release(index);
                     }
                     retro_junk_scraper::ScrapeEvent::GameGrouped { .. } => {
@@ -269,15 +330,16 @@ pub(crate) fn run_scrape(
                         );
                     }
                     retro_junk_scraper::ScrapeEvent::Done => {}
-                },
-            ).await;
+                })
+                .await;
 
             pool.clear_all();
 
             match scrape_result {
                 Ok(result) => {
                     let summary = result.log.summary();
-                    total_games += summary.total_success + summary.total_partial + summary.total_grouped;
+                    total_games +=
+                        summary.total_success + summary.total_partial + summary.total_grouped;
                     total_media += summary.media_downloaded;
                     total_errors += summary.total_errors;
                     total_unidentified += summary.total_unidentified;
@@ -286,11 +348,7 @@ pub(crate) fn run_scrape(
 
                     // In quiet mode, re-emit console header as warn for context
                     if has_issues && log::max_level() < LevelFilter::Info {
-                        log::warn!(
-                            "{} ({}):",
-                            console.metadata.platform_name,
-                            folder_name,
-                        );
+                        log::warn!("{} ({}):", console.metadata.platform_name, folder_name,);
                     }
 
                     // Print per-system summary

@@ -150,10 +150,7 @@ pub fn fetch(
         };
 
         if !response.status().is_success() {
-            eprintln!(
-                "Warning: HTTP {} for {dat_name} ({url})",
-                response.status()
-            );
+            eprintln!("Warning: HTTP {} for {dat_name} ({url})", response.status());
             continue;
         }
 

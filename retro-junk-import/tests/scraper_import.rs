@@ -1,6 +1,4 @@
-use retro_junk_catalog::types::{
-    self, CatalogPlatform, MediaStatus, MediaType, Release,
-};
+use retro_junk_catalog::types::{self, CatalogPlatform, MediaStatus, MediaType, Release};
 use retro_junk_db::*;
 use retro_junk_import::scraper_import::*;
 use retro_junk_scraper::types::*;
@@ -221,8 +219,14 @@ fn ss_media_type_mappings() {
     assert_eq!(ss_media_type_to_asset_type("wheel-hd"), Some("wheel"));
     assert_eq!(ss_media_type_to_asset_type("wheel"), Some("wheel"));
     assert_eq!(ss_media_type_to_asset_type("fanart"), Some("fanart"));
-    assert_eq!(ss_media_type_to_asset_type("support-2D"), Some("cart-front"));
-    assert_eq!(ss_media_type_to_asset_type("video-normalized"), Some("video"));
+    assert_eq!(
+        ss_media_type_to_asset_type("support-2D"),
+        Some("cart-front")
+    );
+    assert_eq!(
+        ss_media_type_to_asset_type("video-normalized"),
+        Some("video")
+    );
     assert_eq!(ss_media_type_to_asset_type("unknown-type"), None);
 }
 
@@ -305,7 +309,10 @@ fn enrichment_updates_release_fields() {
     assert_eq!(updated.release_date.as_deref(), Some("1985-10-18"));
     assert_eq!(updated.genre.as_deref(), Some("Platform"));
     assert_eq!(updated.players.as_deref(), Some("1-2"));
-    assert_eq!(updated.description.as_deref(), Some("A classic platformer."));
+    assert_eq!(
+        updated.description.as_deref(),
+        Some("A classic platformer.")
+    );
     assert_eq!(updated.publisher_id.as_deref(), Some("nintendo"));
     assert_eq!(updated.developer_id.as_deref(), Some("nintendo-ead"));
 }
@@ -347,8 +354,8 @@ fn enrichment_preserves_existing_fields() {
         "nes:zelda:nes:usa",
         "67890",
         Some("The Legend of Zelda"),
-        Some("1986-02-21"),  // Different date — should NOT overwrite
-        Some("Action-Adventure"),  // Different genre — should NOT overwrite
+        Some("1986-02-21"),       // Different date — should NOT overwrite
+        Some("Action-Adventure"), // Different genre — should NOT overwrite
         Some("1"),
         Some(0.95),
         Some("An epic adventure."),

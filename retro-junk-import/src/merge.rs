@@ -147,10 +147,7 @@ pub fn merge_release_fields(
 ///
 /// For each override, find matching entities by pattern and update the field.
 /// This should be called after import to apply known corrections.
-pub fn apply_overrides(
-    conn: &Connection,
-    overrides: &[Override],
-) -> Result<u32, ImportError> {
+pub fn apply_overrides(conn: &Connection, overrides: &[Override]) -> Result<u32, ImportError> {
     let mut applied = 0u32;
 
     for ovr in overrides {
@@ -165,10 +162,9 @@ pub fn apply_overrides(
 
             let platform_id = ovr.platform_id.as_deref().unwrap_or("");
             let matches: Vec<(String, String)> = stmt
-                .query_map(
-                    rusqlite::params![sql_pattern, platform_id],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )?
+                .query_map(rusqlite::params![sql_pattern, platform_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
                 .filter_map(|r| r.ok())
                 .collect();
 
@@ -244,9 +240,8 @@ fn apply_field_override(
     }
 
     // Use parameterized field name via format (safe because we validated above)
-    let sql = format!(
-        "UPDATE {table} SET {field} = ?1, updated_at = datetime('now') WHERE id = ?2"
-    );
+    let sql =
+        format!("UPDATE {table} SET {field} = ?1, updated_at = datetime('now') WHERE id = ?2");
     conn.execute(&sql, rusqlite::params![value, entity_id])?;
 
     Ok(())

@@ -186,10 +186,7 @@ fn is_m3u_entry_point(filename: &str) -> bool {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    matches!(
-        ext.as_str(),
-        "cue" | "chd" | "iso" | "gdi" | "cso" | "pbp"
-    )
+    matches!(ext.as_str(), "cue" | "chd" | "iso" | "gdi" | "cso" | "pbp")
 }
 
 /// Plan renames for a single console folder.
@@ -301,10 +298,7 @@ pub fn plan_renames(
                     serial_warnings.push(SerialWarning {
                         file: file_path.clone(),
                         kind: SerialWarningKind::Ambiguous {
-                            full_serial: serial_outcome
-                                .full_serial
-                                .clone()
-                                .unwrap_or_default(),
+                            full_serial: serial_outcome.full_serial.clone().unwrap_or_default(),
                             game_code: serial_outcome.game_code.clone(),
                             candidates: candidates.clone(),
                         },
@@ -357,10 +351,7 @@ pub fn plan_renames(
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
-            file_game_names.insert(
-                file_path.clone(),
-                (game.name.clone(), target_filename),
-            );
+            file_game_names.insert(file_path.clone(), (game.name.clone(), target_filename));
 
             if *file_path == target {
                 already_correct.push(file_path.clone());
@@ -433,9 +424,9 @@ pub fn plan_renames(
             let matched: Vec<(&PathBuf, &str, &str)> = files
                 .iter()
                 .filter_map(|f| {
-                    file_game_names
-                        .get(f)
-                        .map(|(game_name, target_name)| (f, game_name.as_str(), target_name.as_str()))
+                    file_game_names.get(f).map(|(game_name, target_name)| {
+                        (f, game_name.as_str(), target_name.as_str())
+                    })
                 })
                 .collect();
 
@@ -481,7 +472,11 @@ pub fn plan_renames(
                     let contents = fs::read_to_string(&expected_m3u_path).unwrap_or_default();
                     let existing_lines: Vec<&str> =
                         contents.lines().filter(|l| !l.is_empty()).collect();
-                    existing_lines == playlist_entries.iter().map(|s| s.as_str()).collect::<Vec<_>>()
+                    existing_lines
+                        == playlist_entries
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
                 } else {
                     false
                 }
@@ -711,7 +706,11 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
         if rename.source == rename.target {
             continue;
         }
-        let dir = rename.source.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let dir = rename
+            .source
+            .parent()
+            .unwrap_or(Path::new("."))
+            .to_path_buf();
         let old_name = rename
             .source
             .file_name()
@@ -861,8 +860,7 @@ pub fn format_match_method(method: &MatchMethod) -> &'static str {
 /// the given files. Returns paths to .cue files with at least one broken reference.
 fn detect_broken_cue_files(files: &[PathBuf]) -> Vec<PathBuf> {
     let mut broken = Vec::new();
-    let mut checked_dirs: std::collections::HashSet<PathBuf> =
-        std::collections::HashSet::new();
+    let mut checked_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
     for file in files {
         let dir = match file.parent() {
@@ -883,10 +881,7 @@ fn detect_broken_cue_files(files: &[PathBuf]) -> Vec<PathBuf> {
             if !path.is_file() {
                 continue;
             }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !ext.eq_ignore_ascii_case("cue") {
                 continue;
             }
@@ -972,10 +967,7 @@ fn fix_cue_references_in_dir(
         if !path.is_file() {
             continue;
         }
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !ext.eq_ignore_ascii_case("cue") {
             continue;
         }
@@ -985,9 +977,7 @@ fn fix_cue_references_in_dir(
             Ok(false) => {} // no changes needed
             Err(e) => errors.push(format!(
                 "CUE fix error for {}: {}",
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?"),
+                path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
                 e
             )),
         }
@@ -1004,13 +994,9 @@ fn fix_single_cue_file(
     dir: &Path,
     rename_map: &HashMap<String, String>,
 ) -> Result<bool, String> {
-    let content =
-        fs::read_to_string(cue_path).map_err(|e| format!("read error: {}", e))?;
+    let content = fs::read_to_string(cue_path).map_err(|e| format!("read error: {}", e))?;
 
-    let cue_stem = cue_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
+    let cue_stem = cue_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
     let mut new_content = String::with_capacity(content.len());
     let mut changed = false;
@@ -1229,8 +1215,7 @@ fn extract_trailing_number(stem: &str) -> Option<u32> {
 /// the given files. Returns paths to .m3u files with at least one broken entry.
 fn detect_broken_m3u_playlists(files: &[PathBuf]) -> Vec<PathBuf> {
     let mut broken = Vec::new();
-    let mut checked_dirs: std::collections::HashSet<PathBuf> =
-        std::collections::HashSet::new();
+    let mut checked_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
     for file in files {
         let dir = match file.parent() {
@@ -1251,10 +1236,7 @@ fn detect_broken_m3u_playlists(files: &[PathBuf]) -> Vec<PathBuf> {
             if !path.is_file() {
                 continue;
             }
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !ext.eq_ignore_ascii_case("m3u") {
                 continue;
             }
@@ -1339,10 +1321,7 @@ fn fix_m3u_references_in_dir(
         if !path.is_file() {
             continue;
         }
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         if !ext.eq_ignore_ascii_case("m3u") {
             continue;
         }
@@ -1352,9 +1331,7 @@ fn fix_m3u_references_in_dir(
             Ok(false) => {}
             Err(e) => errors.push(format!(
                 "M3U fix error for {}: {}",
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("?"),
+                path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
                 e
             )),
         }
@@ -1371,8 +1348,7 @@ fn fix_single_m3u_file(
     dir: &Path,
     rename_map: &HashMap<String, String>,
 ) -> Result<bool, String> {
-    let content =
-        fs::read_to_string(m3u_path).map_err(|e| format!("read error: {}", e))?;
+    let content = fs::read_to_string(m3u_path).map_err(|e| format!("read error: {}", e))?;
 
     let mut new_lines = Vec::new();
     let mut changed = false;

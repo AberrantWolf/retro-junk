@@ -295,7 +295,9 @@ fn apply_disagreement_resolution_updates_entity() {
     .unwrap();
 
     // Verify it was applied
-    let updated = find_release(&conn, "nes:smb", "nes", "usa", "", "").unwrap().unwrap();
+    let updated = find_release(&conn, "nes:smb", "nes", "usa", "", "")
+        .unwrap()
+        .unwrap();
     assert_eq!(updated.release_date.as_deref(), Some("1985-10-18"));
 }
 

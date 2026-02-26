@@ -75,7 +75,7 @@ impl GdbIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gdb::{GdbTags, GdbGame};
+    use crate::gdb::{GdbGame, GdbTags};
 
     fn make_game(sha1: &str, md5: &str, title: &str) -> GdbGame {
         GdbGame {
@@ -153,10 +153,7 @@ mod tests {
 
     #[test]
     fn test_counts() {
-        let games = vec![
-            make_game("sha1a", "md5a", "A"),
-            make_game("sha1b", "", "B"),
-        ];
+        let games = vec![make_game("sha1a", "md5a", "A"), make_game("sha1b", "", "B")];
         let index = GdbIndex::from_games(games);
         assert_eq!(index.len(), 2);
         assert_eq!(index.sha1_count(), 2);

@@ -10,12 +10,12 @@
 use retro_junk_catalog::types::Company;
 use retro_junk_dat::gdb::{self, GdbGame};
 use retro_junk_dat::gdb_cache;
-use retro_junk_db::{operations, queries, Connection};
+use retro_junk_db::{Connection, operations, queries};
 use rusqlite::params;
 
+use crate::ImportError;
 use crate::merge;
 use crate::slugify;
-use crate::ImportError;
 
 /// Statistics from a GDB enrichment run.
 #[derive(Debug, Default)]
@@ -61,8 +61,7 @@ pub fn enrich_gdb(
         gdb_cache::load_gdb_index_from_dir(csv_names, dir)
             .map_err(|e| ImportError::Dat(e.to_string()))?
     } else {
-        gdb_cache::load_gdb_index(csv_names)
-            .map_err(|e| ImportError::Dat(e.to_string()))?
+        gdb_cache::load_gdb_index(csv_names).map_err(|e| ImportError::Dat(e.to_string()))?
     };
 
     log::info!(
@@ -172,7 +171,10 @@ fn enrich_release(
     let (_, native_screen) = gdb::split_title(&gdb_game.screen_title);
     if let Some(native) = native_screen {
         let needs_update = release.screen_title.is_none()
-            || release.screen_title.as_deref().is_some_and(|s| s.contains('@'));
+            || release
+                .screen_title
+                .as_deref()
+                .is_some_and(|s| s.contains('@'));
         if needs_update {
             conn.execute(
                 "UPDATE releases SET screen_title = ?2, updated_at = datetime('now') WHERE id = ?1",
@@ -186,7 +188,10 @@ fn enrich_release(
     let (_, native_cover) = gdb::split_title(&gdb_game.cover_title);
     if let Some(native) = native_cover {
         let needs_update = release.cover_title.is_none()
-            || release.cover_title.as_deref().is_some_and(|s| s.contains('@'));
+            || release
+                .cover_title
+                .as_deref()
+                .is_some_and(|s| s.contains('@'));
         if needs_update {
             conn.execute(
                 "UPDATE releases SET cover_title = ?2, updated_at = datetime('now') WHERE id = ?1",
@@ -282,11 +287,7 @@ fn enrich_release(
     }
 
     // -- genre (from first genre tag path, joined with " > ") --
-    let genre_str = gdb_game
-        .tags
-        .genres
-        .first()
-        .map(|path| path.join(" > "));
+    let genre_str = gdb_game.tags.genres.first().map(|path| path.join(" > "));
 
     if let Some(ref genre) = genre_str {
         if release.genre.is_none() {

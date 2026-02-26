@@ -145,7 +145,10 @@ fn test_detect_format_unknown() {
 fn test_full_cci_via_analyzer() {
     let rom = make_cci_minimal();
     let analyzer = N3dsAnalyzer::new();
-    let options = AnalysisOptions { quick: true, ..Default::default() };
+    let options = AnalysisOptions {
+        quick: true,
+        ..Default::default()
+    };
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     assert_eq!(result.platform.as_deref(), Some("Nintendo 3DS"));
@@ -157,7 +160,10 @@ fn test_full_cci_via_analyzer() {
 fn test_full_cia_via_analyzer() {
     let cia = make_cia_minimal();
     let analyzer = N3dsAnalyzer::new();
-    let options = AnalysisOptions { quick: true, ..Default::default() };
+    let options = AnalysisOptions {
+        quick: true,
+        ..Default::default()
+    };
     let result = analyzer.analyze(&mut Cursor::new(cia), &options).unwrap();
 
     assert_eq!(result.platform.as_deref(), Some("Nintendo 3DS"));

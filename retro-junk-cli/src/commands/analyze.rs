@@ -156,7 +156,11 @@ fn analyze_and_print(
             let has_warnings = lines.iter().any(|(level, _)| *level <= Level::Warn);
             for (i, (level, msg)) in lines.iter().enumerate() {
                 // Promote header to warn if this file has warnings (visible in quiet mode)
-                let effective_level = if i == 0 && has_warnings { Level::Warn } else { *level };
+                let effective_level = if i == 0 && has_warnings {
+                    Level::Warn
+                } else {
+                    *level
+                };
                 log::log!(effective_level, "{}", msg);
             }
         }
@@ -316,49 +320,68 @@ const HARDWARE_KEYS: &[&str] = &[
 
 /// Format the analysis result for a single file as level-tagged lines.
 /// The first element is always the file header line.
-fn format_analysis(file_name: &str, info: &RomIdentification, indent: &str) -> Vec<(Level, String)> {
+fn format_analysis(
+    file_name: &str,
+    info: &RomIdentification,
+    indent: &str,
+) -> Vec<(Level, String)> {
     let mut lines: Vec<(Level, String)> = Vec::new();
     let mut shown_keys: HashSet<&str> = HashSet::new();
 
     // Header line (caller may promote to Warn if other lines have warnings)
-    lines.push((Level::Info, format!(
-        "  {}{}:",
-        indent,
-        file_name.if_supports_color(Stdout, |t| t.bold()),
-    )));
+    lines.push((
+        Level::Info,
+        format!(
+            "  {}{}:",
+            indent,
+            file_name.if_supports_color(Stdout, |t| t.bold()),
+        ),
+    ));
 
     // (a) Identity fields
     if let Some(ref serial) = info.serial_number {
-        lines.push((Level::Info, format!(
-            "    {}{}   {}",
-            indent,
-            "Serial:".if_supports_color(Stdout, |t| t.cyan()),
-            serial,
-        )));
+        lines.push((
+            Level::Info,
+            format!(
+                "    {}{}   {}",
+                indent,
+                "Serial:".if_supports_color(Stdout, |t| t.cyan()),
+                serial,
+            ),
+        ));
     }
     if let Some(ref name) = info.internal_name {
-        lines.push((Level::Info, format!(
-            "    {}{}     {}",
-            indent,
-            "Name:".if_supports_color(Stdout, |t| t.cyan()),
-            name,
-        )));
+        lines.push((
+            Level::Info,
+            format!(
+                "    {}{}     {}",
+                indent,
+                "Name:".if_supports_color(Stdout, |t| t.cyan()),
+                name,
+            ),
+        ));
     }
     if let Some(ref maker) = info.maker_code {
-        lines.push((Level::Info, format!(
-            "    {}{}    {}",
-            indent,
-            "Maker:".if_supports_color(Stdout, |t| t.cyan()),
-            maker,
-        )));
+        lines.push((
+            Level::Info,
+            format!(
+                "    {}{}    {}",
+                indent,
+                "Maker:".if_supports_color(Stdout, |t| t.cyan()),
+                maker,
+            ),
+        ));
     }
     if let Some(ref version) = info.version {
-        lines.push((Level::Info, format!(
-            "    {}{}  {}",
-            indent,
-            "Version:".if_supports_color(Stdout, |t| t.cyan()),
-            version,
-        )));
+        lines.push((
+            Level::Info,
+            format!(
+                "    {}{}  {}",
+                indent,
+                "Version:".if_supports_color(Stdout, |t| t.cyan()),
+                version,
+            ),
+        ));
     }
 
     // (b) Format line (composed as single string)
@@ -389,20 +412,26 @@ fn format_analysis(file_name: &str, info: &RomIdentification, indent: &str) -> V
         .collect();
 
     if !hardware_present.is_empty() {
-        lines.push((Level::Info, format!(
-            "    {}{}",
-            indent,
-            "Hardware:".if_supports_color(Stdout, |t| t.bright_magenta()),
-        )));
+        lines.push((
+            Level::Info,
+            format!(
+                "    {}{}",
+                indent,
+                "Hardware:".if_supports_color(Stdout, |t| t.bright_magenta()),
+            ),
+        ));
         for key in &hardware_present {
             shown_keys.insert(key);
             let value = &info.extra[*key];
-            lines.push((Level::Info, format!(
-                "      {}{} {}",
-                indent,
-                format!("{}:", prettify_key(key)).if_supports_color(Stdout, |t| t.cyan()),
-                value,
-            )));
+            lines.push((
+                Level::Info,
+                format!(
+                    "      {}{} {}",
+                    indent,
+                    format!("{}:", prettify_key(key)).if_supports_color(Stdout, |t| t.cyan()),
+                    value,
+                ),
+            ));
         }
     }
 
@@ -410,23 +439,33 @@ fn format_analysis(file_name: &str, info: &RomIdentification, indent: &str) -> V
     match (info.file_size, info.expected_size) {
         (Some(actual), Some(expected)) => {
             let verdict = compute_size_verdict(actual, expected);
-            let level = if matches!(verdict, SizeVerdict::Ok) { Level::Info } else { Level::Warn };
-            lines.push((level, format!(
-                "    {}{}     {} on disk, {} expected [{}]",
-                indent,
-                "Size:".if_supports_color(Stdout, |t| t.cyan()),
-                format_bytes(actual),
-                format_bytes(expected),
-                print_size_verdict(&verdict),
-            )));
+            let level = if matches!(verdict, SizeVerdict::Ok) {
+                Level::Info
+            } else {
+                Level::Warn
+            };
+            lines.push((
+                level,
+                format!(
+                    "    {}{}     {} on disk, {} expected [{}]",
+                    indent,
+                    "Size:".if_supports_color(Stdout, |t| t.cyan()),
+                    format_bytes(actual),
+                    format_bytes(expected),
+                    print_size_verdict(&verdict),
+                ),
+            ));
         }
         (Some(actual), None) => {
-            lines.push((Level::Info, format!(
-                "    {}{}     {}",
-                indent,
-                "Size:".if_supports_color(Stdout, |t| t.cyan()),
-                format_bytes(actual),
-            )));
+            lines.push((
+                Level::Info,
+                format!(
+                    "    {}{}     {}",
+                    indent,
+                    "Size:".if_supports_color(Stdout, |t| t.cyan()),
+                    format_bytes(actual),
+                ),
+            ));
         }
         _ => {}
     }
@@ -446,34 +485,43 @@ fn format_analysis(file_name: &str, info: &RomIdentification, indent: &str) -> V
         let level = if is_ok { Level::Info } else { Level::Warn };
         if is_ok {
             let colored_status = format!("{}", status.if_supports_color(Stdout, |t| t.green()));
-            lines.push((level, format!(
-                "    {}{} {}  {}",
-                indent,
-                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
-                colored_status,
-            )));
+            lines.push((
+                level,
+                format!(
+                    "    {}{} {}  {}",
+                    indent,
+                    "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                    format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
+                    colored_status,
+                ),
+            ));
         } else {
             let colored_status = format!("{}", status.if_supports_color(Stdout, |t| t.red()));
-            lines.push((level, format!(
-                "    {}{} {}  {}",
-                indent,
-                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
-                colored_status,
-            )));
+            lines.push((
+                level,
+                format!(
+                    "    {}{} {}  {}",
+                    indent,
+                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                    format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
+                    colored_status,
+                ),
+            ));
         }
     }
 
     // (f) Region
     if !info.regions.is_empty() {
         let region_str: Vec<_> = info.regions.iter().map(|r| r.name()).collect();
-        lines.push((Level::Info, format!(
-            "    {}{}   {}",
-            indent,
-            "Region:".if_supports_color(Stdout, |t| t.cyan()),
-            region_str.join(", "),
-        )));
+        lines.push((
+            Level::Info,
+            format!(
+                "    {}{}   {}",
+                indent,
+                "Region:".if_supports_color(Stdout, |t| t.cyan()),
+                region_str.join(", "),
+            ),
+        ));
     }
 
     // (g) Remaining extras
@@ -485,19 +533,25 @@ fn format_analysis(file_name: &str, info: &RomIdentification, indent: &str) -> V
     remaining.sort();
 
     if !remaining.is_empty() {
-        lines.push((Level::Info, format!(
-            "    {}{}",
-            indent,
-            "Details:".if_supports_color(Stdout, |t| t.bright_magenta()),
-        )));
+        lines.push((
+            Level::Info,
+            format!(
+                "    {}{}",
+                indent,
+                "Details:".if_supports_color(Stdout, |t| t.bright_magenta()),
+            ),
+        ));
         for key in &remaining {
             let value = &info.extra[key.as_str()];
-            lines.push((Level::Info, format!(
-                "      {}{} {}",
-                indent,
-                format!("{}:", prettify_key(key)).if_supports_color(Stdout, |t| t.cyan()),
-                value,
-            )));
+            lines.push((
+                Level::Info,
+                format!(
+                    "      {}{} {}",
+                    indent,
+                    format!("{}:", prettify_key(key)).if_supports_color(Stdout, |t| t.cyan()),
+                    value,
+                ),
+            ));
         }
     }
 

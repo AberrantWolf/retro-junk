@@ -32,7 +32,9 @@ impl CliLogger {
     /// Format a timestamp as HH:MM:SS.mmm for log output.
     fn timestamp() -> String {
         let now = SystemTime::now();
-        let dur = now.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+        let dur = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default();
         let total_secs = dur.as_secs();
         let millis = dur.subsec_millis();
         let hours = (total_secs / 3600) % 24;
@@ -119,7 +121,11 @@ fn main() {
         });
         Mutex::new(file)
     });
-    let logger = Box::new(CliLogger { level, verbose, logfile });
+    let logger = Box::new(CliLogger {
+        level,
+        verbose,
+        logfile,
+    });
     log::set_boxed_logger(logger).expect("Failed to set logger");
     log::set_max_level(level);
 
@@ -135,7 +141,16 @@ fn main() {
             roms,
             dat_dir,
         } => {
-            commands::rename::run_rename(&ctx, dry_run, hash, roms.consoles, roms.limit, cli.root, dat_dir, quiet);
+            commands::rename::run_rename(
+                &ctx,
+                dry_run,
+                hash,
+                roms.consoles,
+                roms.limit,
+                cli.root,
+                dat_dir,
+                quiet,
+            );
         }
         Commands::Repair {
             dry_run,
@@ -143,7 +158,16 @@ fn main() {
             roms,
             dat_dir,
         } => {
-            commands::repair::run_repair(&ctx, dry_run, no_backup, roms.consoles, roms.limit, cli.root, dat_dir, quiet);
+            commands::repair::run_repair(
+                &ctx,
+                dry_run,
+                no_backup,
+                roms.consoles,
+                roms.limit,
+                cli.root,
+                dat_dir,
+                quiet,
+            );
         }
         Commands::Scrape {
             roms,
@@ -190,7 +214,9 @@ fn main() {
             CacheAction::Fetch { systems } => commands::cache::run_cache_fetch(&ctx, systems),
             CacheAction::GdbList => commands::cache::run_gdb_cache_list(),
             CacheAction::GdbClear => commands::cache::run_gdb_cache_clear(),
-            CacheAction::GdbFetch { systems } => commands::cache::run_gdb_cache_fetch(&ctx, systems),
+            CacheAction::GdbFetch { systems } => {
+                commands::cache::run_gdb_cache_fetch(&ctx, systems)
+            }
         },
         Commands::Config { action } => match action {
             ConfigAction::Show => commands::config::run_config_show(),
@@ -205,7 +231,13 @@ fn main() {
                 db,
                 dat_dir,
             } => {
-                commands::catalog::import::run_catalog_import(&ctx, systems, catalog_dir, db, dat_dir);
+                commands::catalog::import::run_catalog_import(
+                    &ctx,
+                    systems,
+                    catalog_dir,
+                    db,
+                    dat_dir,
+                );
             }
             CatalogAction::EnrichGdb {
                 systems,
@@ -213,7 +245,9 @@ fn main() {
                 limit,
                 gdb_dir,
             } => {
-                commands::catalog::enrich_gdb::run_catalog_enrich_gdb(&ctx, systems, db, limit, gdb_dir);
+                commands::catalog::enrich_gdb::run_catalog_enrich_gdb(
+                    &ctx, systems, db, limit, gdb_dir,
+                );
             }
             CatalogAction::Enrich {
                 systems,
@@ -262,7 +296,9 @@ fn main() {
                 field,
                 limit,
             } => {
-                commands::catalog::disagreements::run_catalog_disagreements(db, system, field, limit);
+                commands::catalog::disagreements::run_catalog_disagreements(
+                    db, system, field, limit,
+                );
             }
             CatalogAction::Resolve {
                 id,
@@ -271,7 +307,9 @@ fn main() {
                 source_b,
                 custom,
             } => {
-                commands::catalog::disagreements::run_catalog_resolve(id, db, source_a, source_b, custom);
+                commands::catalog::disagreements::run_catalog_resolve(
+                    id, db, source_a, source_b, custom,
+                );
             }
             CatalogAction::Gaps {
                 system,
@@ -280,7 +318,13 @@ fn main() {
                 missing,
                 limit,
             } => {
-                commands::catalog::gaps::run_catalog_gaps(system, db, collection_only, missing, limit);
+                commands::catalog::gaps::run_catalog_gaps(
+                    system,
+                    db,
+                    collection_only,
+                    missing,
+                    limit,
+                );
             }
             CatalogAction::Lookup {
                 query,
@@ -296,7 +340,20 @@ fn main() {
                 group,
                 db,
             } => {
-                commands::catalog::lookup::run_catalog_lookup(query, platform, r#type, manufacturer, crc, sha1, md5, serial, limit, offset, group, db);
+                commands::catalog::lookup::run_catalog_lookup(
+                    query,
+                    platform,
+                    r#type,
+                    manufacturer,
+                    crc,
+                    sha1,
+                    md5,
+                    serial,
+                    limit,
+                    offset,
+                    group,
+                    db,
+                );
             }
             CatalogAction::Reconcile {
                 systems,
@@ -360,7 +417,12 @@ pub(crate) fn scan_folders(
 }
 
 /// Log a DAT loading error with a `cache fetch` hint.
-pub(crate) fn log_dat_error(platform_name: &str, folder_name: &str, short_name: &str, error: &dyn std::fmt::Display) {
+pub(crate) fn log_dat_error(
+    platform_name: &str,
+    folder_name: &str,
+    short_name: &str,
+    error: &dyn std::fmt::Display,
+) {
     log::warn!(
         "{} {}: {} Error: {}",
         platform_name.if_supports_color(Stdout, |t| t.bold()),

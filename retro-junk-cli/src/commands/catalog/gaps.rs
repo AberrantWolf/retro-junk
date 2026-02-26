@@ -55,7 +55,10 @@ pub(crate) fn run_catalog_gaps(
         ) {
             Ok(releases) => {
                 if releases.is_empty() {
-                    log::info!("  No gaps found — all releases have '{}' assets.", asset_type);
+                    log::info!(
+                        "  No gaps found — all releases have '{}' assets.",
+                        asset_type
+                    );
                 } else {
                     for (id, title, region) in &releases {
                         log::info!(
@@ -67,10 +70,7 @@ pub(crate) fn run_catalog_gaps(
                         log::debug!("    {}", id);
                     }
                     if releases.len() as u32 == limit {
-                        log::info!(
-                            "  ... (showing first {}, use --limit to see more)",
-                            limit,
-                        );
+                        log::info!("  ... (showing first {}, use --limit to see more)", limit,);
                     }
                 }
             }
