@@ -318,6 +318,20 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             detail_row(ui, "Method", &format!("{:?}", dm.method));
         }
 
+        // Titles (from catalog DB enrichment)
+        if entry.cover_title.is_some() || entry.screen_title.is_some() {
+            ui.add_space(4.0);
+            ui.separator();
+            ui.label(egui::RichText::new("Titles").strong());
+            ui.add_space(2.0);
+            if let Some(ref ct) = entry.cover_title {
+                detail_row(ui, "Box Title", ct);
+            }
+            if let Some(ref st) = entry.screen_title {
+                detail_row(ui, "Screen Title", st);
+            }
+        }
+
         // Media
         if let Some(ref media) = entry.media_paths
             && !media.is_empty()

@@ -141,6 +141,10 @@ pub struct LibraryEntry {
     pub media_paths: Option<HashMap<MediaType, PathBuf>>,
     /// User-set region override. When set, takes precedence over detected regions.
     pub region_override: Option<Region>,
+    /// Box/cover title from catalog DB (e.g., the title printed on the game box).
+    pub cover_title: Option<String>,
+    /// Screen title from catalog DB (e.g., the title shown on the title screen).
+    pub screen_title: Option<String>,
 }
 
 impl LibraryEntry {
@@ -232,6 +236,34 @@ impl BackgroundOperation {
         } else {
             self.progress_current as f32 / self.progress_total as f32
         }
+    }
+}
+
+// -- Catalog enrichment --
+
+/// Try to enrich a library entry with cover/screen titles from the catalog DB.
+///
+/// Skips if the entry already has a cover_title or has no SHA1 hash.
+/// SQLite indexed lookups are sub-millisecond, safe for the main thread.
+fn try_catalog_enrich(entry: &mut LibraryEntry, conn: &retro_junk_db::Connection) {
+    if entry.cover_title.is_some() {
+        return;
+    }
+    let sha1 = match entry.hashes.as_ref().and_then(|h| h.sha1.as_deref()) {
+        Some(s) => s,
+        None => return,
+    };
+    let media_list = match retro_junk_db::find_media_by_sha1(conn, sha1) {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+    let release_id = match media_list.first() {
+        Some(m) => &m.release_id,
+        None => return,
+    };
+    if let Ok(Some(release)) = retro_junk_db::get_release_by_id(conn, release_id) {
+        entry.cover_title = release.cover_title;
+        entry.screen_title = release.screen_title;
     }
 }
 
@@ -396,6 +428,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         ambiguous_candidates: Vec::new(),
                         media_paths: None,
                         region_override: None,
+                        cover_title: None,
+                        screen_title: None,
                     })
                     .collect();
                 console.scan_status = ScanStatus::Scanning;
@@ -506,6 +540,15 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         entry.ambiguous_candidates.clear();
                     }
                 }
+
+                // Enrich entries that have hashes with catalog titles
+                if let Some(ref conn) = app.catalog_db {
+                    for entry in app.library.consoles[ci].entries.iter_mut() {
+                        if entry.hashes.is_some() {
+                            try_catalog_enrich(entry, conn);
+                        }
+                    }
+                }
             }
 
             // Store the DatIndex for later hash matching
@@ -545,6 +588,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     entry.ambiguous_candidates.clear();
                 }
                 entry.hashes = Some(hashes);
+
+                // Enrich with catalog titles
+                if let Some(ref conn) = app.catalog_db {
+                    try_catalog_enrich(entry, conn);
+                }
             }
             app.save_library_cache();
         }
@@ -587,6 +635,17 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     .then(a.platform_name.cmp(b.platform_name))
                     .then(a.folder_name.cmp(&b.folder_name))
             });
+
+            // Enrich cached entries that have hashes but no catalog titles yet
+            if let Some(ref conn) = app.catalog_db {
+                for console in &mut app.library.consoles {
+                    for entry in &mut console.entries {
+                        if entry.hashes.is_some() {
+                            try_catalog_enrich(entry, conn);
+                        }
+                    }
+                }
+            }
 
             // Trigger DAT loads for consoles that previously had DATs loaded
             for console in &app.library.consoles {

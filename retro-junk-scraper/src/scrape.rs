@@ -482,6 +482,7 @@ async fn process_single_game(
                 rating: None,
                 release_date: None,
                 media: media_map,
+                cover_title: None,
             };
             return GameResult::Skipped {
                 scraped: Some(scraped),
@@ -681,6 +682,7 @@ async fn process_single_game(
                     .date_for_region(&effective_region)
                     .map(|d| d.to_string()),
                 media: media_map,
+                cover_title: None,
             };
 
             let _ = events.send(ScrapeEvent::GameCompleted {

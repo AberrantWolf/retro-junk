@@ -7,6 +7,11 @@ edition.workspace = true
 name = "retro-junk-gui"
 path = "src/main.rs"
 
+[features]
+default = ["cjk-full"]
+cjk-full = []
+cjk-jp = []
+
 [dependencies]
 retro-junk-lib.workspace = true
 retro-junk-dat.workspace = true
@@ -16,6 +21,7 @@ retro-junk-sony.workspace = true
 retro-junk-sega.workspace = true
 retro-junk-microsoft.workspace = true
 retro-junk-frontend.workspace = true
+retro-junk-db.workspace = true
 eframe = "0.30"
 egui = "0.30"
 egui_extras = { version = "0.30", features = ["image"] }

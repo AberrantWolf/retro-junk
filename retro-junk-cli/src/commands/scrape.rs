@@ -12,6 +12,43 @@ use crate::CliError;
 use crate::scan_folders;
 use crate::spinner;
 
+/// Try to enrich scraped games with cover_title from the catalog database.
+///
+/// Looks up each game by title in the catalog DB. If a release with a
+/// `cover_title` is found, it's set on the `ScrapedGame` so ES-DE can
+/// use it as the `<name>` tag.
+fn enrich_from_catalog(games: &mut [retro_junk_frontend::ScrapedGame]) {
+    let catalog_path = match retro_junk_dat::cache::cache_dir() {
+        Ok(p) => p.join("catalog.db"),
+        Err(_) => return,
+    };
+    if !catalog_path.exists() {
+        return;
+    }
+    let conn = match retro_junk_db::open_database(&catalog_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    for game in games.iter_mut() {
+        if game.cover_title.is_some() {
+            continue;
+        }
+        if let Ok(releases) = retro_junk_db::search_releases(&conn, &game.name) {
+            // Pick the first release whose title exactly matches
+            let exact = releases
+                .iter()
+                .find(|r| r.title == game.name)
+                .or(releases.first());
+            if let Some(release) = exact {
+                if let Some(ref ct) = release.cover_title {
+                    game.cover_title = Some(ct.clone());
+                }
+            }
+        }
+    }
+}
+
 pub(crate) async fn connect_screenscraper(
     threads: Option<usize>,
     quiet: bool,
@@ -451,14 +488,18 @@ pub(crate) fn run_scrape(
                         }
                     }
 
+                    // Enrich with cover titles from catalog DB
+                    let mut games = result.games;
+                    enrich_from_catalog(&mut games);
+
                     // Write metadata
-                    if !result.games.is_empty() && !dry_run {
+                    if !games.is_empty() && !dry_run {
                         let system_metadata_dir = options.metadata_dir.join(folder_name);
                         let system_media_dir = options.media_dir.join(folder_name);
 
                         use retro_junk_frontend::Frontend;
                         if let Err(e) = esde.write_metadata(
-                            &result.games,
+                            &games,
                             path,
                             &system_metadata_dir,
                             &system_media_dir,

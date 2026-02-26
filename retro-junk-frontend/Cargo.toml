@@ -13,3 +13,6 @@ image.workspace = true
 serde_yml.workspace = true
 dirs.workspace = true
 pathdiff.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

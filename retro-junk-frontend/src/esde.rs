@@ -44,7 +44,8 @@ impl Frontend for EsDeFrontend {
         for game in games {
             xml.push_str("  <game>\n");
             write_tag(&mut xml, "path", &format!("./{}", game.rom_filename));
-            write_tag(&mut xml, "name", &game.name);
+            let display_name = game.cover_title.as_deref().unwrap_or(&game.name);
+            write_tag(&mut xml, "name", display_name);
 
             if let Some(ref desc) = game.description {
                 write_tag(&mut xml, "desc", desc);

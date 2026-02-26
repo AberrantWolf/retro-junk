@@ -34,6 +34,8 @@ pub struct ScrapedGame {
     pub release_date: Option<String>,
     /// Map of media type to downloaded file path
     pub media: std::collections::HashMap<MediaType, std::path::PathBuf>,
+    /// Box/cover title from catalog DB (used as ES-DE `<name>` when present)
+    pub cover_title: Option<String>,
 }
 
 /// Trait for gaming frontend metadata generators.

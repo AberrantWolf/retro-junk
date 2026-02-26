@@ -10,7 +10,7 @@ use crate::state::{
     ConsoleState, DatMatchInfo, DatStatus, EntryStatus, Library, LibraryEntry, ScanStatus,
 };
 
-const LIBRARY_CACHE_VERSION: u32 = 2;
+const LIBRARY_CACHE_VERSION: u32 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LibraryCache {
@@ -46,6 +46,10 @@ pub struct CachedEntry {
     pub ambiguous_candidates: Vec<String>,
     #[serde(default)]
     pub region_override: Option<Region>,
+    #[serde(default)]
+    pub cover_title: Option<String>,
+    #[serde(default)]
+    pub screen_title: Option<String>,
 }
 
 /// Returns `~/.cache/retro-junk/library/`.
@@ -101,6 +105,8 @@ pub fn save_library(root: &Path, library: &Library) -> std::io::Result<()> {
                         status: e.status,
                         ambiguous_candidates: e.ambiguous_candidates.clone(),
                         region_override: e.region_override,
+                        cover_title: e.cover_title.clone(),
+                        screen_title: e.screen_title.clone(),
                     })
                     .collect(),
                 dat_game_count: match &c.dat_status {
@@ -178,6 +184,8 @@ pub fn load_library(root: &Path, context: &AnalysisContext) -> Option<(Library, 
                     ambiguous_candidates: ce.ambiguous_candidates,
                     media_paths: None, // re-discovered lazily
                     region_override: ce.region_override,
+                    cover_title: ce.cover_title,
+                    screen_title: ce.screen_title,
                 })
                 .collect();
 

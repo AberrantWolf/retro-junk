@@ -56,14 +56,26 @@ pub struct RetroJunkApp {
 
     /// Persistent settings (library roots, preferences).
     pub settings: AppSettings,
+
+    /// Connection to the catalog database (for cover/screen title enrichment).
+    /// `None` if the catalog DB doesn't exist yet (user hasn't run catalog import).
+    pub catalog_db: Option<retro_junk_db::Connection>,
 }
 
 impl RetroJunkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
+        crate::fonts::configure_cjk_fonts(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
         let context = Arc::new(retro_junk_lib::create_default_context());
         let settings = crate::settings::load_settings();
+
+        // Try to open the catalog DB for title enrichment
+        let catalog_db = retro_junk_dat::cache::cache_dir()
+            .ok()
+            .map(|p| p.join("catalog.db"))
+            .filter(|p| p.exists())
+            .and_then(|p| retro_junk_db::open_database(&p).ok());
 
         let mut app = Self {
             context,
@@ -80,6 +92,7 @@ impl RetroJunkApp {
             filter_text: String::new(),
             detail_panel_open: true,
             settings,
+            catalog_db,
         };
 
         // Restore last open root from settings

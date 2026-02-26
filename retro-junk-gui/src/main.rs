@@ -6,6 +6,7 @@
 mod app;
 mod backend;
 mod cache;
+mod fonts;
 mod settings;
 mod state;
 mod views;
