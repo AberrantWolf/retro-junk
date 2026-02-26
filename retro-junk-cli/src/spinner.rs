@@ -31,7 +31,7 @@ impl SpinnerPool {
         };
 
         let spinner_style = ProgressStyle::with_template("  {spinner:.cyan} {msg}")
-            .unwrap()
+            .expect("static pattern")
             .tick_chars("/-\\|");
 
         let spinners: Vec<ProgressBar> = (0..n)

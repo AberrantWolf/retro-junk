@@ -8,6 +8,7 @@ use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::{AnalysisContext, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
 
+use crate::CliError;
 use crate::scan_folders;
 
 /// Run the analyze command.
@@ -17,9 +18,9 @@ pub(crate) fn run_analyze(
     consoles: Option<Vec<Platform>>,
     limit: Option<usize>,
     root: Option<PathBuf>,
-) {
+) -> Result<(), CliError> {
     let root_path =
-        root.unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
+        root.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     log::info!("Analyzing ROMs in: {}", root_path.display());
     if quick {
@@ -28,17 +29,19 @@ pub(crate) fn run_analyze(
     if let Some(n) = limit {
         log::info!("Limit: {} games per console", n);
     }
-    log::info!("");
+    crate::log_blank();
 
     let options = AnalysisOptions::new().quick(quick);
 
     let scan = match scan_folders(ctx, &root_path, &consoles) {
         Some(s) => s,
-        None => return,
+        None => return Ok(()),
     };
 
     for cf in &scan.matches {
-        let console = ctx.get_by_platform(cf.platform).unwrap();
+        let console = ctx.get_by_platform(cf.platform).ok_or_else(|| {
+            CliError::unknown_system(format!("No analyzer for platform {:?}", cf.platform))
+        })?;
         log::info!(
             "{} {} folder: {}",
             "Found".if_supports_color(Stdout, |t| t.bold()),
@@ -58,12 +61,14 @@ pub(crate) fn run_analyze(
             )
             .if_supports_color(Stdout, |t| t.dimmed()),
         );
-        log::info!("");
+        crate::log_blank();
         log::info!("Tip: Create folders named after consoles (e.g., 'snes', 'n64', 'ps1')");
         log::info!("     and place your ROM files inside them.");
-        log::info!("");
+        crate::log_blank();
         log::info!("Run 'retro-junk list' to see all supported console names.");
     }
+
+    Ok(())
 }
 
 /// Analyze all ROM files in a folder.
@@ -119,7 +124,7 @@ fn analyze_folder(
             "No ROM files found".if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
-    log::info!("");
+    crate::log_blank();
 }
 
 /// Analyze a single file and print its results.
@@ -166,7 +171,7 @@ fn analyze_and_print(
         }
         Err(e) => {
             log::warn!(
-                "  {}{}: {} Analysis not implemented ({})",
+                "  {}{}: {} Analysis failed ({})",
                 indent,
                 file_name,
                 "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),

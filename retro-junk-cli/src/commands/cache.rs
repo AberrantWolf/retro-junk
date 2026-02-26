@@ -5,10 +5,12 @@ use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::AnalysisContext;
 
+use crate::CliError;
+
 use super::analyze::format_bytes;
 
 /// List cached DAT files.
-pub(crate) fn run_cache_list() {
+pub(crate) fn run_cache_list() -> Result<(), CliError> {
     match retro_junk_dat::cache::list() {
         Ok(entries) => {
             if entries.is_empty() {
@@ -17,14 +19,14 @@ pub(crate) fn run_cache_list() {
                     "No cached DAT files.".if_supports_color(Stdout, |t| t.dimmed()),
                 );
                 log::info!("Run 'retro-junk cache fetch <system>' to download DAT files.");
-                return;
+                return Ok(());
             }
 
             log::info!(
                 "{}",
                 "Cached DAT files:".if_supports_color(Stdout, |t| t.bold()),
             );
-            log::info!("");
+            crate::log_blank();
 
             let mut total_size = 0u64;
             for entry in &entries {
@@ -41,7 +43,7 @@ pub(crate) fn run_cache_list() {
                     entry.dat_version,
                 );
             }
-            log::info!("");
+            crate::log_blank();
             log::info!(
                 "Total: {} files, {}",
                 entries.len(),
@@ -56,10 +58,12 @@ pub(crate) fn run_cache_list() {
             );
         }
     }
+
+    Ok(())
 }
 
 /// Clear the DAT cache.
-pub(crate) fn run_cache_clear() {
+pub(crate) fn run_cache_clear() -> Result<(), CliError> {
     match retro_junk_dat::cache::clear() {
         Ok(freed) => {
             log::info!(
@@ -76,10 +80,12 @@ pub(crate) fn run_cache_clear() {
             );
         }
     }
+
+    Ok(())
 }
 
 /// List cached GDB CSV files.
-pub(crate) fn run_gdb_cache_list() {
+pub(crate) fn run_gdb_cache_list() -> Result<(), CliError> {
     match retro_junk_dat::gdb_cache::list() {
         Ok(entries) => {
             if entries.is_empty() {
@@ -88,14 +94,14 @@ pub(crate) fn run_gdb_cache_list() {
                     "No cached GDB files.".if_supports_color(Stdout, |t| t.dimmed()),
                 );
                 log::info!("Run 'retro-junk cache gdb-fetch <system>' to download GDB CSV files.");
-                return;
+                return Ok(());
             }
 
             log::info!(
                 "{}",
                 "Cached GDB files:".if_supports_color(Stdout, |t| t.bold()),
             );
-            log::info!("");
+            crate::log_blank();
 
             let mut total_size = 0u64;
             for entry in &entries {
@@ -107,7 +113,7 @@ pub(crate) fn run_gdb_cache_list() {
                     format_bytes(entry.file_size),
                 );
             }
-            log::info!("");
+            crate::log_blank();
             log::info!(
                 "Total: {} files, {}",
                 entries.len(),
@@ -122,10 +128,12 @@ pub(crate) fn run_gdb_cache_list() {
             );
         }
     }
+
+    Ok(())
 }
 
 /// Clear the GDB cache.
-pub(crate) fn run_gdb_cache_clear() {
+pub(crate) fn run_gdb_cache_clear() -> Result<(), CliError> {
     match retro_junk_dat::gdb_cache::clear() {
         Ok(freed) => {
             log::info!(
@@ -142,10 +150,15 @@ pub(crate) fn run_gdb_cache_clear() {
             );
         }
     }
+
+    Ok(())
 }
 
 /// Fetch GDB CSV files for specified systems.
-pub(crate) fn run_gdb_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
+pub(crate) fn run_gdb_cache_fetch(
+    ctx: &AnalysisContext,
+    systems: Vec<String>,
+) -> Result<(), CliError> {
     let to_fetch: Vec<(String, &'static [&'static str])> =
         if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
             ctx.consoles()
@@ -214,10 +227,12 @@ pub(crate) fn run_gdb_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
             }
         }
     }
+
+    Ok(())
 }
 
 /// Fetch DAT files for specified systems.
-pub(crate) fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
+pub(crate) fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) -> Result<(), CliError> {
     use retro_junk_lib::DatSource;
 
     let to_fetch: Vec<(String, Vec<&str>, &'static [&'static str], DatSource)> =
@@ -305,4 +320,6 @@ pub(crate) fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) {
             }
         }
     }
+
+    Ok(())
 }

@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use crate::CliError;
+
 use super::default_catalog_db_path;
 
 /// Analyze media asset coverage gaps.
@@ -12,22 +14,17 @@ pub(crate) fn run_catalog_gaps(
     collection_only: bool,
     missing: Option<String>,
     limit: u32,
-) {
+) -> Result<(), CliError> {
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
 
     if !db_path.exists() {
         log::warn!("No catalog database found at {}", db_path.display());
         log::info!("Run 'retro-junk catalog import all' first.");
-        return;
+        return Ok(());
     }
 
-    let conn = match retro_junk_db::open_database(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("Failed to open catalog database: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let conn = retro_junk_db::open_database(&db_path)
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
 
     let scope = if collection_only {
         "collection"
@@ -46,40 +43,36 @@ pub(crate) fn run_catalog_gaps(
             .if_supports_color(Stdout, |t| t.bold()),
         );
 
-        match retro_junk_db::releases_missing_asset_type(
+        let releases = retro_junk_db::releases_missing_asset_type(
             &conn,
             &system,
             asset_type,
             collection_only,
             Some(limit),
-        ) {
-            Ok(releases) => {
-                if releases.is_empty() {
-                    log::info!(
-                        "  No gaps found — all releases have '{}' assets.",
-                        asset_type
-                    );
-                } else {
-                    for (id, title, region) in &releases {
-                        log::info!(
-                            "  {} {} ({})",
-                            "\u{2022}".if_supports_color(Stdout, |t| t.dimmed()),
-                            title,
-                            region.if_supports_color(Stdout, |t| t.dimmed()),
-                        );
-                        log::debug!("    {}", id);
-                    }
-                    if releases.len() as u32 == limit {
-                        log::info!("  ... (showing first {}, use --limit to see more)", limit,);
-                    }
-                }
+        )
+        .map_err(|e| CliError::database(format!("Failed to query gaps: {}", e)))?;
+
+        if releases.is_empty() {
+            log::info!(
+                "  No gaps found — all releases have '{}' assets.",
+                asset_type
+            );
+        } else {
+            for (id, title, region) in &releases {
+                log::info!(
+                    "  {} {} ({})",
+                    "\u{2022}".if_supports_color(Stdout, |t| t.dimmed()),
+                    title,
+                    region.if_supports_color(Stdout, |t| t.dimmed()),
+                );
+                log::debug!("    {}", id);
             }
-            Err(e) => {
-                log::error!("Failed to query gaps: {}", e);
-                std::process::exit(1);
+            if releases.len() as u32 == limit {
+                log::info!("  ... (showing first {}, use --limit to see more)", limit,);
             }
         }
-        return;
+
+        return Ok(());
     }
 
     // Default: show coverage summary
@@ -90,29 +83,25 @@ pub(crate) fn run_catalog_gaps(
     );
 
     // Coverage summary
-    match retro_junk_db::asset_coverage_summary(&conn, &system, collection_only) {
-        Ok((total, with_assets, asset_count)) => {
-            let pct = if total > 0 {
-                (with_assets as f64 / total as f64 * 100.0) as u32
-            } else {
-                0
-            };
-            log::info!("  Total releases:       {:>6}", total);
-            log::info!("  With any asset:       {:>6} ({}%)", with_assets, pct);
-            log::info!("  Without any asset:    {:>6}", total - with_assets);
-            log::info!("  Total assets:         {:>6}", asset_count);
-        }
-        Err(e) => {
-            log::error!("Failed to query coverage: {}", e);
-            std::process::exit(1);
-        }
-    }
+    let (total, with_assets, asset_count) =
+        retro_junk_db::asset_coverage_summary(&conn, &system, collection_only)
+            .map_err(|e| CliError::database(format!("Failed to query coverage: {}", e)))?;
+
+    let pct = if total > 0 {
+        (with_assets as f64 / total as f64 * 100.0) as u32
+    } else {
+        0
+    };
+    log::info!("  Total releases:       {:>6}", total);
+    log::info!("  With any asset:       {:>6} ({}%)", with_assets, pct);
+    log::info!("  Without any asset:    {:>6}", total - with_assets);
+    log::info!("  Total assets:         {:>6}", asset_count);
 
     // Asset counts by type
     match retro_junk_db::asset_counts_by_type(&conn, &system, collection_only) {
         Ok(counts) => {
             if !counts.is_empty() {
-                log::info!("");
+                crate::log_blank();
                 log::info!(
                     "{}",
                     "  Assets by type:".if_supports_color(Stdout, |t| t.bold()),
@@ -131,7 +120,7 @@ pub(crate) fn run_catalog_gaps(
     match retro_junk_db::releases_with_no_assets(&conn, &system, collection_only, Some(10)) {
         Ok(releases) => {
             if !releases.is_empty() {
-                log::info!("");
+                crate::log_blank();
                 log::info!(
                     "{}",
                     format!("  Releases with no assets (first {}):", releases.len())
@@ -152,7 +141,7 @@ pub(crate) fn run_catalog_gaps(
         }
     }
 
-    log::info!("");
+    crate::log_blank();
     log::info!(
         "Use {} to see releases missing a specific type.",
         "--missing <type>".if_supports_color(Stdout, |t| t.bold()),
@@ -160,4 +149,6 @@ pub(crate) fn run_catalog_gaps(
     log::info!(
         "  Asset types: box-front, box-back, screenshot, title-screen, wheel, fanart, cart-front"
     );
+
+    Ok(())
 }

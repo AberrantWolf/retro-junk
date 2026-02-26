@@ -4,6 +4,8 @@ use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 use retro_junk_lib::{AnalysisContext, Platform};
 
+use crate::CliError;
+
 use super::default_catalog_db_path;
 
 /// Enrich catalog releases with GameDataBase metadata.
@@ -13,7 +15,7 @@ pub(crate) fn run_catalog_enrich_gdb(
     db_path: Option<PathBuf>,
     limit: Option<u32>,
     gdb_dir: Option<PathBuf>,
-) {
+) -> Result<(), CliError> {
     use retro_junk_import::gdb_import::{self, GdbEnrichOptions};
 
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
@@ -21,16 +23,11 @@ pub(crate) fn run_catalog_enrich_gdb(
     if !db_path.exists() {
         log::warn!("No catalog database found at {}", db_path.display());
         log::info!("Run 'retro-junk catalog import all' first.");
-        return;
+        return Ok(());
     }
 
-    let conn = match retro_junk_db::open_database(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("Failed to open catalog database: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let conn = retro_junk_db::open_database(&db_path)
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
 
     // Resolve systems
     let consoles: Vec<(String, &'static [&'static str])> =
@@ -45,20 +42,15 @@ pub(crate) fn run_catalog_enrich_gdb(
                 })
                 .collect()
         } else {
-            systems
-                .iter()
-                .filter_map(|s| {
-                    let p: Platform = match s.parse() {
-                        Ok(p) => p,
-                        Err(_) => {
-                            log::error!(
-                                "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
-                                s
-                            );
-                            std::process::exit(1);
-                        }
-                    };
-                    let console = ctx.get_by_short_name(p.short_name())?;
+            let mut result = Vec::new();
+            for s in &systems {
+                let p: Platform = s.parse().map_err(|_| {
+                    CliError::unknown_system(format!(
+                        "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
+                        s
+                    ))
+                })?;
+                if let Some(console) = ctx.get_by_short_name(p.short_name()) {
                     let csv_names = console.analyzer.gdb_csv_names();
                     if csv_names.is_empty() {
                         log::warn!(
@@ -66,23 +58,23 @@ pub(crate) fn run_catalog_enrich_gdb(
                             "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                             s,
                         );
-                        None
                     } else {
-                        Some((p.short_name().to_string(), csv_names))
+                        result.push((p.short_name().to_string(), csv_names));
                     }
-                })
-                .collect()
+                }
+            }
+            result
         };
 
     if consoles.is_empty() {
         log::warn!("No systems with GDB support specified.");
-        return;
+        return Ok(());
     }
 
     let mut total_enriched = 0u32;
 
     for (short_name, csv_names) in &consoles {
-        println!(
+        log::info!(
             "\n{} {}",
             "Enriching".if_supports_color(Stdout, |t| t.bold()),
             short_name.if_supports_color(Stdout, |t| t.cyan()),
@@ -96,7 +88,7 @@ pub(crate) fn run_catalog_enrich_gdb(
 
         match gdb_import::enrich_gdb(&conn, csv_names, &options) {
             Ok(stats) => {
-                println!(
+                log::info!(
                     "  {} {}: {}/{} matched, {} enriched, {} disagreements",
                     "\u{2714}".if_supports_color(Stdout, |t| t.green()),
                     short_name.if_supports_color(Stdout, |t| t.bold()),
@@ -106,10 +98,10 @@ pub(crate) fn run_catalog_enrich_gdb(
                     stats.disagreements,
                 );
                 if stats.companies_created > 0 {
-                    println!("    {} new companies created", stats.companies_created,);
+                    log::info!("    {} new companies created", stats.companies_created,);
                 }
                 if stats.skipped_no_hash > 0 {
-                    println!(
+                    log::info!(
                         "    {} media entries skipped (no SHA1)",
                         stats.skipped_no_hash,
                     );
@@ -127,9 +119,11 @@ pub(crate) fn run_catalog_enrich_gdb(
         }
     }
 
-    println!(
+    log::info!(
         "\n{} Total enriched: {}",
         "Done.".if_supports_color(Stdout, |t| t.bold()),
         total_enriched,
     );
+
+    Ok(())
 }

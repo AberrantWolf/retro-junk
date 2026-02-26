@@ -5,6 +5,8 @@ use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::AnalysisContext;
 
+use crate::CliError;
+
 use super::default_catalog_db_path;
 
 /// Scan a ROM folder and add matched files to the collection.
@@ -15,7 +17,7 @@ pub(crate) fn run_catalog_scan(
     db_path: Option<PathBuf>,
     user_id: String,
     quiet: bool,
-) {
+) -> Result<(), CliError> {
     use retro_junk_import::scan_import::{ScanOptions, ScanProgress, ScanStats};
 
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
@@ -23,32 +25,25 @@ pub(crate) fn run_catalog_scan(
     if !db_path.exists() {
         log::warn!("No catalog database found at {}", db_path.display());
         log::info!("Run 'retro-junk catalog import all' first.");
-        return;
+        return Ok(());
     }
 
     if !folder.exists() {
-        log::error!("ROM folder not found: {}", folder.display());
-        std::process::exit(1);
+        return Err(CliError::other(format!(
+            "ROM folder not found: {}",
+            folder.display()
+        )));
     }
 
-    let console = match ctx.get_by_short_name(&system) {
-        Some(c) => c,
-        None => {
-            log::error!(
-                "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
-                system
-            );
-            std::process::exit(1);
-        }
-    };
+    let console = ctx.get_by_short_name(&system).ok_or_else(|| {
+        CliError::unknown_system(format!(
+            "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
+            system
+        ))
+    })?;
 
-    let conn = match retro_junk_db::open_database(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("Failed to open catalog database: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let conn = retro_junk_db::open_database(&db_path)
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
 
     let options = ScanOptions { user_id };
 
@@ -92,7 +87,7 @@ pub(crate) fn run_catalog_scan(
         }
 
         fn on_complete(&self, stats: &ScanStats) {
-            log::info!("");
+            crate::log_blank();
             log::info!(
                 "{}",
                 "Scan complete".if_supports_color(Stdout, |t| t.bold()),
@@ -119,38 +114,35 @@ pub(crate) fn run_catalog_scan(
 
     let progress = CliScanProgress { quiet };
 
-    match retro_junk_import::scan_folder(
+    let result = retro_junk_import::scan_folder(
         &conn,
         &folder,
         console.analyzer.as_ref(),
         console.metadata.platform,
         &options,
         Some(&progress),
-    ) {
-        Ok(result) => {
-            if !result.unmatched.is_empty() && !quiet {
-                log::info!("");
-                log::info!(
-                    "{}",
-                    format!("{} unmatched files:", result.unmatched.len())
-                        .if_supports_color(Stdout, |t| t.dimmed()),
-                );
-                for f in &result.unmatched {
-                    log::info!(
-                        "  {} (CRC32: {}, size: {})",
-                        f.path
-                            .file_name()
-                            .map(|n| n.to_string_lossy())
-                            .unwrap_or_default(),
-                        f.crc32,
-                        f.file_size,
-                    );
-                }
-            }
-        }
-        Err(e) => {
-            log::error!("Scan failed: {}", e);
-            std::process::exit(1);
+    )
+    .map_err(|e| CliError::other(format!("Scan failed: {}", e)))?;
+
+    if !result.unmatched.is_empty() && !quiet {
+        crate::log_blank();
+        log::info!(
+            "{}",
+            format!("{} unmatched files:", result.unmatched.len())
+                .if_supports_color(Stdout, |t| t.dimmed()),
+        );
+        for f in &result.unmatched {
+            log::info!(
+                "  {} (CRC32: {}, size: {})",
+                f.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default(),
+                f.crc32,
+                f.file_size,
+            );
         }
     }
+
+    Ok(())
 }

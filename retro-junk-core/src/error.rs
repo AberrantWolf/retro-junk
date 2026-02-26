@@ -45,6 +45,10 @@ impl AnalysisError {
         Self::CorruptedHeader(msg.into())
     }
 
+    pub fn too_small(expected: u64, actual: u64) -> Self {
+        Self::TooSmall { expected, actual }
+    }
+
     pub fn unsupported(msg: impl Into<String>) -> Self {
         Self::UnsupportedVariant(msg.into())
     }

@@ -704,13 +704,13 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
         let old_name = rename
             .source
             .file_name()
-            .unwrap()
+            .unwrap_or(std::ffi::OsStr::new("?"))
             .to_string_lossy()
             .to_string();
         let new_name = rename
             .target
             .file_name()
-            .unwrap()
+            .unwrap_or(std::ffi::OsStr::new("?"))
             .to_string_lossy()
             .to_string();
         dir_rename_maps
@@ -1128,6 +1128,7 @@ fn find_correct_bin_filename(
     }
 
     // Strategy 5: If there's exactly one file with the matching extension, use it
+    // SAFETY: len == 1 guarantees next() returns Some
     if bin_files.len() == 1 {
         return Some(bin_files.into_iter().next().unwrap());
     }
@@ -1455,6 +1456,7 @@ fn find_correct_m3u_entry(
                 }
             })
             .collect();
+        // SAFETY: len == 1 guarantees next() returns Some
         if candidates.len() == 1 {
             return Some(candidates.into_iter().next().unwrap());
         }

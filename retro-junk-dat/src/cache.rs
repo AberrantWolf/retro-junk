@@ -144,20 +144,20 @@ pub fn fetch(
         let response = match reqwest::blocking::get(&url) {
             Ok(r) => r,
             Err(e) => {
-                eprintln!("Warning: failed to download {dat_name}: {e}");
+                log::warn!("Failed to download {dat_name}: {e}");
                 continue;
             }
         };
 
         if !response.status().is_success() {
-            eprintln!("Warning: HTTP {} for {dat_name} ({url})", response.status());
+            log::warn!("HTTP {} for {dat_name} ({url})", response.status());
             continue;
         }
 
         let bytes = match response.bytes() {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Warning: failed to read response for {dat_name}: {e}");
+                log::warn!("Failed to read response for {dat_name}: {e}");
                 continue;
             }
         };
@@ -213,7 +213,7 @@ pub fn load_dats(
         for dat_name in dat_names {
             match find_dat_in_dir(short_name, dat_name, dir) {
                 Ok(path) => dats.push(dat::parse_dat_file(&path)?),
-                Err(e) => eprintln!("Warning: {e}"),
+                Err(e) => log::warn!("{e}"),
             }
         }
         if dats.is_empty() {

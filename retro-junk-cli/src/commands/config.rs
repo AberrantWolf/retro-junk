@@ -4,6 +4,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use crate::CliError;
+
 fn mask_value(s: &str) -> String {
     if s.len() <= 2 {
         "****".to_string()
@@ -13,7 +15,7 @@ fn mask_value(s: &str) -> String {
 }
 
 /// Show current credentials and their sources.
-pub(crate) fn run_config_show() {
+pub(crate) fn run_config_show() -> Result<(), CliError> {
     use retro_junk_scraper::CredentialSource;
 
     let path = retro_junk_scraper::config_path();
@@ -23,7 +25,7 @@ pub(crate) fn run_config_show() {
         "{}",
         "ScreenScraper Configuration".if_supports_color(Stdout, |t| t.bold()),
     );
-    log::info!("");
+    crate::log_blank();
 
     // Config file status
     match &path {
@@ -48,7 +50,7 @@ pub(crate) fn run_config_show() {
             );
         }
     }
-    log::info!("");
+    crate::log_blank();
 
     // Resolve values per-field (Credentials::load() would fail if required fields are missing)
     let creds = retro_junk_scraper::Credentials::load().ok();
@@ -142,10 +144,12 @@ pub(crate) fn run_config_show() {
             }
         }
     }
+
+    Ok(())
 }
 
 /// Interactively set up credentials.
-pub(crate) fn run_config_setup() {
+pub(crate) fn run_config_setup() -> Result<(), CliError> {
     println!(
         "{}",
         "ScreenScraper Credential Setup".if_supports_color(Stdout, |t| t.bold()),
@@ -162,10 +166,10 @@ pub(crate) fn run_config_setup() {
             } else {
                 print!("  {}: ", prompt);
             }
-            std::io::stdout().flush().unwrap();
+            let _ = std::io::stdout().flush();
 
             let mut input = String::new();
-            std::io::stdin().read_line(&mut input).unwrap();
+            let _ = std::io::stdin().read_line(&mut input);
             let trimmed = input.trim().to_string();
 
             if trimmed.is_empty() {
@@ -206,6 +210,7 @@ pub(crate) fn run_config_setup() {
             "  {}",
             "Developer credentials (required):".if_supports_color(Stdout, |t| t.dimmed()),
         );
+        // SAFETY: read_line with required=true always returns Some
         let dev_id =
             read_line("dev_id", existing.as_ref().map(|c| c.dev_id.as_str()), true).unwrap();
         let dev_password = read_line(
@@ -244,28 +249,21 @@ pub(crate) fn run_config_setup() {
         user_password,
     };
 
-    match retro_junk_scraper::save_to_file(&creds) {
-        Ok(path) => {
-            println!();
-            println!(
-                "{} Credentials saved to {}",
-                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                path.display().if_supports_color(Stdout, |t| t.cyan()),
-            );
-        }
-        Err(e) => {
-            eprintln!();
-            eprintln!(
-                "{} Failed to save credentials: {}",
-                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                e,
-            );
-        }
-    }
+    let path = retro_junk_scraper::save_to_file(&creds)
+        .map_err(|e| CliError::config(format!("Failed to save credentials: {}", e)))?;
+
+    println!();
+    log::info!(
+        "{} Credentials saved to {}",
+        "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+        path.display().if_supports_color(Stdout, |t| t.cyan()),
+    );
+
+    Ok(())
 }
 
 /// Test credentials against the ScreenScraper API.
-pub(crate) fn run_config_test(quiet: bool) {
+pub(crate) fn run_config_test(quiet: bool) -> Result<(), CliError> {
     let creds = match retro_junk_scraper::Credentials::load() {
         Ok(c) => c,
         Err(e) => {
@@ -276,13 +274,14 @@ pub(crate) fn run_config_test(quiet: bool) {
             );
             log::warn!("");
             log::warn!("Run 'retro-junk config setup' to configure credentials.");
-            return;
+            return Ok(());
         }
     };
 
     log::info!("Testing credentials against ScreenScraper API...");
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| CliError::runtime(format!("Failed to create tokio runtime: {}", e)))?;
 
     rt.block_on(async {
         let pb = if quiet {
@@ -291,7 +290,7 @@ pub(crate) fn run_config_test(quiet: bool) {
             let pb = ProgressBar::new_spinner();
             pb.set_style(
                 ProgressStyle::with_template("  {spinner:.cyan} {msg}")
-                    .unwrap()
+                    .expect("static pattern")
                     .tick_chars("/-\\|"),
             );
             pb.set_message("Connecting...");
@@ -306,7 +305,7 @@ pub(crate) fn run_config_test(quiet: bool) {
                     "{} Credentials are valid!",
                     "\u{2714}".if_supports_color(Stdout, |t| t.green()),
                 );
-                log::info!("");
+                crate::log_blank();
                 log::info!(
                     "  Requests today: {}/{}",
                     user_info.requests_today(),
@@ -324,15 +323,18 @@ pub(crate) fn run_config_test(quiet: bool) {
             }
         }
     });
+
+    Ok(())
 }
 
 /// Print the config file path.
-pub(crate) fn run_config_path() {
+pub(crate) fn run_config_path() -> Result<(), CliError> {
     match retro_junk_scraper::config_path() {
         Some(path) => log::info!("{}", path.display()),
         None => {
-            log::warn!("Could not determine config directory");
-            std::process::exit(1);
+            return Err(CliError::config("Could not determine config directory"));
         }
     }
+
+    Ok(())
 }

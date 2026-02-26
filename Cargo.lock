@@ -3875,6 +3875,7 @@ dependencies = [
  "retro-junk-sega",
  "retro-junk-sony",
  "strip-ansi-escapes",
+ "thiserror 2.0.18",
  "tokio",
 ]
 

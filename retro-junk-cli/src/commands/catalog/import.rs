@@ -5,6 +5,8 @@ use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::AnalysisContext;
 
+use crate::CliError;
+
 use super::{default_catalog_db_path, default_catalog_dir};
 
 /// Import DAT files into the catalog database.
@@ -14,24 +16,20 @@ pub(crate) fn run_catalog_import(
     catalog_dir: Option<PathBuf>,
     db_path: Option<PathBuf>,
     dat_dir: Option<PathBuf>,
-) {
+) -> Result<(), CliError> {
     use retro_junk_import::{ImportStats, dat_source_str, import_dat, log_import};
 
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
     let catalog_dir = catalog_dir.unwrap_or_else(default_catalog_dir);
 
     // Open or create the database
-    let conn = match retro_junk_db::open_database(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!(
-                "Failed to open catalog database at {}: {}",
-                db_path.display(),
-                e
-            );
-            std::process::exit(1);
-        }
-    };
+    let conn = retro_junk_db::open_database(&db_path).map_err(|e| {
+        CliError::database(format!(
+            "Failed to open catalog database at {}: {}",
+            db_path.display(),
+            e
+        ))
+    })?;
 
     // Seed platforms and companies from YAML
     if catalog_dir.exists() {
@@ -91,7 +89,7 @@ pub(crate) fn run_catalog_import(
 
     if to_import.is_empty() {
         log::warn!("No systems to import.");
-        return;
+        return Ok(());
     }
 
     log::info!(
@@ -218,7 +216,7 @@ pub(crate) fn run_catalog_import(
         0
     };
 
-    log::info!("");
+    crate::log_blank();
     log::info!(
         "{}",
         "Import complete".if_supports_color(Stdout, |t| t.bold()),
@@ -247,6 +245,8 @@ pub(crate) fn run_catalog_import(
         log::info!("  Overrides applied: {}", overrides_applied);
     }
     log::info!("  Database: {}", db_path.display());
+
+    Ok(())
 }
 
 /// CLI progress reporter for DAT imports.

@@ -4,10 +4,14 @@
 
 mod cli_types;
 mod commands;
+mod error;
 mod spinner;
+
+pub(crate) use error::CliError;
 
 use std::fs;
 use std::io::Write;
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
@@ -99,6 +103,13 @@ impl log::Log for CliLogger {
     }
 }
 
+// -- Helpers --
+
+/// Log an empty line. Wrapper around `log::info!("")` for consistency.
+pub(crate) fn log_blank() {
+    log::info!("");
+}
+
 // -- Main --
 
 fn main() {
@@ -130,10 +141,24 @@ fn main() {
     log::set_max_level(level);
 
     let ctx = create_context();
+    let command = cli.command;
+    let root = cli.root;
 
-    match cli.command {
+    if let Err(e) = run(command, root, quiet, &ctx) {
+        log::error!("{e}");
+        std::process::exit(1);
+    }
+}
+
+fn run(
+    command: Commands,
+    root: Option<PathBuf>,
+    quiet: bool,
+    ctx: &AnalysisContext,
+) -> Result<(), CliError> {
+    match command {
         Commands::Analyze { quick, roms } => {
-            commands::analyze::run_analyze(&ctx, quick, roms.consoles, roms.limit, cli.root);
+            commands::analyze::run_analyze(ctx, quick, roms.consoles, roms.limit, root)?;
         }
         Commands::Rename {
             dry_run,
@@ -142,15 +167,15 @@ fn main() {
             dat_dir,
         } => {
             commands::rename::run_rename(
-                &ctx,
+                ctx,
                 dry_run,
                 hash,
                 roms.consoles,
                 roms.limit,
-                cli.root,
+                root,
                 dat_dir,
                 quiet,
-            );
+            )?;
         }
         Commands::Repair {
             dry_run,
@@ -159,15 +184,15 @@ fn main() {
             dat_dir,
         } => {
             commands::repair::run_repair(
-                &ctx,
+                ctx,
                 dry_run,
                 no_backup,
                 roms.consoles,
                 roms.limit,
-                cli.root,
+                root,
                 dat_dir,
                 quiet,
-            );
+            )?;
         }
         Commands::Scrape {
             roms,
@@ -187,7 +212,7 @@ fn main() {
             threads,
         } => {
             commands::scrape::run_scrape(
-                &ctx,
+                ctx,
                 roms.consoles,
                 roms.limit,
                 media_types,
@@ -204,25 +229,25 @@ fn main() {
                 no_miximage,
                 force_redownload,
                 threads,
-                cli.root,
+                root,
                 quiet,
-            );
+            )?;
         }
         Commands::Cache { action } => match action {
-            CacheAction::List => commands::cache::run_cache_list(),
-            CacheAction::Clear => commands::cache::run_cache_clear(),
-            CacheAction::Fetch { systems } => commands::cache::run_cache_fetch(&ctx, systems),
-            CacheAction::GdbList => commands::cache::run_gdb_cache_list(),
-            CacheAction::GdbClear => commands::cache::run_gdb_cache_clear(),
+            CacheAction::List => commands::cache::run_cache_list()?,
+            CacheAction::Clear => commands::cache::run_cache_clear()?,
+            CacheAction::Fetch { systems } => commands::cache::run_cache_fetch(ctx, systems)?,
+            CacheAction::GdbList => commands::cache::run_gdb_cache_list()?,
+            CacheAction::GdbClear => commands::cache::run_gdb_cache_clear()?,
             CacheAction::GdbFetch { systems } => {
-                commands::cache::run_gdb_cache_fetch(&ctx, systems)
+                commands::cache::run_gdb_cache_fetch(ctx, systems)?
             }
         },
         Commands::Config { action } => match action {
-            ConfigAction::Show => commands::config::run_config_show(),
-            ConfigAction::Setup => commands::config::run_config_setup(),
-            ConfigAction::Test => commands::config::run_config_test(quiet),
-            ConfigAction::Path => commands::config::run_config_path(),
+            ConfigAction::Show => commands::config::run_config_show()?,
+            ConfigAction::Setup => commands::config::run_config_setup()?,
+            ConfigAction::Test => commands::config::run_config_test(quiet)?,
+            ConfigAction::Path => commands::config::run_config_path()?,
         },
         Commands::Catalog { action } => match action {
             CatalogAction::Import {
@@ -232,12 +257,12 @@ fn main() {
                 dat_dir,
             } => {
                 commands::catalog::import::run_catalog_import(
-                    &ctx,
+                    ctx,
                     systems,
                     catalog_dir,
                     db,
                     dat_dir,
-                );
+                )?;
             }
             CatalogAction::EnrichGdb {
                 systems,
@@ -246,8 +271,8 @@ fn main() {
                 gdb_dir,
             } => {
                 commands::catalog::enrich_gdb::run_catalog_enrich_gdb(
-                    &ctx, systems, db, limit, gdb_dir,
-                );
+                    ctx, systems, db, limit, gdb_dir,
+                )?;
             }
             CatalogAction::Enrich {
                 systems,
@@ -273,7 +298,7 @@ fn main() {
                     threads,
                     no_reconcile,
                     quiet,
-                );
+                )?;
             }
             CatalogAction::Scan {
                 system,
@@ -281,14 +306,14 @@ fn main() {
                 db,
                 user_id,
             } => {
-                commands::catalog::scan::run_catalog_scan(&ctx, system, folder, db, user_id, quiet);
+                commands::catalog::scan::run_catalog_scan(ctx, system, folder, db, user_id, quiet)?;
             }
             CatalogAction::Verify {
                 system,
                 db,
                 user_id,
             } => {
-                commands::catalog::verify::run_catalog_verify(&ctx, system, db, user_id, quiet);
+                commands::catalog::verify::run_catalog_verify(ctx, system, db, user_id, quiet)?;
             }
             CatalogAction::Disagreements {
                 db,
@@ -298,7 +323,7 @@ fn main() {
             } => {
                 commands::catalog::disagreements::run_catalog_disagreements(
                     db, system, field, limit,
-                );
+                )?;
             }
             CatalogAction::Resolve {
                 id,
@@ -309,7 +334,7 @@ fn main() {
             } => {
                 commands::catalog::disagreements::run_catalog_resolve(
                     id, db, source_a, source_b, custom,
-                );
+                )?;
             }
             CatalogAction::Gaps {
                 system,
@@ -324,7 +349,7 @@ fn main() {
                     collection_only,
                     missing,
                     limit,
-                );
+                )?;
             }
             CatalogAction::Lookup {
                 query,
@@ -353,17 +378,17 @@ fn main() {
                     offset,
                     group,
                     db,
-                );
+                )?;
             }
             CatalogAction::Reconcile {
                 systems,
                 db,
                 dry_run,
             } => {
-                commands::catalog::reconcile::run_catalog_reconcile(systems, db, dry_run);
+                commands::catalog::reconcile::run_catalog_reconcile(systems, db, dry_run)?;
             }
             CatalogAction::Stats { db } => {
-                commands::catalog::stats::run_catalog_stats(db);
+                commands::catalog::stats::run_catalog_stats(db)?;
             }
             CatalogAction::Unenrich {
                 system,
@@ -371,13 +396,15 @@ fn main() {
                 db,
                 confirm,
             } => {
-                commands::catalog::unenrich::run_catalog_unenrich(system, after, db, confirm);
+                commands::catalog::unenrich::run_catalog_unenrich(system, after, db, confirm)?;
             }
             CatalogAction::Reset { db, confirm } => {
-                commands::catalog::reset::run_catalog_reset(db, confirm);
+                commands::catalog::reset::run_catalog_reset(db, confirm)?;
             }
         },
     }
+
+    Ok(())
 }
 
 /// Create the analysis context with all registered consoles.

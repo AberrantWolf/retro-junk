@@ -3,27 +3,28 @@ use std::path::PathBuf;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use crate::CliError;
+
 use super::default_catalog_db_path;
 
 /// Run the `catalog reconcile` command.
-pub(crate) fn run_catalog_reconcile(systems: Vec<String>, db_path: Option<PathBuf>, dry_run: bool) {
+pub(crate) fn run_catalog_reconcile(
+    systems: Vec<String>,
+    db_path: Option<PathBuf>,
+    dry_run: bool,
+) -> Result<(), CliError> {
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
 
     if !db_path.exists() {
         log::warn!("No catalog database found at {}", db_path.display());
         log::info!("Run 'retro-junk catalog import all' first.");
-        return;
+        return Ok(());
     }
 
-    let conn = match retro_junk_db::open_database(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("Failed to open catalog database: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let conn = retro_junk_db::open_database(&db_path)
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
 
-    run_reconcile_on_conn(&conn, &systems, dry_run);
+    run_reconcile_on_conn(&conn, &systems, dry_run)
 }
 
 /// Shared reconciliation logic, usable from both standalone command and post-enrich.
@@ -31,7 +32,7 @@ pub(crate) fn run_reconcile_on_conn(
     conn: &retro_junk_db::Connection,
     systems: &[String],
     dry_run: bool,
-) {
+) -> Result<(), CliError> {
     use retro_junk_import::reconcile::{ReconcileOptions, reconcile_works};
 
     let options = ReconcileOptions {
@@ -44,17 +45,12 @@ pub(crate) fn run_reconcile_on_conn(
         "Reconciling works...".if_supports_color(Stdout, |t| t.bold()),
     );
 
-    let result = match reconcile_works(conn, &options) {
-        Ok(r) => r,
-        Err(e) => {
-            log::error!("Reconciliation failed: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let result = reconcile_works(conn, &options)
+        .map_err(|e| CliError::database(format!("Reconciliation failed: {}", e)))?;
 
     if result.stats.groups_found == 0 {
         log::info!("  No duplicate works found.");
-        return;
+        return Ok(());
     }
 
     // Group details by platform
@@ -90,7 +86,7 @@ pub(crate) fn run_reconcile_on_conn(
         }
     }
 
-    log::info!("");
+    crate::log_blank();
     if dry_run {
         log::info!(
             "{}",
@@ -113,4 +109,6 @@ pub(crate) fn run_reconcile_on_conn(
     if result.stats.media_moved > 0 {
         log::info!("  Media moved:      {:>6}", result.stats.media_moved);
     }
+
+    Ok(())
 }

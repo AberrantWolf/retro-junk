@@ -37,6 +37,53 @@
 
 - [ ] **Overrides YAML expansion** — The overrides system exists but has limited use. Expand with curated override sets for known problem areas: multi-disc serial mismatches (FF7, etc.), regional title corrections, and publisher name normalization.
 
+## Code Health: Error Handling
+
+Audit findings from 2026-02-26. All items resolved — see commit history for details.
+
+## Code Health: DRY Violations
+
+Audit findings from 2026-02-26.
+
+### Shared utility functions
+
+- [ ] **Consolidate `format_size()` / `format_bytes()` — 5 duplicate implementations** — There's a canonical `format_bytes()` in `retro-junk-lib/src/util.rs`, but it's reimplemented in:
+  - `retro-junk-lib/src/repair.rs:567` — private copy; should import from `crate::util`
+  - `retro-junk-nintendo/src/nes.rs:827` — `format_size(u32)`
+  - `retro-junk-nintendo/src/snes.rs:792` — `format_size(u64)`
+  - `retro-junk-nintendo/src/gameboy.rs:472` — `format_size(u64)`
+  - `retro-junk-gui/src/views/settings.rs:125` — slightly different variant
+
+  Make the canonical version in `retro-junk-lib/src/util.rs` accept `u64` (it already does), then replace all 5 duplicates with imports. Platform crates already depend on `retro-junk-lib` transitively through `retro-junk-core`, but may need a direct dependency or the function could go in `retro-junk-core`.
+
+- [ ] **Consolidate `read_ascii()` — 2 duplicate implementations** — Identical function in `retro-junk-nintendo/src/n3ds/common.rs:70` and `retro-junk-sega/src/genesis.rs:57`. Both filter bytes to printable ASCII range (0x20-0x7F) and trim. Move to `retro-junk-core` as a utility since it's cross-platform. Signature: `pub fn read_ascii(buf: &[u8]) -> String`.
+
+- [ ] **Consolidate byte-reading helpers within Nintendo crate** — `retro-junk-nintendo/src/ds.rs:98-110` defines private `read_u16_le()` and `read_u32_le()` that duplicate what `n3ds/common.rs:17-66` already provides as `pub(crate)`. Either have `ds.rs` import from `n3ds::common`, or extract to a shared `nintendo_util` module in the Nintendo crate.
+
+- [ ] **Extract `get_file_size()` helper** — The seek-to-end/seek-to-start pattern for getting file size appears 26+ times across all analyzer crates:
+  ```rust
+  let file_size = reader.seek(SeekFrom::End(0))?;
+  reader.seek(SeekFrom::Start(0))?;
+  ```
+  Add a `pub fn file_size(reader: &mut dyn ReadSeek) -> Result<u64, AnalysisError>` to `retro-junk-core` (since all analyzers depend on it and use `ReadSeek`). Replace all 26+ instances.
+
+- [ ] **Extract header-reading helper with TooSmall error mapping** — The pattern of `read_exact` + `map_err` converting `UnexpectedEof` to `AnalysisError::TooSmall` appears in `nes.rs:570`, `snes.rs:348`, `gameboy.rs:69`, and others. Add a helper to `retro-junk-core`:
+  ```rust
+  pub fn read_header(reader: &mut dyn ReadSeek, buf: &mut [u8], expected: u64) -> Result<(), AnalysisError>
+  ```
+
+- [ ] **Remove trivial `new()` methods from analyzer structs** — 30+ analyzer structs have manual `fn new() -> Self { Self }` that duplicates `#[derive(Default)]` which they all already have. Remove the manual `new()` methods and use `Default::default()` or struct literal syntax at call sites. Only keep `new()` if the struct has fields that need initialization.
+
+### Test helpers
+
+- [ ] **Extract shared test database setup** — Multiple test files implement similar SQLite test database setup:
+  - `retro-junk-db/tests/queries.rs` — `setup_db()`, `setup_db_with_assets()`
+  - `retro-junk-import/tests/dat_import.rs` — `setup_db()`
+  - `retro-junk-import/tests/scan_import.rs` — `setup_db_with_media()`
+  - `retro-junk-import/tests/merge.rs` — `setup_db_with_release()`
+
+  Create a shared `test_helpers` module (e.g., in `retro-junk-db` behind a `#[cfg(test)]` or as a dev-dependency feature) that provides reusable setup functions.
+
 ## Enrichment Pipeline Hardening
 
 Audit findings from 2026-02-25. Goal: make `catalog enrich` reliable enough to run hands-off on a server for months.

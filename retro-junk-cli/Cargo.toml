@@ -25,4 +25,5 @@ indicatif.workspace = true
 tokio.workspace = true
 chrono.workspace = true
 log.workspace = true
+thiserror.workspace = true
 strip-ansi-escapes.workspace = true

@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use crate::CliError;
+
 use super::{default_catalog_db_path, format_file_size, truncate_str};
 
 /// Entity type prefixes for ID-based lookups.
@@ -27,21 +29,16 @@ pub(crate) fn run_catalog_lookup(
     offset: u32,
     group: bool,
     db_path: Option<PathBuf>,
-) {
+) -> Result<(), CliError> {
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
     if !db_path.exists() {
         log::warn!("No catalog database found at {}", db_path.display());
         log::info!("Run 'retro-junk catalog import all' first.");
-        return;
+        return Ok(());
     }
 
-    let conn = match retro_junk_db::open_database(&db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("Failed to open catalog database: {}", e);
-            std::process::exit(1);
-        }
-    };
+    let conn = retro_junk_db::open_database(&db_path)
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
 
     // ── Hash / serial lookups (original behavior) ─────────────────────
     let has_hash_or_serial = crc.is_some() || sha1.is_some() || md5.is_some() || serial.is_some();
@@ -57,8 +54,9 @@ pub(crate) fn run_catalog_lookup(
         .filter(|&&b| b)
         .count();
         if mode_count > 1 {
-            log::error!("Only one of --crc, --sha1, --md5, or --serial at a time.");
-            std::process::exit(1);
+            return Err(CliError::other(
+                "Only one of --crc, --sha1, --md5, or --serial at a time.",
+            ));
         }
 
         let platform_label = make_platform_label(&conn);
@@ -106,7 +104,7 @@ pub(crate) fn run_catalog_lookup(
                 &company_label,
             );
         }
-        return;
+        return Ok(());
     }
 
     // ── Browse/search modes ───────────────────────────────────────────
@@ -128,8 +126,10 @@ pub(crate) fn run_catalog_lookup(
             limit,
             offset,
             group,
-        ),
+        )?,
     }
+
+    Ok(())
 }
 
 // ── Routing helpers ─────────────────────────────────────────────────────────
@@ -159,7 +159,7 @@ fn lookup_by_hash<F>(
         Ok(m) => m,
         Err(e) => {
             log::error!("Hash lookup failed: {}", e);
-            std::process::exit(1);
+            return;
         }
     };
 
@@ -255,7 +255,7 @@ fn lookup_by_serial(
             )
             .if_supports_color(Stdout, |t| t.bold()),
         );
-        log::info!("");
+        crate::log_blank();
         for r in &releases {
             let plat = platform_label(&r.platform_id);
             let date_str = r.release_date.as_deref().unwrap_or("");
@@ -366,7 +366,6 @@ fn dispatch_search(
                 "Unknown type \"{}\". Use: platforms, works, releases, media",
                 other
             );
-            std::process::exit(1);
         }
         // Unified search across all types
         None => {
@@ -394,7 +393,7 @@ fn dispatch_search(
                         wid.if_supports_color(Stdout, |t| t.dimmed()),
                     );
                 }
-                log::info!("");
+                crate::log_blank();
             }
 
             if !releases.is_empty() {
@@ -416,7 +415,7 @@ fn dispatch_search(
                         rid.if_supports_color(Stdout, |t| t.dimmed()),
                     );
                 }
-                log::info!("");
+                crate::log_blank();
             }
 
             if !media.is_empty() {
@@ -437,7 +436,7 @@ fn dispatch_search(
                         mid.if_supports_color(Stdout, |t| t.dimmed()),
                     );
                 }
-                log::info!("");
+                crate::log_blank();
             }
 
             log::info!(
@@ -457,7 +456,7 @@ fn dispatch_listing(
     limit: u32,
     offset: u32,
     group: bool,
-) {
+) -> Result<(), CliError> {
     match entity_type {
         None | Some("platforms" | "platform") => {
             list_platforms(conn, manufacturer, group);
@@ -486,13 +485,13 @@ fn dispatch_listing(
             }
         }
         Some(other) => {
-            log::error!(
+            return Err(CliError::other(format!(
                 "Unknown type \"{}\". Use: platforms, works, releases, media",
                 other
-            );
-            std::process::exit(1);
+            )));
         }
     }
+    Ok(())
 }
 
 // ── Platform listing ────────────────────────────────────────────────────────
@@ -546,13 +545,14 @@ fn list_platforms(
                 current_mfr = p.manufacturer.clone();
                 by_mfr.push((current_mfr.clone(), Vec::new()));
             }
+            // SAFETY: just pushed an entry above when manufacturer changes, or on first iteration
             by_mfr.last_mut().unwrap().1.push(p);
         }
 
         for (mfr, group_platforms) in &by_mfr {
             log::info!("{}", mfr.if_supports_color(Stdout, |t| t.bold()),);
             print_platform_table_rows(group_platforms, &release_counts, &media_counts);
-            log::info!("");
+            crate::log_blank();
         }
     } else {
         log::info!(
@@ -568,7 +568,7 @@ fn list_platforms(
         print_platform_table_rows(&filtered, &release_counts, &media_counts);
     }
 
-    log::info!("");
+    crate::log_blank();
     log::info!("{} platforms.", filtered.len());
 }
 
@@ -625,7 +625,7 @@ fn list_releases_for_platform(
         format!("Releases for {} (offset {}):", plat_name, offset)
             .if_supports_color(Stdout, |t| t.bold()),
     );
-    log::info!("");
+    crate::log_blank();
     print_releases_table(&results, &platform_label, offset, limit);
 }
 
@@ -656,7 +656,7 @@ fn list_media_for_platform(
         format!("Media for {} (offset {}):", plat_name, offset)
             .if_supports_color(Stdout, |t| t.bold()),
     );
-    log::info!("");
+    crate::log_blank();
     print_media_table(conn, &results, &platform_label, offset, limit);
 }
 
@@ -694,7 +694,7 @@ fn print_platform_detail(conn: &retro_junk_db::Connection, p: &retro_junk_db::Pl
     log::info!("  Release year: {}", year_str);
     log::info!("  Releases:     {}", format_count(rel_count));
     log::info!("  Media:        {}", format_count(med_count));
-    log::info!("");
+    crate::log_blank();
 }
 
 fn print_work_detail(
@@ -727,7 +727,7 @@ fn print_work_detail(
             );
         }
     }
-    log::info!("");
+    crate::log_blank();
 }
 
 /// Print a detailed view of a single release.
@@ -795,7 +795,7 @@ fn print_release_detail(
     // Media entries
     match retro_junk_db::media_for_release(conn, &release.id) {
         Ok(media) if !media.is_empty() => {
-            log::info!("");
+            crate::log_blank();
             log::info!("  {}", "Media:".if_supports_color(Stdout, |t| t.bold()),);
             for (i, m) in media.iter().enumerate() {
                 let name = m.dat_name.as_deref().unwrap_or(&m.id);
@@ -853,7 +853,7 @@ fn print_release_detail(
                 v.sort();
                 v
             };
-            log::info!("");
+            crate::log_blank();
             log::info!(
                 "  Assets: {} ({})",
                 assets.len(),
@@ -863,7 +863,7 @@ fn print_release_detail(
         _ => {}
     }
 
-    log::info!("");
+    crate::log_blank();
 }
 
 fn print_media_detail(
@@ -920,7 +920,7 @@ fn print_media_detail(
         );
     }
 
-    log::info!("");
+    crate::log_blank();
 }
 
 // ── Table printers ──────────────────────────────────────────────────────────
@@ -934,7 +934,7 @@ fn print_works_table(works: &[retro_junk_db::WorkRow], offset: u32) {
             wid.if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
-    log::info!("");
+    crate::log_blank();
     log::info!("{} works shown (offset {}).", works.len(), offset);
 }
 
@@ -959,7 +959,7 @@ fn print_releases_table(
             rid.if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
-    log::info!("");
+    crate::log_blank();
     if releases.len() as u32 == limit {
         log::info!(
             "Showing {} results (offset {}). Use --offset {} to see more.",
@@ -992,7 +992,7 @@ fn print_media_table(
             mid.if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
-    log::info!("");
+    crate::log_blank();
     if media.len() as u32 == limit {
         log::info!(
             "Showing {} results (offset {}). Use --offset {} to see more.",

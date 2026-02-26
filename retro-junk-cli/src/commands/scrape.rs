@@ -8,20 +8,21 @@ use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::{AnalysisContext, Platform};
 
+use crate::CliError;
 use crate::scan_folders;
 use crate::spinner;
 
 pub(crate) async fn connect_screenscraper(
     threads: Option<usize>,
     quiet: bool,
-) -> Option<(Arc<retro_junk_scraper::ScreenScraperClient>, usize)> {
+) -> Result<(Arc<retro_junk_scraper::ScreenScraperClient>, usize), CliError> {
     let pb = if quiet {
         ProgressBar::hidden()
     } else {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
             ProgressStyle::with_template("  {spinner:.cyan} {msg}")
-                .unwrap()
+                .expect("static pattern")
                 .tick_chars("/-\\|"),
         );
         pb.set_message("Connecting to ScreenScraper...");
@@ -33,20 +34,16 @@ pub(crate) async fn connect_screenscraper(
         Ok(result) => result,
         Err(e) => {
             pb.finish_and_clear();
-            log::error!(
-                "{} Failed to connect to ScreenScraper: {}",
-                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                e,
-            );
+            let mut msg = format!("Failed to connect to ScreenScraper: {}", e);
             if e.to_string().contains("credentials") {
-                log::error!("");
-                log::error!("Set credentials via environment variables:");
-                log::error!("  SCREENSCRAPER_DEVID, SCREENSCRAPER_DEVPASSWORD");
-                log::error!("  SCREENSCRAPER_SSID, SCREENSCRAPER_SSPASSWORD (optional)");
-                log::error!("");
-                log::error!("Or run 'retro-junk config setup' to configure credentials.");
+                msg.push_str(
+                    "\n\nSet credentials via environment variables:\n\
+                     SCREENSCRAPER_DEVID, SCREENSCRAPER_DEVPASSWORD\n\
+                     SCREENSCRAPER_SSID, SCREENSCRAPER_SSPASSWORD (optional)\n\n\
+                     Or run 'retro-junk config setup' to configure credentials.",
+                );
             }
-            return None;
+            return Err(CliError::config(msg));
         }
     };
     pb.finish_and_clear();
@@ -66,9 +63,9 @@ pub(crate) async fn connect_screenscraper(
             max_workers,
         );
     }
-    log::info!("");
+    crate::log_blank();
 
-    Some((client, max_workers))
+    Ok((client, max_workers))
 }
 
 /// Run the scrape command.
@@ -93,9 +90,9 @@ pub(crate) fn run_scrape(
     threads: Option<usize>,
     root: Option<PathBuf>,
     quiet: bool,
-) {
+) -> Result<(), CliError> {
     let root_path =
-        root.unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
+        root.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     // Build scrape options
     let mut options = retro_junk_scraper::ScrapeOptions::new(root_path.clone());
@@ -122,6 +119,7 @@ pub(crate) fn run_scrape(
                     "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                     e,
                 );
+                options.no_miximage = true;
             }
         }
     }
@@ -166,19 +164,17 @@ pub(crate) fn run_scrape(
             .display()
             .if_supports_color(Stdout, |t| t.dimmed()),
     );
-    log::info!("");
+    crate::log_blank();
 
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| CliError::runtime(format!("Failed to create tokio runtime: {}", e)))?;
 
     rt.block_on(async {
-        let (client, max_workers) = match connect_screenscraper(threads, quiet).await {
-            Some(r) => r,
-            None => return,
-        };
+        let (client, max_workers) = connect_screenscraper(threads, quiet).await?;
 
         let scan = match scan_folders(ctx, &root_path, &consoles) {
             Some(s) => s,
-            None => return,
+            None => return Ok(()),
         };
 
         let esde = retro_junk_frontend::esde::EsDeFrontend::new();
@@ -188,7 +184,9 @@ pub(crate) fn run_scrape(
         let mut total_unidentified = 0usize;
 
         for cf in &scan.matches {
-            let console = ctx.get_by_platform(cf.platform).unwrap();
+            let console = ctx.get_by_platform(cf.platform).ok_or_else(|| {
+                CliError::unknown_system(format!("No analyzer for platform {:?}", cf.platform))
+            })?;
             let path = &cf.path;
             let folder_name = &cf.folder_name;
 
@@ -502,7 +500,7 @@ pub(crate) fn run_scrape(
                     total_errors += 1;
                 }
             }
-            log::info!("");
+            crate::log_blank();
         }
 
         // Print overall summary
@@ -540,5 +538,9 @@ pub(crate) fn run_scrape(
                 );
             }
         }
-    });
+
+        Ok::<(), CliError>(())
+    })?;
+
+    Ok(())
 }

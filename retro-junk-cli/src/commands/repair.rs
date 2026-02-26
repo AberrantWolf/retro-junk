@@ -11,6 +11,8 @@ use retro_junk_lib::repair::{
 };
 use retro_junk_lib::{AnalysisContext, Platform};
 
+use crate::CliError;
+
 /// Run the repair command.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_repair(
@@ -22,9 +24,9 @@ pub(crate) fn run_repair(
     root: Option<PathBuf>,
     dat_dir: Option<PathBuf>,
     quiet: bool,
-) {
+) -> Result<(), CliError> {
     let root_path =
-        root.unwrap_or_else(|| std::env::current_dir().expect("Failed to get current directory"));
+        root.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
     let repair_options = RepairOptions {
         dat_dir,
@@ -60,11 +62,11 @@ pub(crate) fn run_repair(
             format!("Limit: {} ROMs per console", n).if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
-    log::info!("");
+    crate::log_blank();
 
     let scan = match crate::scan_folders(ctx, &root_path, &consoles) {
         Some(s) => s,
-        None => return,
+        None => return Ok(()),
     };
 
     let mut total_repaired = 0usize;
@@ -74,7 +76,9 @@ pub(crate) fn run_repair(
     let mut found_any = false;
 
     for cf in &scan.matches {
-        let console = ctx.get_by_platform(cf.platform).unwrap();
+        let console = ctx.get_by_platform(cf.platform).ok_or_else(|| {
+            CliError::unknown_system(format!("No analyzer for platform {:?}", cf.platform))
+        })?;
 
         if !console.analyzer.has_dat_support() {
             log::warn!(
@@ -93,7 +97,7 @@ pub(crate) fn run_repair(
             let pb = ProgressBar::new_spinner();
             pb.set_style(
                 ProgressStyle::with_template("  {spinner:.cyan} {msg}")
-                    .unwrap()
+                    .expect("static pattern")
                     .tick_chars("/-\\|"),
             );
             pb
@@ -154,10 +158,10 @@ pub(crate) fn run_repair(
 
                 if !dry_run && !plan.repairable.is_empty() {
                     print!("\n  Proceed with {} repairs? [y/N] ", plan.repairable.len(),);
-                    std::io::stdout().flush().unwrap();
+                    std::io::stdout().flush()?;
 
                     let mut input = String::new();
-                    std::io::stdin().read_line(&mut input).unwrap();
+                    std::io::stdin().read_line(&mut input)?;
 
                     if input.trim().eq_ignore_ascii_case("y") {
                         let summary = execute_repairs(&plan, repair_options.create_backup);
@@ -195,7 +199,7 @@ pub(crate) fn run_repair(
                 );
             }
         }
-        log::info!("");
+        crate::log_blank();
     }
 
     if scan.matches.is_empty() || !found_any {
@@ -203,7 +207,7 @@ pub(crate) fn run_repair(
             "{}",
             "No console folders with DAT support found.".if_supports_color(Stdout, |t| t.dimmed()),
         );
-        return;
+        return Ok(());
     }
 
     // Print overall summary
@@ -236,6 +240,8 @@ pub(crate) fn run_repair(
             error,
         );
     }
+
+    Ok(())
 }
 
 /// Print the repair plan for a single console.
