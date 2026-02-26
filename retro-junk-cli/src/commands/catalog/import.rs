@@ -265,7 +265,7 @@ impl CliImportProgress {
 impl retro_junk_import::ImportProgress for CliImportProgress {
     fn on_game(&self, current: usize, total: usize, _name: &str) {
         // Log progress every 1000 games to avoid spam
-        if current % 1000 == 0 && current < total {
+        if current.is_multiple_of(1000) && current < total {
             log::info!(
                 "    {} [{}/{}]",
                 self.system.if_supports_color(Stdout, |t| t.dimmed()),

@@ -474,6 +474,7 @@ fn anchor_position(
 }
 
 /// Compute position for physical media relative to the box art.
+#[allow(clippy::too_many_arguments)]
 fn physical_media_position(
     position: PhysMediaPosition,
     elem_w: u32,

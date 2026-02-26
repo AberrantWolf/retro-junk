@@ -16,6 +16,9 @@ pub use platform::{Platform, PlatformParseError};
 pub use progress::AnalysisProgress;
 pub use region::Region;
 
+/// Result type for chunk normalizers used during ROM hashing.
+pub type ChunkNormalizerResult = Result<Option<Box<dyn FnMut(&mut [u8])>>, AnalysisError>;
+
 /// Options that control how ROM analysis is performed.
 #[derive(Debug, Clone, Default)]
 pub struct AnalysisOptions {
@@ -283,7 +286,7 @@ pub trait RomAnalyzer: Send + Sync {
         &self,
         _reader: &mut dyn ReadSeek,
         _header_offset: u64,
-    ) -> Result<Option<Box<dyn FnMut(&mut [u8])>>, AnalysisError> {
+    ) -> ChunkNormalizerResult {
         Ok(None)
     }
 

@@ -9,6 +9,7 @@ use crate::commands::scrape::connect_screenscraper;
 use super::default_catalog_db_path;
 
 /// Enrich catalog releases with ScreenScraper metadata.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_catalog_enrich(
     systems: Vec<String>,
     db_path: Option<PathBuf>,

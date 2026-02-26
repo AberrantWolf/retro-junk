@@ -12,6 +12,7 @@ use retro_junk_lib::rename::{
 };
 use retro_junk_lib::{AnalysisContext, Platform};
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_rename(
     ctx: &AnalysisContext,
     dry_run: bool,
@@ -29,7 +30,6 @@ pub(crate) fn run_rename(
         hash_mode,
         dat_dir,
         limit,
-        ..Default::default()
     };
 
     log::info!(

@@ -58,10 +58,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             if ui
                 .add_enabled(has_selection, egui::Button::new("Calculate Hashes"))
                 .clicked()
+                && let Some(ci) = app.selected_console
             {
-                if let Some(ci) = app.selected_console {
-                    backend::hash::compute_hashes_for_selection(app, ci);
-                }
+                backend::hash::compute_hashes_for_selection(app, ci);
             }
 
             ui.separator();

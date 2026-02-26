@@ -68,7 +68,7 @@ pub struct DatIndex {
 /// spaces (e.g., "SLPS 00700") vs dashes (e.g., "SLPS-00700"), so we
 /// strip both for reliable matching.
 fn normalize_serial(serial: &str) -> String {
-    serial.to_uppercase().replace(' ', "").replace('-', "")
+    serial.to_uppercase().replace([' ', '-'], "")
 }
 
 impl DatIndex {
@@ -144,14 +144,14 @@ impl DatIndex {
         }
 
         // Try SHA1 if available
-        if let Some(ref sha1) = hashes.sha1 {
-            if let Some(&(gi, ri)) = self.by_sha1.get(sha1) {
-                return Some(MatchResult {
-                    game_index: gi,
-                    rom_index: ri,
-                    method: MatchMethod::Sha1,
-                });
-            }
+        if let Some(ref sha1) = hashes.sha1
+            && let Some(&(gi, ri)) = self.by_sha1.get(sha1)
+        {
+            return Some(MatchResult {
+                game_index: gi,
+                rom_index: ri,
+                method: MatchMethod::Sha1,
+            });
         }
 
         None
@@ -222,15 +222,15 @@ impl DatIndex {
             // Check if a "-0" suffixed entry exists — if so, the bare serial
             // is from a multi-disc set and we should use the specific entry.
             let suffixed = format!("{norm}0");
-            if let Some(suffixed_entries) = self.by_serial.get(&suffixed) {
-                if suffixed_entries.len() == 1 {
-                    let (sgi, sri) = suffixed_entries[0];
-                    return SerialLookupResult::Match(MatchResult {
-                        game_index: sgi,
-                        rom_index: sri,
-                        method: MatchMethod::Serial,
-                    });
-                }
+            if let Some(suffixed_entries) = self.by_serial.get(&suffixed)
+                && suffixed_entries.len() == 1
+            {
+                let (sgi, sri) = suffixed_entries[0];
+                return SerialLookupResult::Match(MatchResult {
+                    game_index: sgi,
+                    rom_index: sri,
+                    method: MatchMethod::Serial,
+                });
             }
             return SerialLookupResult::Match(MatchResult {
                 game_index: gi,
@@ -241,15 +241,15 @@ impl DatIndex {
 
         // Multiple entries — try "-0" suffix to disambiguate multi-disc sets
         let suffixed = format!("{norm}0");
-        if let Some(suffixed_entries) = self.by_serial.get(&suffixed) {
-            if suffixed_entries.len() == 1 {
-                let (sgi, sri) = suffixed_entries[0];
-                return SerialLookupResult::Match(MatchResult {
-                    game_index: sgi,
-                    rom_index: sri,
-                    method: MatchMethod::Serial,
-                });
-            }
+        if let Some(suffixed_entries) = self.by_serial.get(&suffixed)
+            && suffixed_entries.len() == 1
+        {
+            let (sgi, sri) = suffixed_entries[0];
+            return SerialLookupResult::Match(MatchResult {
+                game_index: sgi,
+                rom_index: sri,
+                method: MatchMethod::Serial,
+            });
         }
 
         // Deduplicate game names — if all entries share the same name,

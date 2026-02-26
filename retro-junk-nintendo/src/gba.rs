@@ -85,21 +85,21 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<GbaHeader, AnalysisError> {
     let title: String = buf[0xA0..0xAC]
         .iter()
         .take_while(|&&b| b != 0)
-        .filter(|&&b| b >= 0x20 && b < 0x7F)
+        .filter(|&&b| (0x20..0x7F).contains(&b))
         .map(|&b| b as char)
         .collect();
 
     // Game code: 4 bytes at 0xAC
     let game_code: String = buf[0xAC..0xB0]
         .iter()
-        .filter(|&&b| b >= 0x20 && b < 0x7F)
+        .filter(|&&b| (0x20..0x7F).contains(&b))
         .map(|&b| b as char)
         .collect();
 
     // Maker code: 2 bytes at 0xB0
     let maker_code: String = buf[0xB0..0xB2]
         .iter()
-        .filter(|&&b| b >= 0x20 && b < 0x7F)
+        .filter(|&&b| (0x20..0x7F).contains(&b))
         .map(|&b| b as char)
         .collect();
 
@@ -289,10 +289,10 @@ fn to_identification(
     id.maker_code = maker;
 
     // Region from game code
-    if header.game_code.len() == 4 {
-        if let Some(region) = region_from_game_code(&header.game_code) {
-            id.regions.push(region);
-        }
+    if header.game_code.len() == 4
+        && let Some(region) = region_from_game_code(&header.game_code)
+    {
+        id.regions.push(region);
     }
 
     // Version

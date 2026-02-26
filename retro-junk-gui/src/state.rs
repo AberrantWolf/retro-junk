@@ -42,7 +42,6 @@ pub struct ConsoleState {
     pub folder_path: PathBuf,
     pub manufacturer: &'static str,
     pub platform_name: &'static str,
-    pub short_name: &'static str,
     pub scan_status: ScanStatus,
     pub entries: Vec<LibraryEntry>,
     pub dat_status: DatStatus,
@@ -57,18 +56,17 @@ pub enum ScanStatus {
     Scanned,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DatStatus {
+    #[default]
     NotLoaded,
     Loading,
-    Loaded { game_count: usize },
-    Unavailable { reason: String },
-}
-
-impl Default for DatStatus {
-    fn default() -> Self {
-        Self::NotLoaded
-    }
+    Loaded {
+        game_count: usize,
+    },
+    Unavailable {
+        reason: String,
+    },
 }
 
 /// Derive the media directory for a console from the root path and folder name.
@@ -258,7 +256,6 @@ pub enum AppMessage {
         folder_path: PathBuf,
         manufacturer: &'static str,
         platform_name: &'static str,
-        short_name: &'static str,
     },
     FolderScanComplete,
 
@@ -320,10 +317,6 @@ pub enum AppMessage {
     OperationComplete {
         op_id: u64,
     },
-    OperationFailed {
-        op_id: u64,
-        error: String,
-    },
 }
 
 // -- Message handler --
@@ -336,7 +329,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             folder_path,
             manufacturer,
             platform_name,
-            short_name,
         } => {
             // Avoid duplicates (keyed on folder_name, which is unique per directory)
             if app
@@ -353,7 +345,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 folder_path,
                 manufacturer,
                 platform_name,
-                short_name,
                 scan_status: ScanStatus::NotScanned,
                 entries: Vec::new(),
                 dat_status: DatStatus::NotLoaded,
@@ -362,8 +353,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             // Sort by manufacturer then platform name then folder name
             app.library.consoles.sort_by(|a, b| {
                 a.manufacturer
-                    .cmp(&b.manufacturer)
-                    .then(a.platform_name.cmp(&b.platform_name))
+                    .cmp(b.manufacturer)
+                    .then(a.platform_name.cmp(b.platform_name))
                     .then(a.folder_name.cmp(&b.folder_name))
             });
         }
@@ -416,21 +407,21 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             index,
             result,
         } => {
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                if let Some(entry) = app.library.consoles[ci].entries.get_mut(index) {
-                    match result {
-                        Ok(id) => {
-                            let has_serial = id.serial_number.is_some();
-                            entry.identification = Some(id);
-                            entry.status = if has_serial {
-                                EntryStatus::Ambiguous
-                            } else {
-                                EntryStatus::Unrecognized
-                            };
-                        }
-                        Err(_) => {
-                            entry.status = EntryStatus::Unrecognized;
-                        }
+            if let Some(ci) = app.library.find_by_folder(&folder_name)
+                && let Some(entry) = app.library.consoles[ci].entries.get_mut(index)
+            {
+                match result {
+                    Ok(id) => {
+                        let has_serial = id.serial_number.is_some();
+                        entry.identification = Some(id);
+                        entry.status = if has_serial {
+                            EntryStatus::Ambiguous
+                        } else {
+                            EntryStatus::Unrecognized
+                        };
+                    }
+                    Err(_) => {
+                        entry.status = EntryStatus::Unrecognized;
                     }
                 }
             }
@@ -443,18 +434,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 // Cache fingerprint so save_library doesn't need to recompute
                 console.fingerprint = Some(crate::cache::compute_fingerprint(&console.folder_path));
             }
-            let desc_match = format!("Scanning ");
+            let desc_match = "Scanning ".to_string();
             app.operations.retain(|op| {
                 // Match operations like "Scanning Super Nintendo..."
                 !(op.description.starts_with(&desc_match))
                     || !app
                         .library
                         .find_by_folder(&folder_name)
-                        .and_then(|ci| {
-                            Some(
-                                op.description
-                                    .contains(app.library.consoles[ci].platform_name),
-                            )
+                        .map(|ci| {
+                            op.description
+                                .contains(app.library.consoles[ci].platform_name)
                         })
                         .unwrap_or(false)
             });
@@ -475,26 +464,26 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 let context = app.context.clone();
                 if let Some(registered) = context.get_by_platform(platform) {
                     for entry in app.library.consoles[ci].entries.iter_mut() {
-                        if let Some(ref id) = entry.identification {
-                            if let Some(ref serial) = id.serial_number {
-                                let game_code = registered.analyzer.extract_dat_game_code(serial);
-                                match index.match_by_serial(serial, game_code.as_deref()) {
-                                    SerialLookupResult::Match(m) => {
-                                        let game_name = index.games[m.game_index].name.clone();
-                                        entry.dat_match = Some(DatMatchInfo {
-                                            game_name,
-                                            method: m.method,
-                                        });
-                                        entry.status = EntryStatus::Matched;
-                                        entry.ambiguous_candidates.clear();
-                                    }
-                                    SerialLookupResult::Ambiguous { candidates } => {
-                                        entry.status = EntryStatus::Ambiguous;
-                                        entry.ambiguous_candidates = candidates;
-                                    }
-                                    SerialLookupResult::NotFound => {
-                                        // Keep current status
-                                    }
+                        if let Some(ref id) = entry.identification
+                            && let Some(ref serial) = id.serial_number
+                        {
+                            let game_code = registered.analyzer.extract_dat_game_code(serial);
+                            match index.match_by_serial(serial, game_code.as_deref()) {
+                                SerialLookupResult::Match(m) => {
+                                    let game_name = index.games[m.game_index].name.clone();
+                                    entry.dat_match = Some(DatMatchInfo {
+                                        game_name,
+                                        method: m.method,
+                                    });
+                                    entry.status = EntryStatus::Matched;
+                                    entry.ambiguous_candidates.clear();
+                                }
+                                SerialLookupResult::Ambiguous { candidates } => {
+                                    entry.status = EntryStatus::Ambiguous;
+                                    entry.ambiguous_candidates = candidates;
+                                }
+                                SerialLookupResult::NotFound => {
+                                    // Keep current status
                                 }
                             }
                         }
@@ -504,18 +493,17 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 // Re-check hash matches for entries that have cached hashes
                 // but weren't resolved by serial alone (e.g. Ambiguous or Unrecognized)
                 for entry in app.library.consoles[ci].entries.iter_mut() {
-                    if entry.status != EntryStatus::Matched {
-                        if let Some(ref hashes) = entry.hashes {
-                            if let Some(m) = index.match_by_hash(hashes.data_size, hashes) {
-                                let game_name = index.games[m.game_index].name.clone();
-                                entry.dat_match = Some(DatMatchInfo {
-                                    game_name,
-                                    method: m.method,
-                                });
-                                entry.status = EntryStatus::Matched;
-                                entry.ambiguous_candidates.clear();
-                            }
-                        }
+                    if entry.status != EntryStatus::Matched
+                        && let Some(ref hashes) = entry.hashes
+                        && let Some(m) = index.match_by_hash(hashes.data_size, hashes)
+                    {
+                        let game_name = index.games[m.game_index].name.clone();
+                        entry.dat_match = Some(DatMatchInfo {
+                            game_name,
+                            method: m.method,
+                        });
+                        entry.status = EntryStatus::Matched;
+                        entry.ambiguous_candidates.clear();
                     }
                 }
             }
@@ -541,22 +529,22 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             index,
             hashes,
         } => {
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                if let Some(entry) = app.library.consoles[ci].entries.get_mut(index) {
-                    // Try hash matching against the loaded DAT
-                    if let Some(dat_index) = app.dat_indices.get(&folder_name) {
-                        if let Some(m) = dat_index.match_by_hash(hashes.data_size, &hashes) {
-                            let game_name = dat_index.games[m.game_index].name.clone();
-                            entry.dat_match = Some(DatMatchInfo {
-                                game_name,
-                                method: m.method,
-                            });
-                            entry.status = EntryStatus::Matched;
-                            entry.ambiguous_candidates.clear();
-                        }
-                    }
-                    entry.hashes = Some(hashes);
+            if let Some(ci) = app.library.find_by_folder(&folder_name)
+                && let Some(entry) = app.library.consoles[ci].entries.get_mut(index)
+            {
+                // Try hash matching against the loaded DAT
+                if let Some(dat_index) = app.dat_indices.get(&folder_name)
+                    && let Some(m) = dat_index.match_by_hash(hashes.data_size, &hashes)
+                {
+                    let game_name = dat_index.games[m.game_index].name.clone();
+                    entry.dat_match = Some(DatMatchInfo {
+                        game_name,
+                        method: m.method,
+                    });
+                    entry.status = EntryStatus::Matched;
+                    entry.ambiguous_candidates.clear();
                 }
+                entry.hashes = Some(hashes);
             }
             app.save_library_cache();
         }
@@ -574,10 +562,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_index,
             media,
         } => {
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                if let Some(entry) = app.library.consoles[ci].entries.get_mut(entry_index) {
-                    entry.media_paths = Some(media);
-                }
+            if let Some(ci) = app.library.find_by_folder(&folder_name)
+                && let Some(entry) = app.library.consoles[ci].entries.get_mut(entry_index)
+            {
+                entry.media_paths = Some(media);
             }
         }
 
@@ -595,8 +583,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
             app.library.consoles.sort_by(|a, b| {
                 a.manufacturer
-                    .cmp(&b.manufacturer)
-                    .then(a.platform_name.cmp(&b.platform_name))
+                    .cmp(b.manufacturer)
+                    .then(a.platform_name.cmp(b.platform_name))
                     .then(a.folder_name.cmp(&b.folder_name))
             });
 
@@ -626,11 +614,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         }
 
         AppMessage::OperationComplete { op_id } => {
-            app.operations.retain(|op| op.id != op_id);
-        }
-
-        AppMessage::OperationFailed { op_id, error } => {
-            log::warn!("Operation {op_id} failed: {error}");
             app.operations.retain(|op| op.id != op_id);
         }
     }

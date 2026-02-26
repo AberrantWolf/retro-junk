@@ -13,6 +13,7 @@ use crate::dat_import::ImportError;
 /// Compare two optional string values and record a disagreement if they differ.
 ///
 /// Returns `true` if a disagreement was recorded.
+#[allow(clippy::too_many_arguments)]
 pub fn check_field(
     conn: &Connection,
     entity_type: &str,
@@ -61,6 +62,7 @@ pub fn check_field(
 /// Compare release fields from a new source against existing DB values.
 ///
 /// Returns the number of disagreements found.
+#[allow(clippy::too_many_arguments)]
 pub fn merge_release_fields(
     conn: &Connection,
     release_id: &str,

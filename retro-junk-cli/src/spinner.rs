@@ -2,11 +2,6 @@
 //!
 //! Manages a fixed number of progress bar "slots" that can be claimed and
 //! released by concurrent tasks identified by a `usize` key.
-//!
-//! **Important:** All text output during spinner display must go through
-//! [`println()`](SpinnerPool::println) — never use `log::info!` or `eprintln!`
-//! directly, as that bypasses indicatif's `MultiProgress` and corrupts the
-//! terminal display (leaving "ghost" lines above the spinners).
 
 use std::collections::HashMap;
 
@@ -14,6 +9,7 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 /// A pool of reusable spinner slots for displaying concurrent task progress.
 pub struct SpinnerPool {
+    #[allow(dead_code)]
     mp: MultiProgress,
     spinners: Vec<ProgressBar>,
     slot_assignments: HashMap<usize, usize>,
@@ -59,13 +55,6 @@ impl SpinnerPool {
         }
     }
 
-    /// Print a line above the spinners. This is the ONLY safe way to output
-    /// text while spinners are active — `log::info!` and `eprintln!` bypass
-    /// the `MultiProgress` and corrupt the display.
-    pub fn println(&self, msg: &str) {
-        let _ = self.mp.println(msg);
-    }
-
     /// Claim a spinner slot for the given key and set its message.
     pub fn claim(&mut self, key: usize, msg: String) {
         if let Some(slot) = self.free_slots.pop() {
@@ -91,16 +80,6 @@ impl SpinnerPool {
             self.spinners[slot].finish_and_clear();
             self.free_slots.push(slot);
         }
-    }
-
-    /// Release a spinner slot and print a final status line above the spinners.
-    ///
-    /// This atomically releases the slot and outputs the message through
-    /// `MultiProgress::println`, avoiding the ghost-line race that happens
-    /// when `update()` + `release()` are called separately.
-    pub fn release_with_message(&mut self, key: usize, msg: &str) {
-        self.release(key);
-        let _ = self.mp.println(msg);
     }
 
     /// Clear all spinners and reset slot tracking.

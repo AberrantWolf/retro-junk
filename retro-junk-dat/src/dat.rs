@@ -119,11 +119,11 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
             }
             Event::Empty(ref e) => {
                 let tag_name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if tag_name == "rom" {
-                    if let Some(ref mut game) = current_game {
-                        let rom = parse_xml_rom_attributes(e)?;
-                        game.roms.push(rom);
-                    }
+                if tag_name == "rom"
+                    && let Some(ref mut game) = current_game
+                {
+                    let rom = parse_xml_rom_attributes(e)?;
+                    game.roms.push(rom);
                 }
             }
             Event::Text(ref e) => {
@@ -135,11 +135,8 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                         "version" => dat.version = text,
                         _ => {}
                     }
-                } else if current_game.is_some() {
-                    match current_tag.as_str() {
-                        "serial" => game_serial = Some(text),
-                        _ => {}
-                    }
+                } else if current_game.is_some() && current_tag.as_str() == "serial" {
+                    game_serial = Some(text)
                 }
             }
             Event::End(ref e) => {
@@ -250,15 +247,12 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
         // Detect block start: "blocktype ("
         if in_block.is_none() {
             if let Some(block_type) = detect_block_start(trimmed) {
-                match block_type.as_str() {
-                    "game" => {
-                        current_game = Some(DatGame {
-                            name: String::new(),
-                            region: None,
-                            roms: Vec::new(),
-                        });
-                    }
-                    _ => {} // clrmamepro header block, etc.
+                if block_type.as_str() == "game" {
+                    current_game = Some(DatGame {
+                        name: String::new(),
+                        region: None,
+                        roms: Vec::new(),
+                    });
                 }
                 in_block = Some(block_type);
                 continue;
@@ -269,22 +263,19 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
         // Detect block end: ")"
         if trimmed == ")" {
             let block_type = in_block.take().unwrap();
-            match block_type.as_str() {
-                "game" => {
-                    if let Some(mut game) = current_game.take() {
-                        // Propagate game-level serial to ROMs that lack one
-                        if let Some(ref serial) = game_serial {
-                            for rom in &mut game.roms {
-                                if rom.serial.is_none() {
-                                    rom.serial = Some(serial.clone());
-                                }
-                            }
+            if block_type.as_str() == "game"
+                && let Some(mut game) = current_game.take()
+            {
+                // Propagate game-level serial to ROMs that lack one
+                if let Some(ref serial) = game_serial {
+                    for rom in &mut game.roms {
+                        if rom.serial.is_none() {
+                            rom.serial = Some(serial.clone());
                         }
-                        game_serial = None;
-                        dat.games.push(game);
                     }
                 }
-                _ => {}
+                game_serial = None;
+                dat.games.push(game);
             }
             continue;
         }
@@ -334,8 +325,8 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
 /// Detect a block start like `clrmamepro (` or `game (`.
 fn detect_block_start(line: &str) -> Option<String> {
     let stripped = line.trim_end();
-    if stripped.ends_with('(') {
-        let block_type = stripped[..stripped.len() - 1].trim();
+    if let Some(without_paren) = stripped.strip_suffix('(') {
+        let block_type = without_paren.trim();
         if !block_type.is_empty() && block_type.chars().all(|c| c.is_alphanumeric() || c == '_') {
             return Some(block_type.to_lowercase());
         }
@@ -349,8 +340,8 @@ fn parse_kv(line: &str) -> Option<(String, String)> {
     let trimmed = line.trim();
 
     // Handle "rom ( ... )" specially — the key is "rom" and value is the inner content
-    if trimmed.starts_with("rom") {
-        let rest = trimmed["rom".len()..].trim();
+    if let Some(after_rom) = trimmed.strip_prefix("rom") {
+        let rest = after_rom.trim();
         if rest.starts_with('(') && rest.ends_with(')') {
             let inner = rest[1..rest.len() - 1].trim();
             return Some(("rom".to_string(), inner.to_string()));

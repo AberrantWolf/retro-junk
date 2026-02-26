@@ -160,18 +160,18 @@ enum LookupOutcome {
     /// Game found — ready for DB enrichment.
     Found {
         index: usize,
-        release: Release,
-        result: LookupResult,
-        mapped: MappedGameInfo,
+        release: Box<Release>,
+        result: Box<LookupResult>,
+        mapped: Box<MappedGameInfo>,
     },
     /// ScreenScraper confirmed the game doesn't exist.
-    NotFound { index: usize, release: Release },
+    NotFound { index: usize, release: Box<Release> },
     /// Release had no media entries or was otherwise skippable.
     Skipped { index: usize },
     /// Non-fatal error during lookup.
     Error {
         index: usize,
-        release: Release,
+        release: Box<Release>,
         error: String,
     },
     /// Fatal error — must stop all processing (quota exceeded, server closed).
@@ -425,7 +425,7 @@ pub async fn enrich_releases(
                         let best_media = pick_best_media_for_lookup(&item.media_entries);
                         let rom_info = build_rom_info(best_media, item.core_platform);
 
-                        let outcome = match tokio::time::timeout(
+                        match tokio::time::timeout(
                             ITEM_TIMEOUT,
                             lookup::lookup_game(&client, item.system_id, &rom_info),
                         )
@@ -447,9 +447,9 @@ pub async fn enrich_releases(
                                 );
                                 LookupOutcome::Found {
                                     index: item.index,
-                                    release: item.release,
-                                    result,
-                                    mapped,
+                                    release: Box::new(item.release),
+                                    result: Box::new(result),
+                                    mapped: Box::new(mapped),
                                 }
                             }
                             Ok(Err(ScrapeError::NotFound { .. })) => {
@@ -461,7 +461,7 @@ pub async fn enrich_releases(
                                 );
                                 LookupOutcome::NotFound {
                                     index: item.index,
-                                    release: item.release,
+                                    release: Box::new(item.release),
                                 }
                             }
                             Ok(Err(e @ ScrapeError::QuotaExceeded { .. }))
@@ -488,7 +488,7 @@ pub async fn enrich_releases(
                                 );
                                 LookupOutcome::Error {
                                     index: item.index,
-                                    release: item.release,
+                                    release: Box::new(item.release),
                                     error: e.to_string(),
                                 }
                             }
@@ -502,16 +502,14 @@ pub async fn enrich_releases(
                                 );
                                 LookupOutcome::Error {
                                     index: item.index,
-                                    release: item.release,
+                                    release: Box::new(item.release),
                                     error: format!(
                                         "Lookup timed out after {}s",
                                         ITEM_TIMEOUT.as_secs()
                                     ),
                                 }
                             }
-                        };
-
-                        outcome
+                        }
                     })
                 })
                 .buffer_unordered(max_workers);

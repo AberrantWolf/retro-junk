@@ -90,7 +90,7 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<GbHeader, AnalysisError> {
     let title: String = title_bytes
         .iter()
         .take_while(|&&b| b != 0)
-        .filter(|&&b| b >= 0x20 && b < 0x7F)
+        .filter(|&&b| (0x20..0x7F).contains(&b))
         .map(|&b| b as char)
         .collect();
 
@@ -98,7 +98,7 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<GbHeader, AnalysisError> {
     let manufacturer_code = if cgb_flag == 0x80 || cgb_flag == 0xC0 {
         let mfr: String = buf[0x3F..0x43]
             .iter()
-            .filter(|&&b| b >= 0x20 && b < 0x7F)
+            .filter(|&&b| (0x20..0x7F).contains(&b))
             .map(|&b| b as char)
             .collect();
         if mfr.is_empty() { None } else { Some(mfr) }
@@ -111,7 +111,7 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<GbHeader, AnalysisError> {
     let new_licensee_code = if old_licensee_code == 0x33 {
         let code: String = buf[0x44..0x46]
             .iter()
-            .filter(|&&b| b >= 0x20 && b < 0x7F)
+            .filter(|&&b| (0x20..0x7F).contains(&b))
             .map(|&b| b as char)
             .collect();
         if code.len() == 2 { Some(code) } else { None }
@@ -453,13 +453,13 @@ fn compute_global_checksum(reader: &mut dyn ReadSeek) -> Result<u16, AnalysisErr
         if n == 0 {
             break;
         }
-        for i in 0..n {
+        for (i, &byte) in buf[..n].iter().enumerate() {
             let file_pos = pos + i as u64;
             // Skip the global checksum bytes themselves
             if file_pos == 0x014E || file_pos == 0x014F {
                 continue;
             }
-            sum = sum.wrapping_add(buf[i] as u16);
+            sum = sum.wrapping_add(byte as u16);
         }
         pos += n as u64;
     }
@@ -473,9 +473,9 @@ fn format_size(bytes: u64) -> String {
     if bytes == 0 {
         return "0".into();
     }
-    if bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0 {
+    if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
         format!("{} MB", bytes / (1024 * 1024))
-    } else if bytes >= 1024 && bytes % 1024 == 0 {
+    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
         format!("{} KB", bytes / 1024)
     } else {
         format!("{} bytes", bytes)
@@ -496,9 +496,7 @@ fn to_identification(
     let cgb_mode = detect_cgb_mode(header.cgb_flag);
     let is_cgb = cgb_mode.is_some();
 
-    let platform = if header.cgb_flag == 0xC0 {
-        "Game Boy Color"
-    } else if header.cgb_flag == 0x80 {
+    let platform = if header.cgb_flag == 0xC0 || header.cgb_flag == 0x80 {
         "Game Boy Color"
     } else {
         "Game Boy"
@@ -574,10 +572,10 @@ fn to_identification(
     }
 
     // Extra: RAM size
-    if let Some(ram) = ram_size(header.ram_size_code) {
-        if ram > 0 {
-            id.extra.insert("ram_size".into(), format_size(ram));
-        }
+    if let Some(ram) = ram_size(header.ram_size_code)
+        && ram > 0
+    {
+        id.extra.insert("ram_size".into(), format_size(ram));
     }
 
     // Extra: manufacturer code (CGB only)

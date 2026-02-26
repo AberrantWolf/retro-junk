@@ -134,6 +134,7 @@ pub fn collect_existing_media(
 /// Download all selected media for a game.
 ///
 /// Returns a map of MediaType -> downloaded file path.
+#[allow(clippy::too_many_arguments)]
 pub async fn download_game_media(
     client: &ScreenScraperClient,
     game: &GameInfo,

@@ -37,7 +37,6 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
                             folder_path: cf.path,
                             manufacturer: registered.metadata.manufacturer,
                             platform_name: registered.metadata.platform_name,
-                            short_name: registered.metadata.short_name,
                         });
                     }
                 }

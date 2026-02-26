@@ -143,17 +143,17 @@ pub(crate) fn run_catalog_resolve(
     };
 
     // Apply the chosen value to the entity
-    if let Some(ref value) = chosen_value {
-        if let Err(e) = retro_junk_db::apply_disagreement_resolution(
+    if let Some(ref value) = chosen_value
+        && let Err(e) = retro_junk_db::apply_disagreement_resolution(
             &conn,
             &disagreement.entity_type,
             &disagreement.entity_id,
             &disagreement.field,
             value,
-        ) {
-            log::error!("Failed to apply resolution: {}", e);
-            std::process::exit(1);
-        }
+        )
+    {
+        log::error!("Failed to apply resolution: {}", e);
+        std::process::exit(1);
     }
 
     // Mark as resolved

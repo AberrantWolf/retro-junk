@@ -163,13 +163,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                         ui.separator();
                         ui.label(egui::RichText::new("Other:").weak().small());
                         for &r in Region::ALL {
-                            if !detected_regions.contains(&r) {
-                                if ui
+                            if !detected_regions.contains(&r)
+                                && ui
                                     .selectable_label(current_override == Some(r), r.name())
                                     .clicked()
-                                {
-                                    new_override = Some(r);
-                                }
+                            {
+                                new_override = Some(r);
                             }
                         }
                     } else {
@@ -193,35 +192,35 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
 
         // Warning text
-        if app.settings.general.warn_on_region_override {
-            if let Some(overridden) = new_override {
-                let should_warn = if detected_regions.len() == 1 {
-                    // Specific detection: warn if override differs
-                    detected_regions[0] != overridden
-                } else if detected_regions.len() > 1 {
-                    // Ambiguous: warn if override not in detected set
-                    !detected_regions.contains(&overridden)
-                } else {
-                    false
-                };
+        if app.settings.general.warn_on_region_override
+            && let Some(overridden) = new_override
+        {
+            let should_warn = if detected_regions.len() == 1 {
+                // Specific detection: warn if override differs
+                detected_regions[0] != overridden
+            } else if detected_regions.len() > 1 {
+                // Ambiguous: warn if override not in detected set
+                !detected_regions.contains(&overridden)
+            } else {
+                false
+            };
 
-                if should_warn {
-                    ui.horizontal(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "\u{26a0} Overriding detected region ({})",
-                                detected_regions
-                                    .iter()
-                                    .map(|r| r.name())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ))
-                            .small()
-                            .color(egui::Color32::from_rgb(220, 180, 30)),
-                        );
-                    });
-                }
+            if should_warn {
+                ui.horizontal(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "\u{26a0} Overriding detected region ({})",
+                            detected_regions
+                                .iter()
+                                .map(|r| r.name())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                        .small()
+                        .color(egui::Color32::from_rgb(220, 180, 30)),
+                    );
+                });
             }
         }
 
@@ -243,13 +242,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.label(name);
         });
 
-        if let Some(ref id) = entry.identification {
-            if let Some(size) = id.file_size {
-                ui.horizontal(|ui| {
-                    ui.label("Size:");
-                    ui.label(retro_junk_lib::util::format_bytes(size));
-                });
-            }
+        if let Some(ref id) = entry.identification
+            && let Some(size) = id.file_size
+        {
+            ui.horizontal(|ui| {
+                ui.label("Size:");
+                ui.label(retro_junk_lib::util::format_bytes(size));
+            });
         }
 
         ui.separator();
@@ -320,30 +319,30 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
 
         // Media
-        if let Some(ref media) = entry.media_paths {
-            if !media.is_empty() {
-                ui.add_space(4.0);
-                ui.separator();
-                ui.label(egui::RichText::new("Media").strong());
-                ui.add_space(2.0);
+        if let Some(ref media) = entry.media_paths
+            && !media.is_empty()
+        {
+            ui.add_space(4.0);
+            ui.separator();
+            ui.label(egui::RichText::new("Media").strong());
+            ui.add_space(2.0);
 
-                let panel_width = ui.available_width();
+            let panel_width = ui.available_width();
 
-                for &mt in DISPLAY_MEDIA_TYPES {
-                    if let Some(path) = media.get(&mt) {
-                        ui.add_space(4.0);
-                        ui.label(egui::RichText::new(mt.to_string()).weak());
+            for &mt in DISPLAY_MEDIA_TYPES {
+                if let Some(path) = media.get(&mt) {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(mt.to_string()).weak());
 
-                        let uri = format!("bytes://media/{}", path.display());
-                        let image = egui::Image::new(uri)
-                            .fit_to_exact_size(egui::vec2(panel_width, panel_width))
-                            .maintain_aspect_ratio(true)
-                            .rounding(4.0);
+                    let uri = format!("bytes://media/{}", path.display());
+                    let image = egui::Image::new(uri)
+                        .fit_to_exact_size(egui::vec2(panel_width, panel_width))
+                        .maintain_aspect_ratio(true)
+                        .rounding(4.0);
 
-                        let response = ui.add(image);
-                        if let Some(path_str) = path.to_str() {
-                            response.on_hover_text(path_str);
-                        }
+                    let response = ui.add(image);
+                    if let Some(path_str) = path.to_str() {
+                        response.on_hover_text(path_str);
                     }
                 }
             }

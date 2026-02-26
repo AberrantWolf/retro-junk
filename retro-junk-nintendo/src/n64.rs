@@ -14,8 +14,8 @@ use std::sync::mpsc::Sender;
 
 use crate::n64_byteorder::{N64Format, detect_n64_format, normalize_to_big_endian};
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum,
-    Platform, Region, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ChunkNormalizerResult,
+    ExpectedChecksum, Platform, Region, RomAnalyzer, RomIdentification,
 };
 
 // ---------------------------------------------------------------------------
@@ -160,7 +160,7 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<N64Header, AnalysisError> {
     let title: String = buf[0x20..0x34]
         .iter()
         .map(|&b| {
-            if b >= 0x20 && b < 0x7F {
+            if (0x20..0x7F).contains(&b) {
                 b as char
             } else {
                 ' '
@@ -315,7 +315,8 @@ fn build_serial(header: &N64Header, region: &Region) -> Option<String> {
     let id1 = header.game_id[1];
     let dest = header.destination_code;
 
-    if cat < 0x20 || cat >= 0x7F || id0 < 0x20 || id0 >= 0x7F || id1 < 0x20 || id1 >= 0x7F {
+    if !(0x20..0x7F).contains(&cat) || !(0x20..0x7F).contains(&id0) || !(0x20..0x7F).contains(&id1)
+    {
         return None;
     }
 
@@ -508,7 +509,7 @@ impl RomAnalyzer for N64Analyzer {
         &self,
         reader: &mut dyn ReadSeek,
         header_offset: u64,
-    ) -> Result<Option<Box<dyn FnMut(&mut [u8])>>, AnalysisError> {
+    ) -> ChunkNormalizerResult {
         reader.seek(SeekFrom::Start(header_offset))?;
         let mut magic = [0u8; 4];
         reader.read_exact(&mut magic)?;

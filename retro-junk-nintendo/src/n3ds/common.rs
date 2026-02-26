@@ -70,7 +70,7 @@ pub(crate) fn read_u64_be(buf: &[u8], offset: usize) -> u64 {
 pub(crate) fn read_ascii(buf: &[u8]) -> String {
     buf.iter()
         .take_while(|&&b| b != 0)
-        .filter(|&&b| b >= 0x20 && b < 0x7F)
+        .filter(|&&b| (0x20..0x7F).contains(&b))
         .map(|&b| b as char)
         .collect()
 }
@@ -314,8 +314,6 @@ pub(crate) fn detect_cci_origin(ncsd: &NcsdHeader) -> CciOrigin {
 
     if card_score > digital_score + 2 {
         CciOrigin::GameCard
-    } else if digital_score > card_score + 2 {
-        CciOrigin::Digital
     } else if digital_score > card_score {
         CciOrigin::Digital
     } else if card_score > digital_score {

@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use crate::state::BackgroundOperation;
 
 /// Render the activity bar showing background operation progress.
-pub fn show(ui: &mut egui::Ui, operations: &mut Vec<BackgroundOperation>) {
+pub fn show(ui: &mut egui::Ui, operations: &mut [BackgroundOperation]) {
     for op in operations.iter() {
         ui.horizontal(|ui| {
             ui.spinner();

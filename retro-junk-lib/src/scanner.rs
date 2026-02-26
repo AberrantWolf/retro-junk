@@ -100,17 +100,16 @@ pub fn scan_game_entries(
             if has_matching_extension(&path, extensions) {
                 game_entries.push(GameEntry::SingleFile(path));
             }
-        } else if path.is_dir() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.ends_with(".m3u") {
-                    let disc_files = collect_matching_files(&path, extensions);
-                    if !disc_files.is_empty() {
-                        game_entries.push(GameEntry::MultiDisc {
-                            name: name.to_string(),
-                            files: disc_files,
-                        });
-                    }
-                }
+        } else if path.is_dir()
+            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+            && name.ends_with(".m3u")
+        {
+            let disc_files = collect_matching_files(&path, extensions);
+            if !disc_files.is_empty() {
+                game_entries.push(GameEntry::MultiDisc {
+                    name: name.to_string(),
+                    files: disc_files,
+                });
             }
         }
     }

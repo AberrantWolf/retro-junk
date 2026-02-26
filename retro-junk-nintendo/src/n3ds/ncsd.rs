@@ -69,9 +69,9 @@ pub(crate) fn parse_ncsd_header(reader: &mut dyn ReadSeek) -> Result<NcsdHeader,
 
     // Partition table at 0x120: 8 entries of (u32 offset, u32 size)
     let mut partitions = [(0u32, 0u32); 8];
-    for i in 0..8 {
+    for (i, partition) in partitions.iter_mut().enumerate() {
         let base = 0x120 + i * 8;
-        partitions[i] = (read_u32_le(&buf, base), read_u32_le(&buf, base + 4));
+        *partition = (read_u32_le(&buf, base), read_u32_le(&buf, base + 4));
     }
 
     // Partition flags at 0x188

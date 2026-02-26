@@ -158,19 +158,15 @@ pub struct Media {
 /// Status of a media dump.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum MediaStatus {
+    #[default]
     Verified,
     Bad,
     Overdump,
     Prototype,
     Beta,
     Sample,
-}
-
-impl Default for MediaStatus {
-    fn default() -> Self {
-        Self::Verified
-    }
 }
 
 impl MediaStatus {

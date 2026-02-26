@@ -34,7 +34,7 @@ pub fn load_media_for_entry(
 
         // Register image bytes with egui before sending the message,
         // so they're available by the time the UI renders.
-        for (_, path) in &found {
+        for path in found.values() {
             let uri = format!("bytes://media/{}", path.display());
             if let Ok(bytes) = std::fs::read(path) {
                 ctx.include_bytes(uri, bytes);

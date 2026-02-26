@@ -175,11 +175,11 @@ fn reconcile_groups(
         }
 
         // Try to update canonical name from ScreenScraper alt_title
-        if !options.dry_run {
-            if let Some(name) = pick_canonical_name(conn, &surviving.id)? {
-                operations::update_work_name(conn, &surviving.id, &name)?;
-                detail.surviving_name = name;
-            }
+        if !options.dry_run
+            && let Some(name) = pick_canonical_name(conn, &surviving.id)?
+        {
+            operations::update_work_name(conn, &surviving.id, &name)?;
+            detail.surviving_name = name;
         }
 
         details.push(detail);

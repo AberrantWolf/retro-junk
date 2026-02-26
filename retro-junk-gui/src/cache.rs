@@ -111,8 +111,7 @@ pub fn save_library(root: &Path, library: &Library) -> std::io::Result<()> {
             .collect(),
     };
 
-    let contents = serde_json::to_string_pretty(&cached)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let contents = serde_json::to_string_pretty(&cached).map_err(std::io::Error::other)?;
     let path = cache_path(root);
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, contents)?;
@@ -137,12 +136,8 @@ pub fn load_library(root: &Path, context: &AnalysisContext) -> Option<(Library, 
 
     for cc in cached.consoles {
         let registered = context.get_by_platform(cc.platform);
-        let (manufacturer, platform_name, short_name) = match registered {
-            Some(r) => (
-                r.metadata.manufacturer,
-                r.metadata.platform_name,
-                r.metadata.short_name,
-            ),
+        let (manufacturer, platform_name) = match registered {
+            Some(r) => (r.metadata.manufacturer, r.metadata.platform_name),
             None => {
                 log::warn!(
                     "Platform {:?} not registered, skipping cached console {}",
@@ -165,7 +160,6 @@ pub fn load_library(root: &Path, context: &AnalysisContext) -> Option<(Library, 
                 folder_path: cc.folder_path,
                 manufacturer,
                 platform_name,
-                short_name,
                 scan_status: ScanStatus::NotScanned,
                 entries: Vec::new(),
                 dat_status: DatStatus::NotLoaded,
@@ -198,7 +192,6 @@ pub fn load_library(root: &Path, context: &AnalysisContext) -> Option<(Library, 
                 folder_path: cc.folder_path,
                 manufacturer,
                 platform_name,
-                short_name,
                 scan_status: ScanStatus::Scanned,
                 entries,
                 dat_status,
@@ -210,8 +203,8 @@ pub fn load_library(root: &Path, context: &AnalysisContext) -> Option<(Library, 
     // Sort same as handle_message does
     consoles.sort_by(|a, b| {
         a.manufacturer
-            .cmp(&b.manufacturer)
-            .then(a.platform_name.cmp(&b.platform_name))
+            .cmp(b.manufacturer)
+            .then(a.platform_name.cmp(b.platform_name))
             .then(a.folder_name.cmp(&b.folder_name))
     });
 
@@ -231,30 +224,6 @@ pub fn delete_cache(root: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// List all cached roots with their file sizes.
-pub fn list_caches() -> Vec<(PathBuf, u64)> {
-    let dir = cache_dir();
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-
-    entries
-        .flatten()
-        .filter_map(|e| {
-            let path = e.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                let contents = std::fs::read_to_string(&path).ok()?;
-                let cached: LibraryCache = serde_json::from_str(&contents).ok()?;
-                let size = e.metadata().ok()?.len();
-                Some((cached.root_path, size))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 /// Compute a quick fingerprint of a folder by hashing sorted filenames.
 ///
 /// Only uses `read_dir` + `file_type()` (no `metadata()`/`stat()` calls),
@@ -266,13 +235,12 @@ pub fn compute_fingerprint(path: &Path) -> FolderFingerprint {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             // Check subdirectories using file_type() (free on macOS/Linux via d_type)
-            if let Ok(ft) = entry.file_type() {
-                if ft.is_dir() {
-                    if let Ok(sub_entries) = std::fs::read_dir(entry.path()) {
-                        for sub in sub_entries.flatten() {
-                            names.push(format!("{}/{}", name, sub.file_name().to_string_lossy()));
-                        }
-                    }
+            if let Ok(ft) = entry.file_type()
+                && ft.is_dir()
+                && let Ok(sub_entries) = std::fs::read_dir(entry.path())
+            {
+                for sub in sub_entries.flatten() {
+                    names.push(format!("{}/{}", name, sub.file_name().to_string_lossy()));
                 }
             }
             names.push(name);

@@ -47,7 +47,7 @@ pub enum RenameProgress {
 }
 
 /// Options controlling rename behavior.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RenameOptions {
     /// Force CRC32-based matching instead of serial/name
     pub hash_mode: bool,
@@ -55,16 +55,6 @@ pub struct RenameOptions {
     pub dat_dir: Option<PathBuf>,
     /// Maximum number of ROMs to process
     pub limit: Option<usize>,
-}
-
-impl Default for RenameOptions {
-    fn default() -> Self {
-        Self {
-            hash_mode: false,
-            dat_dir: None,
-            limit: None,
-        }
-    }
 }
 
 /// Summary of a rename operation.
@@ -271,14 +261,14 @@ pub fn plan_renames(
             let serial_outcome = match_by_serial(file_path, analyzer, &analysis_options, &index);
 
             // Report discrepancy if both matched but to different games
-            if let (Some(hr), Some(sr)) = (&hash_outcome.result, &serial_outcome.result) {
-                if hr.game_index != sr.game_index {
-                    discrepancies.push(MatchDiscrepancy {
-                        file: file_path.clone(),
-                        serial_game: index.games[sr.game_index].name.clone(),
-                        hash_game: index.games[hr.game_index].name.clone(),
-                    });
-                }
+            if let (Some(hr), Some(sr)) = (&hash_outcome.result, &serial_outcome.result)
+                && hr.game_index != sr.game_index
+            {
+                discrepancies.push(MatchDiscrepancy {
+                    file: file_path.clone(),
+                    serial_game: index.games[sr.game_index].name.clone(),
+                    hash_game: index.games[hr.game_index].name.clone(),
+                });
             }
 
             hash_outcome.result
@@ -769,12 +759,11 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
         if let Ok(entries) = fs::read_dir(&action.source_folder) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_file() {
-                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        if ext.eq_ignore_ascii_case("m3u") {
-                            let _ = fs::remove_file(&path);
-                        }
-                    }
+                if path.is_file()
+                    && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                    && ext.eq_ignore_ascii_case("m3u")
+                {
+                    let _ = fs::remove_file(&path);
                 }
             }
         }
@@ -908,10 +897,10 @@ fn has_broken_file_references(content: &str, dir: &Path) -> bool {
             continue;
         }
 
-        if let Some((filename, _)) = parse_cue_file_directive(trimmed) {
-            if !dir.join(&filename).exists() {
-                return true;
-            }
+        if let Some((filename, _)) = parse_cue_file_directive(trimmed)
+            && !dir.join(&filename).exists()
+        {
+            return true;
         }
     }
     false
@@ -930,10 +919,10 @@ fn parse_cue_file_directive(line: &str) -> Option<(String, String)> {
     }
     let rest = &line[5..]; // skip "FILE "
 
-    if rest.starts_with('"') {
-        let end_quote = rest[1..].find('"')?;
-        let filename = rest[1..1 + end_quote].to_string();
-        let remainder = rest[2 + end_quote..].trim().to_string();
+    if let Some(after_quote) = rest.strip_prefix('"') {
+        let end_quote = after_quote.find('"')?;
+        let filename = after_quote[..end_quote].to_string();
+        let remainder = after_quote[end_quote + 1..].trim().to_string();
         Some((filename, remainder))
     } else {
         let mut parts = rest.splitn(2, ' ');
@@ -1006,23 +995,21 @@ fn fix_single_cue_file(
     for line in content.lines() {
         let trimmed = line.trim();
 
-        if trimmed.to_uppercase().starts_with("FILE ") {
-            if let Some((old_filename, file_type)) = parse_cue_file_directive(trimmed) {
-                if !dir.join(&old_filename).exists() {
-                    // Reference is broken — try to find the correct filename
-                    if let Some(new_name) =
-                        find_correct_bin_filename(&old_filename, cue_stem, dir, rename_map)
-                    {
-                        let indent = &line[..line.len() - trimmed.len()];
-                        new_content
-                            .push_str(&format!("{}FILE \"{}\" {}", indent, new_name, file_type));
-                        new_content.push('\n');
-                        changed = true;
-                        continue;
-                    } else {
-                        unfixed.push(old_filename);
-                    }
-                }
+        if trimmed.to_uppercase().starts_with("FILE ")
+            && let Some((old_filename, file_type)) = parse_cue_file_directive(trimmed)
+            && !dir.join(&old_filename).exists()
+        {
+            // Reference is broken — try to find the correct filename
+            if let Some(new_name) =
+                find_correct_bin_filename(&old_filename, cue_stem, dir, rename_map)
+            {
+                let indent = &line[..line.len() - trimmed.len()];
+                new_content.push_str(&format!("{}FILE \"{}\" {}", indent, new_name, file_type));
+                new_content.push('\n');
+                changed = true;
+                continue;
+            } else {
+                unfixed.push(old_filename);
             }
         }
 
@@ -1068,10 +1055,10 @@ fn find_correct_bin_filename(
     rename_map: &HashMap<String, String>,
 ) -> Option<String> {
     // Strategy 1: Check rename map
-    if let Some(new_name) = rename_map.get(old_filename) {
-        if dir.join(new_name).exists() {
-            return Some(new_name.clone());
-        }
+    if let Some(new_name) = rename_map.get(old_filename)
+        && dir.join(new_name).exists()
+    {
+        return Some(new_name.clone());
     }
 
     let ref_ext = Path::new(old_filename)
@@ -1178,10 +1165,10 @@ fn extract_ordinal_from_filename(filename: &str) -> Option<u32> {
             .skip_while(|c| !c.is_ascii_digit())
             .take_while(|c| c.is_ascii_digit())
             .collect();
-        if let Ok(n) = digits.parse::<u32>() {
-            if n > 0 {
-                return Some(n);
-            }
+        if let Ok(n) = digits.parse::<u32>()
+            && n > 0
+        {
+            return Some(n);
         }
     }
 
@@ -1408,10 +1395,10 @@ fn find_correct_m3u_entry(
     rename_map: &HashMap<String, String>,
 ) -> Option<String> {
     // Strategy 1: Check rename map
-    if let Some(new_name) = rename_map.get(old_entry) {
-        if dir.join(new_name).exists() {
-            return Some(new_name.clone());
-        }
+    if let Some(new_name) = rename_map.get(old_entry)
+        && dir.join(new_name).exists()
+    {
+        return Some(new_name.clone());
     }
 
     let old_stem = Path::new(old_entry)

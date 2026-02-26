@@ -264,6 +264,7 @@ pub fn find_release(
 /// Only updates fields that are currently NULL in the database,
 /// preserving values already set by DAT import. The screenscraper_id
 /// is always set to mark this release as enriched.
+#[allow(clippy::too_many_arguments)]
 pub fn update_release_enrichment(
     conn: &Connection,
     release_id: &str,

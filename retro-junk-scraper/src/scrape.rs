@@ -415,6 +415,7 @@ pub async fn scrape_folder(
 }
 
 /// Process a single game entry: analyze, look up, download media.
+#[allow(clippy::too_many_arguments)]
 async fn process_single_game(
     client: &ScreenScraperClient,
     analyzer: &dyn RomAnalyzer,

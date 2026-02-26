@@ -25,12 +25,12 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         } else {
             ui.weak("None");
         }
-        if ui.button("Browse...").clicked() {
-            if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                // Use the library view's switch logic
-                let ctx = ui.ctx().clone();
-                crate::views::library::switch_to_root(app, path, &ctx);
-            }
+        if ui.button("Browse...").clicked()
+            && let Some(path) = rfd::FileDialog::new().pick_folder()
+        {
+            // Use the library view's switch logic
+            let ctx = ui.ctx().clone();
+            crate::views::library::switch_to_root(app, path, &ctx);
         }
     });
 
@@ -95,7 +95,7 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     );
 }
 
-fn show_cache_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+fn show_cache_section(ui: &mut egui::Ui, _app: &mut RetroJunkApp) {
     ui.strong("Cache Management");
     ui.add_space(4.0);
 
@@ -103,10 +103,10 @@ fn show_cache_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     let lib_cache_size = crate::cache::total_cache_size();
     ui.horizontal(|ui| {
         ui.label(format!("Library cache: {}", format_size(lib_cache_size)));
-        if ui.small_button("Clear All").clicked() {
-            if let Err(e) = crate::cache::clear_all_caches() {
-                log::warn!("Failed to clear library caches: {}", e);
-            }
+        if ui.small_button("Clear All").clicked()
+            && let Err(e) = crate::cache::clear_all_caches()
+        {
+            log::warn!("Failed to clear library caches: {}", e);
         }
     });
 
@@ -114,10 +114,10 @@ fn show_cache_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     let dat_cache_size = retro_junk_dat::cache::total_cache_size().unwrap_or(0);
     ui.horizontal(|ui| {
         ui.label(format!("DAT cache: {}", format_size(dat_cache_size)));
-        if ui.small_button("Clear All").clicked() {
-            if let Err(e) = retro_junk_dat::cache::clear() {
-                log::warn!("Failed to clear DAT cache: {}", e);
-            }
+        if ui.small_button("Clear All").clicked()
+            && let Err(e) = retro_junk_dat::cache::clear()
+        {
+            log::warn!("Failed to clear DAT cache: {}", e);
         }
     });
 }

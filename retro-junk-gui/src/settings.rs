@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
     #[serde(default)]
     pub library: LibrarySettings,
@@ -9,7 +9,7 @@ pub struct AppSettings {
     pub general: GeneralSettings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LibrarySettings {
     pub current_root: Option<PathBuf>,
     #[serde(default)]
@@ -33,24 +33,6 @@ pub struct GeneralSettings {
 
 fn default_true() -> bool {
     true
-}
-
-impl Default for AppSettings {
-    fn default() -> Self {
-        Self {
-            library: LibrarySettings::default(),
-            general: GeneralSettings::default(),
-        }
-    }
-}
-
-impl Default for LibrarySettings {
-    fn default() -> Self {
-        Self {
-            current_root: None,
-            recent_roots: Vec::new(),
-        }
-    }
 }
 
 impl Default for GeneralSettings {
@@ -86,8 +68,7 @@ pub fn save_settings(settings: &AppSettings) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let contents = toml::to_string_pretty(settings)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let contents = toml::to_string_pretty(settings).map_err(std::io::Error::other)?;
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, &path)?;

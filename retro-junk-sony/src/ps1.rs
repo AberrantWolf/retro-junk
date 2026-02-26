@@ -131,38 +131,38 @@ impl Ps1Analyzer {
 
         // Open the first data track BIN and extract serial/volume ID
         // (fast: just a few sector reads from the referenced BIN file)
-        if let Some(ref file_path) = options.file_path {
-            if let Some(parent) = file_path.parent() {
-                // Find the first file with a data track
-                if let Some(first_data_file) = sheet.files.iter().find(|f| {
-                    f.tracks
-                        .iter()
-                        .any(|t| t.mode.to_uppercase().contains("MODE"))
-                }) {
-                    let bin_path = parent.join(&first_data_file.filename);
-                    if bin_path.exists() {
-                        if let Ok(mut bin_file) = std::fs::File::open(&bin_path) {
-                            // Detect format and analyze the BIN
-                            if let Ok(bin_format) = ps1_disc::detect_disc_format(&mut bin_file) {
-                                let bin_format = match bin_format {
-                                    DiscFormat::RawSector2352 => DiscFormat::RawSector2352,
-                                    _ => DiscFormat::Iso2048,
-                                };
-                                if let Ok(pvd) = ps1_disc::read_pvd(&mut bin_file, bin_format) {
-                                    if pvd.system_identifier.starts_with("PLAYSTATION") {
-                                        if !pvd.volume_identifier.is_empty() {
-                                            id.internal_name = Some(pvd.volume_identifier.clone());
-                                        }
-                                        if let Ok(content) = ps1_disc::find_file_in_root(
-                                            &mut bin_file,
-                                            bin_format,
-                                            &pvd,
-                                            "SYSTEM.CNF",
-                                        ) {
-                                            self.apply_system_cnf(&content, &mut id);
-                                        }
-                                    }
-                                }
+        if let Some(ref file_path) = options.file_path
+            && let Some(parent) = file_path.parent()
+        {
+            // Find the first file with a data track
+            if let Some(first_data_file) = sheet.files.iter().find(|f| {
+                f.tracks
+                    .iter()
+                    .any(|t| t.mode.to_uppercase().contains("MODE"))
+            }) {
+                let bin_path = parent.join(&first_data_file.filename);
+                if bin_path.exists()
+                    && let Ok(mut bin_file) = std::fs::File::open(&bin_path)
+                {
+                    // Detect format and analyze the BIN
+                    if let Ok(bin_format) = ps1_disc::detect_disc_format(&mut bin_file) {
+                        let bin_format = match bin_format {
+                            DiscFormat::RawSector2352 => DiscFormat::RawSector2352,
+                            _ => DiscFormat::Iso2048,
+                        };
+                        if let Ok(pvd) = ps1_disc::read_pvd(&mut bin_file, bin_format)
+                            && pvd.system_identifier.starts_with("PLAYSTATION")
+                        {
+                            if !pvd.volume_identifier.is_empty() {
+                                id.internal_name = Some(pvd.volume_identifier.clone());
+                            }
+                            if let Ok(content) = ps1_disc::find_file_in_root(
+                                &mut bin_file,
+                                bin_format,
+                                &pvd,
+                                "SYSTEM.CNF",
+                            ) {
+                                self.apply_system_cnf(&content, &mut id);
                             }
                         }
                     }

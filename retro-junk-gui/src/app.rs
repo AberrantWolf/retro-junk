@@ -83,33 +83,33 @@ impl RetroJunkApp {
         };
 
         // Restore last open root from settings
-        if let Some(ref root) = app.settings.library.current_root.clone() {
-            if root.is_dir() {
-                app.root_path = Some(root.clone());
+        if let Some(ref root) = app.settings.library.current_root.clone()
+            && root.is_dir()
+        {
+            app.root_path = Some(root.clone());
 
-                // Load cache on a background thread so the window appears immediately.
-                // The CacheLoaded handler merges restored data with any consoles
-                // already discovered by the folder scan.
-                let tx = app.message_tx.clone();
-                let context = app.context.clone();
-                let root_bg = root.clone();
-                let ctx_bg = cc.egui_ctx.clone();
-                std::thread::spawn(move || {
-                    if let Some((library, stale)) = crate::cache::load_library(&root_bg, &context) {
-                        log::info!(
-                            "Restored {} consoles from cache ({} stale)",
-                            library.consoles.len(),
-                            stale.len()
-                        );
-                        let _ = tx.send(crate::state::AppMessage::CacheLoaded { library });
-                        ctx_bg.request_repaint();
-                    }
-                });
+            // Load cache on a background thread so the window appears immediately.
+            // The CacheLoaded handler merges restored data with any consoles
+            // already discovered by the folder scan.
+            let tx = app.message_tx.clone();
+            let context = app.context.clone();
+            let root_bg = root.clone();
+            let ctx_bg = cc.egui_ctx.clone();
+            std::thread::spawn(move || {
+                if let Some((library, stale)) = crate::cache::load_library(&root_bg, &context) {
+                    log::info!(
+                        "Restored {} consoles from cache ({} stale)",
+                        library.consoles.len(),
+                        stale.len()
+                    );
+                    let _ = tx.send(crate::state::AppMessage::CacheLoaded { library });
+                    ctx_bg.request_repaint();
+                }
+            });
 
-                // Always scan disk to discover new/removed console folders.
-                // ConsoleFolderFound handler deduplicates, so cached consoles keep their data.
-                crate::backend::scan::scan_root_folder(&mut app, root.clone(), &cc.egui_ctx);
-            }
+            // Always scan disk to discover new/removed console folders.
+            // ConsoleFolderFound handler deduplicates, so cached consoles keep their data.
+            crate::backend::scan::scan_root_folder(&mut app, root.clone(), &cc.egui_ctx);
         }
 
         app
@@ -129,10 +129,10 @@ impl RetroJunkApp {
 
     /// Save the current library state to disk cache.
     pub fn save_library_cache(&self) {
-        if let Some(ref root) = self.root_path {
-            if let Err(e) = crate::cache::save_library(root, &self.library) {
-                log::warn!("Failed to save library cache: {}", e);
-            }
+        if let Some(ref root) = self.root_path
+            && let Err(e) = crate::cache::save_library(root, &self.library)
+        {
+            log::warn!("Failed to save library cache: {}", e);
         }
     }
 }

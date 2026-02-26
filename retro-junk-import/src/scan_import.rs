@@ -113,7 +113,7 @@ pub fn scan_folder(
     // Collect all file paths from entries
     let all_files: Vec<PathBuf> = entries
         .iter()
-        .flat_map(|entry| entry.all_files().into_iter().cloned())
+        .flat_map(|entry| entry.all_files().iter().cloned())
         .collect();
 
     let total = all_files.len();
@@ -319,10 +319,10 @@ fn find_matching_media(
         }
 
         // If we have SHA1, verify it matches
-        if let (Some(expected), Some(actual)) = (&media.sha1, &hashes.sha1) {
-            if expected != actual {
-                continue;
-            }
+        if let (Some(expected), Some(actual)) = (&media.sha1, &hashes.sha1)
+            && expected != actual
+        {
+            continue;
         }
 
         return Ok(Some((media, release.title)));

@@ -376,7 +376,7 @@ fn parse_fds_disk_info(data: &[u8]) -> Result<FdsDiskInfo, AnalysisError> {
     let game_name_bytes = &data[16..20];
     let game_name: String = game_name_bytes
         .iter()
-        .filter(|&&b| b >= 0x20 && b < 0x7F)
+        .filter(|&&b| (0x20..0x7F).contains(&b))
         .map(|&b| b as char)
         .collect();
 
@@ -648,7 +648,7 @@ fn analyze_fds(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> {
     }
 
     let disk_count = if sides.is_empty() {
-        (side_count as u8 + 1) / 2
+        (side_count as u8).div_ceil(2)
     } else {
         // Derive from max disk_number seen
         sides.iter().map(|s| s.disk_number + 1).max().unwrap_or(1)
@@ -708,10 +708,10 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
             if let Some(name) = mapper_name(hdr.mapper) {
                 id.extra.insert("mapper_name".into(), name.into());
             }
-            if let Some(sub) = hdr.submapper {
-                if sub != 0 {
-                    id.extra.insert("submapper".into(), sub.to_string());
-                }
+            if let Some(sub) = hdr.submapper
+                && sub != 0
+            {
+                id.extra.insert("submapper".into(), sub.to_string());
             }
             id.extra
                 .insert("mirroring".into(), hdr.mirroring.name().into());
@@ -828,9 +828,9 @@ fn format_size(bytes: u32) -> String {
     if bytes == 0 {
         return "0".into();
     }
-    if bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0 {
+    if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
         format!("{} MB", bytes / (1024 * 1024))
-    } else if bytes >= 1024 && bytes % 1024 == 0 {
+    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
         format!("{} KB", bytes / 1024)
     } else {
         format!("{} bytes", bytes)

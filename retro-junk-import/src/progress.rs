@@ -26,7 +26,7 @@ pub struct LogProgress;
 
 impl ImportProgress for LogProgress {
     fn on_game(&self, current: usize, total: usize, name: &str) {
-        if current % 500 == 0 || current == total {
+        if current.is_multiple_of(500) || current == total {
             log::info!("  [{}/{}] {}", current, total, name);
         }
     }

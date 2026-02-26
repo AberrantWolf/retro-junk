@@ -272,10 +272,10 @@ fn serial_attempts(serial: &Option<String>, scraper_serial: &Option<String>) -> 
     }
 
     // Raw serial as fallback (if different from scraper serial)
-    if let Some(s) = serial {
-        if !attempts.iter().any(|a| a == s) {
-            attempts.push(s.clone());
-        }
+    if let Some(s) = serial
+        && !attempts.iter().any(|a| a == s)
+    {
+        attempts.push(s.clone());
     }
 
     attempts

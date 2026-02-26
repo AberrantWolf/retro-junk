@@ -144,30 +144,30 @@ fn build_strategies(
 ) -> Vec<Strategy> {
     let mut strategies = Vec::new();
 
-    if let Some(expected) = expected_data_size {
-        if expected > data_size {
-            let diff = expected - data_size;
-            // Try append 0x00
-            strategies.push(Strategy {
-                padding: PaddingSpec {
-                    prepend_size: 0,
-                    append_size: diff,
-                    fill_byte: 0x00,
-                },
-                method_fn: RepairMethod::append,
-                description: format!("append {} of 0x00 to expected size", format_bytes(diff)),
-            });
-            // Try append 0xFF
-            strategies.push(Strategy {
-                padding: PaddingSpec {
-                    prepend_size: 0,
-                    append_size: diff,
-                    fill_byte: 0xFF,
-                },
-                method_fn: RepairMethod::append,
-                description: format!("append {} of 0xFF to expected size", format_bytes(diff)),
-            });
-        }
+    if let Some(expected) = expected_data_size
+        && expected > data_size
+    {
+        let diff = expected - data_size;
+        // Try append 0x00
+        strategies.push(Strategy {
+            padding: PaddingSpec {
+                prepend_size: 0,
+                append_size: diff,
+                fill_byte: 0x00,
+            },
+            method_fn: RepairMethod::append,
+            description: format!("append {} of 0x00 to expected size", format_bytes(diff)),
+        });
+        // Try append 0xFF
+        strategies.push(Strategy {
+            padding: PaddingSpec {
+                prepend_size: 0,
+                append_size: diff,
+                fill_byte: 0xFF,
+            },
+            method_fn: RepairMethod::append,
+            description: format!("append {} of 0xFF to expected size", format_bytes(diff)),
+        });
     }
 
     // Redump disc images: try prepending CD pregap
@@ -565,9 +565,9 @@ fn is_power_of_two(n: u64) -> bool {
 }
 
 fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0 {
+    if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
         format!("{} MB", bytes / (1024 * 1024))
-    } else if bytes >= 1024 && bytes % 1024 == 0 {
+    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
         format!("{} KB", bytes / 1024)
     } else {
         format!("{} bytes", bytes)

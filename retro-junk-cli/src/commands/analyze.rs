@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use log::Level;
 use owo_colors::OwoColorize;
@@ -68,7 +68,7 @@ pub(crate) fn run_analyze(
 
 /// Analyze all ROM files in a folder.
 fn analyze_folder(
-    folder: &PathBuf,
+    folder: &Path,
     analyzer: &dyn RomAnalyzer,
     options: &AnalysisOptions,
     limit: Option<usize>,

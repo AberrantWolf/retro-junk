@@ -54,8 +54,10 @@ pub fn import_dat(
     dat_source: &str,
     progress: Option<&dyn ImportProgress>,
 ) -> Result<ImportStats, ImportError> {
-    let mut stats = ImportStats::default();
-    stats.total_games = dat.games.len() as u64;
+    let mut stats = ImportStats {
+        total_games: dat.games.len() as u64,
+        ..Default::default()
+    };
 
     let tx = conn.unchecked_transaction()?;
 

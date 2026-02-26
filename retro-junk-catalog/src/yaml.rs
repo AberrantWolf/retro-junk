@@ -23,6 +23,9 @@ pub enum YamlError {
     DirNotFound(String),
 }
 
+/// Result type for [`load_catalog`] containing all loaded catalog data.
+pub type CatalogData = (Vec<CatalogPlatform>, Vec<Company>, Vec<Override>);
+
 /// Load all platform definitions from YAML files in a directory.
 ///
 /// Each `.yaml` file in the directory should contain a single `CatalogPlatform`.
@@ -97,9 +100,7 @@ pub fn load_overrides(dir: &Path) -> Result<Vec<Override>, YamlError> {
 ///     psx-serials.yaml
 ///     ...
 /// ```
-pub fn load_catalog(
-    catalog_dir: &Path,
-) -> Result<(Vec<CatalogPlatform>, Vec<Company>, Vec<Override>), YamlError> {
+pub fn load_catalog(catalog_dir: &Path) -> Result<CatalogData, YamlError> {
     let platforms = load_platforms(&catalog_dir.join("platforms"))?;
     let companies = load_companies(&catalog_dir.join("companies"))?;
     let overrides = load_overrides(&catalog_dir.join("overrides"))?;

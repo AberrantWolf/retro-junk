@@ -13,6 +13,7 @@ const PREFIX_RELEASE: &str = "rel-";
 const PREFIX_MEDIA: &str = "med-";
 
 /// Entry point for `catalog lookup`.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_catalog_lookup(
     query: Option<String>,
     platform: Option<String>,
@@ -189,10 +190,10 @@ fn lookup_by_hash<F>(
             }
         };
 
-        if let Some(cf) = platform_filter {
-            if release.platform_id != cf {
-                continue;
-            }
+        if let Some(cf) = platform_filter
+            && release.platform_id != cf
+        {
+            continue;
         }
 
         print_release_detail(conn, &release, platform_label, company_label);
@@ -223,11 +224,11 @@ fn lookup_by_serial(
     // Search media serials → resolve parent release
     if let Ok(media_hits) = retro_junk_db::find_media_by_serial(conn, serial) {
         for m in &media_hits {
-            if !release_ids.contains(&m.release_id) {
-                if let Ok(Some(r)) = retro_junk_db::get_release_by_id(conn, &m.release_id) {
-                    release_ids.insert(r.id.clone());
-                    releases.push(r);
-                }
+            if !release_ids.contains(&m.release_id)
+                && let Ok(Some(r)) = retro_junk_db::get_release_by_id(conn, &m.release_id)
+            {
+                release_ids.insert(r.id.clone());
+                releases.push(r);
             }
         }
     }
@@ -749,12 +750,12 @@ fn print_release_detail(
     let publisher = release
         .publisher_id
         .as_deref()
-        .map(|id| company_label(id))
+        .map(company_label)
         .unwrap_or_else(|| dash.to_string());
     let developer = release
         .developer_id
         .as_deref()
-        .map(|id| company_label(id))
+        .map(company_label)
         .unwrap_or_else(|| dash.to_string());
     let date_str = release.release_date.as_deref().unwrap_or(dash);
     let genre_str = release.genre.as_deref().unwrap_or(dash);
@@ -808,7 +809,7 @@ fn print_release_detail(
                 };
                 let size_str = m
                     .file_size
-                    .map(|s| format_file_size(s))
+                    .map(format_file_size)
                     .unwrap_or_else(|| dash.to_string());
                 log::info!(
                     "       CRC32: {}  SHA1: {}...  Size: {}",

@@ -274,7 +274,7 @@ pub fn find_file_in_root(
     let target_upper = filename.to_uppercase();
 
     // Read root directory sectors
-    let dir_sectors = (pvd.root_dir_data_length as u64 + 2047) / 2048;
+    let dir_sectors = (pvd.root_dir_data_length as u64).div_ceil(2048);
 
     for sector_offset in 0..dir_sectors {
         let sector = pvd.root_dir_extent_lba as u64 + sector_offset;
@@ -351,7 +351,7 @@ fn read_file_content(
     record: &DirectoryRecord,
 ) -> Result<Vec<u8>, AnalysisError> {
     let mut result = Vec::with_capacity(record.data_length as usize);
-    let sectors_needed = (record.data_length as u64 + 2047) / 2048;
+    let sectors_needed = (record.data_length as u64).div_ceil(2048);
     let mut remaining = record.data_length as usize;
 
     for i in 0..sectors_needed {
@@ -429,9 +429,7 @@ pub fn parse_system_cnf(content: &str) -> Result<SystemCnf, AnalysisError> {
 pub fn extract_serial(boot_path: &str) -> Option<String> {
     // Find the filename part (after last \, /, or : to handle all SYSTEM.CNF variants)
     // Some games use "cdrom:\SLUS_012.34;1", others use "cdrom:SLUS_006.91;1"
-    let filename = boot_path
-        .rsplit(|c: char| c == '\\' || c == '/' || c == ':')
-        .next()?;
+    let filename = boot_path.rsplit(['\\', '/', ':']).next()?;
 
     // Strip version suffix (";1")
     let filename = filename.split(';').next().unwrap_or(filename);
@@ -548,11 +546,11 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
                 file_type,
                 tracks: Vec::new(),
             });
-        } else if upper.starts_with("TRACK ") {
-            if let Some(ref mut f) = current_file {
-                let (number, mode) = parse_cue_track_line(line)?;
-                f.tracks.push(CueTrack { number, mode });
-            }
+        } else if upper.starts_with("TRACK ")
+            && let Some(ref mut f) = current_file
+        {
+            let (number, mode) = parse_cue_track_line(line)?;
+            f.tracks.push(CueTrack { number, mode });
         }
         // Ignore INDEX, PREGAP, POSTGAP, REM, etc.
     }
@@ -574,13 +572,13 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
 fn parse_cue_file_line(line: &str) -> Result<(String, String), AnalysisError> {
     let rest = &line[5..]; // skip "FILE "
 
-    let (filename, remainder) = if rest.starts_with('"') {
+    let (filename, remainder) = if let Some(after_quote) = rest.strip_prefix('"') {
         // Quoted filename
-        let end_quote = rest[1..]
+        let end_quote = after_quote
             .find('"')
             .ok_or_else(|| AnalysisError::invalid_format("Unterminated quote in CUE FILE line"))?;
-        let filename = rest[1..1 + end_quote].to_string();
-        let remainder = rest[2 + end_quote..].trim().to_string();
+        let filename = after_quote[..end_quote].to_string();
+        let remainder = after_quote[end_quote + 1..].trim().to_string();
         (filename, remainder)
     } else {
         // Unquoted filename (space-delimited)
@@ -726,7 +724,7 @@ pub fn read_system_cnf_from_chd(
     ]);
 
     // Walk root directory to find SYSTEM.CNF
-    let dir_sectors = (root_size as u64 + 2047) / 2048;
+    let dir_sectors = (root_size as u64).div_ceil(2048);
 
     for sector_offset in 0..dir_sectors {
         let sector = root_lba as u64 + sector_offset;
@@ -767,7 +765,7 @@ fn read_file_from_chd(
     record: &DirectoryRecord,
 ) -> Result<Vec<u8>, AnalysisError> {
     let mut result = Vec::with_capacity(record.data_length as usize);
-    let sectors_needed = (record.data_length as u64 + 2047) / 2048;
+    let sectors_needed = (record.data_length as u64).div_ceil(2048);
     let mut remaining = record.data_length as usize;
 
     for i in 0..sectors_needed {

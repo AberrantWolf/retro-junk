@@ -313,7 +313,7 @@ fn detect_mapping(reader: &mut dyn ReadSeek, file_size: u64) -> Result<(u64, boo
     }
 
     // Try ExHiROM only for large files (> 4 MB)
-    if rom_size > 0x400000 && rom_size > EXHIROM_HEADER_BASE + 0x30 {
+    if rom_size > EXHIROM_HEADER_BASE + 0x30 {
         let offset = copier_offset + EXHIROM_HEADER_BASE;
         let s = score_header_at(reader, offset);
         candidates.push((offset, s));
@@ -322,10 +322,10 @@ fn detect_mapping(reader: &mut dyn ReadSeek, file_size: u64) -> Result<(u64, boo
     // Pick the highest-scoring candidate
     candidates.sort_by(|a, b| b.1.cmp(&a.1));
 
-    if let Some(&(offset, score)) = candidates.first() {
-        if score >= MIN_SCORE_THRESHOLD {
-            return Ok((offset, has_copier));
-        }
+    if let Some(&(offset, score)) = candidates.first()
+        && score >= MIN_SCORE_THRESHOLD
+    {
+        return Ok((offset, has_copier));
     }
 
     Err(AnalysisError::invalid_format(
@@ -597,7 +597,7 @@ fn coprocessor_name(rom_type: u8) -> Option<&'static str> {
     match rom_type >> 4 {
         0x0 => {
             // Check specific low nibble for DSP
-            if rom_type >= 0x03 && rom_type <= 0x05 {
+            if (0x03..=0x05).contains(&rom_type) {
                 Some("DSP")
             } else {
                 None
@@ -793,9 +793,9 @@ fn format_size(bytes: u64) -> String {
     if bytes == 0 {
         return "0".into();
     }
-    if bytes >= 1024 * 1024 && bytes % (1024 * 1024) == 0 {
+    if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
         format!("{} MB", bytes / (1024 * 1024))
-    } else if bytes >= 1024 && bytes % 1024 == 0 {
+    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
         format!("{} KB", bytes / 1024)
     } else {
         format!("{} bytes", bytes)

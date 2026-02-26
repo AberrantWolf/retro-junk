@@ -232,11 +232,12 @@ pub(crate) fn analyze_cia(
 
     // Parse ticket for title ID (cross-reference)
     let ticket_offset = cia_ticket_offset(&cia);
-    if let Ok(ticket_tid) = parse_cia_ticket_title_id(reader, ticket_offset) {
-        if ticket_tid != tmd_info.title_id && ticket_tid != 0 {
-            id.extra
-                .insert("ticket_title_id".into(), format_title_id(ticket_tid));
-        }
+    if let Ok(ticket_tid) = parse_cia_ticket_title_id(reader, ticket_offset)
+        && ticket_tid != tmd_info.title_id
+        && ticket_tid != 0
+    {
+        id.extra
+            .insert("ticket_title_id".into(), format_title_id(ticket_tid));
     }
 
     // Try to parse NCCH from content section
@@ -316,37 +317,35 @@ pub(crate) fn analyze_cia(
         }
 
         // SHA-256 verification for unencrypted content (not quick mode)
-        if !options.quick && ncch.no_crypto {
-            if ncch.exheader_size > 0 {
-                let exheader_offset = content_offset + 0x200;
-                let hash_size = 0x400u64.min(ncch.exheader_size as u64);
-                match verify_sha256(reader, exheader_offset, hash_size, &ncch.exheader_hash)? {
-                    HashResult::Ok => {
-                        id.extra
-                            .insert("checksum_status:ExHeader SHA-256".into(), "OK".into());
-                        id.expected_checksums.push(
-                            ExpectedChecksum::new(
-                                ChecksumAlgorithm::Sha256,
-                                ncch.exheader_hash.to_vec(),
-                            )
-                            .with_description("ExHeader SHA-256"),
-                        );
-                    }
-                    HashResult::Mismatch { expected, actual } => {
-                        id.extra.insert(
-                            "checksum_status:ExHeader SHA-256".into(),
-                            format!("MISMATCH (expected {}, got {})", expected, actual),
-                        );
-                        id.expected_checksums.push(
-                            ExpectedChecksum::new(
-                                ChecksumAlgorithm::Sha256,
-                                ncch.exheader_hash.to_vec(),
-                            )
-                            .with_description("ExHeader SHA-256"),
-                        );
-                    }
-                    _ => {}
+        if !options.quick && ncch.no_crypto && ncch.exheader_size > 0 {
+            let exheader_offset = content_offset + 0x200;
+            let hash_size = 0x400u64.min(ncch.exheader_size as u64);
+            match verify_sha256(reader, exheader_offset, hash_size, &ncch.exheader_hash)? {
+                HashResult::Ok => {
+                    id.extra
+                        .insert("checksum_status:ExHeader SHA-256".into(), "OK".into());
+                    id.expected_checksums.push(
+                        ExpectedChecksum::new(
+                            ChecksumAlgorithm::Sha256,
+                            ncch.exheader_hash.to_vec(),
+                        )
+                        .with_description("ExHeader SHA-256"),
+                    );
                 }
+                HashResult::Mismatch { expected, actual } => {
+                    id.extra.insert(
+                        "checksum_status:ExHeader SHA-256".into(),
+                        format!("MISMATCH (expected {}, got {})", expected, actual),
+                    );
+                    id.expected_checksums.push(
+                        ExpectedChecksum::new(
+                            ChecksumAlgorithm::Sha256,
+                            ncch.exheader_hash.to_vec(),
+                        )
+                        .with_description("ExHeader SHA-256"),
+                    );
+                }
+                _ => {}
             }
         }
     } else {

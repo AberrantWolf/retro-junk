@@ -28,21 +28,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 return true;
             }
             if let Some(ref id) = entry.identification {
-                if let Some(ref serial) = id.serial_number {
-                    if serial.to_lowercase().contains(&filter) {
-                        return true;
-                    }
-                }
-                if let Some(ref iname) = id.internal_name {
-                    if iname.to_lowercase().contains(&filter) {
-                        return true;
-                    }
-                }
-            }
-            if let Some(ref dm) = entry.dat_match {
-                if dm.game_name.to_lowercase().contains(&filter) {
+                if let Some(ref serial) = id.serial_number
+                    && serial.to_lowercase().contains(&filter)
+                {
                     return true;
                 }
+                if let Some(ref iname) = id.internal_name
+                    && iname.to_lowercase().contains(&filter)
+                {
+                    return true;
+                }
+            }
+            if let Some(ref dm) = entry.dat_match
+                && dm.game_name.to_lowercase().contains(&filter)
+            {
+                return true;
             }
             false
         })
