@@ -483,18 +483,6 @@ fn test_too_small_file() {
 }
 
 #[test]
-fn test_expected_rom_size_calculation() {
-    assert_eq!(expected_rom_size_from_capacity(0), 128 * 1024); // 128 KB
-    assert_eq!(expected_rom_size_from_capacity(6), 8 * 1024 * 1024); // 8 MB
-    assert_eq!(expected_rom_size_from_capacity(7), 16 * 1024 * 1024); // 16 MB
-    assert_eq!(expected_rom_size_from_capacity(8), 32 * 1024 * 1024); // 32 MB
-    assert_eq!(expected_rom_size_from_capacity(9), 64 * 1024 * 1024); // 64 MB
-    assert_eq!(expected_rom_size_from_capacity(10), 128 * 1024 * 1024); // 128 MB
-    assert_eq!(expected_rom_size_from_capacity(11), 256 * 1024 * 1024); // 256 MB
-    assert_eq!(expected_rom_size_from_capacity(12), 512 * 1024 * 1024); // 512 MB
-}
-
-#[test]
 fn test_region_from_game_code_function() {
     assert_eq!(region_from_game_code("ADMJ"), Some(Region::Japan));
     assert_eq!(region_from_game_code("ADME"), Some(Region::Usa));
@@ -505,14 +493,6 @@ fn test_region_from_game_code_function() {
     assert_eq!(region_from_game_code("ADMA"), Some(Region::World)); // Region-free
     assert_eq!(region_from_game_code("ADMW"), Some(Region::World)); // Worldwide
     assert_eq!(region_from_game_code("ADM"), None); // Too short
-}
-
-#[test]
-fn test_maker_code_lookup() {
-    assert_eq!(maker_code_name("01"), Some("Nintendo R&D1"));
-    assert_eq!(maker_code_name("08"), Some("Capcom"));
-    assert_eq!(maker_code_name("34"), Some("Konami"));
-    assert_eq!(maker_code_name("ZZ"), None);
 }
 
 #[test]

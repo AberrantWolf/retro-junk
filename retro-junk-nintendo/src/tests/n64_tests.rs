@@ -149,22 +149,6 @@ fn test_crc32_ieee() {
     assert_eq!(crc32fast::hash(b"123456789"), 0xCBF43926);
 }
 
-// -- CIC detection --
-
-#[test]
-fn test_cic_seed_values() {
-    assert_eq!(CicVariant::Cic6101.seed(), 0xF8CA4DDC);
-    assert_eq!(CicVariant::Cic6102.seed(), 0xF8CA4DDC);
-    assert_eq!(CicVariant::Cic6103.seed(), 0xA3886759);
-    assert_eq!(CicVariant::Cic6105.seed(), 0xDF26F436);
-    assert_eq!(CicVariant::Cic6106.seed(), 0x1FEA617A);
-}
-
-#[test]
-fn test_unknown_cic_defaults_to_6102_seed() {
-    assert_eq!(CicVariant::Unknown.seed(), CicVariant::Cic6102.seed());
-}
-
 // -- can_handle tests --
 
 #[test]

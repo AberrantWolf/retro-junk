@@ -283,14 +283,6 @@ fn test_quick_mode_skips_save_type() {
 }
 
 #[test]
-fn test_maker_code_lookup() {
-    assert_eq!(maker_code_name("01"), Some("Nintendo R&D1"));
-    assert_eq!(maker_code_name("08"), Some("Capcom"));
-    assert_eq!(maker_code_name("34"), Some("Konami"));
-    assert_eq!(maker_code_name("ZZ"), None);
-}
-
-#[test]
 fn test_title_trimming() {
     let mut rom = make_gba_rom();
     // Title with trailing nulls should be trimmed

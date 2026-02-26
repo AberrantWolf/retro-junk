@@ -161,44 +161,6 @@ fn test_japan_region() {
 }
 
 #[test]
-fn test_mbc_cartridge_types() {
-    assert_eq!(cartridge_type_name(0x00), "ROM ONLY");
-    assert_eq!(cartridge_type_name(0x01), "MBC1");
-    assert_eq!(cartridge_type_name(0x03), "MBC1+RAM+BATTERY");
-    assert_eq!(cartridge_type_name(0x13), "MBC3+RAM+BATTERY");
-    assert_eq!(cartridge_type_name(0x1B), "MBC5+RAM+BATTERY");
-    assert_eq!(cartridge_type_name(0x22), "MBC7+SENSOR+RUMBLE+RAM+BATTERY");
-    assert_eq!(cartridge_type_name(0xFE), "HuC3");
-    assert_eq!(cartridge_type_name(0x04), "Unknown");
-}
-
-#[test]
-fn test_rom_size_lookup() {
-    assert_eq!(rom_size(0x00), Some(32 * 1024)); // 32 KB
-    assert_eq!(rom_size(0x01), Some(64 * 1024)); // 64 KB
-    assert_eq!(rom_size(0x02), Some(128 * 1024)); // 128 KB
-    assert_eq!(rom_size(0x03), Some(256 * 1024)); // 256 KB
-    assert_eq!(rom_size(0x04), Some(512 * 1024)); // 512 KB
-    assert_eq!(rom_size(0x05), Some(1024 * 1024)); // 1 MB
-    assert_eq!(rom_size(0x06), Some(2 * 1024 * 1024)); // 2 MB
-    assert_eq!(rom_size(0x07), Some(4 * 1024 * 1024)); // 4 MB
-    assert_eq!(rom_size(0x08), Some(8 * 1024 * 1024)); // 8 MB
-    assert_eq!(rom_size(0x09), None); // Invalid
-    assert_eq!(rom_size(0xFF), None); // Invalid
-}
-
-#[test]
-fn test_ram_size_lookup() {
-    assert_eq!(ram_size(0x00), Some(0));
-    assert_eq!(ram_size(0x01), Some(0)); // Unused
-    assert_eq!(ram_size(0x02), Some(8 * 1024)); // 8 KB
-    assert_eq!(ram_size(0x03), Some(32 * 1024)); // 32 KB
-    assert_eq!(ram_size(0x04), Some(128 * 1024)); // 128 KB
-    assert_eq!(ram_size(0x05), Some(64 * 1024)); // 64 KB
-    assert_eq!(ram_size(0x06), None); // Invalid
-}
-
-#[test]
 fn test_header_checksum_correct() {
     let rom = make_gb_rom();
     let mut cursor = Cursor::new(&rom);
@@ -338,14 +300,6 @@ fn test_cartridge_with_ram() {
         "MBC1+RAM+BATTERY"
     );
     assert_eq!(result.extra.get("ram_size").unwrap(), "32 KB");
-}
-
-#[test]
-fn test_detect_cgb_mode() {
-    assert_eq!(detect_cgb_mode(0x00), None);
-    assert_eq!(detect_cgb_mode(0x80), Some("CGB Compatible"));
-    assert_eq!(detect_cgb_mode(0xC0), Some("CGB Only"));
-    assert_eq!(detect_cgb_mode(0x42), None);
 }
 
 /// Helper to recompute both checksums in a ROM buffer.

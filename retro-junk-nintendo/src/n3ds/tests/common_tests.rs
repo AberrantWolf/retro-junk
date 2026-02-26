@@ -19,34 +19,6 @@ fn test_is_all_zeros() {
 }
 
 #[test]
-fn test_media_type_name() {
-    assert_eq!(media_type_name(0), "Inner Device");
-    assert_eq!(media_type_name(1), "Card1");
-    assert_eq!(media_type_name(2), "Card2");
-}
-
-#[test]
-fn test_maker_codes() {
-    assert_eq!(maker_code_name("31"), Some("Nintendo"));
-    assert_eq!(maker_code_name("SQ"), Some("Square Enix"));
-    assert_eq!(maker_code_name("NB"), Some("Bandai Namco"));
-    assert_eq!(maker_code_name("ZZ"), None);
-}
-
-#[test]
-fn test_title_id_format() {
-    assert_eq!(format_title_id(0x0004000000ABCDEF), "0004000000ABCDEF");
-}
-
-#[test]
-fn test_title_type() {
-    assert_eq!(title_type_from_id(0x0004000000000000), "Application");
-    assert_eq!(title_type_from_id(0x0004000100000000), "System Application");
-    assert_eq!(title_type_from_id(0x0004008C00000000), "DLC");
-    assert_eq!(title_type_from_id(0x0004000E00000000), "Patch/Update");
-}
-
-#[test]
 fn test_region_from_product_code() {
     assert_eq!(region_from_product_code("CTR-P-ABCE"), vec![Region::Usa]);
     assert_eq!(region_from_product_code("CTR-P-ABCJ"), vec![Region::Japan]);

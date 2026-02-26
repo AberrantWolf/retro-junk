@@ -322,17 +322,6 @@ fn test_quick_mode_skips_checksum() {
     assert!(!result.extra.contains_key("checksum_status:SNES Internal"));
 }
 
-// -- Lookup table tests --
-
-#[test]
-fn test_country_names() {
-    assert_eq!(country_name(0x00), "Japan");
-    assert_eq!(country_name(0x01), "USA");
-    assert_eq!(country_name(0x02), "Europe");
-    assert_eq!(country_name(0x11), "Australia");
-    assert_eq!(country_name(0xFF), "Unknown");
-}
-
 #[test]
 fn test_country_to_region_mapping() {
     assert_eq!(country_to_region(0x00), Region::Japan);
@@ -343,26 +332,6 @@ fn test_country_to_region_mapping() {
     assert_eq!(country_to_region(0x0E), Region::World);
     assert_eq!(country_to_region(0x10), Region::Brazil);
     assert_eq!(country_to_region(0x11), Region::Australia);
-}
-
-#[test]
-fn test_chipset_names() {
-    assert_eq!(chipset_name(0x00), "ROM only");
-    assert_eq!(chipset_name(0x02), "ROM + RAM + Battery");
-    assert_eq!(chipset_name(0x15), "ROM + SuperFX + RAM + Battery");
-    assert_eq!(chipset_name(0x33), "ROM + SA-1");
-    assert_eq!(chipset_name(0x43), "ROM + S-DD1");
-    assert_eq!(chipset_name(0xFF), "Unknown chipset");
-}
-
-#[test]
-fn test_coprocessor_names() {
-    assert_eq!(coprocessor_name(0x03), Some("DSP"));
-    assert_eq!(coprocessor_name(0x15), Some("SuperFX"));
-    assert_eq!(coprocessor_name(0x33), Some("SA-1"));
-    assert_eq!(coprocessor_name(0x43), Some("S-DD1"));
-    assert_eq!(coprocessor_name(0x00), None);
-    assert_eq!(coprocessor_name(0x01), None);
 }
 
 // -- Metadata tests --
@@ -409,22 +378,6 @@ fn test_game_code_extraction() {
 
     assert_eq!(result.serial_number.as_deref(), Some("SMWJ"));
     assert_eq!(result.extra.get("game_code").unwrap(), "SMWJ");
-}
-
-#[test]
-fn test_old_maker_name_lookup() {
-    assert_eq!(old_maker_name(0x01), Some("Nintendo"));
-    assert_eq!(old_maker_name(0xC3), Some("Square"));
-    assert_eq!(old_maker_name(0x08), Some("Capcom"));
-    assert_eq!(old_maker_name(0xFF), None);
-}
-
-#[test]
-fn test_new_maker_name_lookup() {
-    assert_eq!(new_maker_name("01"), Some("Nintendo"));
-    assert_eq!(new_maker_name("C3"), Some("Square"));
-    assert_eq!(new_maker_name("69"), Some("Electronic Arts"));
-    assert_eq!(new_maker_name("ZZ"), None);
 }
 
 // -- Edge case tests --

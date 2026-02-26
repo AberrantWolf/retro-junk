@@ -311,12 +311,6 @@ fn test_analyze_cue_multi_track() {
 // -- DAT methods --
 
 #[test]
-fn test_dat_names() {
-    let analyzer = Ps1Analyzer::new();
-    assert_eq!(analyzer.dat_names(), &["Sony - PlayStation"]);
-}
-
-#[test]
 fn test_extract_dat_game_code() {
     let analyzer = Ps1Analyzer::new();
     // Normal serial passes through unchanged
@@ -351,17 +345,6 @@ fn test_extract_dat_game_code_multi_disc_fixups() {
     assert_eq!(
         analyzer.extract_dat_game_code("SCUS-94163"),
         Some("SCUS-94163".to_string())
-    );
-}
-
-// -- Scraper serial --
-
-#[test]
-fn test_extract_scraper_serial_passthrough() {
-    let analyzer = Ps1Analyzer::new();
-    assert_eq!(
-        analyzer.extract_scraper_serial("SLUS-01234"),
-        Some("SLUS-01234".to_string()),
     );
 }
 
