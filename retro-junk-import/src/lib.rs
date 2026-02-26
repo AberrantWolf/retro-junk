@@ -5,6 +5,7 @@
 //! overrides.
 
 pub mod dat_import;
+pub mod gdb_import;
 pub mod merge;
 pub mod progress;
 pub mod reconcile;
@@ -12,6 +13,7 @@ pub mod scan_import;
 pub mod scraper_import;
 
 pub use dat_import::{ImportError, ImportStats, dat_source_str, import_dat, log_import};
+pub use gdb_import::{GdbEnrichOptions, GdbEnrichStats, enrich_gdb};
 pub use merge::{apply_overrides, check_field, merge_release_fields};
 pub use progress::{ImportProgress, LogProgress, SilentProgress};
 pub use scan_import::{

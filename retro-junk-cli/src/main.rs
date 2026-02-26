@@ -188,6 +188,9 @@ fn main() {
             CacheAction::List => commands::cache::run_cache_list(),
             CacheAction::Clear => commands::cache::run_cache_clear(),
             CacheAction::Fetch { systems } => commands::cache::run_cache_fetch(&ctx, systems),
+            CacheAction::GdbList => commands::cache::run_gdb_cache_list(),
+            CacheAction::GdbClear => commands::cache::run_gdb_cache_clear(),
+            CacheAction::GdbFetch { systems } => commands::cache::run_gdb_cache_fetch(&ctx, systems),
         },
         Commands::Config { action } => match action {
             ConfigAction::Show => commands::config::run_config_show(),
@@ -203,6 +206,14 @@ fn main() {
                 dat_dir,
             } => {
                 commands::catalog::import::run_catalog_import(&ctx, systems, catalog_dir, db, dat_dir);
+            }
+            CatalogAction::EnrichGdb {
+                systems,
+                db,
+                limit,
+                gdb_dir,
+            } => {
+                commands::catalog::enrich_gdb::run_catalog_enrich_gdb(&ctx, systems, db, limit, gdb_dir);
             }
             CatalogAction::Enrich {
                 systems,

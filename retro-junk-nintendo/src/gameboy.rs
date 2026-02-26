@@ -702,6 +702,10 @@ impl RomAnalyzer for GameBoyAnalyzer {
         &["Nintendo - Game Boy", "Nintendo - Game Boy Color"]
     }
 
+    fn gdb_csv_names(&self) -> &'static [&'static str] {
+        &["console_nintendo_gameboy", "console_nintendo_gameboycolor"]
+    }
+
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
         // DMG-XXXX-YYY or CGB-XXXX-YYY → XXXX (YYYY is optional)
         let parts: Vec<&str> = serial.split('-').collect();

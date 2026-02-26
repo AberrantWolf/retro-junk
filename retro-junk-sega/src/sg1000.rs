@@ -56,4 +56,8 @@ impl RomAnalyzer for Sg1000Analyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sega - SG-1000"]
     }
+
+    fn gdb_csv_names(&self) -> &'static [&'static str] {
+        &["console_sega_sg1000_sc3000_othellomultivision"]
+    }
 }

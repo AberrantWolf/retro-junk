@@ -22,6 +22,8 @@ pub enum ImportError {
     Sqlite(#[from] rusqlite::Error),
     #[error("No platform mapping for DAT: {0}")]
     UnknownPlatform(String),
+    #[error("DAT/GDB error: {0}")]
+    Dat(String),
 }
 
 /// Statistics from a single DAT import.
@@ -177,6 +179,8 @@ fn import_game(
             players: None,
             rating: None,
             description: None,
+            screen_title: None,
+            cover_title: None,
             screenscraper_id: None,
             scraper_not_found: false,
             created_at: String::new(),

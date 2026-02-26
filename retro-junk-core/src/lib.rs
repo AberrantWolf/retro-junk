@@ -308,6 +308,25 @@ pub trait RomAnalyzer: Send + Sync {
         false
     }
 
+    // -- GDB (GameDataBase) support methods --
+
+    /// Returns GDB CSV names for this platform.
+    ///
+    /// GameDataBase by PigSaint provides supplementary metadata (Japanese titles,
+    /// developer/publisher, genre, player count) indexed by SHA1 hash. Each CSV
+    /// corresponds to a system; multi-CSV platforms (e.g., NES + FDS) return
+    /// multiple names that are merged into one index.
+    ///
+    /// Example: `&["console_nintendo_famicom_nes"]`
+    fn gdb_csv_names(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// Returns true if this platform has GDB support.
+    fn has_gdb_support(&self) -> bool {
+        !self.gdb_csv_names().is_empty()
+    }
+
     // -- Scraper support methods (override in platform analyzers) --
 
     /// Extract a serial number adapted for ScreenScraper API lookups.

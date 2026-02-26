@@ -37,6 +37,8 @@ fn setup_db_with_release() -> (rusqlite::Connection, String) {
         players: None,
         rating: None,
         description: None,
+        screen_title: None,
+        cover_title: None,
         screenscraper_id: None,
         scraper_not_found: false,
         created_at: String::new(),

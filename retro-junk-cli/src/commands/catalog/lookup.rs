@@ -200,12 +200,14 @@ fn lookup_by_serial(
         for r in &releases {
             let plat = platform_label(&r.platform_id);
             let date_str = r.release_date.as_deref().unwrap_or("");
+            let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
             log::info!(
-                "  {:<40} {:<10} {:<7} {}",
+                "  {:<40} {:<10} {:<7} {:<12} {}",
                 truncate_str(&r.title, 40),
                 plat,
                 &r.region,
                 date_str,
+                rid.if_supports_color(Stdout, |t| t.dimmed()),
             );
         }
     }
@@ -315,11 +317,11 @@ fn dispatch_search(
                         .if_supports_color(Stdout, |t| t.bold()),
                 );
                 for w in &works {
+                    let wid = format!("{}{}", PREFIX_WORK, &w.id);
                     log::info!(
-                        "  {:<30} {}",
-                        truncate_str(&format!("{}{}", PREFIX_WORK, &w.id), 30)
-                            .if_supports_color(Stdout, |t| t.dimmed()),
+                        "  {:<50} {}",
                         w.canonical_name,
+                        wid.if_supports_color(Stdout, |t| t.dimmed()),
                     );
                 }
                 log::info!("");
@@ -334,14 +336,14 @@ fn dispatch_search(
                 for r in &releases {
                     let plat = platform_label(&r.platform_id);
                     let date_str = r.release_date.as_deref().unwrap_or("");
+                    let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
                     log::info!(
-                        "  {:<30} {:<35} {:<8} {:<7} {}",
-                        truncate_str(&format!("{}{}", PREFIX_RELEASE, &r.id), 30)
-                            .if_supports_color(Stdout, |t| t.dimmed()),
+                        "  {:<35} {:<8} {:<7} {:<12} {}",
                         truncate_str(&r.title, 35),
                         plat,
                         &r.region,
                         date_str,
+                        rid.if_supports_color(Stdout, |t| t.dimmed()),
                     );
                 }
                 log::info!("");
@@ -356,17 +358,14 @@ fn dispatch_search(
                 for m in &media {
                     let name = m.dat_name.as_deref().unwrap_or(&m.id);
                     let size_str = m.file_size.map(format_file_size).unwrap_or_default();
-                    let crc = m.crc32.as_deref().unwrap_or("");
-                    let crc_short = if crc.len() > 8 { &crc[..8] } else { crc };
                     let plat = resolve_media_platform(conn, &m.release_id, &platform_label);
+                    let mid = format!("{}{}", PREFIX_MEDIA, &m.id);
                     log::info!(
-                        "  {:<30} {:<35} {:<8} {:>8}  {}",
-                        truncate_str(&format!("{}{}", PREFIX_MEDIA, &m.id), 30)
-                            .if_supports_color(Stdout, |t| t.dimmed()),
+                        "  {:<35} {:<8} {:>8}  {}",
                         truncate_str(name, 35),
                         plat,
                         size_str,
-                        crc_short.if_supports_color(Stdout, |t| t.dimmed()),
+                        mid.if_supports_color(Stdout, |t| t.dimmed()),
                     );
                 }
                 log::info!("");
@@ -640,14 +639,14 @@ fn print_work_detail(
         for r in &releases {
             let plat = platform_label(&r.platform_id);
             let date_str = r.release_date.as_deref().unwrap_or("");
+            let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
             log::info!(
-                "    {:<30} {:<35} {:<8} {:<7} {}",
-                truncate_str(&format!("{}{}", PREFIX_RELEASE, &r.id), 30)
-                    .if_supports_color(Stdout, |t| t.dimmed()),
+                "    {:<35} {:<8} {:<7} {:<12} {}",
                 truncate_str(&r.title, 35),
                 plat,
                 &r.region,
                 date_str,
+                rid.if_supports_color(Stdout, |t| t.dimmed()),
             );
         }
     }
@@ -689,6 +688,16 @@ fn print_release_detail(
         .map(|r| format!("{:.1}", r))
         .unwrap_or_else(|| dash.to_string());
 
+    log::info!("  ID:           {}{}", PREFIX_RELEASE, &release.id);
+    if let Some(ref alt) = release.alt_title {
+        log::info!("  Alt title:    {}", alt);
+    }
+    if let Some(ref st) = release.screen_title {
+        log::info!("  Screen title: {}", st);
+    }
+    if let Some(ref ct) = release.cover_title {
+        log::info!("  Cover title:  {}", ct);
+    }
     log::info!("  Serial:       {}", serial_str);
     log::info!("  Publisher:    {}", publisher);
     log::info!("  Developer:    {}", developer);
@@ -853,11 +862,11 @@ fn print_media_detail(
 
 fn print_works_table(works: &[retro_junk_db::WorkRow], offset: u32) {
     for w in works {
+        let wid = format!("{}{}", PREFIX_WORK, &w.id);
         log::info!(
-            "  {:<30} {}",
-            truncate_str(&format!("{}{}", PREFIX_WORK, &w.id), 30)
-                .if_supports_color(Stdout, |t| t.dimmed()),
+            "  {:<50} {}",
             w.canonical_name,
+            wid.if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
     log::info!("");
@@ -874,15 +883,15 @@ fn print_releases_table(
         let plat = platform_label(&r.platform_id);
         let date_str = r.release_date.as_deref().unwrap_or("");
         let serial_str = r.game_serial.as_deref().unwrap_or("");
+        let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
         log::info!(
-            "  {:<30} {:<35} {:<8} {:<7} {:<12} {}",
-            truncate_str(&format!("{}{}", PREFIX_RELEASE, &r.id), 30)
-                .if_supports_color(Stdout, |t| t.dimmed()),
+            "  {:<35} {:<8} {:<7} {:<12} {:<14} {}",
             truncate_str(&r.title, 35),
             plat,
             &r.region,
             date_str,
             serial_str.if_supports_color(Stdout, |t| t.dimmed()),
+            rid.if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
     log::info!("");
@@ -908,17 +917,14 @@ fn print_media_table(
     for m in media {
         let name = m.dat_name.as_deref().unwrap_or(&m.id);
         let size_str = m.file_size.map(format_file_size).unwrap_or_default();
-        let crc = m.crc32.as_deref().unwrap_or("");
-        let crc_short = if crc.len() > 8 { &crc[..8] } else { crc };
         let plat = resolve_media_platform(conn, &m.release_id, platform_label);
+        let mid = format!("{}{}", PREFIX_MEDIA, &m.id);
         log::info!(
-            "  {:<30} {:<35} {:<8} {:>8}  {}",
-            truncate_str(&format!("{}{}", PREFIX_MEDIA, &m.id), 30)
-                .if_supports_color(Stdout, |t| t.dimmed()),
+            "  {:<35} {:<8} {:>8}  {}",
             truncate_str(name, 35),
             plat,
             size_str,
-            crc_short.if_supports_color(Stdout, |t| t.dimmed()),
+            mid.if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
     log::info!("");

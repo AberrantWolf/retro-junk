@@ -1028,6 +1028,10 @@ impl RomAnalyzer for SnesAnalyzer {
         &["Nintendo - Super Nintendo Entertainment System"]
     }
 
+    fn gdb_csv_names(&self) -> &'static [&'static str] {
+        &["console_nintendo_superfamicom_snes"]
+    }
+
     fn dat_header_size(
         &self,
         _reader: &mut dyn ReadSeek,

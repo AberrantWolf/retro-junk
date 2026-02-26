@@ -12,7 +12,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 3;
+pub const CURRENT_VERSION: i32 = 4;
 
 /// Create all tables and indexes if they don't exist.
 ///
@@ -100,6 +100,12 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                      DROP INDEX IF EXISTS idx_releases_natural;
                      CREATE UNIQUE INDEX idx_releases_natural
                          ON releases(work_id, platform_id, region, revision, variant);",
+                )?;
+            }
+            3 => {
+                conn.execute_batch(
+                    "ALTER TABLE releases ADD COLUMN screen_title TEXT;
+                     ALTER TABLE releases ADD COLUMN cover_title TEXT;",
                 )?;
             }
             _ => {}
@@ -192,6 +198,8 @@ CREATE TABLE IF NOT EXISTS releases (
     players TEXT,
     rating REAL,
     description TEXT,
+    screen_title TEXT,
+    cover_title TEXT,
     screenscraper_id TEXT,
     scraper_not_found BOOLEAN NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),

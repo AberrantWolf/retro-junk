@@ -155,8 +155,9 @@ pub fn upsert_release(conn: &Connection, release: &Release) -> Result<(), Operat
     conn.execute(
         "INSERT INTO releases (id, work_id, platform_id, region, revision, variant,
              title, alt_title, publisher_id, developer_id, release_date, game_serial,
-             genre, players, rating, description, screenscraper_id, scraper_not_found)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+             genre, players, rating, description, screen_title, cover_title,
+             screenscraper_id, scraper_not_found)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
          ON CONFLICT(id) DO UPDATE SET
              title = excluded.title,
              alt_title = excluded.alt_title,
@@ -168,6 +169,8 @@ pub fn upsert_release(conn: &Connection, release: &Release) -> Result<(), Operat
              players = excluded.players,
              rating = excluded.rating,
              description = excluded.description,
+             screen_title = excluded.screen_title,
+             cover_title = excluded.cover_title,
              screenscraper_id = excluded.screenscraper_id,
              scraper_not_found = excluded.scraper_not_found,
              updated_at = datetime('now')",
@@ -188,6 +191,8 @@ pub fn upsert_release(conn: &Connection, release: &Release) -> Result<(), Operat
             release.players,
             release.rating,
             release.description,
+            release.screen_title,
+            release.cover_title,
             release.screenscraper_id,
             release.scraper_not_found,
         ],
@@ -208,6 +213,7 @@ pub fn find_release(
         "SELECT id, work_id, platform_id, region, revision, variant,
                 title, alt_title, publisher_id, developer_id, release_date,
                 game_serial, genre, players, rating, description,
+                screen_title, cover_title,
                 screenscraper_id, scraper_not_found, created_at, updated_at
          FROM releases
          WHERE work_id = ?1 AND platform_id = ?2 AND region = ?3
@@ -231,10 +237,12 @@ pub fn find_release(
             players: row.get(13)?,
             rating: row.get(14)?,
             description: row.get(15)?,
-            screenscraper_id: row.get(16)?,
-            scraper_not_found: row.get(17)?,
-            created_at: row.get(18)?,
-            updated_at: row.get(19)?,
+            screen_title: row.get(16)?,
+            cover_title: row.get(17)?,
+            screenscraper_id: row.get(18)?,
+            scraper_not_found: row.get(19)?,
+            created_at: row.get(20)?,
+            updated_at: row.get(21)?,
         })
     });
     match result {

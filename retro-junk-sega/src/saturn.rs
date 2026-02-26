@@ -63,4 +63,7 @@ impl RomAnalyzer for SaturnAnalyzer {
         &["Sega - Saturn"]
     }
 
+    fn gdb_csv_names(&self) -> &'static [&'static str] {
+        &["console_sega_saturn"]
+    }
 }

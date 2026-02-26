@@ -56,4 +56,8 @@ impl RomAnalyzer for MasterSystemAnalyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sega - Master System - Mark III"]
     }
+
+    fn gdb_csv_names(&self) -> &'static [&'static str] {
+        &["console_sega_markIII_mastersystem"]
+    }
 }

@@ -1,5 +1,6 @@
 pub(crate) mod disagreements;
 pub(crate) mod enrich;
+pub(crate) mod enrich_gdb;
 pub(crate) mod gaps;
 pub(crate) mod import;
 pub(crate) mod lookup;

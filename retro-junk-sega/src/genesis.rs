@@ -334,6 +334,10 @@ impl RomAnalyzer for GenesisAnalyzer {
         &["Sega - Mega Drive - Genesis"]
     }
 
+    fn gdb_csv_names(&self) -> &'static [&'static str] {
+        &["console_sega_megadrive_genesis"]
+    }
+
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
         // Genesis header serials are "TT SERIAL-VV" where TT is the media type
         // (GM=game, AI=educational, etc.). DATs store only "SERIAL-VV"

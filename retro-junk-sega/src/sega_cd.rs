@@ -62,4 +62,7 @@ impl RomAnalyzer for SegaCdAnalyzer {
         &["Sega - Mega-CD - Sega CD"]
     }
 
+    fn gdb_csv_names(&self) -> &'static [&'static str] {
+        &["console_sega_megacd_segacd"]
+    }
 }

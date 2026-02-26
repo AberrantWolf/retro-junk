@@ -497,6 +497,10 @@ impl RomAnalyzer for N64Analyzer {
         &["Nintendo - Nintendo 64"]
     }
 
+    fn gdb_csv_names(&self) -> &'static [&'static str] {
+        &["console_nintendo_nintendo64"]
+    }
+
     fn dat_chunk_normalizer(
         &self,
         reader: &mut dyn ReadSeek,

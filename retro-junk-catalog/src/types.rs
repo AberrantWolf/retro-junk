@@ -125,6 +125,8 @@ pub struct Release {
     pub players: Option<String>,
     pub rating: Option<f64>,
     pub description: Option<String>,
+    pub screen_title: Option<String>,
+    pub cover_title: Option<String>,
     pub screenscraper_id: Option<String>,
     pub scraper_not_found: bool,
     pub created_at: String,

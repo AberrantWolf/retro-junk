@@ -18,6 +18,7 @@ const RELEASE_COLUMNS: &str =
     "id, work_id, platform_id, region, revision, variant, \
      title, alt_title, publisher_id, developer_id, release_date, \
      game_serial, genre, players, rating, description, \
+     screen_title, cover_title, \
      screenscraper_id, scraper_not_found, created_at, updated_at";
 
 // ── Media Lookups ───────────────────────────────────────────────────────────
@@ -174,6 +175,7 @@ pub fn releases_to_enrich(
         "SELECT DISTINCT r.id, r.work_id, r.platform_id, r.region, r.revision, r.variant, \
                 r.title, r.alt_title, r.publisher_id, r.developer_id, r.release_date, \
                 r.game_serial, r.genre, r.players, r.rating, r.description, \
+                r.screen_title, r.cover_title, \
                 r.screenscraper_id, r.scraper_not_found, r.created_at, r.updated_at \
          FROM releases r \
          JOIN media m ON m.release_id = r.id \
@@ -1179,9 +1181,11 @@ fn row_to_release(row: &rusqlite::Row<'_>) -> rusqlite::Result<Release> {
         players: row.get(13)?,
         rating: row.get(14)?,
         description: row.get(15)?,
-        screenscraper_id: row.get(16)?,
-        scraper_not_found: row.get(17)?,
-        created_at: row.get(18)?,
-        updated_at: row.get(19)?,
+        screen_title: row.get(16)?,
+        cover_title: row.get(17)?,
+        screenscraper_id: row.get(18)?,
+        scraper_not_found: row.get(19)?,
+        created_at: row.get(20)?,
+        updated_at: row.get(21)?,
     })
 }

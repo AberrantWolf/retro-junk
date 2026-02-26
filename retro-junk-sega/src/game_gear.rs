@@ -55,4 +55,8 @@ impl RomAnalyzer for GameGearAnalyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sega - Game Gear"]
     }
+
+    fn gdb_csv_names(&self) -> &'static [&'static str] {
+        &["console_sega_gamegear"]
+    }
 }

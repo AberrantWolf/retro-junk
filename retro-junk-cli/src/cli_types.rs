@@ -187,6 +187,19 @@ pub(crate) enum CacheAction {
         #[arg(value_delimiter = ',')]
         systems: Vec<String>,
     },
+
+    /// List cached GDB (GameDataBase) CSV files
+    GdbList,
+
+    /// Remove all cached GDB CSV files
+    GdbClear,
+
+    /// Download GDB CSV files for specified systems
+    GdbFetch {
+        /// Systems to fetch (e.g., nes,snes) or "all"
+        #[arg(value_delimiter = ',')]
+        systems: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -223,6 +236,25 @@ pub(crate) enum CatalogAction {
         /// Use DAT files from this directory instead of the cache
         #[arg(long)]
         dat_dir: Option<PathBuf>,
+    },
+
+    /// Enrich catalog releases with GameDataBase metadata (Japanese titles, developer/publisher, genre)
+    EnrichGdb {
+        /// Systems to enrich (e.g., nes,snes) or "all"
+        #[arg(value_delimiter = ',')]
+        systems: Vec<String>,
+
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Maximum releases to process per system
+        #[arg(long)]
+        limit: Option<u32>,
+
+        /// Use GDB CSV files from this directory instead of the cache
+        #[arg(long)]
+        gdb_dir: Option<PathBuf>,
     },
 
     /// Enrich catalog releases with ScreenScraper metadata
