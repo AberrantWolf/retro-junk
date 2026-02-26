@@ -65,6 +65,8 @@ Platform crates own ALL console-specific knowledge. No console-specific code exi
 - **Serial format normalization** lives in `retro-junk-dat/src/matcher.rs` — the single place bridging analyzer serial output to DAT serial lookup.
 - **DAT sources:** No-Intro (cartridge, via LibRetro enhanced DATs) and Redump (disc, from redump.org). See `.claude/skills/game-scraping/` for full details.
 
+**IMPORTANT**: Prioritize code change suggestions that avoid repeated code! Actively look for ways to keep the codebase "DRY". With every plan, include a section about how the plan keeps the code base from having meaningful chunks of repeated logic in multiple places.
+
 ## Conventions
 
 - **Builder pattern** on `RomIdentification`: chain `.with_serial()`, `.with_internal_name()`, `.with_region()`, `.with_platform()`; set other fields directly

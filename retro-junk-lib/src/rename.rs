@@ -247,18 +247,18 @@ pub fn plan_m3u_action(
     })
 }
 
-/// Result of executing a single M3U action.
+/// Result of executing a single M3U action (internal to rename module).
 #[derive(Debug, Default)]
-pub struct M3uExecutionResult {
-    pub playlist_written: bool,
-    pub folder_renamed: bool,
+struct M3uExecutionResult {
+    playlist_written: bool,
+    folder_renamed: bool,
 }
 
 /// Execute a single M3U action: write playlist file, rename folder.
 ///
 /// This does NOT rename individual disc files — the caller is responsible for that.
 /// Execution order: write playlist first (using source_folder path), then rename folder.
-pub fn execute_m3u_action(action: &M3uAction, errors: &mut Vec<String>) -> M3uExecutionResult {
+fn execute_m3u_action(action: &M3uAction, errors: &mut Vec<String>) -> M3uExecutionResult {
     let mut result = M3uExecutionResult::default();
 
     // Write .m3u playlist file (using source folder path, before folder rename)
@@ -316,9 +316,122 @@ pub fn execute_m3u_action(action: &M3uAction, errors: &mut Vec<String>) -> M3uEx
     result
 }
 
+/// Input for a single M3U folder rename operation.
+///
+/// Encapsulates all data needed to rename disc files, fix CUE/M3U references,
+/// write playlists, and rename the M3U folder. Used by both CLI and GUI.
+#[derive(Debug, Clone)]
+pub struct M3uRenameJob {
+    /// The .m3u folder containing disc files
+    pub source_folder: PathBuf,
+    /// Per-disc rename data (file_path → game_name + target_filename)
+    pub discs: Vec<DiscMatchData>,
+    /// Pre-resolved game name (from catalog DB); skips derive_base_game_name
+    pub game_name_override: Option<String>,
+}
+
+/// Result of executing a single M3U folder rename via `execute_m3u_rename()`.
+#[derive(Debug, Default)]
+pub struct M3uRenameResult {
+    pub discs_renamed: usize,
+    pub cue_files_updated: usize,
+    pub m3u_references_updated: usize,
+    pub playlist_written: bool,
+    pub playlist_renamed: bool,
+    pub folder_renamed: bool,
+    pub final_folder: PathBuf,
+    pub errors: Vec<String>,
+}
+
+/// Execute the full rename flow for a single M3U folder.
+///
+/// Steps:
+/// 1. Rename disc files
+/// 2. Fix CUE FILE references broken by the renames
+/// 3. Fix M3U playlist entries broken by the renames
+/// 4. Plan M3U action (folder rename + playlist write)
+/// 5. Rename misnamed inner `.m3u` file (if playlist won't be rewritten)
+/// 6. Execute M3U action (write playlist, rename folder)
+pub fn execute_m3u_rename(job: &M3uRenameJob) -> M3uRenameResult {
+    let mut result = M3uRenameResult {
+        final_folder: job.source_folder.clone(),
+        ..Default::default()
+    };
+
+    // Step 1: Rename disc files
+    let mut rename_map: HashMap<String, String> = HashMap::new();
+    for disc in &job.discs {
+        let target = job.source_folder.join(&disc.target_filename);
+        if disc.file_path == target {
+            continue;
+        }
+        let old_name = disc
+            .file_path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        match fs::rename(&disc.file_path, &target) {
+            Ok(()) => {
+                result.discs_renamed += 1;
+                rename_map.insert(old_name, disc.target_filename.clone());
+            }
+            Err(e) => {
+                result.errors.push(format!(
+                    "Failed to rename '{}': {}",
+                    disc.file_path.display(),
+                    e,
+                ));
+            }
+        }
+    }
+
+    // Step 2: Fix CUE FILE references
+    result.cue_files_updated =
+        fix_cue_references_in_dir(&job.source_folder, &rename_map, &mut result.errors);
+
+    // Step 3: Fix M3U playlist entries
+    result.m3u_references_updated =
+        fix_m3u_references_in_dir(&job.source_folder, &rename_map, &mut result.errors);
+
+    // Step 4: Plan M3U action
+    if let Some(action) = plan_m3u_action(
+        &job.source_folder,
+        &job.discs,
+        None,
+        job.game_name_override.as_deref(),
+    ) {
+        // Step 5: Rename misnamed inner .m3u (only when playlist won't be rewritten)
+        if action.playlist_entries.is_empty() {
+            let expected = format!("{}.m3u", action.game_name);
+            if let Some((src, dst)) = detect_misnamed_m3u(&job.source_folder, &expected) {
+                match fs::rename(&src, &dst) {
+                    Ok(()) => result.playlist_renamed = true,
+                    Err(e) => {
+                        result
+                            .errors
+                            .push(format!("Failed to rename inner playlist: {}", e));
+                    }
+                }
+            }
+        }
+
+        // Step 6: Execute M3U action (write playlist, rename folder)
+        let m3u_exec = execute_m3u_action(&action, &mut result.errors);
+        result.playlist_written = m3u_exec.playlist_written;
+        result.folder_renamed = m3u_exec.folder_renamed;
+        if m3u_exec.folder_renamed {
+            result.final_folder = action.target_folder;
+        }
+    }
+
+    result
+}
+
 /// Result of planning renames for a single console folder.
 #[derive(Debug)]
 pub struct RenamePlan {
+    /// Single-file renames (non-M3U). Disc renames live inside `m3u_jobs`.
     pub renames: Vec<RenameAction>,
     pub already_correct: Vec<PathBuf>,
     pub unmatched: Vec<UnmatchedFile>,
@@ -327,14 +440,12 @@ pub struct RenamePlan {
     pub discrepancies: Vec<MatchDiscrepancy>,
     /// Serial-related diagnostics (serial lookup failed, or missing serial)
     pub serial_warnings: Vec<SerialWarning>,
-    /// M3U folder renames and playlist writes
-    pub m3u_actions: Vec<M3uAction>,
-    /// CUE files with broken FILE references (pre-existing from prior renames)
+    /// M3U folder jobs: disc renames + CUE/M3U fix + playlist + folder rename
+    pub m3u_jobs: Vec<M3uRenameJob>,
+    /// CUE files with broken FILE references in non-M3U dirs (pre-existing)
     pub broken_cue_files: Vec<PathBuf>,
-    /// M3U playlist files with broken entries (pre-existing from prior renames)
+    /// M3U playlist files with broken entries in non-M3U dirs (pre-existing)
     pub broken_m3u_files: Vec<PathBuf>,
-    /// M3U playlist files that need renaming to match their parent .m3u folder
-    pub misnamed_m3u_playlists: Vec<(PathBuf, PathBuf)>,
 }
 
 use retro_junk_core::disc::{derive_base_game_name, extract_disc_number};
@@ -577,11 +688,11 @@ pub fn plan_renames(
         .map(|(_, r)| r)
         .collect();
 
-    // M3U post-processing: plan folder renames and playlist writes for multi-disc sets
-    let mut m3u_actions = Vec::new();
+    // M3U post-processing: build M3uRenameJobs for multi-disc sets.
+    // Each job owns its disc renames, CUE/M3U fixing, playlist, and folder rename.
+    let mut m3u_jobs = Vec::new();
     for entry in &game_entries {
         if let crate::scanner::GameEntry::MultiDisc { name: _, files } = entry {
-            // Collect DiscMatchData for all matched files in this folder
             let discs: Vec<DiscMatchData> = files
                 .iter()
                 .filter_map(|f| {
@@ -599,58 +710,68 @@ pub fn plan_renames(
                 continue;
             }
 
-            // The source folder is the parent of any file in this multi-disc set
             let source_folder = match files[0].parent() {
                 Some(p) => p.to_path_buf(),
                 None => continue,
             };
 
-            if let Some(action) = plan_m3u_action(&source_folder, &discs, None, None) {
-                m3u_actions.push(action);
+            // Only create a job if there's actual work: disc renames or M3U action needed
+            let any_disc_rename = discs
+                .iter()
+                .any(|d| d.file_path != source_folder.join(&d.target_filename));
+            let needs_m3u_action = plan_m3u_action(&source_folder, &discs, None, None).is_some();
+
+            if any_disc_rename || needs_m3u_action {
+                m3u_jobs.push(M3uRenameJob {
+                    source_folder,
+                    discs,
+                    game_name_override: None,
+                });
             }
         }
     }
 
-    // Detect .m3u playlist files that don't match their parent folder name.
-    // Skip folders where Step 2 will rewrite the playlist (non-empty playlist_entries).
-    let m3u_write_folders: std::collections::HashSet<PathBuf> = m3u_actions
+    // Separate disc renames from single-file renames: disc files in M3U jobs
+    // are handled by execute_m3u_rename(), not by the top-level rename step.
+    let m3u_job_files: std::collections::HashSet<PathBuf> = m3u_jobs
         .iter()
-        .filter(|a| !a.playlist_entries.is_empty())
-        .map(|a| a.source_folder.clone())
+        .flat_map(|j| j.discs.iter().map(|d| d.file_path.clone()))
         .collect();
 
-    let mut misnamed_m3u_playlists = Vec::new();
-    for action in &m3u_actions {
-        if m3u_write_folders.contains(&action.source_folder) {
-            continue;
-        }
-        let expected_name = format!("{}.m3u", action.game_name);
-        if let Some(pair) = detect_misnamed_m3u(&action.source_folder, &expected_name) {
-            misnamed_m3u_playlists.push(pair);
-        }
-    }
+    let single_renames: Vec<RenameAction> = clean_renames
+        .into_iter()
+        .filter(|r| !m3u_job_files.contains(&r.source))
+        .collect();
+    let single_already_correct: Vec<PathBuf> = already_correct
+        .into_iter()
+        .filter(|p| !m3u_job_files.contains(p))
+        .collect();
 
-    // Filter phantom m3u_actions: keep only actions with real work
-    // (folder rename or playlist write). Misnamed .m3u files are handled separately.
-    m3u_actions.retain(|action| {
-        action.source_folder != action.target_folder || !action.playlist_entries.is_empty()
-    });
-
-    // Detect pre-existing broken CUE and M3U file references
-    let broken_cue_files = detect_broken_cue_files(&files);
-    let broken_m3u_files = detect_broken_m3u_playlists(&files);
+    // Detect pre-existing broken CUE and M3U references in non-M3U dirs only.
+    // M3U dirs get their references fixed inside execute_m3u_rename().
+    let m3u_dir_set: std::collections::HashSet<PathBuf> =
+        m3u_jobs.iter().map(|j| j.source_folder.clone()).collect();
+    let non_m3u_files: Vec<PathBuf> = files
+        .iter()
+        .filter(|f| {
+            !f.parent()
+                .is_some_and(|p| m3u_dir_set.contains(&p.to_path_buf()))
+        })
+        .cloned()
+        .collect();
+    let broken_cue_files = detect_broken_cue_files(&non_m3u_files);
+    let broken_m3u_files = detect_broken_m3u_playlists(&non_m3u_files);
 
     Ok(RenamePlan {
-        renames: clean_renames,
-        already_correct,
+        renames: single_renames,
+        already_correct: single_already_correct,
         unmatched,
         conflicts,
         discrepancies,
         serial_warnings,
-        m3u_actions,
+        m3u_jobs,
         broken_cue_files,
         broken_m3u_files,
-        misnamed_m3u_playlists,
     })
 }
 
@@ -775,10 +896,10 @@ fn match_by_hash(
 
 /// Execute a rename plan, performing the actual file renames and M3U operations.
 ///
-/// Execution order for M3U actions:
-/// 1. Rename individual disc files (existing logic)
-/// 2. Write/update .m3u playlist files inside folders (using source folder paths)
-/// 3. Rename .m3u folders (last, so steps 1-2 use valid paths)
+/// Execution order:
+/// 1. Rename single files (non-M3U)
+/// 2. Fix CUE/M3U references in non-M3U directories
+/// 3. Execute each M3U job (disc renames + CUE/M3U fix + playlist + folder rename)
 pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
     let mut summary = RenameSummary {
         already_correct: plan.already_correct.len(),
@@ -789,9 +910,8 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
         summary.conflicts.push(msg.clone());
     }
 
-    // Step 1: Rename individual disc files
+    // Step 1: Rename single files (disc renames are handled by M3U jobs)
     for rename in &plan.renames {
-        // Check if target already exists (and isn't the source)
         if rename.target.exists() && rename.source != rename.target {
             summary.errors.push(format!(
                 "Target already exists: {}",
@@ -813,10 +933,9 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
         }
     }
 
-    // Step 1.5: Fix CUE file references
-    // Build per-directory rename maps from successful renames
+    // Step 2: Fix CUE/M3U references in non-M3U directories
     let mut dir_rename_maps: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
-    let mut cue_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut fix_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
     for rename in &plan.renames {
         if rename.source == rename.target {
@@ -843,65 +962,45 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
             .entry(dir.clone())
             .or_default()
             .insert(old_name, new_name);
-        cue_dirs.insert(dir);
+        fix_dirs.insert(dir);
     }
 
-    // Also include directories containing pre-existing broken CUE files
     for cue_path in &plan.broken_cue_files {
         if let Some(dir) = cue_path.parent() {
-            cue_dirs.insert(dir.to_path_buf());
+            fix_dirs.insert(dir.to_path_buf());
+        }
+    }
+    for m3u_path in &plan.broken_m3u_files {
+        if let Some(dir) = m3u_path.parent() {
+            fix_dirs.insert(dir.to_path_buf());
         }
     }
 
-    // Fix CUE references in all affected directories
-    for dir in &cue_dirs {
+    for dir in &fix_dirs {
         let empty_map = HashMap::new();
         let rename_map = dir_rename_maps.get(dir).unwrap_or(&empty_map);
         summary.cue_files_updated +=
             fix_cue_references_in_dir(dir, rename_map, &mut summary.errors);
-    }
-
-    // Fix broken M3U playlist entries in affected directories
-    let mut m3u_dirs: std::collections::HashSet<PathBuf> = cue_dirs.clone();
-    for m3u_path in &plan.broken_m3u_files {
-        if let Some(dir) = m3u_path.parent() {
-            m3u_dirs.insert(dir.to_path_buf());
-        }
-    }
-    for dir in &m3u_dirs {
-        let empty_map = HashMap::new();
-        let rename_map = dir_rename_maps.get(dir).unwrap_or(&empty_map);
         summary.m3u_references_updated +=
             fix_m3u_references_in_dir(dir, rename_map, &mut summary.errors);
     }
 
-    // Step 2+3: Execute M3U actions (write playlists + rename folders)
-    for action in &plan.m3u_actions {
-        let result = execute_m3u_action(action, &mut summary.errors);
+    // Step 3: Execute M3U jobs (each handles disc renames + CUE/M3U fix + playlist + folder)
+    for job in &plan.m3u_jobs {
+        let result = execute_m3u_rename(job);
+        summary.renamed += result.discs_renamed;
+        summary.cue_files_updated += result.cue_files_updated;
+        summary.m3u_references_updated += result.m3u_references_updated;
         if result.playlist_written {
             summary.m3u_playlists_written += 1;
+        }
+        if result.playlist_renamed {
+            summary.m3u_playlists_renamed += 1;
         }
         if result.folder_renamed {
             summary.m3u_folders_renamed += 1;
         }
-    }
-
-    // Step 2.5: Rename misnamed .m3u playlist files to match their parent folder
-    for (source, target) in &plan.misnamed_m3u_playlists {
-        if !source.exists() || target.exists() {
-            continue; // Source deleted by Step 2, or target already created
-        }
-        match fs::rename(source, target) {
-            Ok(()) => summary.m3u_playlists_renamed += 1,
-            Err(e) => {
-                summary.errors.push(format!(
-                    "Failed to rename playlist {:?} → {:?}: {}",
-                    source.file_name().unwrap_or_default(),
-                    target.file_name().unwrap_or_default(),
-                    e,
-                ));
-            }
-        }
+        summary.errors.extend(result.errors);
     }
 
     summary
@@ -1014,7 +1113,7 @@ fn parse_cue_file_directive(line: &str) -> Option<(String, String)> {
 /// track number matching).
 ///
 /// Returns the number of .cue files that were updated.
-pub fn fix_cue_references_in_dir(
+fn fix_cue_references_in_dir(
     dir: &Path,
     rename_map: &HashMap<String, String>,
     errors: &mut Vec<String>,
@@ -1322,7 +1421,7 @@ fn detect_broken_m3u_playlists(files: &[PathBuf]) -> Vec<PathBuf> {
 ///
 /// Returns `Some((current_path, target_path))` if a rename is needed, `None` otherwise.
 /// Only triggers when there's exactly one existing .m3u file with the wrong name.
-pub fn detect_misnamed_m3u(dir: &Path, expected_name: &str) -> Option<(PathBuf, PathBuf)> {
+fn detect_misnamed_m3u(dir: &Path, expected_name: &str) -> Option<(PathBuf, PathBuf)> {
     let expected_path = dir.join(expected_name);
     if expected_path.exists() {
         return None;
@@ -1367,7 +1466,7 @@ fn has_broken_m3u_entries(content: &str, dir: &Path) -> bool {
 /// Fix broken entries in M3U playlist files in a directory.
 ///
 /// Returns the number of .m3u files that were updated.
-pub fn fix_m3u_references_in_dir(
+fn fix_m3u_references_in_dir(
     dir: &Path,
     rename_map: &HashMap<String, String>,
     errors: &mut Vec<String>,

@@ -7,8 +7,8 @@ use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::rename::{
-    M3uAction, RenameOptions, RenamePlan, RenameProgress, SerialWarningKind, execute_renames,
-    format_match_method, plan_renames,
+    M3uRenameJob, RenameOptions, RenamePlan, RenameProgress, SerialWarningKind, execute_renames,
+    format_match_method, plan_m3u_action, plan_renames,
 };
 use retro_junk_lib::{AnalysisContext, Platform};
 
@@ -163,23 +163,31 @@ pub(crate) fn run_rename(
                 print_rename_plan(&plan);
 
                 let has_work = !plan.renames.is_empty()
-                    || !plan.m3u_actions.is_empty()
+                    || !plan.m3u_jobs.is_empty()
                     || !plan.broken_cue_files.is_empty()
-                    || !plan.broken_m3u_files.is_empty()
-                    || !plan.misnamed_m3u_playlists.is_empty();
+                    || !plan.broken_m3u_files.is_empty();
                 if !dry_run && has_work {
                     // Prompt for confirmation (raw print — user interaction)
-                    let m3u_count = plan.m3u_actions.len();
+                    let m3u_count = plan.m3u_jobs.len();
                     let cue_count = plan.broken_cue_files.len();
                     let m3u_fix_count = plan.broken_m3u_files.len();
-                    let m3u_rename_count = plan.misnamed_m3u_playlists.len();
+                    let disc_rename_count: usize = plan
+                        .m3u_jobs
+                        .iter()
+                        .map(|j| {
+                            j.discs
+                                .iter()
+                                .filter(|d| d.file_path != j.source_folder.join(&d.target_filename))
+                                .count()
+                        })
+                        .sum();
                     let mut parts = Vec::new();
-                    if !plan.renames.is_empty() {
-                        parts.push(format!("{} renames", plan.renames.len()));
+                    let total_renames = plan.renames.len() + disc_rename_count;
+                    if total_renames > 0 {
+                        parts.push(format!("{} renames", total_renames));
                     }
-                    if m3u_count > 0 || m3u_rename_count > 0 {
-                        let total = m3u_count + m3u_rename_count;
-                        parts.push(format!("{} m3u updates", total));
+                    if m3u_count > 0 {
+                        parts.push(format!("{} m3u updates", m3u_count));
                     }
                     if cue_count > 0 || m3u_fix_count > 0 {
                         let total = cue_count + m3u_fix_count;
@@ -464,10 +472,10 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
         }
     }
 
-    // M3U actions
-    print_m3u_actions(&plan.m3u_actions);
+    // M3U jobs (disc renames + folder rename + playlist)
+    print_m3u_jobs(&plan.m3u_jobs);
 
-    // Broken CUE files
+    // Broken CUE files (non-M3U dirs only)
     for cue_path in &plan.broken_cue_files {
         let name = cue_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         log::info!(
@@ -477,7 +485,7 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
         );
     }
 
-    // Broken M3U playlists
+    // Broken M3U playlists (non-M3U dirs only)
     for m3u_path in &plan.broken_m3u_files {
         let name = m3u_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         log::info!(
@@ -486,61 +494,70 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
             name.if_supports_color(Stdout, |t| t.bold()),
         );
     }
-
-    // Misnamed M3U playlists
-    for (source, target) in &plan.misnamed_m3u_playlists {
-        let source_name = source.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        let target_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        log::info!(
-            "  {} {} {} {} {}",
-            "\u{2192}".if_supports_color(Stdout, |t| t.green()),
-            source_name.if_supports_color(Stdout, |t| t.dimmed()),
-            "\u{2192}".if_supports_color(Stdout, |t| t.green()),
-            target_name.if_supports_color(Stdout, |t| t.bold()),
-            "(playlist)".if_supports_color(Stdout, |t| t.dimmed()),
-        );
-    }
 }
 
-/// Print M3U folder rename and playlist actions.
-pub(crate) fn print_m3u_actions(actions: &[M3uAction]) {
-    if actions.is_empty() {
-        return;
-    }
+/// Print M3U jobs: disc renames, folder rename, and playlist actions.
+pub(crate) fn print_m3u_jobs(jobs: &[M3uRenameJob]) {
+    for job in jobs {
+        // Show disc renames
+        for disc in &job.discs {
+            let target = job.source_folder.join(&disc.target_filename);
+            if disc.file_path == target {
+                continue;
+            }
+            let source_name = disc
+                .file_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?");
 
-    for action in actions {
-        let source_name = action
-            .source_folder
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
-        let target_name = action
-            .target_folder
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
-
-        // Folder rename (if different)
-        if action.source_folder != action.target_folder {
             log::info!(
                 "  {} {} {} {} {}",
-                "\u{1F4C1}".if_supports_color(Stdout, |t| t.green()),
+                "\u{2192}".if_supports_color(Stdout, |t| t.green()),
                 source_name.if_supports_color(Stdout, |t| t.dimmed()),
                 "\u{2192}".if_supports_color(Stdout, |t| t.green()),
-                target_name.if_supports_color(Stdout, |t| t.bold()),
-                "(folder)".if_supports_color(Stdout, |t| t.dimmed()),
+                disc.target_filename.if_supports_color(Stdout, |t| t.bold()),
+                "(disc)".if_supports_color(Stdout, |t| t.dimmed()),
             );
         }
 
-        // Playlist write
-        if !action.playlist_entries.is_empty() {
-            let playlist_name = format!("{}.m3u", action.game_name);
-            log::info!(
-                "  {} Write {} ({} discs)",
-                "\u{1F4DD}".if_supports_color(Stdout, |t| t.green()),
-                playlist_name.if_supports_color(Stdout, |t| t.bold()),
-                action.playlist_entries.len(),
-            );
+        // Compute M3U action for display
+        if let Some(action) = plan_m3u_action(
+            &job.source_folder,
+            &job.discs,
+            None,
+            job.game_name_override.as_deref(),
+        ) {
+            if action.source_folder != action.target_folder {
+                let source_name = action
+                    .source_folder
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?");
+                let target_name = action
+                    .target_folder
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?");
+                log::info!(
+                    "  {} {} {} {} {}",
+                    "\u{1F4C1}".if_supports_color(Stdout, |t| t.green()),
+                    source_name.if_supports_color(Stdout, |t| t.dimmed()),
+                    "\u{2192}".if_supports_color(Stdout, |t| t.green()),
+                    target_name.if_supports_color(Stdout, |t| t.bold()),
+                    "(folder)".if_supports_color(Stdout, |t| t.dimmed()),
+                );
+            }
+
+            if !action.playlist_entries.is_empty() {
+                let playlist_name = format!("{}.m3u", action.game_name);
+                log::info!(
+                    "  {} Write {} ({} discs)",
+                    "\u{1F4DD}".if_supports_color(Stdout, |t| t.green()),
+                    playlist_name.if_supports_color(Stdout, |t| t.bold()),
+                    action.playlist_entries.len(),
+                );
+            }
         }
     }
 }
