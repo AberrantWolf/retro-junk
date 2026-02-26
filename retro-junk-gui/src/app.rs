@@ -101,9 +101,10 @@ impl RetroJunkApp {
         {
             app.root_path = Some(root.clone());
 
-            // Load cache on a background thread so the window appears immediately.
-            // The CacheLoaded handler merges restored data with any consoles
-            // already discovered by the folder scan.
+            // Load cache first, then scan. The cache thread sends CacheLoaded
+            // (if a cache exists) followed by StartFolderScan. This ordering
+            // ensures cached data (hashes, status, dat_match) is fully merged
+            // before any scan can overwrite it.
             let tx = app.message_tx.clone();
             let context = app.context.clone();
             let root_bg = root.clone();
@@ -116,13 +117,11 @@ impl RetroJunkApp {
                         stale.len()
                     );
                     let _ = tx.send(crate::state::AppMessage::CacheLoaded { library });
-                    ctx_bg.request_repaint();
                 }
+                // Always trigger a folder scan to discover new/removed consoles.
+                let _ = tx.send(crate::state::AppMessage::StartFolderScan);
+                ctx_bg.request_repaint();
             });
-
-            // Always scan disk to discover new/removed console folders.
-            // ConsoleFolderFound handler deduplicates, so cached consoles keep their data.
-            crate::backend::scan::scan_root_folder(&mut app, root.clone(), &cc.egui_ctx);
         }
 
         app

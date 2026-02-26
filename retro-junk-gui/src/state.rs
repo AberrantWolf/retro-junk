@@ -340,6 +340,11 @@ pub enum AppMessage {
         library: Library,
     },
 
+    /// Sent after the cache load attempt finishes (whether cache existed or not)
+    /// to kick off the folder scan. This ensures the cache is merged before
+    /// any scan can overwrite it.
+    StartFolderScan,
+
     // -- Operations --
     OperationProgress {
         op_id: u64,
@@ -417,19 +422,48 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         } => {
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 let console = &mut app.library.consoles[ci];
+
+                // Build a lookup from display_name to existing entry so we can
+                // preserve cached data (hashes, status, dat_match, etc.) across
+                // re-scans instead of starting from scratch.
+                let existing: HashMap<String, LibraryEntry> = console
+                    .entries
+                    .drain(..)
+                    .map(|e| (e.game_entry.display_name().to_owned(), e))
+                    .collect();
+
                 console.entries = entries
                     .into_iter()
-                    .map(|ge| LibraryEntry {
-                        game_entry: ge,
-                        identification: None,
-                        hashes: None,
-                        dat_match: None,
-                        status: EntryStatus::Unknown,
-                        ambiguous_candidates: Vec::new(),
-                        media_paths: None,
-                        region_override: None,
-                        cover_title: None,
-                        screen_title: None,
+                    .map(|ge| {
+                        if let Some(cached) = existing.get(ge.display_name()) {
+                            // File still exists — keep cached analysis data
+                            LibraryEntry {
+                                game_entry: ge,
+                                identification: cached.identification.clone(),
+                                hashes: cached.hashes.clone(),
+                                dat_match: cached.dat_match.clone(),
+                                status: cached.status,
+                                ambiguous_candidates: cached.ambiguous_candidates.clone(),
+                                media_paths: cached.media_paths.clone(),
+                                region_override: cached.region_override,
+                                cover_title: cached.cover_title.clone(),
+                                screen_title: cached.screen_title.clone(),
+                            }
+                        } else {
+                            // New file — start fresh
+                            LibraryEntry {
+                                game_entry: ge,
+                                identification: None,
+                                hashes: None,
+                                dat_match: None,
+                                status: EntryStatus::Unknown,
+                                ambiguous_candidates: Vec::new(),
+                                media_paths: None,
+                                region_override: None,
+                                cover_title: None,
+                                screen_title: None,
+                            }
+                        }
                     })
                     .collect();
                 console.scan_status = ScanStatus::Scanning;
@@ -658,6 +692,12 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         ctx.clone(),
                     );
                 }
+            }
+        }
+
+        AppMessage::StartFolderScan => {
+            if let Some(ref root) = app.root_path.clone() {
+                crate::backend::scan::scan_root_folder(app, root.clone(), ctx);
             }
         }
 
