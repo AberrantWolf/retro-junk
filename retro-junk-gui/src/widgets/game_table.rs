@@ -134,127 +134,138 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     ui.add_space(2.0);
 
     // Table wrapped in horizontal scroll area
-    let available_height = ui.available_height();
     let text_height = egui::TextStyle::Body
         .resolve(ui.style())
         .size
         .max(ui.spacing().interact_size.y);
+    // Keep header height in one place so the body height calculation stays in sync.
+    let header_height = 20.0_f32;
 
-    egui::ScrollArea::horizontal().show(ui, |ui| {
-        let table = TableBuilder::new(ui)
-            .striped(true)
-            .resizable(true)
-            .sense(egui::Sense::click())
-            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-            .column(Column::exact(20.0)) // Status badge
-            .column(Column::initial(280.0).at_least(100.0)) // Name
-            .column(Column::initial(120.0).at_least(60.0)) // Serial
-            .column(Column::initial(140.0).at_least(60.0)) // Internal Name
-            .column(Column::initial(80.0).at_least(40.0)) // Region
-            .column(Column::initial(80.0).at_least(60.0)) // CRC32
-            .column(Column::initial(200.0).at_least(80.0)) // DAT Match
-            .min_scrolled_height(0.0)
-            .max_scroll_height(available_height);
+    egui::ScrollArea::horizontal()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            // Measure available height *inside* the scroll area: egui has already
+            // reduced it by the horizontal scrollbar thickness (when visible), so
+            // we only need to subtract the table header to get the body height.
+            let body_height = (ui.available_height() - header_height).max(0.0);
 
-        table
-            .header(20.0, |mut header| {
-                header.col(|ui| {
-                    ui.strong("");
-                });
-                header.col(|ui| {
-                    ui.strong("Name");
-                });
-                header.col(|ui| {
-                    ui.strong("Serial");
-                });
-                header.col(|ui| {
-                    ui.strong("Internal Name");
-                });
-                header.col(|ui| {
-                    ui.strong("Region");
-                });
-                header.col(|ui| {
-                    ui.strong("CRC32");
-                });
-                header.col(|ui| {
-                    ui.strong("DAT Match");
-                });
-            })
-            .body(|body| {
-                body.rows(text_height, row_data.len(), |mut row| {
-                    let row_idx = row.index();
-                    let data = &row_data[row_idx];
-                    let is_selected = app.selected_entries.contains(&data.entry_idx);
-                    let is_focused = app.focused_entry == Some(data.entry_idx);
+            let table = TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .sense(egui::Sense::click())
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::exact(20.0)) // Status badge
+                .column(Column::initial(280.0).at_least(100.0)) // Name
+                .column(Column::initial(120.0).at_least(60.0)) // Serial
+                .column(Column::initial(140.0).at_least(60.0)) // Internal Name
+                .column(Column::initial(80.0).at_least(40.0)) // Region
+                .column(Column::initial(80.0).at_least(60.0)) // CRC32
+                .column(Column::initial(200.0).at_least(80.0)) // DAT Match
+                .min_scrolled_height(0.0)
+                .max_scroll_height(body_height);
 
-                    // Highlight the entire row
-                    row.set_selected(is_selected || is_focused);
-
-                    // Status badge with tooltip (includes warning triangle for broken refs)
-                    let r1 = row.col(|ui| {
-                        let resp =
-                            status_badge::show_with_warning(ui, data.status, data.has_broken_refs);
-                        if data.has_broken_refs {
-                            resp.on_hover_text(format!(
-                                "{}\n\u{26a0} Broken file references",
-                                data.status.tooltip()
-                            ));
-                        } else {
-                            resp.on_hover_text(data.status.tooltip());
-                        }
+            table
+                .header(header_height, |mut header| {
+                    header.col(|ui| {
+                        ui.strong("");
                     });
+                    header.col(|ui| {
+                        ui.strong("Name");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Serial");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Internal Name");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Region");
+                    });
+                    header.col(|ui| {
+                        ui.strong("CRC32");
+                    });
+                    header.col(|ui| {
+                        ui.strong("DAT Match");
+                    });
+                })
+                .body(|body| {
+                    body.rows(text_height, row_data.len(), |mut row| {
+                        let row_idx = row.index();
+                        let data = &row_data[row_idx];
+                        let is_selected = app.selected_entries.contains(&data.entry_idx);
+                        let is_focused = app.focused_entry == Some(data.entry_idx);
 
-                    // Paint text directly in cells so no WidgetRect is created,
-                    // allowing the cell response to handle all click interaction.
-                    let r2 = row.col(|ui| paint_cell_text(ui, &data.name));
-                    let r3 = row.col(|ui| {
-                        paint_cell_text(ui, data.serial.as_deref().unwrap_or(""));
-                    });
-                    let r4 = row.col(|ui| {
-                        paint_cell_text(ui, data.internal_name.as_deref().unwrap_or(""));
-                    });
-                    let r5 = row.col(|ui| {
-                        paint_cell_text(
-                            ui,
-                            if data.regions.is_empty() {
-                                ""
+                        // Highlight the entire row
+                        row.set_selected(is_selected || is_focused);
+
+                        // Status badge with tooltip (includes warning triangle for broken refs)
+                        let r1 = row.col(|ui| {
+                            let resp = status_badge::show_with_warning(
+                                ui,
+                                data.status,
+                                data.has_broken_refs,
+                            );
+                            if data.has_broken_refs {
+                                resp.on_hover_text(format!(
+                                    "{}\n\u{26a0} Broken file references",
+                                    data.status.tooltip()
+                                ));
                             } else {
-                                &data.regions
-                            },
-                        );
-                    });
-                    let r6 = row.col(|ui| {
-                        paint_cell_text(ui, data.crc32.as_deref().unwrap_or(""));
-                    });
-                    let r7 = row.col(|ui| {
-                        paint_cell_text(ui, data.dat_match.as_deref().unwrap_or(""));
-                    });
+                                resp.on_hover_text(data.status.tooltip());
+                            }
+                        });
 
-                    // Union all column responses for click and context menu
-                    let row_resp = r1.1 | r2.1 | r3.1 | r4.1 | r5.1 | r6.1 | r7.1;
+                        // Paint text directly in cells so no WidgetRect is created,
+                        // allowing the cell response to handle all click interaction.
+                        let r2 = row.col(|ui| paint_cell_text(ui, &data.name));
+                        let r3 = row.col(|ui| {
+                            paint_cell_text(ui, data.serial.as_deref().unwrap_or(""));
+                        });
+                        let r4 = row.col(|ui| {
+                            paint_cell_text(ui, data.internal_name.as_deref().unwrap_or(""));
+                        });
+                        let r5 = row.col(|ui| {
+                            paint_cell_text(
+                                ui,
+                                if data.regions.is_empty() {
+                                    ""
+                                } else {
+                                    &data.regions
+                                },
+                            );
+                        });
+                        let r6 = row.col(|ui| {
+                            paint_cell_text(ui, data.crc32.as_deref().unwrap_or(""));
+                        });
+                        let r7 = row.col(|ui| {
+                            paint_cell_text(ui, data.dat_match.as_deref().unwrap_or(""));
+                        });
 
-                    // Right-click selection: if right-clicked row isn't selected, select just it
-                    if row_resp.secondary_clicked() {
-                        if !app.selected_entries.contains(&data.entry_idx) {
-                            app.selected_entries.clear();
-                            app.selected_entries.insert(data.entry_idx);
+                        // Union all column responses for click and context menu
+                        let row_resp = r1.1 | r2.1 | r3.1 | r4.1 | r5.1 | r6.1 | r7.1;
+
+                        // Right-click selection: if right-clicked row isn't selected, select just it
+                        if row_resp.secondary_clicked() {
+                            if !app.selected_entries.contains(&data.entry_idx) {
+                                app.selected_entries.clear();
+                                app.selected_entries.insert(data.entry_idx);
+                            }
+                            app.focused_entry = Some(data.entry_idx);
                         }
-                        app.focused_entry = Some(data.entry_idx);
-                    }
 
-                    // Left-click
-                    if row_resp.clicked() {
-                        let modifiers = ctx.input(|i| i.modifiers);
-                        handle_row_click(app, data.entry_idx, modifiers);
-                    }
+                        // Left-click
+                        if row_resp.clicked() {
+                            let modifiers = ctx.input(|i| i.modifiers);
+                            handle_row_click(app, data.entry_idx, modifiers);
+                        }
 
-                    // Context menu on unioned response
-                    row_resp.context_menu(|ui| {
-                        show_row_context_menu(ui, app, ctx, console_idx, data);
+                        // Context menu on unioned response
+                        row_resp.context_menu(|ui| {
+                            show_row_context_menu(ui, app, ctx, console_idx, data);
+                        });
                     });
                 });
-            });
-    });
+        });
 }
 
 /// Render the context menu for a game table row.

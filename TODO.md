@@ -17,7 +17,7 @@
 
 - [ ] **Custom multi-select view** in the game details panel, rather than showing details for the most-recent selection in the list
 
-- [ ] **Add space below table** both to fill the remainder of the view, as well as allow space to select the bottom row (mostly blocked by the scroll bar)
+- [x] **Add space below table** both to fill the remainder of the view, as well as allow space to select the bottom row (mostly blocked by the scroll bar)
 
 ## Data Model & Import Pipeline
 
@@ -118,7 +118,7 @@ Audit findings from 2026-02-27.
 
 - [ ] **Remove dead `CliError` variants** — `retro-junk-cli/src/error.rs:28,32` defines `DatError` and `Analysis` variants (and constructors at lines 56, 60) that are never constructed. Remove or use them.
 
-- [ ] **Fix `unwrap()` panic risk in multi-disc DAT matching** — `state.rs:920` does `entry.disc_identifications.as_ref().unwrap()` outside a `Some` guard. If the prior mutable borrow changes flow, this will panic. Convert to `if let Some(discs)` or restructure to avoid the reborrow.
+- [x] **Fix `unwrap()` panic risk in multi-disc DAT matching** — `state.rs:920` does `entry.disc_identifications.as_ref().unwrap()` outside a `Some` guard. If the prior mutable borrow changes flow, this will panic. Convert to `if let Some(discs)` or restructure to avoid the reborrow.
 
 ## Enrichment Pipeline Hardening
 

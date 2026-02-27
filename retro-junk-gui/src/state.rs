@@ -729,6 +729,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             if let Some(ci) = app.library.find_by_folder(&folder_name)
                 && let Some(entry) = app.library.consoles[ci].entries.get_mut(index)
             {
+                let prior_status = entry.status;
+                let had_prior_dat_match = entry.dat_match.is_some();
+
                 match result {
                     Ok(id) => {
                         let has_serial = id.serial_number.is_some();
@@ -794,6 +797,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         entry.ambiguous_candidates.clear();
                     }
                 }
+
+                // If re-matching couldn't run (DATs not loaded yet) or didn't
+                // find anything, but the entry already had a valid DAT match
+                // from a prior cycle, restore its old status. The cached
+                // dat_match is still valid — only the identification was refreshed.
+                if entry.status != EntryStatus::Matched && had_prior_dat_match {
+                    entry.status = prior_status;
+                }
             }
         }
 
@@ -802,18 +813,45 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             index,
             disc_results,
         } => {
+            // Pre-fetch DAT context before mutably borrowing library entries.
+            let console_platform = app
+                .library
+                .find_by_folder(&folder_name)
+                .map(|ci| app.library.consoles[ci].platform);
+            let dat_index = app.dat_indices.get(&folder_name).cloned();
+            let context = app.context.clone();
+
             if let Some(ci) = app.library.find_by_folder(&folder_name)
                 && let Some(entry) = app.library.consoles[ci].entries.get_mut(index)
             {
-                // Collect successful disc identifications
+                // Save old per-disc hashes so we can carry them forward.
+                // Analysis doesn't produce hashes, so without this a rescan
+                // would wipe previously-computed per-disc hashes and DAT matches.
+                let old_disc_data: HashMap<PathBuf, (Option<FileHashes>, Option<DatMatchInfo>)> =
+                    entry
+                        .disc_identifications
+                        .as_ref()
+                        .map(|discs| {
+                            discs
+                                .iter()
+                                .map(|d| (d.path.clone(), (d.hashes.clone(), d.dat_match.clone())))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                // Collect successful disc identifications, carrying forward cached data.
                 let disc_ids: Vec<DiscIdentification> = disc_results
                     .iter()
                     .filter_map(|(path, result)| {
-                        result.as_ref().ok().map(|id| DiscIdentification {
-                            path: path.clone(),
-                            identification: id.clone(),
-                            hashes: None,
-                            dat_match: None,
+                        result.as_ref().ok().map(|id| {
+                            let (cached_hashes, cached_dat_match) =
+                                old_disc_data.get(path).cloned().unwrap_or_default();
+                            DiscIdentification {
+                                path: path.clone(),
+                                identification: id.clone(),
+                                hashes: cached_hashes,
+                                dat_match: cached_dat_match,
+                            }
                         })
                     })
                     .collect();
@@ -850,11 +888,95 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
                 entry.identification = Some(game_id);
                 entry.disc_identifications = Some(disc_ids);
+
+                // Remember whether the entry had a prior DAT match so we can
+                // preserve its status if DAT re-matching can't run (e.g. DATs
+                // still loading asynchronously after app restart).
+                let prior_status = entry.status;
+                let had_prior_dat_match = entry.dat_match.is_some();
+
                 entry.status = if has_serial {
                     EntryStatus::Ambiguous
                 } else {
                     EntryStatus::Unrecognized
                 };
+
+                // If the DAT is already loaded (e.g. during a rescan), re-run
+                // multi-disc serial matching immediately to restore Matched status.
+                if let Some(ref dat) = dat_index
+                    && let Some(p) = console_platform
+                    && let Some(ref registered) = context.get_by_platform(p)
+                {
+                    let mut matched_names: Vec<String> = Vec::new();
+                    let mut first_rom_name = String::new();
+                    let mut any_ambiguous = false;
+
+                    if let Some(ref mut discs) = entry.disc_identifications {
+                        for disc in discs.iter_mut() {
+                            if let Some(ref serial) = disc.identification.serial_number {
+                                let game_code = registered.analyzer.extract_dat_game_code(serial);
+                                match dat.match_by_serial(serial, game_code.as_deref()) {
+                                    SerialLookupResult::Match(m) => {
+                                        let name = dat.games[m.game_index].name.clone();
+                                        let rom_name =
+                                            dat.games[m.game_index].roms[m.rom_index].name.clone();
+                                        if first_rom_name.is_empty() {
+                                            first_rom_name = rom_name.clone();
+                                        }
+                                        disc.dat_match = Some(DatMatchInfo {
+                                            game_name: name.clone(),
+                                            rom_name,
+                                            method: MatchMethod::Serial,
+                                        });
+                                        matched_names.push(name);
+                                    }
+                                    SerialLookupResult::Ambiguous { .. } => {
+                                        any_ambiguous = true;
+                                    }
+                                    SerialLookupResult::NotFound => {}
+                                }
+                            }
+                        }
+                    }
+
+                    if !matched_names.is_empty() {
+                        let combined = app
+                            .catalog_db
+                            .as_ref()
+                            .and_then(|conn| {
+                                entry
+                                    .disc_identifications
+                                    .as_ref()
+                                    .and_then(|discs| try_catalog_game_name(discs, conn))
+                            })
+                            .unwrap_or_else(|| {
+                                let name_refs: Vec<&str> =
+                                    matched_names.iter().map(|s| s.as_str()).collect();
+                                retro_junk_core::disc::derive_base_game_name(&name_refs)
+                            });
+                        entry.dat_match = Some(DatMatchInfo {
+                            game_name: combined,
+                            rom_name: first_rom_name,
+                            method: MatchMethod::Serial,
+                        });
+                        entry.status = if any_ambiguous {
+                            EntryStatus::Ambiguous
+                        } else {
+                            EntryStatus::Matched
+                        };
+                        entry.ambiguous_candidates.clear();
+                    } else if any_ambiguous {
+                        entry.status = EntryStatus::Ambiguous;
+                    }
+                }
+
+                // If re-matching couldn't run (DATs not loaded yet) or didn't
+                // find anything, but the entry already had a valid DAT match
+                // from a prior cycle, restore its old status. The cached
+                // dat_match is still valid — only the identification was refreshed.
+                if entry.status != EntryStatus::Matched && had_prior_dat_match {
+                    entry.status = prior_status;
+                }
             }
         }
 
@@ -977,14 +1099,17 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 }
                             }
                         }
-                        let discs = entry.disc_identifications.as_ref().unwrap();
-
                         if !matched_names.is_empty() {
                             // Try catalog DB for canonical game name, fall back to DAT name derivation
                             let combined = app
                                 .catalog_db
                                 .as_ref()
-                                .and_then(|conn| try_catalog_game_name(discs, conn))
+                                .and_then(|conn| {
+                                    entry
+                                        .disc_identifications
+                                        .as_ref()
+                                        .and_then(|discs| try_catalog_game_name(discs, conn))
+                                })
                                 .unwrap_or_else(|| {
                                     let name_refs: Vec<&str> =
                                         matched_names.iter().map(|s| s.as_str()).collect();
