@@ -1,11 +1,11 @@
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use retro_junk_lib::hasher;
 
 use crate::app::RetroJunkApp;
-use crate::state::{AppMessage, BackgroundOperation, next_operation_id};
+use crate::backend::worker::spawn_background_op;
+use crate::state::AppMessage;
 
 /// A single unit of hash work: either a whole entry or one disc of a multi-disc entry.
 enum HashWork {
@@ -56,18 +56,10 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
         return;
     }
 
-    let tx = app.message_tx.clone();
     let context = app.context.clone();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let op_id = next_operation_id();
+    let description = format!("Computing hashes ({} files)", work.len());
 
-    app.operations.push(BackgroundOperation::new(
-        op_id,
-        format!("Computing hashes ({} files)", work.len()),
-        cancel.clone(),
-    ));
-
-    std::thread::spawn(move || {
+    spawn_background_op(app, description, move |op_id, cancel, tx| {
         let registered = match context.get_by_platform(platform) {
             Some(r) => r,
             None => {

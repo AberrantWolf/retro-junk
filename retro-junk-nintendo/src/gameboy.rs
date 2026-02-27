@@ -11,11 +11,11 @@
 
 use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
-use std::sync::mpsc::Sender;
 
+use retro_junk_core::util::format_bytes;
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum,
-    Platform, Region, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, Platform, Region,
+    RomAnalyzer, RomIdentification,
 };
 
 // ---------------------------------------------------------------------------
@@ -203,228 +203,6 @@ fn ram_size(code: u8) -> Option<u64> {
     }
 }
 
-/// Look up old licensee name from code byte at 0x014B.
-fn old_licensee_name(code: u8) -> Option<&'static str> {
-    match code {
-        0x00 => Some("None"),
-        0x01 => Some("Nintendo"),
-        0x08 => Some("Capcom"),
-        0x09 => Some("Hot-B"),
-        0x0A => Some("Jaleco"),
-        0x0B => Some("Coconuts Japan"),
-        0x0C => Some("Elite Systems"),
-        0x13 => Some("EA (Electronic Arts)"),
-        0x18 => Some("Hudson Soft"),
-        0x19 => Some("ITC Entertainment"),
-        0x1A => Some("Yanoman"),
-        0x1D => Some("Japan Clary"),
-        0x1F => Some("Virgin Interactive"),
-        0x24 => Some("PCM Complete"),
-        0x25 => Some("San-X"),
-        0x28 => Some("Kemco (Kotobuki Systems)"),
-        0x29 => Some("SETA Corporation"),
-        0x30 => Some("Infogrames"),
-        0x31 => Some("Nintendo"),
-        0x32 => Some("Bandai"),
-        // 0x33 => use new licensee code
-        0x34 => Some("Konami"),
-        0x35 => Some("HectorSoft"),
-        0x38 => Some("Capcom"),
-        0x39 => Some("Banpresto"),
-        0x3C => Some("Entertainment i"),
-        0x3E => Some("Gremlin"),
-        0x41 => Some("Ubisoft"),
-        0x42 => Some("Atlus"),
-        0x44 => Some("Malibu"),
-        0x46 => Some("Angel"),
-        0x47 => Some("Spectrum Holobyte"),
-        0x49 => Some("Irem"),
-        0x4A => Some("Virgin Interactive"),
-        0x4D => Some("Malibu"),
-        0x4F => Some("U.S. Gold"),
-        0x50 => Some("Absolute"),
-        0x51 => Some("Acclaim"),
-        0x52 => Some("Activision"),
-        0x53 => Some("American Sammy"),
-        0x54 => Some("GameTek"),
-        0x55 => Some("Park Place"),
-        0x56 => Some("LJN"),
-        0x57 => Some("Matchbox"),
-        0x59 => Some("Milton Bradley"),
-        0x5A => Some("Mindscape"),
-        0x5B => Some("Romstar"),
-        0x5C => Some("Naxat Soft"),
-        0x5D => Some("Tradewest"),
-        0x60 => Some("Titus Interactive"),
-        0x61 => Some("Virgin Interactive"),
-        0x67 => Some("Ocean Interactive"),
-        0x69 => Some("EA (Electronic Arts)"),
-        0x6E => Some("Elite Systems"),
-        0x6F => Some("Electro Brain"),
-        0x70 => Some("Infogrames"),
-        0x71 => Some("Interplay"),
-        0x72 => Some("Broderbund"),
-        0x73 => Some("Sculptured Software"),
-        0x75 => Some("The Sales Curve"),
-        0x78 => Some("THQ"),
-        0x79 => Some("Accolade"),
-        0x7A => Some("Triffix Entertainment"),
-        0x7C => Some("Microprose"),
-        0x7F => Some("Kemco"),
-        0x80 => Some("Misawa Entertainment"),
-        0x83 => Some("Lozc"),
-        0x86 => Some("Tokuma Shoten"),
-        0x8B => Some("Bullet-Proof Software"),
-        0x8C => Some("Vic Tokai"),
-        0x8E => Some("Ape"),
-        0x8F => Some("I'Max"),
-        0x91 => Some("Chunsoft"),
-        0x92 => Some("Video System"),
-        0x93 => Some("Tsubaraya Productions"),
-        0x95 => Some("Varie"),
-        0x96 => Some("Yonezawa/s'pal"),
-        0x97 => Some("Kaneko"),
-        0x99 => Some("Arc"),
-        0x9A => Some("Nihon Bussan"),
-        0x9B => Some("Tecmo"),
-        0x9C => Some("Imagineer"),
-        0x9D => Some("Banpresto"),
-        0x9F => Some("Nova"),
-        0xA1 => Some("Hori Electric"),
-        0xA2 => Some("Bandai"),
-        0xA4 => Some("Konami"),
-        0xA6 => Some("Kawada"),
-        0xA7 => Some("Takara"),
-        0xA9 => Some("Technos Japan"),
-        0xAA => Some("Broderbund"),
-        0xAC => Some("Toei Animation"),
-        0xAD => Some("Toho"),
-        0xAF => Some("Namco"),
-        0xB0 => Some("Acclaim"),
-        0xB1 => Some("ASCII/Nexsoft"),
-        0xB2 => Some("Bandai"),
-        0xB4 => Some("Square Enix"),
-        0xB6 => Some("HAL Laboratory"),
-        0xB7 => Some("SNK"),
-        0xB9 => Some("Pony Canyon"),
-        0xBA => Some("Culture Brain"),
-        0xBB => Some("Sunsoft"),
-        0xBD => Some("Sony Imagesoft"),
-        0xBF => Some("Sammy"),
-        0xC0 => Some("Taito"),
-        0xC2 => Some("Kemco"),
-        0xC3 => Some("Square"),
-        0xC4 => Some("Tokuma Shoten"),
-        0xC5 => Some("Data East"),
-        0xC6 => Some("Tonkinhouse"),
-        0xC8 => Some("Koei"),
-        0xC9 => Some("UFL"),
-        0xCA => Some("Ultra"),
-        0xCB => Some("Vap"),
-        0xCC => Some("Use Corporation"),
-        0xCD => Some("Meldac"),
-        0xCE => Some("Pony Canyon"),
-        0xCF => Some("Angel"),
-        0xD0 => Some("Taito"),
-        0xD1 => Some("Sofel"),
-        0xD2 => Some("Quest"),
-        0xD3 => Some("Sigma Enterprises"),
-        0xD4 => Some("ASK Kodansha"),
-        0xD6 => Some("Naxat Soft"),
-        0xD7 => Some("Copya System"),
-        0xD9 => Some("Banpresto"),
-        0xDA => Some("Tomy"),
-        0xDB => Some("LJN"),
-        0xDD => Some("NCS"),
-        0xDE => Some("Human"),
-        0xDF => Some("Altron"),
-        0xE0 => Some("Jaleco"),
-        0xE1 => Some("Towa Chiki"),
-        0xE2 => Some("Yutaka"),
-        0xE3 => Some("Varie"),
-        0xE5 => Some("Epoch"),
-        0xE7 => Some("Athena"),
-        0xE8 => Some("Asmik Ace"),
-        0xE9 => Some("Natsume"),
-        0xEA => Some("King Records"),
-        0xEB => Some("Atlus"),
-        0xEC => Some("Epic/Sony Records"),
-        0xEE => Some("IGS"),
-        0xF0 => Some("A Wave"),
-        0xF3 => Some("Extreme Entertainment"),
-        0xFF => Some("LJN"),
-        _ => None,
-    }
-}
-
-/// Look up new licensee name from 2-character ASCII code at 0x0144-0x0145.
-fn new_licensee_name(code: &str) -> Option<&'static str> {
-    match code {
-        "00" => Some("None"),
-        "01" => Some("Nintendo R&D1"),
-        "08" => Some("Capcom"),
-        "13" => Some("EA (Electronic Arts)"),
-        "18" => Some("Hudson Soft"),
-        "19" => Some("b-ai"),
-        "20" => Some("kss"),
-        "22" => Some("pow"),
-        "24" => Some("PCM Complete"),
-        "25" => Some("san-x"),
-        "28" => Some("Kemco Japan"),
-        "29" => Some("seta"),
-        "30" => Some("Viacom"),
-        "31" => Some("Nintendo"),
-        "32" => Some("Bandai"),
-        "33" => Some("Ocean/Acclaim"),
-        "34" => Some("Konami"),
-        "35" => Some("Hector"),
-        "37" => Some("Taito"),
-        "38" => Some("Hudson"),
-        "39" => Some("Banpresto"),
-        "41" => Some("Ubi Soft"),
-        "42" => Some("Atlus"),
-        "44" => Some("Malibu"),
-        "46" => Some("angel"),
-        "47" => Some("Bullet-Proof"),
-        "49" => Some("irem"),
-        "50" => Some("Absolute"),
-        "51" => Some("Acclaim"),
-        "52" => Some("Activision"),
-        "53" => Some("American sammy"),
-        "54" => Some("Konami"),
-        "55" => Some("Hi tech entertainment"),
-        "56" => Some("LJN"),
-        "57" => Some("Matchbox"),
-        "58" => Some("Mattel"),
-        "59" => Some("Milton Bradley"),
-        "60" => Some("Titus"),
-        "61" => Some("Virgin"),
-        "64" => Some("LucasArts"),
-        "67" => Some("Ocean"),
-        "69" => Some("EA (Electronic Arts)"),
-        "70" => Some("Infogrames"),
-        "71" => Some("Interplay"),
-        "72" => Some("Broderbund"),
-        "73" => Some("sculptured"),
-        "75" => Some("sci"),
-        "78" => Some("THQ"),
-        "79" => Some("Accolade"),
-        "80" => Some("misawa"),
-        "83" => Some("lozc"),
-        "86" => Some("Tokuma Shoten"),
-        "87" => Some("Tsukuda Original"),
-        "91" => Some("Chunsoft"),
-        "92" => Some("Video system"),
-        "93" => Some("Ocean/Acclaim"),
-        "95" => Some("Varie"),
-        "96" => Some("Yonezawa/s'pal"),
-        "97" => Some("Kaneko"),
-        "99" => Some("Pack in soft"),
-        "A4" => Some("Konami (Yu-Gi-Oh!)"),
-        _ => None,
-    }
-}
-
 /// Compute the header checksum (verified by boot ROM).
 /// Sum bytes 0x0134 through 0x014C using: x = x - byte - 1 (wrapping).
 fn compute_header_checksum(reader: &mut dyn ReadSeek) -> Result<u8, AnalysisError> {
@@ -468,20 +246,6 @@ fn compute_global_checksum(reader: &mut dyn ReadSeek) -> Result<u16, AnalysisErr
     Ok(sum)
 }
 
-/// Format a byte count as a human-readable size string.
-fn format_size(bytes: u64) -> String {
-    if bytes == 0 {
-        return "0".into();
-    }
-    if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
-        format!("{} MB", bytes / (1024 * 1024))
-    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
-        format!("{} KB", bytes / 1024)
-    } else {
-        format!("{} bytes", bytes)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Identification
 // ---------------------------------------------------------------------------
@@ -496,13 +260,16 @@ fn to_identification(
     let cgb_mode = detect_cgb_mode(header.cgb_flag);
     let is_cgb = cgb_mode.is_some();
 
-    let platform = if header.cgb_flag == 0xC0 || header.cgb_flag == 0x80 {
-        "Game Boy Color"
+    let platform_variant = if header.cgb_flag == 0xC0 || header.cgb_flag == 0x80 {
+        Some("Game Boy Color")
     } else {
-        "Game Boy"
+        None
     };
 
-    let mut id = RomIdentification::new().with_platform(platform);
+    let mut id = RomIdentification::new().with_platform(Platform::GameBoy);
+    if let Some(variant) = platform_variant {
+        id.extra.insert("platform_variant".into(), variant.into());
+    }
 
     // Internal name
     if !header.title.is_empty() {
@@ -517,10 +284,10 @@ fn to_identification(
         header
             .new_licensee_code
             .as_deref()
-            .and_then(new_licensee_name)
+            .and_then(crate::licensee::maker_code_name)
             .map(|s| s.to_string())
     } else {
-        old_licensee_name(header.old_licensee_code).map(|s| s.to_string())
+        crate::licensee::old_licensee_name(header.old_licensee_code).map(|s| s.to_string())
     };
     id.maker_code = licensee;
 
@@ -575,7 +342,7 @@ fn to_identification(
     if let Some(ram) = ram_size(header.ram_size_code)
         && ram > 0
     {
-        id.extra.insert("ram_size".into(), format_size(ram));
+        id.extra.insert("ram_size".into(), format_bytes(ram));
     }
 
     // Extra: manufacturer code (CGB only)
@@ -650,16 +417,6 @@ impl RomAnalyzer for GameBoyAnalyzer {
             computed_header,
             computed_global,
         ))
-    }
-
-    fn analyze_with_progress(
-        &self,
-        reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
-        _progress_tx: Sender<AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError> {
-        // GB files are small enough that progress reporting is unnecessary.
-        self.analyze(reader, options)
     }
 
     fn platform(&self) -> Platform {

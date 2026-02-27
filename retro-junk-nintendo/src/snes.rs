@@ -10,11 +10,11 @@
 
 use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
-use std::sync::mpsc::Sender;
 
+use retro_junk_core::util::format_bytes;
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum,
-    Platform, Region, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, Platform, Region,
+    RomAnalyzer, RomIdentification,
 };
 
 // ---------------------------------------------------------------------------
@@ -620,187 +620,9 @@ fn coprocessor_name(rom_type: u8) -> Option<&'static str> {
     }
 }
 
-/// Look up old-style developer/licensee ID (1 byte, when developer_id != 0x33).
-fn old_maker_name(id: u8) -> Option<&'static str> {
-    match id {
-        0x01 => Some("Nintendo"),
-        0x08 => Some("Capcom"),
-        0x0A => Some("Jaleco"),
-        0x0B => Some("Coconuts Japan"),
-        0x18 => Some("Hudson Soft"),
-        0x1D => Some("Banpresto"),
-        0x28 => Some("Kemco Japan"),
-        0x30 => Some("Infogrames"),
-        0x31 => Some("Nintendo"),
-        0x33 => Some("Ocean/Acclaim"),
-        0x34 => Some("Konami"),
-        0x35 => Some("HectorSoft"),
-        0x38 => Some("Capcom"),
-        0x41 => Some("Ubisoft"),
-        0x42 => Some("Atlus"),
-        0x44 => Some("Malibu"),
-        0x46 => Some("Angel"),
-        0x4A => Some("Virgin Interactive"),
-        0x4D => Some("Tradewest"),
-        0x4F => Some("U.S. Gold"),
-        0x50 => Some("Absolute"),
-        0x51 => Some("Acclaim"),
-        0x52 => Some("Activision"),
-        0x53 => Some("American Sammy"),
-        0x54 => Some("GameTek"),
-        0x56 => Some("Majesco"),
-        0x5A => Some("Mindscape"),
-        0x60 => Some("Titus"),
-        0x61 => Some("Virgin Interactive"),
-        0x67 => Some("Ocean"),
-        0x69 => Some("Electronic Arts"),
-        0x6E => Some("Elite Systems"),
-        0x6F => Some("Electro Brain"),
-        0x70 => Some("Infogrames"),
-        0x71 => Some("Interplay"),
-        0x72 => Some("Broderbund"),
-        0x75 => Some("The Sales Curve"),
-        0x78 => Some("THQ"),
-        0x79 => Some("Accolade"),
-        0x7F => Some("Kemco"),
-        0x80 => Some("Misawa Entertainment"),
-        0x83 => Some("LOZC"),
-        0x86 => Some("Tokuma Shoten"),
-        0x8B => Some("Bullet-Proof Software"),
-        0x8C => Some("Vic Tokai"),
-        0x8E => Some("Character Soft"),
-        0x91 => Some("Chunsoft"),
-        0x93 => Some("Banpresto"),
-        0x95 => Some("Varie"),
-        0x97 => Some("Kaneko"),
-        0x99 => Some("Pack-In-Video"),
-        0x9A => Some("Nichibutsu"),
-        0x9B => Some("Tecmo"),
-        0x9C => Some("Imagineer"),
-        0xA0 => Some("Telenet"),
-        0xA4 => Some("Konami"),
-        0xA7 => Some("Takara"),
-        0xAA => Some("Culture Brain"),
-        0xAC => Some("Toei Animation"),
-        0xAF => Some("Namco"),
-        0xB0 => Some("Acclaim"),
-        0xB1 => Some("ASCII / Nexoft"),
-        0xB2 => Some("Bandai"),
-        0xB4 => Some("Enix"),
-        0xB6 => Some("HAL Laboratory"),
-        0xBA => Some("Culture Brain"),
-        0xBB => Some("Sunsoft"),
-        0xBD => Some("Sony Imagesoft"),
-        0xBF => Some("Sammy"),
-        0xC0 => Some("Taito"),
-        0xC2 => Some("Kemco"),
-        0xC3 => Some("Square"),
-        0xC4 => Some("Tokuma Shoten"),
-        0xC5 => Some("Data East"),
-        0xC6 => Some("Tonkin House"),
-        0xC8 => Some("Koei"),
-        0xCA => Some("Konami"),
-        0xCB => Some("Vapinc / NTVIC"),
-        0xCC => Some("Use Corporation"),
-        0xCE => Some("Pony Canyon"),
-        0xD0 => Some("Taito"),
-        0xD1 => Some("Sofel"),
-        0xD2 => Some("Bothtec"),
-        0xD6 => Some("Naxat Soft"),
-        0xD9 => Some("Banpresto"),
-        0xDA => Some("Tomy"),
-        0xDB => Some("Hiro"),
-        0xDD => Some("NCS"),
-        0xDE => Some("Human"),
-        0xDF => Some("Altron"),
-        0xE1 => Some("Towa Chiki"),
-        0xE2 => Some("Yutaka"),
-        0xE5 => Some("Epoch"),
-        0xE7 => Some("Athena"),
-        0xE8 => Some("Asmik"),
-        0xE9 => Some("Natsume"),
-        0xEA => Some("King Records"),
-        0xEB => Some("Atlus"),
-        0xEC => Some("Epic/Sony Records"),
-        0xEE => Some("IGS"),
-        0xF0 => Some("A-Wave"),
-        _ => None,
-    }
-}
-
-/// Look up new-style 2-character maker code (when developer_id == 0x33).
-fn new_maker_name(code: &str) -> Option<&'static str> {
-    match code {
-        "01" => Some("Nintendo"),
-        "08" => Some("Capcom"),
-        "0A" => Some("Jaleco"),
-        "18" => Some("Hudson Soft"),
-        "1P" => Some("Creatures"),
-        "20" => Some("Destination Software / KSS"),
-        "28" => Some("Kemco Japan"),
-        "34" => Some("Konami"),
-        "38" => Some("Capcom"),
-        "41" => Some("Ubisoft"),
-        "42" => Some("Atlus"),
-        "47" => Some("Spectrum Holobyte"),
-        "51" => Some("Acclaim"),
-        "52" => Some("Activision"),
-        "53" => Some("American Sammy"),
-        "54" => Some("GameTek"),
-        "5D" => Some("Midway"),
-        "5G" => Some("Majesco"),
-        "64" => Some("LucasArts"),
-        "69" => Some("Electronic Arts"),
-        "6E" => Some("Elite Systems"),
-        "6S" => Some("TDK Mediactive"),
-        "70" => Some("Infogrames"),
-        "71" => Some("Interplay"),
-        "72" => Some("Broderbund"),
-        "75" => Some("The Sales Curve"),
-        "78" => Some("THQ"),
-        "79" => Some("Accolade"),
-        "7D" => Some("Vivendi"),
-        "8P" => Some("Sega"),
-        "99" => Some("Pack-In-Video"),
-        "9B" => Some("Tecmo"),
-        "A4" => Some("Konami"),
-        "AF" => Some("Namco"),
-        "B0" => Some("Acclaim"),
-        "B1" => Some("ASCII"),
-        "B2" => Some("Bandai"),
-        "B4" => Some("Enix"),
-        "B6" => Some("HAL Laboratory"),
-        "BB" => Some("Sunsoft"),
-        "C0" => Some("Taito"),
-        "C3" => Some("Square"),
-        "C5" => Some("Data East"),
-        "C8" => Some("Koei"),
-        "D1" => Some("Sofel"),
-        "E5" => Some("Epoch"),
-        "E7" => Some("Athena"),
-        "E9" => Some("Natsume"),
-        "EB" => Some("Atlus"),
-        _ => None,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Conversion to RomIdentification
 // ---------------------------------------------------------------------------
-
-/// Format a byte count as a human-readable size string.
-fn format_size(bytes: u64) -> String {
-    if bytes == 0 {
-        return "0".into();
-    }
-    if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
-        format!("{} MB", bytes / (1024 * 1024))
-    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
-        format!("{} KB", bytes / 1024)
-    } else {
-        format!("{} bytes", bytes)
-    }
-}
 
 /// Convert a parsed SnesHeader into a RomIdentification.
 fn to_identification(
@@ -808,7 +630,7 @@ fn to_identification(
     file_size: u64,
     computed_checksum: Option<u16>,
 ) -> RomIdentification {
-    let mut id = RomIdentification::new().with_platform("Super Nintendo Entertainment System");
+    let mut id = RomIdentification::new().with_platform(Platform::Snes);
 
     // Internal name
     if !header.title.is_empty() {
@@ -829,13 +651,13 @@ fn to_identification(
     // Maker code
     if header.developer_id == 0x33 {
         if let Some(ref maker) = header.maker_code {
-            if let Some(name) = new_maker_name(maker) {
+            if let Some(name) = crate::licensee::maker_code_name(maker) {
                 id.maker_code = Some(format!("{} ({})", maker, name));
             } else {
                 id.maker_code = Some(maker.clone());
             }
         }
-    } else if let Some(name) = old_maker_name(header.developer_id) {
+    } else if let Some(name) = crate::licensee::old_licensee_name(header.developer_id) {
         id.maker_code = Some(format!("0x{:02X} ({})", header.developer_id, name));
     } else if header.developer_id != 0 {
         id.maker_code = Some(format!("0x{:02X}", header.developer_id));
@@ -895,12 +717,12 @@ fn to_identification(
 
     if header.rom_size > 0 {
         id.extra
-            .insert("rom_size".into(), format_size(header.rom_size));
+            .insert("rom_size".into(), format_bytes(header.rom_size));
     }
 
     if header.ram_size > 0 {
         id.extra
-            .insert("sram_size".into(), format_size(header.ram_size));
+            .insert("sram_size".into(), format_bytes(header.ram_size));
     }
 
     id.extra
@@ -942,7 +764,7 @@ fn to_identification(
     }
     if let Some(exp_ram) = header.expansion_ram_size {
         id.extra
-            .insert("expansion_ram".into(), format_size(exp_ram));
+            .insert("expansion_ram".into(), format_bytes(exp_ram));
     }
 
     id
@@ -989,16 +811,6 @@ impl RomAnalyzer for SnesAnalyzer {
         };
 
         Ok(to_identification(&header, file_size, computed_checksum))
-    }
-
-    fn analyze_with_progress(
-        &self,
-        reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
-        _progress_tx: Sender<AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError> {
-        // SNES ROMs are small enough that progress reporting is unnecessary.
-        self.analyze(reader, options)
     }
 
     fn platform(&self) -> Platform {

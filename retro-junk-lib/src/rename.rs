@@ -9,6 +9,9 @@ use retro_junk_dat::matcher::{DatIndex, MatchMethod, MatchResult, SerialLookupRe
 
 use crate::hasher;
 
+/// File extensions that represent disc-image entry points for M3U playlists.
+const M3U_ENTRY_POINT_EXTENSIONS: &[&str] = &["cue", "chd", "iso", "gdi", "cso", "pbp"];
+
 /// A planned rename action.
 #[derive(Debug, Clone)]
 pub struct RenameAction {
@@ -448,6 +451,26 @@ pub struct RenamePlan {
     pub broken_m3u_files: Vec<PathBuf>,
 }
 
+impl RenamePlan {
+    /// Total number of file rename operations (single files + M3U disc renames).
+    pub fn total_renames(&self) -> usize {
+        self.renames.len() + self.m3u_jobs.iter().map(|j| j.discs.len()).sum::<usize>()
+    }
+
+    /// Whether this plan has any work to do.
+    pub fn has_actions(&self) -> bool {
+        !self.renames.is_empty() || !self.m3u_jobs.is_empty()
+    }
+
+    /// Whether this plan has any problems (conflicts, unmatched, broken refs).
+    pub fn has_problems(&self) -> bool {
+        !self.conflicts.is_empty()
+            || !self.unmatched.is_empty()
+            || !self.broken_cue_files.is_empty()
+            || !self.broken_m3u_files.is_empty()
+    }
+}
+
 use retro_junk_core::disc::{derive_base_game_name, extract_disc_number};
 
 /// Returns true for file extensions that are M3U entry points (playable disc images).
@@ -458,7 +481,7 @@ pub fn is_m3u_entry_point(filename: &str) -> bool {
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
-    matches!(ext.as_str(), "cue" | "chd" | "iso" | "gdi" | "cso" | "pbp")
+    M3U_ENTRY_POINT_EXTENSIONS.iter().any(|&e| e == ext)
 }
 
 /// Plan renames for a single console folder.
@@ -1016,12 +1039,170 @@ pub fn format_match_method(method: &MatchMethod) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// CUE file reference fixing
+// Unified reference-file fixing (CUE sheets and M3U playlists)
 // ---------------------------------------------------------------------------
+//
+// CUE and M3U files both contain references to other files that can break
+// when those files are renamed. The detection, directory-level fixing, single-
+// file fixing, and filename-matching logic is structurally identical for both
+// formats. The `RefFileFormat` trait captures the differences so all four
+// layers share a single implementation.
 
-/// Detect CUE files with broken FILE references in the directories containing
-/// the given files. Returns paths to .cue files with at least one broken reference.
-fn detect_broken_cue_files(files: &[PathBuf]) -> Vec<PathBuf> {
+/// Describes how a reference-file format (CUE or M3U) works, so the generic
+/// fix/detect code can handle both without duplication.
+trait RefFileFormat {
+    /// File extension for the reference file itself (e.g., "cue" or "m3u").
+    fn extension(&self) -> &'static str;
+
+    /// Human-readable label for error messages (e.g., "CUE" or "M3U").
+    fn label(&self) -> &'static str;
+
+    /// Extract referenced filenames from the file content, paired with the
+    /// original line. Returns `None` for lines that are not references (e.g.,
+    /// CUE TRACK/INDEX lines, M3U comments/blanks).
+    fn extract_reference<'a>(&self, line: &'a str) -> Option<RefLine<'a>>;
+
+    /// Reconstruct a line with the corrected filename.
+    fn rebuild_line(&self, original_line: &str, new_filename: &str, ref_line: &RefLine) -> String;
+
+    /// Serialize lines back to file content after fixing.
+    fn serialize(&self, original_content: &str, lines: &[String]) -> String;
+
+    /// Find the correct replacement for a broken reference.
+    fn find_correction(
+        &self,
+        old_ref: &str,
+        ref_file_path: &Path,
+        dir: &Path,
+        rename_map: &HashMap<String, String>,
+    ) -> Option<String>;
+}
+
+/// A parsed reference extracted from a single line.
+struct RefLine<'a> {
+    /// The referenced filename (e.g., "game.bin" from a CUE FILE directive).
+    filename: String,
+    /// Opaque format-specific data needed by `rebuild_line` (e.g., CUE file type).
+    extra: &'a str,
+}
+
+// --- CUE format implementation ---
+
+struct CueFormat;
+
+impl RefFileFormat for CueFormat {
+    fn extension(&self) -> &'static str {
+        "cue"
+    }
+
+    fn label(&self) -> &'static str {
+        "CUE"
+    }
+
+    fn extract_reference<'a>(&self, line: &'a str) -> Option<RefLine<'a>> {
+        let trimmed = line.trim();
+        if !trimmed.to_uppercase().starts_with("FILE ") {
+            return None;
+        }
+        // We need to parse the FILE directive. Since RefLine borrows from the
+        // original line for `extra`, we store nothing there and reconstruct.
+        // Actually, we need the file_type portion. We'll use a small trick:
+        // store the trimmed suffix offset so rebuild_line can grab it.
+        let (filename, _file_type) = parse_cue_file_directive(trimmed)?;
+        Some(RefLine {
+            filename,
+            extra: trimmed, // pass trimmed line so rebuild_line can re-parse
+        })
+    }
+
+    fn rebuild_line(&self, original_line: &str, new_filename: &str, ref_line: &RefLine) -> String {
+        // Re-parse the file type from the stored trimmed line
+        let file_type = parse_cue_file_directive(ref_line.extra)
+            .map(|(_, ft)| ft)
+            .unwrap_or_default();
+        let trimmed = original_line.trim();
+        let indent = &original_line[..original_line.len() - trimmed.len()];
+        format!("{}FILE \"{}\" {}", indent, new_filename, file_type)
+    }
+
+    fn serialize(&self, original_content: &str, lines: &[String]) -> String {
+        let mut out = lines.join("\n");
+        out.push('\n');
+        // Preserve original: don't add trailing newline if original didn't have one
+        if !original_content.ends_with('\n') && out.ends_with('\n') {
+            out.pop();
+        }
+        out
+    }
+
+    fn find_correction(
+        &self,
+        old_ref: &str,
+        ref_file_path: &Path,
+        dir: &Path,
+        rename_map: &HashMap<String, String>,
+    ) -> Option<String> {
+        let cue_stem = ref_file_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        find_correct_bin_filename(old_ref, cue_stem, dir, rename_map)
+    }
+}
+
+// --- M3U format implementation ---
+
+struct M3uFormat;
+
+impl RefFileFormat for M3uFormat {
+    fn extension(&self) -> &'static str {
+        "m3u"
+    }
+
+    fn label(&self) -> &'static str {
+        "M3U"
+    }
+
+    fn extract_reference<'a>(&self, line: &'a str) -> Option<RefLine<'a>> {
+        let entry = line.trim();
+        if entry.is_empty() || entry.starts_with('#') {
+            return None;
+        }
+        Some(RefLine {
+            filename: entry.to_string(),
+            extra: "",
+        })
+    }
+
+    fn rebuild_line(
+        &self,
+        _original_line: &str,
+        new_filename: &str,
+        _ref_line: &RefLine,
+    ) -> String {
+        new_filename.to_string()
+    }
+
+    fn serialize(&self, _original_content: &str, lines: &[String]) -> String {
+        lines.join("\n") + "\n"
+    }
+
+    fn find_correction(
+        &self,
+        old_ref: &str,
+        _ref_file_path: &Path,
+        dir: &Path,
+        rename_map: &HashMap<String, String>,
+    ) -> Option<String> {
+        find_correct_m3u_entry(old_ref, dir, rename_map)
+    }
+}
+
+// --- Generic operations on any RefFileFormat ---
+
+/// Detect reference files with broken entries in directories containing
+/// the given files. Returns paths to reference files with at least one broken entry.
+fn detect_broken_ref_files(fmt: &dyn RefFileFormat, files: &[PathBuf]) -> Vec<PathBuf> {
     let mut broken = Vec::new();
     let mut checked_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
@@ -1045,7 +1226,7 @@ fn detect_broken_cue_files(files: &[PathBuf]) -> Vec<PathBuf> {
                 continue;
             }
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if !ext.eq_ignore_ascii_case("cue") {
+            if !ext.eq_ignore_ascii_case(fmt.extension()) {
                 continue;
             }
 
@@ -1054,7 +1235,15 @@ fn detect_broken_cue_files(files: &[PathBuf]) -> Vec<PathBuf> {
                 Err(_) => continue,
             };
 
-            if has_broken_file_references(&content, &dir) {
+            let has_broken = content.lines().any(|line| {
+                if let Some(ref_line) = fmt.extract_reference(line) {
+                    !dir.join(&ref_line.filename).exists()
+                } else {
+                    false
+                }
+            });
+
+            if has_broken {
                 broken.push(path);
             }
         }
@@ -1063,22 +1252,137 @@ fn detect_broken_cue_files(files: &[PathBuf]) -> Vec<PathBuf> {
     broken
 }
 
-/// Check if a CUE sheet has any FILE references that don't resolve to existing files.
-fn has_broken_file_references(content: &str, dir: &Path) -> bool {
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if !trimmed.to_uppercase().starts_with("FILE ") {
+/// Fix broken references in all matching files in a directory.
+///
+/// Returns the number of reference files that were updated.
+fn fix_references_in_dir(
+    fmt: &dyn RefFileFormat,
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+    errors: &mut Vec<String>,
+) -> usize {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    let mut updated = 0;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !ext.eq_ignore_ascii_case(fmt.extension()) {
             continue;
         }
 
-        if let Some((filename, _)) = parse_cue_file_directive(trimmed)
-            && !dir.join(&filename).exists()
-        {
-            return true;
+        match fix_single_ref_file(fmt, &path, dir, rename_map) {
+            Ok(true) => updated += 1,
+            Ok(false) => {}
+            Err(e) => errors.push(format!(
+                "{} fix error for {}: {}",
+                fmt.label(),
+                path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                e
+            )),
         }
     }
-    false
+
+    updated
 }
+
+/// Fix broken references in a single reference file.
+///
+/// Returns Ok(true) if the file was modified, Ok(false) if no changes were needed.
+fn fix_single_ref_file(
+    fmt: &dyn RefFileFormat,
+    ref_path: &Path,
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+) -> Result<bool, String> {
+    let content = fs::read_to_string(ref_path).map_err(|e| format!("read error: {}", e))?;
+
+    let mut output_lines = Vec::new();
+    let mut changed = false;
+    let mut unfixed = Vec::new();
+
+    for line in content.lines() {
+        if let Some(ref_line) = fmt.extract_reference(line) {
+            if !dir.join(&ref_line.filename).exists() {
+                // Reference is broken — try to find the correct filename
+                if let Some(new_name) =
+                    fmt.find_correction(&ref_line.filename, ref_path, dir, rename_map)
+                {
+                    output_lines.push(fmt.rebuild_line(line, &new_name, &ref_line));
+                    changed = true;
+                    continue;
+                } else {
+                    unfixed.push(ref_line.filename.clone());
+                }
+            }
+        }
+
+        output_lines.push(line.to_string());
+    }
+
+    if !unfixed.is_empty() {
+        let ref_kind = if fmt.extension() == "cue" {
+            "FILE references"
+        } else {
+            "entries"
+        };
+        return Err(format!(
+            "could not resolve {}: {}",
+            ref_kind,
+            unfixed
+                .iter()
+                .map(|f| format!("\"{}\"", f))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    if changed {
+        let new_content = fmt.serialize(&content, &output_lines);
+        fs::write(ref_path, &new_content).map_err(|e| format!("write error: {}", e))?;
+    }
+
+    Ok(changed)
+}
+
+// --- Public API wrappers (unchanged signatures) ---
+
+/// Detect CUE files with broken FILE references.
+fn detect_broken_cue_files(files: &[PathBuf]) -> Vec<PathBuf> {
+    detect_broken_ref_files(&CueFormat, files)
+}
+
+/// Detect M3U playlist files with broken entries.
+fn detect_broken_m3u_playlists(files: &[PathBuf]) -> Vec<PathBuf> {
+    detect_broken_ref_files(&M3uFormat, files)
+}
+
+/// Fix CUE file references in a directory. Returns the number of .cue files updated.
+fn fix_cue_references_in_dir(
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+    errors: &mut Vec<String>,
+) -> usize {
+    fix_references_in_dir(&CueFormat, dir, rename_map, errors)
+}
+
+/// Fix M3U playlist entries in a directory. Returns the number of .m3u files updated.
+fn fix_m3u_references_in_dir(
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+    errors: &mut Vec<String>,
+) -> usize {
+    fix_references_in_dir(&M3uFormat, dir, rename_map, errors)
+}
+
+// --- CUE-specific helpers (not duplicated, used only by CueFormat) ---
 
 /// Parse a CUE FILE directive, returning (filename, file_type).
 ///
@@ -1086,7 +1390,6 @@ fn has_broken_file_references(content: &str, dir: &Path) -> bool {
 ///   FILE "filename.bin" BINARY
 ///   File filename.bin BINARY
 fn parse_cue_file_directive(line: &str) -> Option<(String, String)> {
-    // Case-insensitive: find "FILE " prefix
     let upper = line.to_uppercase();
     if !upper.starts_with("FILE ") {
         return None;
@@ -1106,121 +1409,13 @@ fn parse_cue_file_directive(line: &str) -> Option<(String, String)> {
     }
 }
 
-/// Fix CUE file references in a directory.
-///
-/// For each .cue file, checks if FILE references resolve. Broken references
-/// are fixed using the rename map or filesystem heuristics (stem matching,
-/// track number matching).
-///
-/// Returns the number of .cue files that were updated.
-fn fix_cue_references_in_dir(
-    dir: &Path,
-    rename_map: &HashMap<String, String>,
-    errors: &mut Vec<String>,
-) -> usize {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return 0,
-    };
-
-    let mut updated = 0;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !ext.eq_ignore_ascii_case("cue") {
-            continue;
-        }
-
-        match fix_single_cue_file(&path, dir, rename_map) {
-            Ok(true) => updated += 1,
-            Ok(false) => {} // no changes needed
-            Err(e) => errors.push(format!(
-                "CUE fix error for {}: {}",
-                path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
-                e
-            )),
-        }
-    }
-
-    updated
-}
-
-/// Fix FILE references in a single CUE file.
-///
-/// Returns Ok(true) if the file was modified, Ok(false) if no changes were needed.
-fn fix_single_cue_file(
-    cue_path: &Path,
-    dir: &Path,
-    rename_map: &HashMap<String, String>,
-) -> Result<bool, String> {
-    let content = fs::read_to_string(cue_path).map_err(|e| format!("read error: {}", e))?;
-
-    let cue_stem = cue_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-
-    let mut new_content = String::with_capacity(content.len());
-    let mut changed = false;
-
-    let mut unfixed = Vec::new();
-
-    for line in content.lines() {
-        let trimmed = line.trim();
-
-        if trimmed.to_uppercase().starts_with("FILE ")
-            && let Some((old_filename, file_type)) = parse_cue_file_directive(trimmed)
-            && !dir.join(&old_filename).exists()
-        {
-            // Reference is broken — try to find the correct filename
-            if let Some(new_name) =
-                find_correct_bin_filename(&old_filename, cue_stem, dir, rename_map)
-            {
-                let indent = &line[..line.len() - trimmed.len()];
-                new_content.push_str(&format!("{}FILE \"{}\" {}", indent, new_name, file_type));
-                new_content.push('\n');
-                changed = true;
-                continue;
-            } else {
-                unfixed.push(old_filename);
-            }
-        }
-
-        new_content.push_str(line);
-        new_content.push('\n');
-    }
-
-    if !unfixed.is_empty() {
-        return Err(format!(
-            "could not resolve FILE references: {}",
-            unfixed
-                .iter()
-                .map(|f| format!("\"{}\"", f))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-
-    if changed {
-        // Preserve original: don't add trailing newline if original didn't have one
-        if !content.ends_with('\n') && new_content.ends_with('\n') {
-            new_content.pop();
-        }
-        fs::write(cue_path, &new_content).map_err(|e| format!("write error: {}", e))?;
-    }
-
-    Ok(changed)
-}
-
 /// Try to find the correct filename for a broken CUE FILE reference.
 ///
 /// Strategies (in order):
 /// 1. Check the rename map (covers newly-renamed files)
 /// 2. CUE stem + referenced extension (covers single-bin games)
 /// 3. Track number matching (covers multi-bin/track games)
-/// 4. Disc ordinal matching (e.g., "dragoon1.bin" → "(Disc 1).bin",
-///    "FF8(disc2).iso" → "(Disc 2).iso")
+/// 4. Disc ordinal matching (e.g., "dragoon1.bin" -> "(Disc 1).bin")
 /// 5. Sole candidate by extension (last resort for single-bin)
 fn find_correct_bin_filename(
     old_filename: &str,
@@ -1241,34 +1436,15 @@ fn find_correct_bin_filename(
         .unwrap_or("bin");
 
     // Strategy 2: CUE stem + referenced file extension
-    // e.g., "Game.cue" references "OldName.bin" → try "Game.bin"
     let stem_candidate = format!("{}.{}", cue_stem, ref_ext);
     if dir.join(&stem_candidate).exists() {
         return Some(stem_candidate);
     }
 
     // Collect matching-extension files in the directory (used by strategies 3-5)
-    let bin_files: Vec<String> = fs::read_dir(dir)
-        .ok()
-        .into_iter()
-        .flat_map(|entries| entries.flatten())
-        .filter_map(|entry| {
-            let path = entry.path();
-            if !path.is_file() {
-                return None;
-            }
-            let ext = path.extension().and_then(|e| e.to_str())?;
-            if !ext.eq_ignore_ascii_case(ref_ext) {
-                return None;
-            }
-            path.file_name()
-                .and_then(|n| n.to_str())
-                .map(|s| s.to_string())
-        })
-        .collect();
+    let bin_files = collect_files_by_ext(dir, ref_ext);
 
     // Strategy 3: Match by "(Track N)" pattern
-    // e.g., old "Game (Track 2).bin" → find file with "(Track 2)" in directory
     if let Some(track_num) = extract_track_number(old_filename) {
         for name in &bin_files {
             if extract_track_number(name) == Some(track_num) {
@@ -1278,37 +1454,144 @@ fn find_correct_bin_filename(
     }
 
     // Strategy 4: Disc ordinal matching
-    // Extract a disc/ordinal number from the old filename using various patterns:
-    //   "(Disc 1)", "(disc1)", "_disc1", "Disc1", or trailing number like "dragoon1"
-    // Then match against canonical "(Disc N)" in actual files.
-    if let Some(old_num) = extract_ordinal_from_filename(old_filename) {
-        for name in &bin_files {
-            if extract_disc_number(name) == Some(old_num) {
-                return Some(name.clone());
-            }
-        }
-        // Fallback for ambiguous trailing numbers (e.g., "dq71" = DQ7 disc 1):
-        // if the full number didn't match any disc, try just the last digit.
-        if old_num >= 10 {
-            let last_digit = old_num % 10;
-            if last_digit > 0 {
-                for name in &bin_files {
-                    if extract_disc_number(name) == Some(last_digit) {
-                        return Some(name.clone());
-                    }
-                }
-            }
-        }
+    if let Some(new_name) = match_by_disc_ordinal(old_filename, &bin_files) {
+        return Some(new_name);
     }
 
-    // Strategy 5: If there's exactly one file with the matching extension, use it
-    // SAFETY: len == 1 guarantees next() returns Some
+    // Strategy 5: Sole candidate by extension
     if bin_files.len() == 1 {
         return Some(bin_files.into_iter().next().unwrap());
     }
 
     None
 }
+
+// --- M3U-specific helpers (not duplicated, used only by M3uFormat) ---
+
+/// Try to find the correct file for a broken M3U playlist entry.
+///
+/// Strategies:
+/// 1. Check the rename map
+/// 2. Same stem, preferred entry-point extension (.cue > .chd > .iso)
+/// 3. Disc ordinal matching against entry-point files
+/// 4. Sole candidate with an entry-point extension
+fn find_correct_m3u_entry(
+    old_entry: &str,
+    dir: &Path,
+    rename_map: &HashMap<String, String>,
+) -> Option<String> {
+    // Strategy 1: Check rename map
+    if let Some(new_name) = rename_map.get(old_entry)
+        && dir.join(new_name).exists()
+    {
+        return Some(new_name.clone());
+    }
+
+    let old_stem = Path::new(old_entry)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+
+    // Strategy 2: Same stem, try preferred entry-point extensions
+    for ext in M3U_ENTRY_POINT_EXTENSIONS {
+        let candidate = format!("{}.{}", old_stem, ext);
+        if dir.join(&candidate).exists() {
+            return Some(candidate);
+        }
+    }
+
+    // Collect entry-point files for strategies 3-4
+    let entry_point_files = collect_entry_point_files(dir);
+
+    // Strategy 3: Disc ordinal matching against entry-point files
+    if let Some(new_name) = match_by_disc_ordinal(old_entry, &entry_point_files) {
+        return Some(new_name);
+    }
+
+    // Strategy 4: Sole candidate with an entry-point extension
+    if entry_point_files.len() == 1 {
+        return Some(entry_point_files.into_iter().next().unwrap());
+    }
+
+    None
+}
+
+// --- Shared helpers used by both CUE and M3U filename matching ---
+
+/// Collect filenames in `dir` that match a specific extension (case-insensitive).
+fn collect_files_by_ext(dir: &Path, target_ext: &str) -> Vec<String> {
+    fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            let ext = path.extension().and_then(|e| e.to_str())?;
+            if !ext.eq_ignore_ascii_case(target_ext) {
+                return None;
+            }
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .map(|s| s.to_string())
+        })
+        .collect()
+}
+
+/// Collect entry-point filenames (cue/chd/iso/gdi/cso/pbp) in a directory.
+fn collect_entry_point_files(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.flatten())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() {
+                return None;
+            }
+            let name = path.file_name()?.to_str()?;
+            if is_m3u_entry_point(name) {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Match a broken reference by disc ordinal number against a list of candidate files.
+///
+/// Extracts a disc/ordinal number from the old reference, then looks for a file
+/// with a matching canonical "(Disc N)" in the candidates. Falls back to last-digit
+/// matching for ambiguous trailing numbers (e.g., "dq71" = DQ7 disc 1).
+fn match_by_disc_ordinal(old_ref: &str, candidates: &[String]) -> Option<String> {
+    let old_num = extract_ordinal_from_filename(old_ref)?;
+
+    for name in candidates {
+        if extract_disc_number(name) == Some(old_num) {
+            return Some(name.clone());
+        }
+    }
+
+    // Fallback for ambiguous trailing numbers (e.g., "dq71" = DQ7 disc 1):
+    // if the full number didn't match any disc, try just the last digit.
+    if old_num >= 10 {
+        let last_digit = old_num % 10;
+        if last_digit > 0 {
+            for name in candidates {
+                if extract_disc_number(name) == Some(last_digit) {
+                    return Some(name.clone());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+// --- Shared utility functions ---
 
 /// Extract a track number from a filename like "Game (Track 2).bin".
 fn extract_track_number(filename: &str) -> Option<u32> {
@@ -1322,9 +1605,9 @@ fn extract_track_number(filename: &str) -> Option<u32> {
 /// Extract a disc/ordinal number from a filename using various common patterns.
 ///
 /// Handles (in priority order):
-///   - "(Disc N)" — canonical Redump format
-///   - "disc" followed by digits — e.g., "(disc1)", "_disc2", "Disc3"
-///   - Trailing digits on the stem — e.g., "dragoon1", "dq71"
+///   - "(Disc N)" -- canonical Redump format
+///   - "disc" followed by digits -- e.g., "(disc1)", "_disc2", "Disc3"
+///   - Trailing digits on the stem -- e.g., "dragoon1", "dq71"
 fn extract_ordinal_from_filename(filename: &str) -> Option<u32> {
     // Try canonical "(Disc N)" first
     if let Some(n) = extract_disc_number(filename) {
@@ -1352,7 +1635,7 @@ fn extract_ordinal_from_filename(filename: &str) -> Option<u32> {
     extract_trailing_number(stem)
 }
 
-/// Extract trailing digits from a filename stem: "dragoon1" → 1, "disc02" → 2.
+/// Extract trailing digits from a filename stem: "dragoon1" -> 1, "disc02" -> 2.
 fn extract_trailing_number(stem: &str) -> Option<u32> {
     let digits: String = stem
         .chars()
@@ -1369,53 +1652,7 @@ fn extract_trailing_number(stem: &str) -> Option<u32> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// M3U playlist reference fixing
-// ---------------------------------------------------------------------------
-
-/// Detect M3U playlist files with broken entries in directories containing
-/// the given files. Returns paths to .m3u files with at least one broken entry.
-fn detect_broken_m3u_playlists(files: &[PathBuf]) -> Vec<PathBuf> {
-    let mut broken = Vec::new();
-    let mut checked_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-
-    for file in files {
-        let dir = match file.parent() {
-            Some(d) => d.to_path_buf(),
-            None => continue,
-        };
-        if !checked_dirs.insert(dir.clone()) {
-            continue;
-        }
-
-        let entries = match fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if !ext.eq_ignore_ascii_case("m3u") {
-                continue;
-            }
-
-            let content = match fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
-            if has_broken_m3u_entries(&content, &dir) {
-                broken.push(path);
-            }
-        }
-    }
-
-    broken
-}
+// --- M3U misnamed detection (unique to M3U, no CUE equivalent) ---
 
 /// Detect if a .m3u folder contains a playlist file that doesn't match the expected name.
 ///
@@ -1447,194 +1684,4 @@ fn detect_misnamed_m3u(dir: &Path, expected_name: &str) -> Option<(PathBuf, Path
     } else {
         None
     }
-}
-
-/// Check if an M3U playlist has any entries that don't resolve to existing files.
-fn has_broken_m3u_entries(content: &str, dir: &Path) -> bool {
-    for line in content.lines() {
-        let entry = line.trim();
-        if entry.is_empty() || entry.starts_with('#') {
-            continue;
-        }
-        if !dir.join(entry).exists() {
-            return true;
-        }
-    }
-    false
-}
-
-/// Fix broken entries in M3U playlist files in a directory.
-///
-/// Returns the number of .m3u files that were updated.
-fn fix_m3u_references_in_dir(
-    dir: &Path,
-    rename_map: &HashMap<String, String>,
-    errors: &mut Vec<String>,
-) -> usize {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return 0,
-    };
-
-    let mut updated = 0;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if !ext.eq_ignore_ascii_case("m3u") {
-            continue;
-        }
-
-        match fix_single_m3u_file(&path, dir, rename_map) {
-            Ok(true) => updated += 1,
-            Ok(false) => {}
-            Err(e) => errors.push(format!(
-                "M3U fix error for {}: {}",
-                path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
-                e
-            )),
-        }
-    }
-
-    updated
-}
-
-/// Fix broken entries in a single M3U playlist file.
-///
-/// Returns Ok(true) if the file was modified, Ok(false) if no changes were needed.
-fn fix_single_m3u_file(
-    m3u_path: &Path,
-    dir: &Path,
-    rename_map: &HashMap<String, String>,
-) -> Result<bool, String> {
-    let content = fs::read_to_string(m3u_path).map_err(|e| format!("read error: {}", e))?;
-
-    let mut new_lines = Vec::new();
-    let mut changed = false;
-    let mut unfixed = Vec::new();
-
-    for line in content.lines() {
-        let entry = line.trim();
-        if entry.is_empty() || entry.starts_with('#') {
-            new_lines.push(line.to_string());
-            continue;
-        }
-
-        if dir.join(entry).exists() {
-            new_lines.push(line.to_string());
-            continue;
-        }
-
-        // Entry is broken — try to find the correct file
-        if let Some(new_entry) = find_correct_m3u_entry(entry, dir, rename_map) {
-            new_lines.push(new_entry);
-            changed = true;
-        } else {
-            unfixed.push(entry.to_string());
-            new_lines.push(line.to_string());
-        }
-    }
-
-    if !unfixed.is_empty() {
-        return Err(format!(
-            "could not resolve entries: {}",
-            unfixed
-                .iter()
-                .map(|f| format!("\"{}\"", f))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-
-    if changed {
-        let new_content = new_lines.join("\n") + "\n";
-        fs::write(m3u_path, new_content).map_err(|e| format!("write error: {}", e))?;
-    }
-
-    Ok(changed)
-}
-
-/// Try to find the correct file for a broken M3U playlist entry.
-///
-/// Strategies:
-/// 1. Check the rename map
-/// 2. Same stem, preferred entry-point extension (.cue > .chd > .iso)
-/// 3. Disc ordinal matching (same as CUE fixing)
-/// 4. Sole candidate with an entry-point extension
-fn find_correct_m3u_entry(
-    old_entry: &str,
-    dir: &Path,
-    rename_map: &HashMap<String, String>,
-) -> Option<String> {
-    // Strategy 1: Check rename map
-    if let Some(new_name) = rename_map.get(old_entry)
-        && dir.join(new_name).exists()
-    {
-        return Some(new_name.clone());
-    }
-
-    let old_stem = Path::new(old_entry)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("");
-
-    // Strategy 2: Same stem, try preferred entry-point extensions
-    // M3U entries should point to entry-point formats, not raw data files
-    for ext in &["cue", "chd", "iso", "gdi", "cso", "pbp"] {
-        let candidate = format!("{}.{}", old_stem, ext);
-        if dir.join(&candidate).exists() {
-            return Some(candidate);
-        }
-    }
-
-    // Strategy 3: Disc ordinal matching
-    if let Some(old_num) = extract_ordinal_from_filename(old_entry) {
-        // Find entry-point files with matching disc number
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_file() {
-                    continue;
-                }
-                let name = match path.file_name().and_then(|n| n.to_str()) {
-                    Some(n) => n,
-                    None => continue,
-                };
-                if !is_m3u_entry_point(name) {
-                    continue;
-                }
-                if extract_disc_number(name) == Some(old_num) {
-                    return Some(name.to_string());
-                }
-            }
-        }
-    }
-
-    // Strategy 4: If there's exactly one entry-point file, use it
-    if let Ok(entries) = fs::read_dir(dir) {
-        let candidates: Vec<String> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                if !path.is_file() {
-                    return None;
-                }
-                let name = path.file_name()?.to_str()?;
-                if is_m3u_entry_point(name) {
-                    Some(name.to_string())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        // SAFETY: len == 1 guarantees next() returns Some
-        if candidates.len() == 1 {
-            return Some(candidates.into_iter().next().unwrap());
-        }
-    }
-
-    None
 }

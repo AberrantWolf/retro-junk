@@ -478,11 +478,7 @@ fn test_multi_track_bin_hashes_data_only() {
     // Now run the analyzer's compute_container_hashes
     let mut cursor = Cursor::new(bin);
     let analyzer = crate::ps1::Ps1Analyzer;
-    let algorithms = retro_junk_core::HashAlgorithms {
-        crc32: true,
-        sha1: true,
-        md5: true,
-    };
+    let algorithms = retro_junk_core::HashAlgorithms::All;
     use retro_junk_core::RomAnalyzer;
     let result = analyzer
         .compute_container_hashes(&mut cursor, algorithms)
@@ -513,11 +509,7 @@ fn test_single_track_bin_returns_none() {
     let bin = make_multi_track_bin(20, 0);
     let mut cursor = Cursor::new(bin);
     let analyzer = crate::ps1::Ps1Analyzer;
-    let algorithms = retro_junk_core::HashAlgorithms {
-        crc32: true,
-        sha1: true,
-        md5: true,
-    };
+    let algorithms = retro_junk_core::HashAlgorithms::All;
     use retro_junk_core::RomAnalyzer;
     let result = analyzer
         .compute_container_hashes(&mut cursor, algorithms)

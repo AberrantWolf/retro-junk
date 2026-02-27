@@ -6,11 +6,11 @@
 
 use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
-use std::sync::mpsc::Sender;
 
+use retro_junk_core::util::read_ascii_fixed as read_ascii;
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum,
-    Platform, Region, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, Platform, Region,
+    RomAnalyzer, RomIdentification,
 };
 
 /// Magic bytes at offset 0x0100 — the system type field always starts with "SEGA".
@@ -54,20 +54,6 @@ pub struct GenesisHeader {
 }
 
 /// Read a fixed-size ASCII string from a buffer slice, trimming trailing spaces and nulls.
-fn read_ascii(buf: &[u8]) -> String {
-    let s: String = buf
-        .iter()
-        .map(|&b| {
-            if (0x20..0x7F).contains(&b) {
-                b as char
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    s.trim().to_string()
-}
-
 /// Parse the Genesis header from a 256-byte buffer (offsets 0x0100–0x01FF).
 fn parse_header(buf: &[u8; 256]) -> GenesisHeader {
     let system_type = read_ascii(&buf[0x00..0x10]);
@@ -208,7 +194,7 @@ impl RomAnalyzer for GenesisAnalyzer {
         let header = parse_header(&header_buf);
 
         // Build identification
-        let mut id = RomIdentification::new().with_platform("Sega Genesis / Mega Drive");
+        let mut id = RomIdentification::new().with_platform(Platform::Genesis);
         id.file_size = Some(file_size);
 
         if !header.serial_number.is_empty() {
@@ -298,15 +284,6 @@ impl RomAnalyzer for GenesisAnalyzer {
         }
 
         Ok(id)
-    }
-
-    fn analyze_with_progress(
-        &self,
-        reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
-        _progress_tx: Sender<AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError> {
-        self.analyze(reader, options)
     }
 
     fn platform(&self) -> Platform {

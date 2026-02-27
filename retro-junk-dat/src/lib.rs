@@ -5,6 +5,7 @@ pub mod gdb;
 pub mod gdb_cache;
 pub mod gdb_index;
 pub mod matcher;
+pub(crate) mod util;
 
 pub use cache::{CacheEntry, CachedDat};
 pub use dat::{DatFile, DatGame, DatRom};

@@ -8,11 +8,10 @@
 
 use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
-use std::sync::mpsc::Sender;
 
+use retro_junk_core::util::format_bytes;
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, Region, RomAnalyzer,
-    RomIdentification,
+    AnalysisError, AnalysisOptions, Platform, Region, RomAnalyzer, RomIdentification,
 };
 
 /// The 4-byte magic at the start of every iNES / NES 2.0 file.
@@ -698,7 +697,7 @@ fn fds_expected_size(format: NesFormat, side_count: usize) -> u64 {
 
 /// Convert parsed NES ROM info into a generic `RomIdentification`.
 fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
-    let mut id = RomIdentification::new().with_platform("Nintendo Entertainment System");
+    let mut id = RomIdentification::new().with_platform(Platform::Nes);
     id.file_size = Some(file_size);
 
     match info {
@@ -716,11 +715,11 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
             id.extra
                 .insert("mirroring".into(), hdr.mirroring.name().into());
             id.extra
-                .insert("prg_rom_size".into(), format_size(hdr.prg_rom_size));
+                .insert("prg_rom_size".into(), format_bytes(hdr.prg_rom_size as u64));
             id.extra.insert(
                 "chr_rom_size".into(),
                 if hdr.chr_rom_size > 0 {
-                    format_size(hdr.chr_rom_size)
+                    format_bytes(hdr.chr_rom_size as u64)
                 } else {
                     "CHR RAM".into()
                 },
@@ -743,19 +742,23 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
             if hdr.format == NesFormat::Nes2 {
                 if hdr.prg_ram_size > 0 {
                     id.extra
-                        .insert("prg_ram_size".into(), format_size(hdr.prg_ram_size));
+                        .insert("prg_ram_size".into(), format_bytes(hdr.prg_ram_size as u64));
                 }
                 if hdr.prg_nvram_size > 0 {
-                    id.extra
-                        .insert("prg_nvram_size".into(), format_size(hdr.prg_nvram_size));
+                    id.extra.insert(
+                        "prg_nvram_size".into(),
+                        format_bytes(hdr.prg_nvram_size as u64),
+                    );
                 }
                 if hdr.chr_ram_size > 0 {
                     id.extra
-                        .insert("chr_ram_size".into(), format_size(hdr.chr_ram_size));
+                        .insert("chr_ram_size".into(), format_bytes(hdr.chr_ram_size as u64));
                 }
                 if hdr.chr_nvram_size > 0 {
-                    id.extra
-                        .insert("chr_nvram_size".into(), format_size(hdr.chr_nvram_size));
+                    id.extra.insert(
+                        "chr_nvram_size".into(),
+                        format_bytes(hdr.chr_nvram_size as u64),
+                    );
                 }
                 if hdr.expansion_device != 0 {
                     let dev = if let Some(name) = expansion_device_name(hdr.expansion_device) {
@@ -778,7 +781,9 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
             disk_count,
             sides,
         } => {
-            id.platform = Some("Famicom Disk System".into());
+            id.platform = Some(Platform::Nes);
+            id.extra
+                .insert("platform_variant".into(), "Famicom Disk System".into());
             id.extra.insert("format".into(), format.name().into());
             id.extra.insert("disk_count".into(), disk_count.to_string());
             id.extra
@@ -821,20 +826,6 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
     }
 
     id
-}
-
-/// Format a byte count as a human-readable size string.
-fn format_size(bytes: u32) -> String {
-    if bytes == 0 {
-        return "0".into();
-    }
-    if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
-        format!("{} MB", bytes / (1024 * 1024))
-    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
-        format!("{} KB", bytes / 1024)
-    } else {
-        format!("{} bytes", bytes)
-    }
 }
 
 /// Detect which NES-family format a reader contains by peeking at magic bytes.
@@ -917,16 +908,6 @@ impl RomAnalyzer for NesAnalyzer {
         };
 
         Ok(to_identification(&info, file_size))
-    }
-
-    fn analyze_with_progress(
-        &self,
-        reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
-        _progress_tx: Sender<AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError> {
-        // NES files are small enough that progress reporting is unnecessary.
-        self.analyze(reader, options)
     }
 
     fn platform(&self) -> Platform {

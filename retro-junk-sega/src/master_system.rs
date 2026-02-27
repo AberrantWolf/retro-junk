@@ -5,11 +5,8 @@
 //! - Mark III ROMs
 
 use retro_junk_core::ReadSeek;
-use std::sync::mpsc::Sender;
 
-use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
-};
+use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
 
 /// Analyzer for Sega Master System ROMs.
 #[derive(Debug, Default)]
@@ -30,15 +27,6 @@ impl RomAnalyzer for MasterSystemAnalyzer {
         Err(AnalysisError::other(
             "Master System ROM analysis not yet implemented",
         ))
-    }
-
-    fn analyze_with_progress(
-        &self,
-        reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
-        _progress_tx: Sender<AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError> {
-        self.analyze(reader, options)
     }
 
     fn platform(&self) -> Platform {

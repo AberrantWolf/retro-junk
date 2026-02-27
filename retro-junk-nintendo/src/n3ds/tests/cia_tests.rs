@@ -98,7 +98,7 @@ fn test_cia_basic_analysis() {
     let options = AnalysisOptions::default();
     let result = analyze_cia(&mut Cursor::new(cia), file_size, &options).unwrap();
 
-    assert_eq!(result.platform.as_deref(), Some("Nintendo 3DS"));
+    assert_eq!(result.platform, Some(Platform::N3ds));
     assert_eq!(result.serial_number.as_deref(), Some("CTR-N-ABCJ"));
     assert_eq!(result.maker_code.as_deref(), Some("Nintendo"));
     assert_eq!(result.extra.get("format").unwrap(), "CIA");

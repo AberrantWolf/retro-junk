@@ -49,11 +49,7 @@ fn main() {
     println!("=== Method 3: Analyzer compute_container_hashes ===");
     file.seek(SeekFrom::Start(0)).unwrap();
     let analyzer = retro_junk_sony::Ps1Analyzer;
-    let algorithms = retro_junk_core::HashAlgorithms {
-        crc32: true,
-        sha1: true,
-        md5: true,
-    };
+    let algorithms = retro_junk_core::HashAlgorithms::All;
     use retro_junk_core::RomAnalyzer;
     match analyzer.compute_container_hashes(&mut file, algorithms) {
         Ok(Some(hashes)) => {

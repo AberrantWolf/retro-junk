@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{self, Seek, Write};
 use std::path::{Path, PathBuf};
 
+use retro_junk_core::util::format_bytes;
 use retro_junk_core::{AnalysisOptions, DatSource, RomAnalyzer};
 use retro_junk_dat::cache;
 use retro_junk_dat::error::DatError;
@@ -73,6 +74,18 @@ pub struct RepairPlan {
     pub no_match: Vec<PathBuf>,
     /// Files that encountered errors during planning.
     pub errors: Vec<(PathBuf, String)>,
+}
+
+impl RepairPlan {
+    /// Whether this plan has any repair actions to perform.
+    pub fn has_actions(&self) -> bool {
+        !self.repairable.is_empty()
+    }
+
+    /// Whether this plan has any problems (no-match files, errors).
+    pub fn has_problems(&self) -> bool {
+        !self.no_match.is_empty() || !self.errors.is_empty()
+    }
 }
 
 /// Options controlling repair behavior.
@@ -562,16 +575,6 @@ fn prepend_to_file(path: &Path, fill_byte: u8, count: u64) -> io::Result<()> {
 
 fn is_power_of_two(n: u64) -> bool {
     n > 0 && (n & (n - 1)) == 0
-}
-
-fn format_bytes(bytes: u64) -> String {
-    if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
-        format!("{} MB", bytes / (1024 * 1024))
-    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
-        format!("{} KB", bytes / 1024)
-    } else {
-        format!("{} bytes", bytes)
-    }
 }
 
 #[cfg(test)]

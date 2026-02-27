@@ -13,10 +13,12 @@
 //! - Nintendo DS
 //! - Nintendo 3DS
 
+pub(crate) mod constants;
 pub mod ds;
 pub mod gameboy;
 pub mod gamecube;
 pub mod gba;
+pub(crate) mod licensee;
 pub mod n3ds;
 pub mod n64;
 pub(crate) mod n64_byteorder;

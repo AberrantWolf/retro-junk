@@ -86,7 +86,7 @@ fn test_basic_analysis() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     assert_eq!(result.internal_name.as_deref(), Some("TESTGAME"));
-    assert_eq!(result.platform.as_deref(), Some("Game Boy"));
+    assert_eq!(result.platform, Some(Platform::GameBoy));
     assert_eq!(result.version.as_deref(), Some("v0"));
     assert_eq!(result.maker_code.as_deref(), Some("Nintendo"));
     assert_eq!(result.file_size, Some(0x8000));
@@ -110,7 +110,11 @@ fn test_cgb_compatible() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform.as_deref(), Some("Game Boy Color"));
+    assert_eq!(result.platform, Some(Platform::GameBoy));
+    assert_eq!(
+        result.extra.get("platform_variant").map(|s| s.as_str()),
+        Some("Game Boy Color")
+    );
     assert_eq!(
         result.extra.get("format").unwrap(),
         "Game Boy Color (Compatible)"
@@ -127,7 +131,11 @@ fn test_cgb_exclusive() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform.as_deref(), Some("Game Boy Color"));
+    assert_eq!(result.platform, Some(Platform::GameBoy));
+    assert_eq!(
+        result.extra.get("platform_variant").map(|s| s.as_str()),
+        Some("Game Boy Color")
+    );
     assert_eq!(
         result.extra.get("format").unwrap(),
         "Game Boy Color (Exclusive)"

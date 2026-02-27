@@ -196,7 +196,7 @@ fn test_basic_analysis() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform.as_deref(), Some("Nintendo 64"));
+    assert_eq!(result.platform, Some(Platform::N64));
     assert_eq!(result.internal_name.as_deref(), Some("SUPER MARIO 64"));
     assert_eq!(result.serial_number.as_deref(), Some("NUS-NSME-USA"));
     assert_eq!(result.regions, vec![Region::Usa]);

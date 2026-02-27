@@ -892,17 +892,17 @@ pub fn hash_chd_raw_sectors(
         total_disc_sectors
     );
 
-    let mut crc = if algorithms.crc32 {
+    let mut crc = if algorithms.crc32() {
         Some(crc32fast::Hasher::new())
     } else {
         None
     };
-    let mut sha = if algorithms.sha1 {
+    let mut sha = if algorithms.sha1() {
         Some(sha1::Sha1::new())
     } else {
         None
     };
-    let mut md5_ctx = if algorithms.md5 {
+    let mut md5_ctx = if algorithms.md5() {
         Some(md5::Context::new())
     } else {
         None

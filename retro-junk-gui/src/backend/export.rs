@@ -1,11 +1,9 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
 use retro_junk_frontend::esde::EsDeFrontend;
 use retro_junk_frontend::{Frontend, ScrapedGame};
 
 use crate::app::RetroJunkApp;
-use crate::state::{self, AppMessage, BackgroundOperation, next_operation_id};
+use crate::backend::worker::spawn_background_op;
+use crate::state::{self, AppMessage};
 
 /// Generate a gamelist.xml (ES-DE format) for a console on a background thread.
 pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
@@ -39,19 +37,10 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
 
     let metadata_dir_setting = app.settings.general.metadata_dir.clone();
     let media_dir_setting = app.settings.general.media_dir.clone();
-
-    let tx = app.message_tx.clone();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let op_id = next_operation_id();
     let ctx = ctx.clone();
+    let description = format!("Exporting gamelist.xml for {}", folder_name);
 
-    app.operations.push(BackgroundOperation::new(
-        op_id,
-        format!("Exporting gamelist.xml for {}", folder_name),
-        cancel,
-    ));
-
-    std::thread::spawn(move || {
+    spawn_background_op(app, description, move |op_id, _cancel, tx| {
         let result = do_generate(
             &root_path,
             &folder_name,

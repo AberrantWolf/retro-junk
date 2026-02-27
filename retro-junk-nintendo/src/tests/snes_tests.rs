@@ -178,10 +178,7 @@ fn test_analyze_lorom() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(
-        result.platform.as_deref(),
-        Some("Super Nintendo Entertainment System")
-    );
+    assert_eq!(result.platform, Some(Platform::Snes));
     assert_eq!(result.internal_name.as_deref(), Some("TEST ROM"));
     assert_eq!(result.extra.get("mapping").unwrap(), "LoROM");
     assert_eq!(result.extra.get("format").unwrap(), "SFC (headerless)");
@@ -264,7 +261,7 @@ fn test_analyze_extended_header() {
     assert_eq!(result.serial_number.as_deref(), Some("ABCD"));
     assert_eq!(result.extra.get("game_code").unwrap(), "ABCD");
     assert_eq!(result.extra.get("maker_code_raw").unwrap(), "01");
-    assert_eq!(result.maker_code.as_deref(), Some("01 (Nintendo)"));
+    assert_eq!(result.maker_code.as_deref(), Some("01 (Nintendo R&D1)"));
 }
 
 // -- Checksum tests --
@@ -431,17 +428,6 @@ fn test_detect_mapping_with_copier() {
     .unwrap();
     assert_eq!(offset, COPIER_HEADER_SIZE + LOROM_HEADER_BASE);
     assert!(has_copier);
-}
-
-#[test]
-fn test_format_size() {
-    assert_eq!(format_size(0), "0");
-    assert_eq!(format_size(512), "512 bytes");
-    assert_eq!(format_size(1024), "1 KB");
-    assert_eq!(format_size(8192), "8 KB");
-    assert_eq!(format_size(262144), "256 KB");
-    assert_eq!(format_size(1048576), "1 MB");
-    assert_eq!(format_size(4194304), "4 MB");
 }
 
 #[test]

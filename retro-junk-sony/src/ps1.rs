@@ -8,11 +8,10 @@
 
 use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
-use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, FileHashes, HashAlgorithms, Platform,
-    RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, FileHashes, HashAlgorithms, Platform, RomAnalyzer,
+    RomIdentification,
 };
 
 use crate::ps1_disc::{self, DiscFormat};
@@ -63,7 +62,7 @@ impl Ps1Analyzer {
             )));
         }
 
-        let mut id = RomIdentification::new().with_platform("PlayStation");
+        let mut id = RomIdentification::new().with_platform(Platform::Ps1);
         id.file_size = Some(file_size);
         id.extra.insert("format".into(), format.name().into());
 
@@ -101,7 +100,7 @@ impl Ps1Analyzer {
 
         let sheet = ps1_disc::parse_cue(&cue_text)?;
 
-        let mut id = RomIdentification::new().with_platform("PlayStation");
+        let mut id = RomIdentification::new().with_platform(Platform::Ps1);
         id.file_size = Some(file_size);
         id.extra.insert("format".into(), "CUE Sheet".into());
 
@@ -185,7 +184,7 @@ impl Ps1Analyzer {
 
         let chd_info = ps1_disc::read_chd_info(reader)?;
 
-        let mut id = RomIdentification::new().with_platform("PlayStation");
+        let mut id = RomIdentification::new().with_platform(Platform::Ps1);
         id.file_size = Some(file_size);
         id.extra.insert("format".into(), "CHD".into());
         id.extra
@@ -243,15 +242,6 @@ impl RomAnalyzer for Ps1Analyzer {
             DiscFormat::Cue => self.analyze_cue(reader, options),
             DiscFormat::Chd => self.analyze_chd(reader, options),
         }
-    }
-
-    fn analyze_with_progress(
-        &self,
-        reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
-        _progress_tx: Sender<AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError> {
-        self.analyze(reader, options)
     }
 
     fn platform(&self) -> Platform {
@@ -356,17 +346,17 @@ fn hash_raw_bin_track1(
 
     reader.seek(SeekFrom::Start(0))?;
 
-    let mut crc = if algorithms.crc32 {
+    let mut crc = if algorithms.crc32() {
         Some(crc32fast::Hasher::new())
     } else {
         None
     };
-    let mut sha = if algorithms.sha1 {
+    let mut sha = if algorithms.sha1() {
         Some(sha1::Sha1::new())
     } else {
         None
     };
-    let mut md5_ctx = if algorithms.md5 {
+    let mut md5_ctx = if algorithms.md5() {
         Some(md5::Context::new())
     } else {
         None

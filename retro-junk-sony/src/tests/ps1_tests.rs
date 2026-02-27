@@ -167,7 +167,7 @@ fn test_analyze_iso_basic() {
     let analyzer = Ps1Analyzer::new();
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.platform.as_deref(), Some("PlayStation"));
+    assert_eq!(result.platform, Some(Platform::Ps1));
     assert_eq!(result.internal_name.as_deref(), Some("TEST_VOLUME"));
     assert_eq!(
         result.extra.get("format").map(|s| s.as_str()),
@@ -182,7 +182,7 @@ fn test_analyze_raw_bin_basic() {
     let analyzer = Ps1Analyzer::new();
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.platform.as_deref(), Some("PlayStation"));
+    assert_eq!(result.platform, Some(Platform::Ps1));
     assert_eq!(
         result.extra.get("format").map(|s| s.as_str()),
         Some("Raw BIN (2352)")

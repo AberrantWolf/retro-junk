@@ -5,6 +5,7 @@ pub use retro_junk_core::*;
 // Modules that still live in retro-junk-lib:
 pub mod async_util;
 pub mod context;
+pub mod display;
 pub mod hasher;
 pub mod rename;
 pub mod repair;

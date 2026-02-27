@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
 use retro_junk_core::Platform;
@@ -9,7 +8,8 @@ use retro_junk_lib::async_util::cancellable;
 use retro_junk_scraper::ScrapeError;
 
 use crate::app::RetroJunkApp;
-use crate::state::{self, AppMessage, BackgroundOperation, next_operation_id};
+use crate::backend::worker::spawn_background_op;
+use crate::state::{self, AppMessage};
 
 /// Load media files for an entry on a background thread.
 ///
@@ -167,19 +167,10 @@ pub fn rescrape_media_for_selection(
     }
 
     let media_dir_setting = app.settings.general.media_dir.clone();
-
-    let tx = app.message_tx.clone();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let op_id = next_operation_id();
     let ctx = ctx.clone();
+    let description = format!("Scraping media ({} entries)", work.len());
 
-    app.operations.push(BackgroundOperation::new(
-        op_id,
-        format!("Scraping media ({} entries)", work.len()),
-        cancel.clone(),
-    ));
-
-    std::thread::spawn(move || {
+    spawn_background_op(app, description, move |op_id, cancel, tx| {
         let rt = match tokio::runtime::Runtime::new() {
             Ok(rt) => rt,
             Err(e) => {
@@ -399,19 +390,10 @@ pub fn regenerate_miximages_for_selection(
     }
 
     let media_dir_setting = app.settings.general.media_dir.clone();
-
-    let tx = app.message_tx.clone();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let op_id = next_operation_id();
     let ctx = ctx.clone();
+    let description = format!("Re-generating miximages ({} entries)", work.len());
 
-    app.operations.push(BackgroundOperation::new(
-        op_id,
-        format!("Re-generating miximages ({} entries)", work.len()),
-        cancel.clone(),
-    ));
-
-    std::thread::spawn(move || {
+    spawn_background_op(app, description, move |op_id, cancel, tx| {
         let media_dir =
             match state::media_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
                 Some(d) => d,

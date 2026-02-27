@@ -1,4 +1,5 @@
 use super::*;
+use retro_junk_core::Region;
 use std::io::Cursor;
 
 /// Build a synthetic NDS ROM with a valid header and decrypted secure area.
@@ -131,7 +132,7 @@ fn test_basic_analysis() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     assert_eq!(result.internal_name.as_deref(), Some("TESTGAME"));
-    assert_eq!(result.platform.as_deref(), Some("Nintendo DS"));
+    assert_eq!(result.platform, Some(Platform::Ds));
     assert_eq!(result.serial_number.as_deref(), Some("NTR-ADME"));
     assert_eq!(result.maker_code.as_deref(), Some("Nintendo R&D1"));
     assert_eq!(result.version.as_deref(), Some("v0"));
@@ -254,8 +255,9 @@ fn test_dsi_enhanced() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
+    assert_eq!(result.platform, Some(Platform::Ds));
     assert_eq!(
-        result.platform.as_deref(),
+        result.extra.get("platform_variant").map(|s| s.as_str()),
         Some("Nintendo DS (DSi Enhanced)")
     );
     assert_eq!(result.extra.get("unit_code").unwrap(), "NDS+DSi");
@@ -274,7 +276,11 @@ fn test_dsi_only() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform.as_deref(), Some("Nintendo DSi"));
+    assert_eq!(result.platform, Some(Platform::Ds));
+    assert_eq!(
+        result.extra.get("platform_variant").map(|s| s.as_str()),
+        Some("Nintendo DSi")
+    );
     assert_eq!(result.extra.get("unit_code").unwrap(), "DSi");
     assert!(result.serial_number.as_deref().unwrap().starts_with("TWL-"));
 }

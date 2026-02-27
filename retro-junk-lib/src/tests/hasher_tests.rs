@@ -15,15 +15,6 @@ impl RomAnalyzer for NullAnalyzer {
         Ok(RomIdentification::new())
     }
 
-    fn analyze_with_progress(
-        &self,
-        reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
-        _progress_tx: std::sync::mpsc::Sender<retro_junk_core::AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError> {
-        self.analyze(reader, options)
-    }
-
     fn platform(&self) -> Platform {
         Platform::Nes
     }

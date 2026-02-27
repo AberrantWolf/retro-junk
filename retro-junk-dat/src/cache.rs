@@ -354,16 +354,4 @@ pub fn total_cache_size() -> Result<u64, DatError> {
         .sum())
 }
 
-/// Simple ISO-8601-ish timestamp without pulling in a chrono dependency.
-fn chrono_now() -> String {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    // Return Unix timestamp as string — good enough without chrono
-    let secs = now.as_secs();
-    // Format as YYYY-MM-DD using basic arithmetic
-    let days = secs / 86400;
-    let years = 1970 + days / 365; // approximate
-    format!("{years}-xx-xx (unix: {secs})")
-}
+use crate::util::chrono_now;

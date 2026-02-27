@@ -11,11 +11,10 @@
 
 use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
-use std::sync::mpsc::Sender;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ExpectedChecksum,
-    Platform, Region, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, Platform, RomAnalyzer,
+    RomIdentification,
 };
 
 // ---------------------------------------------------------------------------
@@ -33,18 +32,7 @@ const EXPECTED_LOGO_CHECKSUM: u16 = 0xCF56;
 
 /// Nintendo compressed logo bitmap (156 bytes at offset 0xC0).
 /// This is identical to the GBA Nintendo logo.
-const NINTENDO_LOGO: [u8; 156] = [
-    0x24, 0xFF, 0xAE, 0x51, 0x69, 0x9A, 0xA2, 0x21, 0x3D, 0x84, 0x82, 0x0A, 0x84, 0xE4, 0x09, 0xAD,
-    0x11, 0x24, 0x8B, 0x98, 0xC0, 0x81, 0x7F, 0x21, 0xA3, 0x52, 0xBE, 0x19, 0x93, 0x09, 0xCE, 0x20,
-    0x10, 0x46, 0x4A, 0x4A, 0xF8, 0x27, 0x31, 0xEC, 0x58, 0xC7, 0xE8, 0x33, 0x82, 0xE3, 0xCE, 0xBF,
-    0x85, 0xF4, 0xDF, 0x94, 0xCE, 0x4B, 0x09, 0xC1, 0x94, 0x56, 0x8A, 0xC0, 0x13, 0x72, 0xA7, 0xFC,
-    0x9F, 0x84, 0x4D, 0x73, 0xA3, 0xCA, 0x9A, 0x61, 0x58, 0x97, 0xA3, 0x27, 0xFC, 0x03, 0x98, 0x76,
-    0x23, 0x1D, 0xC7, 0x61, 0x03, 0x04, 0xAE, 0x56, 0xBF, 0x38, 0x84, 0x00, 0x40, 0xA7, 0x0E, 0xFD,
-    0xFF, 0x52, 0xFE, 0x03, 0x6F, 0x95, 0x30, 0xF1, 0x97, 0xFB, 0xC0, 0x85, 0x60, 0xD6, 0x80, 0x25,
-    0xA9, 0x63, 0xBE, 0x03, 0x01, 0x4E, 0x38, 0xE2, 0xF9, 0xA2, 0x34, 0xFF, 0xBB, 0x3E, 0x03, 0x44,
-    0x78, 0x00, 0x90, 0xCB, 0x88, 0x11, 0x3A, 0x94, 0x65, 0xC0, 0x7C, 0x63, 0x87, 0xF0, 0x3C, 0xAF,
-    0xD6, 0x25, 0xE4, 0x8B, 0x38, 0x0A, 0xAC, 0x72, 0x21, 0xD4, 0xF8, 0x07,
-];
+use crate::constants::{NINTENDO_LOGO_156 as NINTENDO_LOGO, region_from_game_code};
 
 // ---------------------------------------------------------------------------
 // CRC-16 (polynomial 0x8005, reflected, init 0xFFFF)
@@ -228,87 +216,7 @@ fn detect_secure_area(
 // Lookup functions
 // ---------------------------------------------------------------------------
 
-/// Look up maker/publisher name from 2-character ASCII code.
-fn maker_code_name(code: &str) -> Option<&'static str> {
-    match code {
-        "00" => Some("None"),
-        "01" => Some("Nintendo R&D1"),
-        "08" => Some("Capcom"),
-        "13" => Some("EA (Electronic Arts)"),
-        "18" => Some("Hudson Soft"),
-        "19" => Some("b-ai"),
-        "20" => Some("kss"),
-        "22" => Some("pow"),
-        "24" => Some("PCM Complete"),
-        "25" => Some("san-x"),
-        "28" => Some("Kemco Japan"),
-        "29" => Some("seta"),
-        "30" => Some("Viacom"),
-        "31" => Some("Nintendo"),
-        "32" => Some("Bandai"),
-        "33" => Some("Ocean/Acclaim"),
-        "34" => Some("Konami"),
-        "35" => Some("Hector"),
-        "37" => Some("Taito"),
-        "38" => Some("Hudson"),
-        "39" => Some("Banpresto"),
-        "41" => Some("Ubi Soft"),
-        "42" => Some("Atlus"),
-        "44" => Some("Malibu"),
-        "46" => Some("angel"),
-        "47" => Some("Bullet-Proof"),
-        "49" => Some("irem"),
-        "50" => Some("Absolute"),
-        "51" => Some("Acclaim"),
-        "52" => Some("Activision"),
-        "53" => Some("American sammy"),
-        "54" => Some("Konami"),
-        "55" => Some("Hi tech entertainment"),
-        "56" => Some("LJN"),
-        "57" => Some("Matchbox"),
-        "58" => Some("Mattel"),
-        "59" => Some("Milton Bradley"),
-        "60" => Some("Titus"),
-        "61" => Some("Virgin"),
-        "64" => Some("LucasArts"),
-        "67" => Some("Ocean"),
-        "69" => Some("EA (Electronic Arts)"),
-        "70" => Some("Infogrames"),
-        "71" => Some("Interplay"),
-        "72" => Some("Broderbund"),
-        "73" => Some("sculptured"),
-        "75" => Some("sci"),
-        "78" => Some("THQ"),
-        "79" => Some("Accolade"),
-        "80" => Some("misawa"),
-        "83" => Some("lozc"),
-        "86" => Some("Tokuma Shoten"),
-        "87" => Some("Tsukuda Original"),
-        "91" => Some("Chunsoft"),
-        "92" => Some("Video system"),
-        "93" => Some("Ocean/Acclaim"),
-        "95" => Some("Varie"),
-        "96" => Some("Yonezawa/s'pal"),
-        "97" => Some("Kaneko"),
-        "99" => Some("Pack in soft"),
-        "A4" => Some("Konami (Yu-Gi-Oh!)"),
-        _ => None,
-    }
-}
-
 /// Derive region from the 4th character of the game code.
-fn region_from_game_code(code: &str) -> Option<Region> {
-    code.chars().nth(3).and_then(|c| match c {
-        'J' => Some(Region::Japan),
-        'E' => Some(Region::Usa),
-        'P' | 'D' | 'F' | 'S' | 'I' | 'U' => Some(Region::Europe),
-        'K' => Some(Region::Korea),
-        'C' => Some(Region::China),
-        'A' | 'W' => Some(Region::World),
-        _ => None,
-    })
-}
-
 /// Map the unit code byte to a human-readable string.
 fn unit_code_name(unit_code: u8) -> &'static str {
     match unit_code {
@@ -337,15 +245,18 @@ fn to_identification(
     secure_area: SecureAreaState,
 ) -> RomIdentification {
     let is_dsi = header.unit_code & 0x02 != 0;
-    let platform_name = if header.unit_code == 0x03 {
-        "Nintendo DSi"
+    let platform_variant = if header.unit_code == 0x03 {
+        Some("Nintendo DSi")
     } else if is_dsi {
-        "Nintendo DS (DSi Enhanced)"
+        Some("Nintendo DS (DSi Enhanced)")
     } else {
-        "Nintendo DS"
+        None
     };
 
-    let mut id = RomIdentification::new().with_platform(platform_name);
+    let mut id = RomIdentification::new().with_platform(Platform::Ds);
+    if let Some(variant) = platform_variant {
+        id.extra.insert("platform_variant".into(), variant.into());
+    }
 
     // Internal name
     if !header.title.is_empty() {
@@ -360,7 +271,7 @@ fn to_identification(
 
     // Maker code
     if header.maker_code.len() == 2 {
-        id.maker_code = maker_code_name(&header.maker_code)
+        id.maker_code = crate::licensee::maker_code_name(&header.maker_code)
             .map(|s| s.to_string())
             .or_else(|| Some(header.maker_code.clone()));
     }
@@ -619,15 +530,6 @@ impl RomAnalyzer for DsAnalyzer {
             computed_header_checksum,
             secure_area,
         ))
-    }
-
-    fn analyze_with_progress(
-        &self,
-        reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
-        _progress_tx: Sender<AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError> {
-        self.analyze(reader, options)
     }
 
     fn platform(&self) -> Platform {

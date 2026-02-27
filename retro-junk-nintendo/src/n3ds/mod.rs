@@ -20,9 +20,7 @@ pub(crate) mod ncsd;
 use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
-use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, Platform, RomAnalyzer, RomIdentification,
-};
+use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
 
 use common::{read_u16_le, read_u32_le, read_u64_le};
 
@@ -143,15 +141,6 @@ impl RomAnalyzer for N3dsAnalyzer {
                 "Not a valid 3DS file (no NCSD magic or CIA header found)",
             )),
         }
-    }
-
-    fn analyze_with_progress(
-        &self,
-        reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
-        _progress_tx: std::sync::mpsc::Sender<AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError> {
-        self.analyze(reader, options)
     }
 
     fn platform(&self) -> Platform {

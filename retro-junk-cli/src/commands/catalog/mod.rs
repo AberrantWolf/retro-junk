@@ -13,7 +13,7 @@ pub(crate) mod verify;
 
 use std::path::PathBuf;
 
-use crate::commands::analyze::format_bytes;
+use retro_junk_lib::util::format_bytes;
 
 pub(crate) fn default_catalog_db_path() -> PathBuf {
     retro_junk_dat::cache::cache_dir()

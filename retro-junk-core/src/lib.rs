@@ -9,6 +9,7 @@ pub mod error;
 pub mod platform;
 pub mod progress;
 pub mod region;
+pub mod util;
 
 pub use checksum::{ChecksumAlgorithm, ExpectedChecksum};
 pub use error::AnalysisError;
@@ -76,7 +77,7 @@ pub struct RomIdentification {
     pub expected_size: Option<u64>,
 
     /// Platform/console identifier
-    pub platform: Option<String>,
+    pub platform: Option<Platform>,
 
     /// Maker/publisher code
     pub maker_code: Option<String>,
@@ -105,8 +106,8 @@ impl RomIdentification {
         self
     }
 
-    pub fn with_platform(mut self, platform: impl Into<String>) -> Self {
-        self.platform = Some(platform.into());
+    pub fn with_platform(mut self, platform: Platform) -> Self {
+        self.platform = Some(platform);
         self
     }
 }
@@ -157,11 +158,28 @@ pub struct FileHashes {
 }
 
 /// Which hash algorithms to compute.
-#[derive(Debug, Clone, Copy)]
-pub struct HashAlgorithms {
-    pub crc32: bool,
-    pub sha1: bool,
-    pub md5: bool,
+///
+/// CRC32 is always included. Higher modes add SHA1 and MD5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HashAlgorithms {
+    /// CRC32 only (fast DAT matching).
+    Crc32,
+    /// CRC32 + SHA1 (standard DAT matching).
+    Crc32Sha1,
+    /// CRC32 + SHA1 + MD5 (ScreenScraper API needs all three).
+    All,
+}
+
+impl HashAlgorithms {
+    pub fn crc32(&self) -> bool {
+        true
+    }
+    pub fn sha1(&self) -> bool {
+        matches!(self, Self::Crc32Sha1 | Self::All)
+    }
+    pub fn md5(&self) -> bool {
+        matches!(self, Self::All)
+    }
 }
 
 /// A reader that implements both Read and Seek.
@@ -193,10 +211,14 @@ pub trait RomAnalyzer: Send + Sync {
     /// This is intended for GUI applications that need to display progress
     /// during analysis of large disc images.
     ///
+    /// The default implementation ignores the progress channel and delegates
+    /// to [`analyze`](RomAnalyzer::analyze). Override this only if the
+    /// analyzer can meaningfully report incremental progress.
+    ///
     /// # Arguments
     /// * `reader` - A reader positioned at the start of the ROM data
     /// * `options` - Analysis options (quick mode, etc.)
-    /// * `progress_tx` - Channel sender for progress updates
+    /// * `_progress_tx` - Channel sender for progress updates
     ///
     /// # Returns
     /// * `Ok(RomIdentification)` - Successfully extracted identification info
@@ -205,8 +227,10 @@ pub trait RomAnalyzer: Send + Sync {
         &self,
         reader: &mut dyn ReadSeek,
         options: &AnalysisOptions,
-        progress_tx: Sender<AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError>;
+        _progress_tx: Sender<AnalysisProgress>,
+    ) -> Result<RomIdentification, AnalysisError> {
+        self.analyze(reader, options)
+    }
 
     /// Returns the platform this analyzer handles.
     fn platform(&self) -> Platform;

@@ -4,7 +4,8 @@ use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, RomIdentification,
+    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, Platform,
+    RomIdentification,
 };
 
 use super::common::*;
@@ -135,7 +136,7 @@ pub(crate) fn analyze_cci(
     let partition0_offset = ncsd.partitions[0].0 as u64 * MEDIA_UNIT;
     let ncch = parse_ncch_header(reader, partition0_offset)?;
 
-    let mut id = RomIdentification::new().with_platform("Nintendo 3DS");
+    let mut id = RomIdentification::new().with_platform(Platform::N3ds);
 
     // Format
     id.extra.insert("format".into(), "CCI (NCSD)".into());
@@ -149,7 +150,7 @@ pub(crate) fn analyze_cci(
 
     // Maker code
     if !ncch.maker_code.is_empty() {
-        id.maker_code = maker_code_name(&ncch.maker_code)
+        id.maker_code = crate::licensee::maker_code_name(&ncch.maker_code)
             .map(|s| s.to_string())
             .or_else(|| Some(ncch.maker_code.clone()));
         id.extra

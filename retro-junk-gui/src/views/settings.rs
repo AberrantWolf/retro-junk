@@ -143,7 +143,10 @@ fn show_cache_section(ui: &mut egui::Ui, _app: &mut RetroJunkApp) {
     // Library cache
     let lib_cache_size = crate::cache::total_cache_size();
     ui.horizontal(|ui| {
-        ui.label(format!("Library cache: {}", format_size(lib_cache_size)));
+        ui.label(format!(
+            "Library cache: {}",
+            format_bytes_approx(lib_cache_size)
+        ));
         if ui.small_button("Clear All").clicked()
             && let Err(e) = crate::cache::clear_all_caches()
         {
@@ -154,7 +157,10 @@ fn show_cache_section(ui: &mut egui::Ui, _app: &mut RetroJunkApp) {
     // DAT cache
     let dat_cache_size = retro_junk_dat::cache::total_cache_size().unwrap_or(0);
     ui.horizontal(|ui| {
-        ui.label(format!("DAT cache: {}", format_size(dat_cache_size)));
+        ui.label(format!(
+            "DAT cache: {}",
+            format_bytes_approx(dat_cache_size)
+        ));
         if ui.small_button("Clear All").clicked()
             && let Err(e) = retro_junk_dat::cache::clear()
         {
@@ -163,15 +169,7 @@ fn show_cache_section(ui: &mut egui::Ui, _app: &mut RetroJunkApp) {
     });
 }
 
-fn format_size(bytes: u64) -> String {
-    if bytes < 1024 {
-        format!("{} B", bytes)
-    } else if bytes < 1024 * 1024 {
-        format!("{:.1} KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
-    }
-}
+use retro_junk_lib::util::format_bytes_approx;
 
 enum RecentAction {
     Open(std::path::PathBuf),

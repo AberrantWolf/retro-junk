@@ -1,53 +1,48 @@
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use retro_junk_lib::AnalysisOptions;
 use retro_junk_lib::scanner;
 
 use crate::app::RetroJunkApp;
-use crate::state::{AppMessage, BackgroundOperation, next_operation_id};
+use crate::backend::worker::spawn_background_op;
+use crate::state::AppMessage;
 
 /// Scan a root folder for console subfolders on a background thread.
 pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Context) {
-    let tx = app.message_tx.clone();
     let context = app.context.clone();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let op_id = next_operation_id();
     let ctx = ctx.clone();
 
-    app.operations.push(BackgroundOperation::new(
-        op_id,
+    spawn_background_op(
+        app,
         "Scanning folders...".to_string(),
-        cancel.clone(),
-    ));
-
-    std::thread::spawn(move || {
-        let result = context.scan_console_folders(&root, None);
-        match result {
-            Ok(scan) => {
-                for cf in scan.matches {
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    if let Some(registered) = context.get_by_platform(cf.platform) {
-                        let _ = tx.send(AppMessage::ConsoleFolderFound {
-                            platform: cf.platform,
-                            folder_name: cf.folder_name,
-                            folder_path: cf.path,
-                            manufacturer: registered.metadata.manufacturer,
-                            platform_name: registered.metadata.platform_name,
-                        });
+        move |_op_id, cancel, tx| {
+            let result = context.scan_console_folders(&root, None);
+            match result {
+                Ok(scan) => {
+                    for cf in scan.matches {
+                        if cancel.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if let Some(registered) = context.get_by_platform(cf.platform) {
+                            let _ = tx.send(AppMessage::ConsoleFolderFound {
+                                platform: cf.platform,
+                                folder_name: cf.folder_name,
+                                folder_path: cf.path,
+                                manufacturer: registered.metadata.manufacturer,
+                                platform_name: registered.metadata.platform_name,
+                            });
+                        }
                     }
                 }
+                Err(e) => {
+                    log::warn!("Failed to scan root folder: {}", e);
+                }
             }
-            Err(e) => {
-                log::warn!("Failed to scan root folder: {}", e);
-            }
-        }
-        let _ = tx.send(AppMessage::FolderScanComplete);
-        ctx.request_repaint();
-    });
+            let _ = tx.send(AppMessage::FolderScanComplete);
+            ctx.request_repaint();
+        },
+    );
 }
 
 /// Quick-scan a single console folder: discover game entries, then analyze each.
@@ -61,23 +56,16 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
     }
     console.scan_status = crate::state::ScanStatus::Scanning;
 
-    let tx = app.message_tx.clone();
     let context = app.context.clone();
     let folder_path = console.folder_path.clone();
     let folder_name = console.folder_name.clone();
     let platform = console.platform;
-    let cancel = Arc::new(AtomicBool::new(false));
-    let op_id = next_operation_id();
     let ctx = ctx.clone();
 
     let platform_name = console.platform_name.to_string();
-    app.operations.push(BackgroundOperation::new(
-        op_id,
-        format!("Scanning {} ({})", platform_name, folder_name),
-        cancel.clone(),
-    ));
+    let description = format!("Scanning {} ({})", platform_name, folder_name);
 
-    std::thread::spawn(move || {
+    spawn_background_op(app, description, move |op_id, cancel, tx| {
         let registered = match context.get_by_platform(platform) {
             Some(r) => r,
             None => {

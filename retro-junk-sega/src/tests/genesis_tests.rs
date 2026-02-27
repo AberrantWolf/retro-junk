@@ -109,10 +109,7 @@ fn test_header_fields() {
         result.extra.get("overseas_title").unwrap(),
         "SONIC THE HEDGEHOG"
     );
-    assert_eq!(
-        result.platform.as_deref(),
-        Some("Sega Genesis / Mega Drive")
-    );
+    assert_eq!(result.platform, Some(Platform::Genesis));
 }
 
 #[test]

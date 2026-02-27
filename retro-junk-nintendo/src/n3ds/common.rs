@@ -8,6 +8,7 @@ use retro_junk_core::Region;
 use sha2::{Digest, Sha256};
 use std::io::SeekFrom;
 
+pub(crate) use retro_junk_core::util::read_ascii;
 use retro_junk_core::{AnalysisError, ReadSeek};
 
 // ---------------------------------------------------------------------------
@@ -66,15 +67,6 @@ pub(crate) fn read_u64_be(buf: &[u8], offset: usize) -> u64 {
     ])
 }
 
-/// Read a null-terminated ASCII string from a byte slice, filtering to printable chars.
-pub(crate) fn read_ascii(buf: &[u8]) -> String {
-    buf.iter()
-        .take_while(|&&b| b != 0)
-        .filter(|&&b| (0x20..0x7F).contains(&b))
-        .map(|&b| b as char)
-        .collect()
-}
-
 /// Align a value up to a 64-byte boundary.
 pub(crate) fn align64(val: u64) -> u64 {
     (val + 63) & !63
@@ -116,71 +108,6 @@ pub(crate) fn region_from_product_code(product_code: &str) -> Vec<Region> {
         Some('W') => vec![Region::World],
         Some('A') => vec![Region::World], // Region-free
         _ => vec![],
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Maker code lookup
-// ---------------------------------------------------------------------------
-
-pub(crate) fn maker_code_name(code: &str) -> Option<&'static str> {
-    match code {
-        "00" => Some("None"),
-        "01" => Some("Nintendo R&D1"),
-        "08" => Some("Capcom"),
-        "13" => Some("EA (Electronic Arts)"),
-        "18" => Some("Hudson Soft"),
-        "20" => Some("kss"),
-        "24" => Some("PCM Complete"),
-        "28" => Some("Kemco Japan"),
-        "30" => Some("Viacom"),
-        "31" => Some("Nintendo"),
-        "32" => Some("Bandai"),
-        "33" => Some("Ocean/Acclaim"),
-        "34" => Some("Konami"),
-        "35" => Some("Hector"),
-        "37" => Some("Taito"),
-        "38" => Some("Hudson"),
-        "39" => Some("Banpresto"),
-        "41" => Some("Ubi Soft"),
-        "42" => Some("Atlus"),
-        "44" => Some("Malibu"),
-        "46" => Some("angel"),
-        "49" => Some("irem"),
-        "50" => Some("Absolute"),
-        "51" => Some("Acclaim"),
-        "52" => Some("Activision"),
-        "53" => Some("American sammy"),
-        "54" => Some("Konami"),
-        "56" => Some("LJN"),
-        "58" => Some("Mattel"),
-        "59" => Some("Milton Bradley"),
-        "60" => Some("Titus"),
-        "61" => Some("Virgin"),
-        "64" => Some("LucasArts"),
-        "67" => Some("Ocean"),
-        "69" => Some("EA (Electronic Arts)"),
-        "70" => Some("Infogrames"),
-        "71" => Some("Interplay"),
-        "72" => Some("Broderbund"),
-        "75" => Some("sci"),
-        "78" => Some("THQ"),
-        "79" => Some("Accolade"),
-        "86" => Some("Tokuma Shoten"),
-        "91" => Some("Chunsoft"),
-        "92" => Some("Video system"),
-        "97" => Some("Kaneko"),
-        "A4" => Some("Konami (Yu-Gi-Oh!)"),
-        "GR" => Some("Grasshopper Manufacture"),
-        "GT" => Some("GUST"),
-        "HB" => Some("Happinet"),
-        "KA" => Some("Kadokawa"),
-        "MR" => Some("Marvelous"),
-        "NB" => Some("Bandai Namco"),
-        "QH" => Some("D3 Publisher"),
-        "SQ" => Some("Square Enix"),
-        "XB" => Some("XSEED"),
-        _ => None,
     }
 }
 

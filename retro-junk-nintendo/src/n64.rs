@@ -10,12 +10,11 @@
 
 use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
-use std::sync::mpsc::Sender;
 
 use crate::n64_byteorder::{N64Format, detect_n64_format, normalize_to_big_endian};
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, AnalysisProgress, ChecksumAlgorithm, ChunkNormalizerResult,
-    ExpectedChecksum, Platform, Region, RomAnalyzer, RomIdentification,
+    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ChunkNormalizerResult, ExpectedChecksum,
+    Platform, Region, RomAnalyzer, RomIdentification,
 };
 
 // ---------------------------------------------------------------------------
@@ -339,7 +338,7 @@ fn to_identification(
     file_size: u64,
     crc_result: Option<(u32, u32)>,
 ) -> RomIdentification {
-    let mut id = RomIdentification::new().with_platform("Nintendo 64");
+    let mut id = RomIdentification::new().with_platform(Platform::N64);
 
     if !header.title.is_empty() {
         id.internal_name = Some(header.title.clone());
@@ -456,15 +455,6 @@ impl RomAnalyzer for N64Analyzer {
         };
 
         Ok(to_identification(&header, file_size, crc_result))
-    }
-
-    fn analyze_with_progress(
-        &self,
-        reader: &mut dyn ReadSeek,
-        options: &AnalysisOptions,
-        _progress_tx: Sender<AnalysisProgress>,
-    ) -> Result<RomIdentification, AnalysisError> {
-        self.analyze(reader, options)
     }
 
     fn platform(&self) -> Platform {

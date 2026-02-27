@@ -174,13 +174,3 @@ fn test_can_handle() {
     let garbage = vec![0xFFu8; 16];
     assert!(!analyzer.can_handle(&mut Cursor::new(garbage)));
 }
-
-#[test]
-fn test_format_size() {
-    assert_eq!(format_size(0), "0");
-    assert_eq!(format_size(512), "512 bytes");
-    assert_eq!(format_size(1024), "1 KB");
-    assert_eq!(format_size(16384), "16 KB");
-    assert_eq!(format_size(262144), "256 KB");
-    assert_eq!(format_size(1048576), "1 MB");
-}

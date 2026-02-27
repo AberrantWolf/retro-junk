@@ -6,6 +6,7 @@ use log::Level;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use retro_junk_lib::display::{HARDWARE_KEYS, SizeVerdict, compute_size_verdict, prettify_key};
 use retro_junk_lib::{AnalysisContext, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
 
 use crate::CliError;
@@ -182,53 +183,7 @@ fn analyze_and_print(
 }
 
 /// Format a byte size as a human-readable string.
-pub(crate) fn format_bytes(bytes: u64) -> String {
-    retro_junk_lib::util::format_bytes(bytes)
-}
-
-// -- Size verdict logic --
-
-enum SizeVerdict {
-    Ok,
-    Trimmed { missing: u64 },
-    Truncated { missing: u64 },
-    CopierHeader,
-    Oversized { excess: u64 },
-}
-
-fn is_power_of_two(n: u64) -> bool {
-    n > 0 && (n & (n - 1)) == 0
-}
-
-fn compute_size_verdict(file_size: u64, expected_size: u64) -> SizeVerdict {
-    if file_size == expected_size {
-        return SizeVerdict::Ok;
-    }
-
-    if file_size < expected_size {
-        let missing = expected_size - file_size;
-
-        // Likely trimmed: file still has most data AND file size is a power of 2
-        // OR the missing amount is a power-of-2 fraction of expected size
-        let has_most_data = file_size >= expected_size / 2;
-        let file_is_pow2 = is_power_of_two(file_size);
-        let missing_is_pow2_fraction =
-            is_power_of_two(missing) && is_power_of_two(expected_size) && missing < expected_size;
-
-        if has_most_data && (file_is_pow2 || missing_is_pow2_fraction) {
-            SizeVerdict::Trimmed { missing }
-        } else {
-            SizeVerdict::Truncated { missing }
-        }
-    } else {
-        let excess = file_size - expected_size;
-        if excess == 512 {
-            SizeVerdict::CopierHeader
-        } else {
-            SizeVerdict::Oversized { excess }
-        }
-    }
-}
+pub(crate) use retro_junk_lib::util::format_bytes;
 
 fn print_size_verdict(verdict: &SizeVerdict) -> String {
     match verdict {
@@ -261,67 +216,6 @@ fn print_size_verdict(verdict: &SizeVerdict) -> String {
         ),
     }
 }
-
-// -- Key prettification --
-
-/// Known acronyms that should stay uppercase when prettifying keys.
-const ACRONYMS: &[&str] = &[
-    "PRG", "CHR", "RAM", "ROM", "SRAM", "NVRAM", "SGB", "CGB", "TV", "ID",
-];
-
-/// Convert a snake_case key to Title Case, keeping known acronyms uppercase.
-fn prettify_key(key: &str) -> String {
-    key.split('_')
-        .filter(|s| !s.is_empty())
-        .map(|word| {
-            let upper = word.to_uppercase();
-            if ACRONYMS.contains(&upper.as_str()) {
-                upper
-            } else {
-                let mut chars = word.chars();
-                match chars.next() {
-                    Some(c) => {
-                        let mut s = c.to_uppercase().to_string();
-                        s.extend(chars);
-                        s
-                    }
-                    None => String::new(),
-                }
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-// -- Hardware keys (ordered) --
-
-/// Known hardware/technical extra keys, in display order.
-const HARDWARE_KEYS: &[&str] = &[
-    "mapping",
-    "speed",
-    "chipset",
-    "coprocessor",
-    "mirroring",
-    "cartridge_type",
-    "rom_size",
-    "prg_rom_size",
-    "chr_rom_size",
-    "sram_size",
-    "ram_size",
-    "prg_ram_size",
-    "prg_nvram_size",
-    "chr_ram_size",
-    "chr_nvram_size",
-    "expansion_ram",
-    "expansion_device",
-    "battery",
-    "trainer",
-    "sgb",
-    "console_type",
-    "tv_system",
-    "copier_header",
-    "checksum_complement_valid",
-];
 
 /// Format the analysis result for a single file as level-tagged lines.
 /// The first element is always the file header line.

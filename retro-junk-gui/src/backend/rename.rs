@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use retro_junk_dat::DatIndex;
 use retro_junk_lib::context::AnalysisContext;
@@ -8,9 +7,8 @@ use retro_junk_lib::rename::DiscMatchData;
 use retro_junk_lib::scanner::GameEntry;
 
 use crate::app::RetroJunkApp;
-use crate::state::{
-    AppMessage, BackgroundOperation, RenameOutcome, RenameResult, next_operation_id,
-};
+use crate::backend::worker::spawn_background_op;
+use crate::state::{AppMessage, RenameOutcome, RenameResult};
 
 /// A single rename job prepared on the UI thread.
 struct RenameJob {
@@ -167,9 +165,6 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
         return;
     }
 
-    let tx = app.message_tx.clone();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let op_id = next_operation_id();
     let ctx = ctx.clone();
     let total_work = jobs.len() + m3u_jobs.len();
 
@@ -177,14 +172,9 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let dat_index_arc = dat_index.cloned();
     let context = app.context.clone();
     let platform = console.platform;
+    let description = format!("Renaming {} entries", total_work);
 
-    app.operations.push(BackgroundOperation::new(
-        op_id,
-        format!("Renaming {} entries", total_work),
-        cancel.clone(),
-    ));
-
-    std::thread::spawn(move || {
+    spawn_background_op(app, description, move |op_id, cancel, tx| {
         let mut file_num = 0usize;
 
         // Step 1: Execute single-file renames

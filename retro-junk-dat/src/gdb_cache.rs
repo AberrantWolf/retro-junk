@@ -258,14 +258,4 @@ pub fn total_cache_size() -> Result<u64, DatError> {
     Ok(meta.csvs.values().map(|c| c.file_size).sum())
 }
 
-/// Simple timestamp (same pattern as DAT cache).
-fn chrono_now() -> String {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let days = secs / 86400;
-    let years = 1970 + days / 365;
-    format!("{years}-xx-xx (unix: {secs})")
-}
+use crate::util::chrono_now;

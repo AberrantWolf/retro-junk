@@ -159,7 +159,7 @@ fn test_cci_basic_analysis() {
     let options = AnalysisOptions::default();
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
-    assert_eq!(result.platform.as_deref(), Some("Nintendo 3DS"));
+    assert_eq!(result.platform, Some(Platform::N3ds));
     assert_eq!(result.serial_number.as_deref(), Some("CTR-P-ABCE"));
     assert_eq!(result.maker_code.as_deref(), Some("Nintendo"));
     assert_eq!(result.regions, vec![retro_junk_core::Region::Usa]);

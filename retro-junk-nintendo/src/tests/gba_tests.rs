@@ -1,4 +1,5 @@
 use super::*;
+use retro_junk_core::Region;
 use std::io::Cursor;
 
 /// Build a synthetic 256 KB GBA ROM with a valid header.
@@ -92,7 +93,7 @@ fn test_basic_analysis() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     assert_eq!(result.internal_name.as_deref(), Some("TESTGAME"));
-    assert_eq!(result.platform.as_deref(), Some("Game Boy Advance"));
+    assert_eq!(result.platform, Some(Platform::Gba));
     assert_eq!(result.serial_number.as_deref(), Some("AGB-ATEJ"));
     assert_eq!(result.maker_code.as_deref(), Some("Nintendo R&D1"));
     assert_eq!(result.version.as_deref(), Some("v0"));
