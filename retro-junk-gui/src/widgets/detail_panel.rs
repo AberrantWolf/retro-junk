@@ -354,6 +354,42 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             }
         }
 
+        // Broken references warning
+        if let Some(ref broken) = entry.broken_references
+            && !broken.is_empty()
+        {
+            let warn_color = egui::Color32::from_rgb(230, 160, 30);
+            let err_color = egui::Color32::from_rgb(220, 50, 50);
+
+            ui.add_space(4.0);
+            ui.separator();
+            ui.label(
+                egui::RichText::new("\u{26a0} Broken References")
+                    .strong()
+                    .color(warn_color),
+            );
+            ui.add_space(2.0);
+
+            for br in broken {
+                let ref_name = br
+                    .ref_file
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?");
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(format!("{} ({})", ref_name, br.format)).weak());
+                });
+                for target in &br.missing_targets {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(
+                            egui::RichText::new(format!("Missing: {}", target)).color(err_color),
+                        );
+                    });
+                }
+            }
+        }
+
         // Hashes (single-file entries only; multi-disc hashes shown per-disc above)
         if entry.disc_identifications.is_none()
             && let Some(ref hashes) = entry.hashes

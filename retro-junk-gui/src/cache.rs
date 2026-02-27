@@ -3,6 +3,7 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
 use retro_junk_dat::FileHashes;
+use retro_junk_lib::rename::BrokenReference;
 use retro_junk_lib::scanner::GameEntry;
 use retro_junk_lib::{AnalysisContext, Platform, Region, RomIdentification};
 
@@ -53,6 +54,8 @@ pub struct CachedEntry {
     pub screen_title: Option<String>,
     #[serde(default)]
     pub disc_identifications: Option<Vec<DiscIdentification>>,
+    #[serde(default)]
+    pub broken_references: Option<Vec<BrokenReference>>,
 }
 
 /// Returns `~/.cache/retro-junk/library/`.
@@ -133,6 +136,7 @@ pub fn save_library(root: &Path, library: &Library) -> std::io::Result<()> {
                         cover_title: e.cover_title.clone(),
                         screen_title: e.screen_title.clone(),
                         disc_identifications: e.disc_identifications.clone(),
+                        broken_references: e.broken_references.clone(),
                     })
                     .collect(),
                 dat_game_count: match &c.dat_status {
@@ -183,9 +187,36 @@ pub fn load_library(root: &Path, context: &AnalysisContext) -> Option<(Library, 
         let current_fp = compute_fingerprint(&cc.folder_path);
         let is_stale = current_fp.name_hash != cc.fingerprint.name_hash;
 
+        // Always restore cached entries so re-scans can merge by display_name
+        // and preserve expensive data (hashes, DAT matches, etc.).
+        let entries = cc
+            .entries
+            .into_iter()
+            .map(|ce| LibraryEntry {
+                game_entry: ce.game_entry,
+                identification: ce.identification,
+                hashes: ce.hashes,
+                dat_match: ce.dat_match,
+                status: ce.status,
+                ambiguous_candidates: ce.ambiguous_candidates,
+                media_paths: None, // re-discovered lazily
+                region_override: ce.region_override,
+                cover_title: ce.cover_title,
+                screen_title: ce.screen_title,
+                disc_identifications: ce.disc_identifications,
+                broken_references: ce.broken_references,
+            })
+            .collect();
+
         if is_stale {
             stale_folders.push(cc.folder_name.clone());
-            // Still add the console but mark as needing re-scan
+            let dat_status = match cc.dat_game_count {
+                Some(game_count) => DatStatus::Loaded { game_count },
+                None => DatStatus::NotLoaded,
+            };
+            // Mark as needing re-scan, but keep cached entries so the rescan's
+            // ConsoleScanComplete handler can match by display_name and
+            // preserve hashes, DAT matches, etc.
             consoles.push(ConsoleState {
                 platform: cc.platform,
                 folder_name: cc.folder_name,
@@ -193,29 +224,11 @@ pub fn load_library(root: &Path, context: &AnalysisContext) -> Option<(Library, 
                 manufacturer,
                 platform_name,
                 scan_status: ScanStatus::NotScanned,
-                entries: Vec::new(),
-                dat_status: DatStatus::NotLoaded,
+                entries,
+                dat_status,
                 fingerprint: None,
             });
         } else {
-            let entries = cc
-                .entries
-                .into_iter()
-                .map(|ce| LibraryEntry {
-                    game_entry: ce.game_entry,
-                    identification: ce.identification,
-                    hashes: ce.hashes,
-                    dat_match: ce.dat_match,
-                    status: ce.status,
-                    ambiguous_candidates: ce.ambiguous_candidates,
-                    media_paths: None, // re-discovered lazily
-                    region_override: ce.region_override,
-                    cover_title: ce.cover_title,
-                    screen_title: ce.screen_title,
-                    disc_identifications: ce.disc_identifications,
-                })
-                .collect();
-
             let dat_status = match cc.dat_game_count {
                 Some(game_count) => DatStatus::Loaded { game_count },
                 None => DatStatus::NotLoaded,

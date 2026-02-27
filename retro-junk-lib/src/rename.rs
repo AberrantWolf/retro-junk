@@ -8,6 +8,91 @@ use retro_junk_dat::error::DatError;
 use retro_junk_dat::matcher::{DatIndex, MatchMethod, MatchResult, SerialLookupResult};
 
 use crate::hasher;
+use crate::scanner::GameEntry;
+
+/// A broken file reference found in a CUE or M3U file.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BrokenReference {
+    /// The reference file (CUE or M3U) containing broken entries.
+    pub ref_file: PathBuf,
+    /// Format label (e.g., "CUE" or "M3U").
+    pub format: String,
+    /// Filenames referenced by the ref file that do not exist on disk.
+    pub missing_targets: Vec<String>,
+}
+
+/// Check a game entry for broken CUE/M3U references.
+///
+/// For `SingleFile` entries, checks the parent directory for CUE/M3U files.
+/// For `MultiDisc` entries, checks each disc file's parent directory.
+/// Returns an empty vec if no broken references are found.
+pub fn check_broken_references(entry: &GameEntry) -> Vec<BrokenReference> {
+    let dirs: Vec<PathBuf> = match entry {
+        GameEntry::SingleFile(path) => path
+            .parent()
+            .map(|d| vec![d.to_path_buf()])
+            .unwrap_or_default(),
+        GameEntry::MultiDisc { files, .. } => {
+            let mut seen = std::collections::HashSet::new();
+            files
+                .iter()
+                .filter_map(|p| p.parent().map(|d| d.to_path_buf()))
+                .filter(|d| seen.insert(d.clone()))
+                .collect()
+        }
+    };
+
+    let mut broken = Vec::new();
+    let formats: &[&dyn RefFileFormat] = &[&CueFormat, &M3uFormat];
+
+    for dir in &dirs {
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for dir_entry in entries.flatten() {
+            let path = dir_entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+            for &fmt in formats {
+                if !ext.eq_ignore_ascii_case(fmt.extension()) {
+                    continue;
+                }
+
+                let content = match fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+
+                let missing: Vec<String> = content
+                    .lines()
+                    .filter_map(|line| {
+                        let ref_line = fmt.extract_reference(line)?;
+                        if !dir.join(&ref_line.filename).exists() {
+                            Some(ref_line.filename)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+
+                if !missing.is_empty() {
+                    broken.push(BrokenReference {
+                        ref_file: path.clone(),
+                        format: fmt.label().to_string(),
+                        missing_targets: missing,
+                    });
+                }
+            }
+        }
+    }
+
+    broken
+}
 
 /// File extensions that represent disc-image entry points for M3U playlists.
 const M3U_ENTRY_POINT_EXTENSIONS: &[&str] = &["cue", "chd", "iso", "gdi", "cso", "pbp"];
@@ -1492,8 +1577,23 @@ fn find_correct_m3u_entry(
         .and_then(|s| s.to_str())
         .unwrap_or("");
 
-    // Strategy 2: Same stem, try preferred entry-point extensions
+    // Strategy 2: Same stem — try the original extension first, then the
+    // preferred entry-point list.  This avoids e.g. replacing a .cue entry
+    // with a .iso file just because .iso appears earlier in the fallback list.
+    let original_ext = Path::new(old_entry)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    if !original_ext.is_empty() {
+        let candidate = format!("{}.{}", old_stem, original_ext);
+        if dir.join(&candidate).exists() {
+            return Some(candidate);
+        }
+    }
     for ext in M3U_ENTRY_POINT_EXTENSIONS {
+        if *ext == original_ext {
+            continue; // already tried above
+        }
         let candidate = format!("{}.{}", old_stem, ext);
         if dir.join(&candidate).exists() {
             return Some(candidate);

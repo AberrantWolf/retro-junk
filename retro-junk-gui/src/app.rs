@@ -63,6 +63,11 @@ pub struct RetroJunkApp {
 
     /// Results from the last rename operation. When `Some`, the rename results dialog is shown.
     pub rename_results: Option<Vec<crate::state::RenameResult>>,
+
+    /// True while the initial cache load is in flight on startup.
+    /// Cleared when `StartFolderScan` is processed (the signal that the cache
+    /// thread has finished, whether or not a cache existed).
+    pub loading_library: bool,
 }
 
 impl RetroJunkApp {
@@ -97,6 +102,7 @@ impl RetroJunkApp {
             settings,
             catalog_db,
             rename_results: None,
+            loading_library: false,
         };
 
         // Restore last open root from settings
@@ -110,6 +116,7 @@ impl RetroJunkApp {
             && root.is_dir()
         {
             app.root_path = Some(root.clone());
+            app.loading_library = true;
 
             // Load cache first, then scan. The cache thread sends CacheLoaded
             // (if a cache exists) followed by StartFolderScan. This ordering
@@ -127,6 +134,9 @@ impl RetroJunkApp {
                         stale.len()
                     );
                     let _ = tx.send(crate::state::AppMessage::CacheLoaded { library });
+                    // Repaint immediately so cached entries are visible before
+                    // the folder scan starts (which may take a moment).
+                    ctx_bg.request_repaint();
                 }
                 // Always trigger a folder scan to discover new/removed consoles.
                 let _ = tx.send(crate::state::AppMessage::StartFolderScan);

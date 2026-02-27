@@ -7,7 +7,11 @@ use crate::widgets::status_badge;
 /// Render the manufacturer-grouped console tree.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     if app.library.consoles.is_empty() {
-        ui.label("No consoles found.");
+        if app.loading_library {
+            ui.label("Loading library...");
+        } else {
+            ui.label("No consoles found.");
+        }
         return;
     }
 

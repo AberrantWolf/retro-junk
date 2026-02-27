@@ -87,6 +87,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             RowData {
                 entry_idx: i,
                 status: entry.status,
+                has_broken_refs: entry
+                    .broken_references
+                    .as_ref()
+                    .is_some_and(|refs| !refs.is_empty()),
                 name: entry.game_entry.display_name().to_string(),
                 file_path: entry.game_entry.analysis_path().to_path_buf(),
                 serial: entry
@@ -186,9 +190,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     // Highlight the entire row
                     row.set_selected(is_selected || is_focused);
 
-                    // Status badge with tooltip
+                    // Status badge with tooltip (includes warning triangle for broken refs)
                     let r1 = row.col(|ui| {
-                        status_badge::show(ui, data.status).on_hover_text(data.status.tooltip());
+                        let resp =
+                            status_badge::show_with_warning(ui, data.status, data.has_broken_refs);
+                        if data.has_broken_refs {
+                            resp.on_hover_text(format!(
+                                "{}\n\u{26a0} Broken file references",
+                                data.status.tooltip()
+                            ));
+                        } else {
+                            resp.on_hover_text(data.status.tooltip());
+                        }
                     });
 
                     // Paint text directly in cells so no WidgetRect is created,
@@ -252,6 +265,11 @@ fn show_row_context_menu(
     console_idx: usize,
     data: &RowData,
 ) {
+    if ui.button("Rescan").clicked() {
+        backend::scan::rescan_selected_entries(app, console_idx, ctx);
+        ui.close_menu();
+    }
+
     if ui.button("Calculate Hashes").clicked() {
         backend::hash::compute_hashes_for_selection(app, console_idx);
         ui.close_menu();
@@ -443,6 +461,7 @@ fn collect_selected_field(
 struct RowData {
     entry_idx: usize,
     status: EntryStatus,
+    has_broken_refs: bool,
     name: String,
     file_path: PathBuf,
     serial: Option<String>,
@@ -456,7 +475,10 @@ fn handle_row_click(app: &mut RetroJunkApp, entry_idx: usize, modifiers: egui::M
     if modifiers.ctrl || modifiers.command {
         // Toggle selection
         if app.selected_entries.contains(&entry_idx) {
+            // Deselect: don't move focused_entry to this row — that would keep
+            // it visually highlighted through the is_focused path.
             app.selected_entries.remove(&entry_idx);
+            return;
         } else {
             app.selected_entries.insert(entry_idx);
         }
@@ -486,14 +508,18 @@ fn handle_row_click(app: &mut RetroJunkApp, entry_idx: usize, modifiers: egui::M
 /// This avoids registering a `WidgetRect` that would intercept pointer events,
 /// allowing the cell's own response (set via `TableBuilder::sense`) to handle
 /// all click and context-menu interaction.
+///
+/// Text is clipped to the cell's available rect so it doesn't bleed into
+/// adjacent columns.
 fn paint_cell_text(ui: &mut egui::Ui, text: &str) {
     if text.is_empty() {
         return;
     }
+    let rect = ui.max_rect();
     let font_id = egui::TextStyle::Body.resolve(ui.style());
     let color = ui.visuals().text_color();
-    ui.painter().text(
-        ui.max_rect().left_center(),
+    ui.painter().with_clip_rect(rect).text(
+        rect.left_center(),
         egui::Align2::LEFT_CENTER,
         text,
         font_id,

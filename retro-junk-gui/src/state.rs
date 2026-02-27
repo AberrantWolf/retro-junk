@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 
 use retro_junk_dat::{DatIndex, FileHashes, MatchMethod, SerialLookupResult};
 use retro_junk_frontend::MediaType;
+use retro_junk_lib::rename::BrokenReference;
 use retro_junk_lib::scanner::GameEntry;
 use retro_junk_lib::{AnalysisError, Platform, Region, RomIdentification};
 
@@ -192,6 +193,8 @@ pub struct LibraryEntry {
     pub screen_title: Option<String>,
     /// Per-disc identification data for multi-disc entries. `None` for single-file entries.
     pub disc_identifications: Option<Vec<DiscIdentification>>,
+    /// Broken CUE/M3U references. `None` = not yet checked, `Some(empty)` = checked and clean.
+    pub broken_references: Option<Vec<BrokenReference>>,
 }
 
 impl LibraryEntry {
@@ -499,6 +502,11 @@ pub enum AppMessage {
         index: usize,
         disc_results: Vec<(PathBuf, Result<RomIdentification, AnalysisError>)>,
     },
+    BrokenRefsChecked {
+        folder_name: String,
+        index: usize,
+        broken_refs: Vec<BrokenReference>,
+    },
     ConsoleScanDone {
         folder_name: String,
     },
@@ -679,6 +687,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 cover_title: cached.cover_title.clone(),
                                 screen_title: cached.screen_title.clone(),
                                 disc_identifications: cached.disc_identifications.clone(),
+                                broken_references: cached.broken_references.clone(),
                             }
                         } else {
                             // New file — start fresh
@@ -694,6 +703,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 cover_title: None,
                                 screen_title: None,
                                 disc_identifications: None,
+                                broken_references: None,
                             }
                         }
                     })
@@ -707,6 +717,15 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             index,
             result,
         } => {
+            // Pre-fetch DAT context before mutably borrowing library entries.
+            // Cloning avoids borrow conflicts when we mutate app.library below.
+            let platform = app
+                .library
+                .find_by_folder(&folder_name)
+                .map(|ci| app.library.consoles[ci].platform);
+            let dat_index = app.dat_indices.get(&folder_name).cloned();
+            let context = app.context.clone();
+
             if let Some(ci) = app.library.find_by_folder(&folder_name)
                 && let Some(entry) = app.library.consoles[ci].entries.get_mut(index)
             {
@@ -722,6 +741,57 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     }
                     Err(_) => {
                         entry.status = EntryStatus::Unrecognized;
+                    }
+                }
+
+                // If the DAT is already loaded (e.g. during a rescan), re-run matching
+                // immediately so we don't temporarily drop a previously-Matched status.
+                if entry.disc_identifications.is_none()
+                    && let Some(ref dat) = dat_index
+                {
+                    // Try serial matching.
+                    if let Some(ref id) = entry.identification
+                        && let Some(ref serial) = id.serial_number
+                        && let Some(p) = platform
+                        && let Some(ref registered) = context.get_by_platform(p)
+                    {
+                        let game_code = registered.analyzer.extract_dat_game_code(serial);
+                        match dat.match_by_serial(serial, game_code.as_deref()) {
+                            SerialLookupResult::Match(m) => {
+                                let game_name = dat.games[m.game_index].name.clone();
+                                let rom_name =
+                                    dat.games[m.game_index].roms[m.rom_index].name.clone();
+                                entry.dat_match = Some(DatMatchInfo {
+                                    game_name,
+                                    rom_name,
+                                    method: m.method,
+                                });
+                                entry.status = EntryStatus::Matched;
+                                entry.ambiguous_candidates.clear();
+                            }
+                            SerialLookupResult::Ambiguous { candidates } => {
+                                entry.status = EntryStatus::Ambiguous;
+                                entry.ambiguous_candidates = candidates;
+                            }
+                            SerialLookupResult::NotFound => {}
+                        }
+                    }
+
+                    // If serial didn't resolve it, try hash matching against
+                    // hashes cached from a prior scan.
+                    if entry.status != EntryStatus::Matched
+                        && let Some(ref hashes) = entry.hashes
+                        && let Some(m) = dat.match_by_hash(hashes.data_size, hashes)
+                    {
+                        let game_name = dat.games[m.game_index].name.clone();
+                        let rom_name = dat.games[m.game_index].roms[m.rom_index].name.clone();
+                        entry.dat_match = Some(DatMatchInfo {
+                            game_name,
+                            rom_name,
+                            method: m.method,
+                        });
+                        entry.status = EntryStatus::Matched;
+                        entry.ambiguous_candidates.clear();
                     }
                 }
             }
@@ -785,6 +855,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 } else {
                     EntryStatus::Unrecognized
                 };
+            }
+        }
+
+        AppMessage::BrokenRefsChecked {
+            folder_name,
+            index,
+            broken_refs,
+        } => {
+            if let Some(ci) = app.library.find_by_folder(&folder_name)
+                && let Some(entry) = app.library.consoles[ci].entries.get_mut(index)
+            {
+                entry.broken_references = Some(broken_refs);
             }
         }
 
@@ -1182,9 +1264,33 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     );
                 }
             }
+
+            // Check broken references on a background thread for any entries
+            // that haven't been checked yet (old caches, or first load).
+            let unchecked: Vec<(String, usize, GameEntry)> = app
+                .library
+                .consoles
+                .iter()
+                .flat_map(|c| {
+                    c.entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| e.broken_references.is_none())
+                        .map(|(i, e)| (c.folder_name.clone(), i, e.game_entry.clone()))
+                })
+                .collect();
+            if !unchecked.is_empty() {
+                crate::backend::scan::check_broken_refs_background(
+                    app.message_tx.clone(),
+                    unchecked,
+                    ctx.clone(),
+                );
+            }
         }
 
         AppMessage::StartFolderScan => {
+            // Cache loading is complete (whether or not a cache existed).
+            app.loading_library = false;
             if let Some(ref root) = app.root_path.clone() {
                 crate::backend::scan::scan_root_folder(app, root.clone(), ctx);
             }
@@ -1221,6 +1327,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             {
                                 entry.game_entry =
                                     retro_junk_lib::scanner::GameEntry::SingleFile(target.clone());
+                                // Clear stale broken-reference warnings; the rename may have
+                                // fixed them and the next background pass will re-check.
+                                entry.broken_references = None;
                             }
                         }
                         RenameOutcome::M3uRenamed {
@@ -1260,9 +1369,39 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                             })
                                             .collect();
                                         new_files.sort();
+
+                                        // Update disc_identifications paths to match new files
+                                        if let Some(ref mut discs) = entry.disc_identifications {
+                                            for disc in discs.iter_mut() {
+                                                // Match old disc path to new file by filename stem
+                                                let old_stem = disc
+                                                    .path
+                                                    .file_stem()
+                                                    .and_then(|s| s.to_str())
+                                                    .unwrap_or("");
+                                                if let Some(new_path) = new_files.iter().find(|p| {
+                                                    p.file_stem()
+                                                        .and_then(|s| s.to_str())
+                                                        .unwrap_or("")
+                                                        == old_stem
+                                                }) {
+                                                    disc.path = new_path.clone();
+                                                } else if let Some(new_path) =
+                                                    new_files.iter().find(|p| {
+                                                        p.extension() == disc.path.extension()
+                                                    })
+                                                {
+                                                    disc.path = new_path.clone();
+                                                }
+                                            }
+                                        }
+
                                         *files = new_files;
                                     }
                                 }
+                                // Clear stale broken-reference warnings; the rename may
+                                // have fixed them and the next background pass will re-check.
+                                entry.broken_references = None;
                             }
                         }
                         RenameOutcome::AlreadyCorrect => already += 1,
@@ -1280,6 +1419,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 failed
             );
             app.rename_results = Some(results);
+
+            // Invalidate fingerprint so the next save recomputes it from the
+            // actual (post-rename) file names on disk.
+            if renamed > 0 {
+                if let Some(ci) = app.library.find_by_folder(&folder_name) {
+                    app.library.consoles[ci].fingerprint = None;
+                }
+            }
             app.save_library_cache();
         }
 
