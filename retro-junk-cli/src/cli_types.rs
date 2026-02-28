@@ -70,6 +70,14 @@ pub(crate) enum Commands {
         /// Use DAT files from this directory instead of the cache
         #[arg(long)]
         dat_dir: Option<PathBuf>,
+
+        /// Directory for media files (default: <root>-media)
+        #[arg(long)]
+        media_dir: Option<PathBuf>,
+
+        /// Don't rename media files alongside ROMs
+        #[arg(long)]
+        no_media: bool,
     },
 
     /// [Experimental] Repair trimmed/truncated ROMs by padding to match DAT checksums

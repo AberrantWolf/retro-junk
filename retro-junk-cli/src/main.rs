@@ -165,6 +165,8 @@ fn run(
             hash,
             roms,
             dat_dir,
+            media_dir,
+            no_media,
         } => {
             commands::rename::run_rename(
                 ctx,
@@ -175,6 +177,8 @@ fn run(
                 root,
                 dat_dir,
                 quiet,
+                media_dir,
+                no_media,
             )?;
         }
         Commands::Repair {

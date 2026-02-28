@@ -64,10 +64,7 @@ impl ScrapeOptions {
             "{}-metadata",
             root.file_name().unwrap_or_default().to_string_lossy()
         ));
-        let media_dir = root.parent().unwrap_or(&root).join(format!(
-            "{}-media",
-            root.file_name().unwrap_or_default().to_string_lossy()
-        ));
+        let media_dir = retro_junk_lib::util::default_media_dir(&root);
 
         Self {
             root,

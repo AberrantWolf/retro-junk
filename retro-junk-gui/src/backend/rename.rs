@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use retro_junk_dat::DatIndex;
@@ -8,7 +9,7 @@ use retro_junk_lib::scanner::GameEntry;
 
 use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
-use crate::state::{AppMessage, RenameOutcome, RenameResult};
+use crate::state::{self, AppMessage, RenameOutcome, RenameResult};
 
 /// A single rename job prepared on the UI thread.
 struct RenameJob {
@@ -174,6 +175,15 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let platform = console.platform;
     let description = format!("Renaming {} entries", total_work);
 
+    // Resolve media directory for this console (for media file renaming)
+    let media_dir = app
+        .root_path
+        .as_ref()
+        .and_then(|rp| {
+            state::media_dir_for_console(rp, &folder_name, &app.settings.general.media_dir)
+        })
+        .filter(|d| d.is_dir());
+
     spawn_background_op(app, description, move |op_id, cancel, tx| {
         let mut file_num = 0usize;
 
@@ -293,6 +303,29 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
             }
         }
 
+        // Step 3: Rename media files to match ROM renames
+        if let Some(ref media_dir) = media_dir {
+            let stem_map = build_stem_map_from_results(&results, &m3u_jobs);
+            if !stem_map.is_empty() {
+                // media_dir already includes the console folder (from media_dir_for_console)
+                // so pass "" as console_folder to avoid double-joining
+                let media_plan =
+                    retro_junk_lib::rename::plan_media_renames_from_stems(&stem_map, media_dir, "");
+                if media_plan.has_actions() {
+                    let media_summary = retro_junk_lib::rename::execute_media_renames(&media_plan);
+                    if media_summary.renamed > 0 {
+                        log::info!(
+                            "Renamed {} media files alongside ROM renames",
+                            media_summary.renamed,
+                        );
+                    }
+                    for err in &media_summary.errors {
+                        log::warn!("Media rename error: {}", err);
+                    }
+                }
+            }
+        }
+
         let _ = tx.send(AppMessage::RenameComplete {
             folder_name,
             results,
@@ -368,4 +401,82 @@ fn get_target_rom_name(
     }
 
     None
+}
+
+/// Build a stem rename map from completed rename results and M3U job data.
+///
+/// Collects old_stem → new_stem for:
+/// - Single-file renames (from `RenameOutcome::Renamed`)
+/// - M3U disc-level renames (from `M3uJob.resolved_discs`)
+/// - M3U folder-level renames (old folder stem → new folder stem from results)
+fn build_stem_map_from_results(
+    results: &[RenameResult],
+    m3u_jobs: &[M3uJob],
+) -> HashMap<String, String> {
+    let mut stem_map = HashMap::new();
+
+    for result in results {
+        match &result.outcome {
+            RenameOutcome::Renamed { source, target } => {
+                let old_stem = source
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let new_stem = target
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                if old_stem != new_stem {
+                    stem_map.insert(old_stem, new_stem);
+                }
+            }
+            RenameOutcome::M3uRenamed { target_folder, .. } => {
+                // Find the corresponding M3uJob to get disc-level stems
+                if let Some(m3u_job) = m3u_jobs
+                    .iter()
+                    .find(|j| j.entry_index == result.entry_index)
+                {
+                    // Disc-level renames
+                    for disc in &m3u_job.resolved_discs {
+                        let old_stem = disc
+                            .file_path
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let new_stem = Path::new(&disc.target_filename)
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        if old_stem != new_stem {
+                            stem_map.insert(old_stem, new_stem);
+                        }
+                    }
+
+                    // Folder-level rename: old folder stem → new folder stem
+                    if let Some(source_folder) = m3u_job.files.first().and_then(|f| f.parent()) {
+                        let old_folder_stem = source_folder
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let new_folder_stem = target_folder
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        if old_folder_stem != new_folder_stem {
+                            stem_map.insert(old_folder_stem, new_folder_stem);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    stem_map
 }

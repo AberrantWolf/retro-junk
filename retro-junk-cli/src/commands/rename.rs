@@ -7,9 +7,11 @@ use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::rename::{
-    M3uRenameJob, RenameOptions, RenamePlan, RenameProgress, SerialWarningKind, execute_renames,
-    format_match_method, plan_m3u_action, plan_renames,
+    M3uRenameJob, MediaRenamePlan, RenameOptions, RenamePlan, RenameProgress, SerialWarningKind,
+    execute_media_renames, execute_renames, format_match_method, plan_m3u_action,
+    plan_media_renames, plan_renames,
 };
+use retro_junk_lib::util::default_media_dir;
 use retro_junk_lib::{AnalysisContext, Platform};
 
 use crate::CliError;
@@ -24,6 +26,8 @@ pub(crate) fn run_rename(
     root: Option<PathBuf>,
     dat_dir: Option<PathBuf>,
     quiet: bool,
+    media_dir_override: Option<PathBuf>,
+    no_media: bool,
 ) -> Result<(), CliError> {
     let root_path =
         root.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
@@ -63,11 +67,20 @@ pub(crate) fn run_rename(
         None => return Ok(()),
     };
 
+    // Compute effective media directory (explicit override or auto-detect)
+    let effective_media_dir = if no_media {
+        None
+    } else {
+        let dir = media_dir_override.unwrap_or_else(|| default_media_dir(&root_path));
+        if dir.is_dir() { Some(dir) } else { None }
+    };
+
     let mut total_renamed = 0usize;
     let mut total_already_correct = 0usize;
     let mut total_unmatched = 0usize;
     let mut total_errors: Vec<String> = Vec::new();
     let mut total_conflicts: Vec<String> = Vec::new();
+    let mut total_media_renamed = 0usize;
     let mut found_any = false;
 
     for cf in &scan.matches {
@@ -162,11 +175,23 @@ pub(crate) fn run_rename(
 
                 print_rename_plan(&plan);
 
+                // Plan media renames if media dir exists
+                let media_plan = effective_media_dir
+                    .as_ref()
+                    .map(|media_dir| plan_media_renames(&plan, media_dir, &cf.folder_name));
+
+                if let Some(ref mp) = media_plan {
+                    if mp.has_actions() {
+                        print_media_rename_plan(mp);
+                    }
+                }
+
                 let has_work = !plan.renames.is_empty()
                     || !plan.m3u_jobs.is_empty()
                     || !plan.broken_cue_files.is_empty()
                     || !plan.broken_m3u_files.is_empty();
-                if !dry_run && has_work {
+                let has_media_work = media_plan.as_ref().is_some_and(|mp| mp.has_actions());
+                if !dry_run && (has_work || has_media_work) {
                     // Prompt for confirmation (raw print — user interaction)
                     let m3u_count = plan.m3u_jobs.len();
                     let cue_count = plan.broken_cue_files.len();
@@ -193,6 +218,10 @@ pub(crate) fn run_rename(
                         let total = cue_count + m3u_fix_count;
                         parts.push(format!("{} reference fixes", total));
                     }
+                    if has_media_work {
+                        let media_count = media_plan.as_ref().unwrap().renames.len();
+                        parts.push(format!("{} media renames", media_count));
+                    }
                     print!("\n  Proceed with {}? [y/N] ", parts.join(" and "));
                     std::io::stdout().flush()?;
 
@@ -200,6 +229,7 @@ pub(crate) fn run_rename(
                     std::io::stdin().read_line(&mut input)?;
 
                     if input.trim().eq_ignore_ascii_case("y") {
+                        // Execute ROM renames
                         let summary = execute_renames(&plan);
                         total_renamed += summary.renamed;
                         total_already_correct += summary.already_correct;
@@ -239,6 +269,22 @@ pub(crate) fn run_rename(
                                 "\u{2714}".if_supports_color(Stdout, |t| t.green()),
                                 ref_fixes,
                             );
+                        }
+
+                        // Execute media renames
+                        if let Some(ref mp) = media_plan {
+                            if mp.has_actions() {
+                                let media_summary = execute_media_renames(mp);
+                                total_media_renamed += media_summary.renamed;
+                                if media_summary.renamed > 0 {
+                                    log::info!(
+                                        "  {} {} media files renamed",
+                                        "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                        media_summary.renamed,
+                                    );
+                                }
+                                total_errors.extend(media_summary.errors);
+                            }
                         }
                     } else {
                         log::info!("  {}", "Skipped".if_supports_color(Stdout, |t| t.dimmed()));
@@ -300,6 +346,13 @@ pub(crate) fn run_rename(
             "  {} {} already correctly named",
             "\u{2714}".if_supports_color(Stdout, |t| t.green()),
             total_already_correct,
+        );
+    }
+    if total_media_renamed > 0 {
+        log::info!(
+            "  {} {} media files renamed",
+            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+            total_media_renamed,
         );
     }
     if total_unmatched > 0 {
@@ -492,6 +545,31 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
             "  {} {} (broken playlist entries)",
             "\u{1F527}".if_supports_color(Stdout, |t| t.yellow()),
             name.if_supports_color(Stdout, |t| t.bold()),
+        );
+    }
+}
+
+/// Print media rename plan for a single console.
+fn print_media_rename_plan(plan: &MediaRenamePlan) {
+    for action in &plan.renames {
+        let source_name = action
+            .source
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        let target_name = action
+            .target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+
+        log::info!(
+            "  {} {} {} {} {}",
+            "\u{2192}".if_supports_color(Stdout, |t| t.green()),
+            source_name.if_supports_color(Stdout, |t| t.dimmed()),
+            "\u{2192}".if_supports_color(Stdout, |t| t.green()),
+            target_name.if_supports_color(Stdout, |t| t.bold()),
+            format!("[media/{}]", action.subdir_name).if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
 }

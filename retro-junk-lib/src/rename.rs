@@ -1114,6 +1114,249 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
     summary
 }
 
+// ---------------------------------------------------------------------------
+// Media file renaming (screenshots, covers, videos, etc.)
+// ---------------------------------------------------------------------------
+
+/// A single media file rename action.
+#[derive(Debug, Clone)]
+pub struct MediaRenameAction {
+    pub source: PathBuf,
+    pub target: PathBuf,
+    /// The media subdirectory name (e.g., "screenshots", "covers")
+    pub subdir_name: String,
+}
+
+/// Result of planning media renames for one console folder.
+#[derive(Debug, Default)]
+pub struct MediaRenamePlan {
+    pub renames: Vec<MediaRenameAction>,
+    pub already_correct: usize,
+    /// Media files that conflict (multiple sources mapping to the same target)
+    pub conflicts: Vec<(PathBuf, String)>,
+}
+
+impl MediaRenamePlan {
+    /// Whether this plan has any work to do.
+    pub fn has_actions(&self) -> bool {
+        !self.renames.is_empty()
+    }
+}
+
+/// Result of executing media renames.
+#[derive(Debug, Default)]
+pub struct MediaRenameSummary {
+    pub renamed: usize,
+    pub errors: Vec<String>,
+}
+
+/// Plan media file renames based on an existing ROM rename plan.
+///
+/// Scans all subdirectories under `media_dir/console_folder` for files whose
+/// stems match old ROM stems, and plans renames to match the new stems.
+/// Also handles M3U folder stems (old folder name → new folder name).
+pub fn plan_media_renames(
+    plan: &RenamePlan,
+    media_dir: &Path,
+    console_folder: &str,
+) -> MediaRenamePlan {
+    // Build stem rename map: old file_stem → new file_stem
+    let mut stem_map: HashMap<String, String> = HashMap::new();
+
+    for rename in &plan.renames {
+        let old_stem = rename
+            .source
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let new_stem = rename
+            .target
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if old_stem != new_stem {
+            stem_map.insert(old_stem, new_stem);
+        }
+    }
+
+    // For M3U jobs: map old folder stem → new folder stem, and disc stems
+    for job in &plan.m3u_jobs {
+        // Disc-level renames
+        for disc in &job.discs {
+            let old_stem = disc
+                .file_path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let new_stem = Path::new(&disc.target_filename)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if old_stem != new_stem {
+                stem_map.insert(old_stem, new_stem);
+            }
+        }
+
+        // Folder-level rename (old .m3u folder stem → new .m3u folder stem)
+        if let Some(action) = plan_m3u_action(
+            &job.source_folder,
+            &job.discs,
+            None,
+            job.game_name_override.as_deref(),
+        ) {
+            if action.source_folder != action.target_folder {
+                let old_folder_stem = action
+                    .source_folder
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let new_folder_stem = action
+                    .target_folder
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                if old_folder_stem != new_folder_stem {
+                    stem_map.insert(old_folder_stem, new_folder_stem);
+                }
+            }
+        }
+    }
+
+    plan_media_renames_from_stems(&stem_map, media_dir, console_folder)
+}
+
+/// Plan media file renames from an explicit stem rename map.
+///
+/// This is the core implementation used by both `plan_media_renames()` (CLI, from a
+/// `RenamePlan`) and directly by the GUI (which builds its own stem map from rename
+/// outcomes).
+///
+/// `stem_map` maps old file stems to new file stems (without extensions).
+/// Scans all subdirectories under `media_dir/console_folder` for matching files.
+pub fn plan_media_renames_from_stems(
+    stem_map: &HashMap<String, String>,
+    media_dir: &Path,
+    console_folder: &str,
+) -> MediaRenamePlan {
+    let console_media_dir = media_dir.join(console_folder);
+    let mut result = MediaRenamePlan::default();
+
+    if !console_media_dir.is_dir() || stem_map.is_empty() {
+        return result;
+    }
+
+    // Scan all subdirs of console_media_dir for matching files
+    let subdirs = match fs::read_dir(&console_media_dir) {
+        Ok(entries) => entries,
+        Err(_) => return result,
+    };
+
+    // Track targets to detect conflicts
+    let mut target_sources: HashMap<PathBuf, PathBuf> = HashMap::new();
+
+    for entry in subdirs.flatten() {
+        let subdir_path = entry.path();
+        if !subdir_path.is_dir() {
+            continue;
+        }
+        let subdir_name = entry.file_name().to_string_lossy().to_string();
+
+        let files = match fs::read_dir(&subdir_path) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for file_entry in files.flatten() {
+            let file_path = file_entry.path();
+            if !file_path.is_file() {
+                continue;
+            }
+
+            let file_name = file_entry.file_name();
+            let file_name_str = file_name.to_string_lossy();
+
+            // Check if this file starts with any old stem followed by "."
+            for (old_stem, new_stem) in stem_map {
+                if file_name_str.starts_with(old_stem)
+                    && file_name_str.as_bytes().get(old_stem.len()) == Some(&b'.')
+                {
+                    let suffix = &file_name_str[old_stem.len()..];
+                    let new_name = format!("{new_stem}{suffix}");
+                    let target = subdir_path.join(&new_name);
+
+                    if target == file_path {
+                        result.already_correct += 1;
+                        continue;
+                    }
+
+                    // Check for conflicts
+                    if let Some(prev_source) = target_sources.get(&target) {
+                        result.conflicts.push((
+                            file_path.clone(),
+                            format!(
+                                "Multiple media files map to \"{}\": \"{}\" and \"{}\"",
+                                new_name,
+                                prev_source
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy(),
+                                file_name_str,
+                            ),
+                        ));
+                        continue;
+                    }
+
+                    target_sources.insert(target.clone(), file_path.clone());
+
+                    result.renames.push(MediaRenameAction {
+                        source: file_path.clone(),
+                        target,
+                        subdir_name: subdir_name.clone(),
+                    });
+                    break; // Only match first stem (avoid double-matching)
+                }
+            }
+        }
+    }
+
+    result
+}
+
+/// Execute a media rename plan.
+pub fn execute_media_renames(plan: &MediaRenamePlan) -> MediaRenameSummary {
+    let mut summary = MediaRenameSummary::default();
+
+    for action in &plan.renames {
+        if action.target.exists() && action.source != action.target {
+            summary.errors.push(format!(
+                "Media target already exists: {}",
+                action.target.display()
+            ));
+            continue;
+        }
+
+        match fs::rename(&action.source, &action.target) {
+            Ok(()) => summary.renamed += 1,
+            Err(e) => {
+                summary.errors.push(format!(
+                    "Failed to rename media {:?} -> {:?}: {}",
+                    action.source.file_name().unwrap_or_default(),
+                    action.target.file_name().unwrap_or_default(),
+                    e,
+                ));
+            }
+        }
+    }
+
+    summary
+}
+
 /// Format a MatchMethod for display.
 pub fn format_match_method(method: &MatchMethod) -> &'static str {
     match method {
