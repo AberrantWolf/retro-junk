@@ -2,6 +2,7 @@
 name = "retro-junk-cli"
 version.workspace = true
 edition.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "retro-junk"
