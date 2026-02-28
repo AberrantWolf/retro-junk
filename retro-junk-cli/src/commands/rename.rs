@@ -23,14 +23,13 @@ pub(crate) fn run_rename(
     hash_mode: bool,
     consoles: Option<Vec<Platform>>,
     limit: Option<usize>,
-    root: Option<PathBuf>,
+    library_path: PathBuf,
     dat_dir: Option<PathBuf>,
     quiet: bool,
     media_dir_override: Option<PathBuf>,
     no_media: bool,
 ) -> Result<(), CliError> {
-    let root_path =
-        root.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let root_path = library_path;
 
     let rename_options = RenameOptions {
         hash_mode,

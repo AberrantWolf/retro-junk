@@ -16,4 +16,6 @@ crc32fast.workspace = true
 sha1.workspace = true
 md5.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
+toml.workspace = true
+dirs.workspace = true
 log.workspace = true

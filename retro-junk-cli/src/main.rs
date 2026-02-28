@@ -142,9 +142,9 @@ fn main() {
 
     let ctx = create_context();
     let command = cli.command;
-    let root = cli.root;
+    let library_path = cli.library_path;
 
-    if let Err(e) = run(command, root, quiet, &ctx) {
+    if let Err(e) = run(command, library_path, quiet, &ctx) {
         log::error!("{e}");
         std::process::exit(1);
     }
@@ -152,13 +152,28 @@ fn main() {
 
 fn run(
     command: Commands,
-    root: Option<PathBuf>,
+    library_path_override: Option<PathBuf>,
     quiet: bool,
     ctx: &AnalysisContext,
 ) -> Result<(), CliError> {
+    // Commands that need the library path resolve it once here.
+    let needs_library_path = matches!(
+        command,
+        Commands::Analyze { .. }
+            | Commands::Rename { .. }
+            | Commands::Repair { .. }
+            | Commands::Scrape { .. }
+    );
+    let library_path = if needs_library_path {
+        retro_junk_lib::settings::resolve_library_path(library_path_override.clone())
+    } else {
+        // Unused — give a dummy value that won't be accessed.
+        PathBuf::new()
+    };
+
     match command {
         Commands::Analyze { quick, roms } => {
-            commands::analyze::run_analyze(ctx, quick, roms.consoles, roms.limit, root)?;
+            commands::analyze::run_analyze(ctx, quick, roms.consoles, roms.limit, library_path)?;
         }
         Commands::Rename {
             dry_run,
@@ -174,7 +189,7 @@ fn run(
                 hash,
                 roms.consoles,
                 roms.limit,
-                root,
+                library_path,
                 dat_dir,
                 quiet,
                 media_dir,
@@ -193,7 +208,7 @@ fn run(
                 no_backup,
                 roms.consoles,
                 roms.limit,
-                root,
+                library_path,
                 dat_dir,
                 quiet,
             )?;
@@ -233,7 +248,7 @@ fn run(
                 no_miximage,
                 force_redownload,
                 threads,
-                root,
+                library_path,
                 quiet,
             )?;
         }
@@ -247,11 +262,17 @@ fn run(
                 commands::cache::run_gdb_cache_fetch(ctx, systems)?
             }
         },
-        Commands::Config { action } => match action {
-            ConfigAction::Show => commands::config::run_config_show()?,
-            ConfigAction::Setup => commands::config::run_config_setup()?,
-            ConfigAction::Test => commands::config::run_config_test(quiet)?,
-            ConfigAction::Path => commands::config::run_config_path()?,
+        Commands::Credentials { action } => match action {
+            CredentialsAction::Show => commands::credentials::run_credentials_show()?,
+            CredentialsAction::Setup => commands::credentials::run_credentials_setup()?,
+            CredentialsAction::Test => commands::credentials::run_credentials_test(quiet)?,
+            CredentialsAction::Path => commands::credentials::run_credentials_path()?,
+        },
+        Commands::Settings { action } => match action {
+            SettingsAction::Show => commands::config::run_config_show()?,
+            SettingsAction::LibraryPath { path, clear } => {
+                commands::config::run_config_library_path(path, clear)?
+            }
         },
         Commands::Catalog { action } => match action {
             CatalogAction::Import {

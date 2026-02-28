@@ -77,7 +77,7 @@ pub(crate) async fn connect_screenscraper(
                     "\n\nSet credentials via environment variables:\n\
                      SCREENSCRAPER_DEVID, SCREENSCRAPER_DEVPASSWORD\n\
                      SCREENSCRAPER_SSID, SCREENSCRAPER_SSPASSWORD (optional)\n\n\
-                     Or run 'retro-junk config setup' to configure credentials.",
+                     Or run 'retro-junk credentials setup' to configure credentials.",
                 );
             }
             return Err(CliError::config(msg));
@@ -125,11 +125,10 @@ pub(crate) fn run_scrape(
     no_miximage: bool,
     force_redownload: bool,
     threads: Option<usize>,
-    root: Option<PathBuf>,
+    library_path: PathBuf,
     quiet: bool,
 ) -> Result<(), CliError> {
-    let root_path =
-        root.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let root_path = library_path;
 
     // Build scrape options
     let mut options = retro_junk_scraper::ScrapeOptions::new(root_path.clone());

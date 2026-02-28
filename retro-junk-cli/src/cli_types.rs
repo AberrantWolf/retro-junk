@@ -10,9 +10,9 @@ use retro_junk_lib::Platform;
 #[command(name = "retro-junk")]
 #[command(about = "Analyze retro game ROMs and disc images", long_about = None)]
 pub(crate) struct Cli {
-    /// Root path containing console folders (defaults to current directory)
-    #[arg(short, long, global = true)]
-    pub root: Option<PathBuf>,
+    /// Library path containing console folders (falls back to saved config, then cwd)
+    #[arg(short = 'L', long, global = true, alias = "root")]
+    pub library_path: Option<PathBuf>,
 
     /// Only show warnings and errors (suppress normal output)
     #[arg(long, global = true)]
@@ -168,10 +168,17 @@ pub(crate) enum Commands {
         action: CacheAction,
     },
 
-    /// Manage ScreenScraper credentials configuration
-    Config {
+    /// Manage ScreenScraper credentials
+    #[command(alias = "config")]
+    Credentials {
         #[command(subcommand)]
-        action: ConfigAction,
+        action: CredentialsAction,
+    },
+
+    /// Manage application settings (library path, etc.)
+    Settings {
+        #[command(subcommand)]
+        action: SettingsAction,
     },
 
     /// Manage the game catalog database
@@ -211,7 +218,7 @@ pub(crate) enum CacheAction {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum ConfigAction {
+pub(crate) enum CredentialsAction {
     /// Show current credentials and their sources
     Show,
 
@@ -221,8 +228,24 @@ pub(crate) enum ConfigAction {
     /// Test credentials against the ScreenScraper API
     Test,
 
-    /// Print the config file path
+    /// Print the credentials file path
     Path,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SettingsAction {
+    /// Show all saved settings
+    Show,
+
+    /// Show or set the library path
+    LibraryPath {
+        /// New library path to save (omit to display current)
+        path: Option<PathBuf>,
+
+        /// Clear the saved library path
+        #[arg(long)]
+        clear: bool,
+    },
 }
 
 #[derive(Subcommand)]

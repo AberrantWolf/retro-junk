@@ -18,10 +18,9 @@ pub(crate) fn run_analyze(
     quick: bool,
     consoles: Option<Vec<Platform>>,
     limit: Option<usize>,
-    root: Option<PathBuf>,
+    library_path: PathBuf,
 ) -> Result<(), CliError> {
-    let root_path =
-        root.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let root_path = library_path;
 
     log::info!("Analyzing ROMs in: {}", root_path.display());
     if quick {

@@ -10,6 +10,7 @@ pub mod hasher;
 pub mod rename;
 pub mod repair;
 pub mod scanner;
+pub mod settings;
 pub mod util;
 
 // Re-export context items at crate root for backwards compatibility.

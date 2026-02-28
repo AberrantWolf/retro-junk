@@ -21,12 +21,11 @@ pub(crate) fn run_repair(
     no_backup: bool,
     consoles: Option<Vec<Platform>>,
     limit: Option<usize>,
-    root: Option<PathBuf>,
+    library_path: PathBuf,
     dat_dir: Option<PathBuf>,
     quiet: bool,
 ) -> Result<(), CliError> {
-    let root_path =
-        root.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let root_path = library_path;
 
     let repair_options = RepairOptions {
         dat_dir,

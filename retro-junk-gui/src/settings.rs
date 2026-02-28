@@ -59,9 +59,10 @@ impl Default for GeneralSettings {
 }
 
 /// Returns `~/.config/retro-junk/settings.toml`.
+///
+/// Delegates to the shared implementation in `retro-junk-lib`.
 pub fn settings_path() -> PathBuf {
-    let config = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    config.join("retro-junk").join("settings.toml")
+    retro_junk_lib::settings::settings_path()
 }
 
 /// Load settings from disk, returning defaults if missing or corrupt.
