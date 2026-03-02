@@ -89,6 +89,32 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     .weak()
                     .italics(),
             );
+        } else if entry.status == EntryStatus::Ambiguous && entry.ambiguous_candidates.is_empty() {
+            ui.add_space(2.0);
+            if let Some(ref discs) = entry.disc_identifications {
+                let unresolved: Vec<usize> = discs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| d.dat_match.is_none())
+                    .map(|(i, _)| i + 1)
+                    .collect();
+                if !unresolved.is_empty() {
+                    let disc_list = unresolved
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    ui.label(
+                        egui::RichText::new(format!("Disc {} not matched in database.", disc_list))
+                            .weak(),
+                    );
+                }
+            }
+            ui.label(
+                egui::RichText::new("Calculate hashes to resolve.")
+                    .weak()
+                    .italics(),
+            );
         }
 
         ui.add_space(4.0);
@@ -349,6 +375,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                         ui.add_space(16.0);
                         ui.label(egui::RichText::new("DAT:").weak());
                         ui.label(&dm.rom_name);
+                    });
+                } else if entry.status == EntryStatus::Ambiguous {
+                    ui.horizontal(|ui| {
+                        ui.add_space(16.0);
+                        ui.label(egui::RichText::new("DAT:").weak());
+                        ui.label(
+                            egui::RichText::new("unresolved").color(EntryStatus::Ambiguous.color()),
+                        );
                     });
                 }
             }

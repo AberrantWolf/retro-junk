@@ -914,6 +914,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     let mut matched_names: Vec<String> = Vec::new();
                     let mut first_rom_name = String::new();
                     let mut any_ambiguous = false;
+                    let mut all_candidates: Vec<String> = Vec::new();
 
                     if let Some(ref mut discs) = entry.disc_identifications {
                         for disc in discs.iter_mut() {
@@ -934,8 +935,13 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                         });
                                         matched_names.push(name);
                                     }
-                                    SerialLookupResult::Ambiguous { .. } => {
+                                    SerialLookupResult::Ambiguous { candidates } => {
                                         any_ambiguous = true;
+                                        for c in candidates {
+                                            if !all_candidates.contains(&c) {
+                                                all_candidates.push(c);
+                                            }
+                                        }
                                     }
                                     SerialLookupResult::NotFound => {}
                                 }
@@ -963,14 +969,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             rom_name: first_rom_name,
                             method: MatchMethod::Serial,
                         });
-                        entry.status = if any_ambiguous {
-                            EntryStatus::Ambiguous
+                        if any_ambiguous {
+                            entry.status = EntryStatus::Ambiguous;
+                            entry.ambiguous_candidates = all_candidates;
                         } else {
-                            EntryStatus::Matched
-                        };
-                        entry.ambiguous_candidates.clear();
+                            entry.status = EntryStatus::Matched;
+                            entry.ambiguous_candidates.clear();
+                        }
                     } else if any_ambiguous {
                         entry.status = EntryStatus::Ambiguous;
+                        entry.ambiguous_candidates = all_candidates;
                     }
                 }
 
@@ -1078,6 +1086,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         let mut matched_names: Vec<String> = Vec::new();
                         let mut first_rom_name = String::new();
                         let mut any_ambiguous = false;
+                        let mut all_candidates: Vec<String> = Vec::new();
 
                         for disc in discs.iter_mut() {
                             if let Some(ref serial) = disc.identification.serial_number {
@@ -1100,8 +1109,15 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                         matched_names.push(name);
                                         continue;
                                     }
-                                    SerialLookupResult::Ambiguous { .. }
-                                    | SerialLookupResult::NotFound => {}
+                                    SerialLookupResult::Ambiguous { candidates } => {
+                                        any_ambiguous = true;
+                                        for c in candidates {
+                                            if !all_candidates.contains(&c) {
+                                                all_candidates.push(c);
+                                            }
+                                        }
+                                    }
+                                    SerialLookupResult::NotFound => {}
                                 }
                             }
 
@@ -1146,14 +1162,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 rom_name: first_rom_name,
                                 method: MatchMethod::Serial,
                             });
-                            entry.status = if any_ambiguous {
-                                EntryStatus::Ambiguous
+                            if any_ambiguous {
+                                entry.status = EntryStatus::Ambiguous;
+                                entry.ambiguous_candidates = all_candidates;
                             } else {
-                                EntryStatus::Matched
-                            };
-                            entry.ambiguous_candidates.clear();
+                                entry.status = EntryStatus::Matched;
+                                entry.ambiguous_candidates.clear();
+                            }
                         } else if any_ambiguous {
                             entry.status = EntryStatus::Ambiguous;
+                            entry.ambiguous_candidates = all_candidates;
                         }
 
                         // If re-matching couldn't fully resolve but the entry
