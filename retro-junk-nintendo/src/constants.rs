@@ -27,8 +27,8 @@ pub(crate) fn region_from_game_code(code: &str) -> Option<Region> {
     code.chars().nth(3).and_then(|c| match c {
         'J' => Some(Region::Japan),
         'E' => Some(Region::Usa),
-        'P' | 'D' | 'F' | 'S' | 'I' | 'U' => Some(Region::Europe),
-        'K' => Some(Region::Korea),
+        'P' | 'D' | 'F' | 'S' | 'I' | 'U' | 'L' | 'M' => Some(Region::Europe),
+        'K' | 'Q' => Some(Region::Korea),
         'C' => Some(Region::China),
         'A' | 'W' => Some(Region::World),
         _ => None,

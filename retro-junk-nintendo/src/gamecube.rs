@@ -3,13 +3,26 @@
 //! Supports:
 //! - ISO images (.iso)
 //! - GCM images (.gcm)
-//! - RVZ compressed images (.rvz)
-//! - CISO compressed images (.ciso)
-//! - NKit images (.nkit.iso, .nkit.gcz)
+//! - Compressed formats via `nod`: RVZ, WIA, WBFS, CISO, GCZ
+//!
+//! The GameCube disc header ("boot.bin") occupies bytes 0x0000–0x043F.
+//! Detection uses the DVD magic word 0xC2339F3D at offset 0x001C, with
+//! verification that the Wii magic at 0x0018 is absent.
+//!
+//! Compressed format support uses the `nod` crate (by the Dolphin team) to
+//! transparently decompress disc containers. The decompressed data is passed
+//! to the same `parse_disc_header()` used for raw ISOs.
+
+use std::io::SeekFrom;
 
 use retro_junk_core::ReadSeek;
 
 use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
+
+use crate::nintendo_disc;
+
+/// Standard GameCube disc size: 1,459,978,240 bytes (1.4 GB mini-DVD).
+const GCM_DISC_SIZE: u64 = 1_459_978_240;
 
 /// Analyzer for Nintendo GameCube disc images.
 #[derive(Debug, Default)]
@@ -24,12 +37,36 @@ impl GameCubeAnalyzer {
 impl RomAnalyzer for GameCubeAnalyzer {
     fn analyze(
         &self,
-        _reader: &mut dyn ReadSeek,
-        _options: &AnalysisOptions,
+        reader: &mut dyn ReadSeek,
+        options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        Err(AnalysisError::other(
-            "GameCube disc analysis not yet implemented",
-        ))
+        let file_size = reader.seek(SeekFrom::End(0))?;
+
+        // Detect compressed container (RVZ, WIA, WBFS, CISO, GCZ) or raw ISO
+        let (header, format_name) = if nintendo_disc::is_compressed_disc(reader) {
+            let path = options.file_path.as_ref().ok_or_else(|| {
+                AnalysisError::invalid_format(
+                    "Compressed disc format detected but no file path provided",
+                )
+            })?;
+            let (header, format_name, _disc_size) = nintendo_disc::open_compressed_disc(path)?;
+            (header, format_name)
+        } else {
+            (nintendo_disc::parse_disc_header(reader)?, "ISO")
+        };
+
+        if !nintendo_disc::is_gamecube(&header) {
+            return Err(AnalysisError::invalid_format(
+                "Not a GameCube disc (magic word mismatch)",
+            ));
+        }
+
+        let mut id = nintendo_disc::build_identification(&header, Platform::GameCube);
+        id.file_size = Some(file_size);
+        id.expected_size = Some(GCM_DISC_SIZE);
+        id.extra.insert("format".into(), format_name.into());
+
+        Ok(id)
     }
 
     fn platform(&self) -> Platform {
@@ -40,8 +77,10 @@ impl RomAnalyzer for GameCubeAnalyzer {
         &["iso", "gcm", "rvz", "ciso", "gcz"]
     }
 
-    fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
-        false // Not yet implemented
+    fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
+        nintendo_disc::check_magic(reader)
+            .map(|(gc, _)| gc)
+            .unwrap_or(false)
     }
 
     fn dat_source(&self) -> retro_junk_core::DatSource {
@@ -50,6 +89,24 @@ impl RomAnalyzer for GameCubeAnalyzer {
 
     fn dat_names(&self) -> &'static [&'static str] {
         &["Nintendo - GameCube"]
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["gc"]
+    }
+
+    fn expects_serial(&self) -> bool {
+        true
+    }
+
+    fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
+        // Serial is the 4-byte game code from the disc header (e.g., "GALE").
+        // Return as-is for DAT matching.
+        if serial.len() == 4 && serial.is_ascii() {
+            Some(serial.to_string())
+        } else {
+            None
+        }
     }
 }
 

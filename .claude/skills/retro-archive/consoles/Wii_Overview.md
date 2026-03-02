@@ -40,6 +40,9 @@
 - GameCube backwards compatibility in emulation
 - Total library size: ~6.56TB uncompressed
 
+## ROM Format Reference
+See [Wii.md](../formats/Wii.md) for detailed header format, detection method, and hashing conventions.
+
 ## Digital Storage Considerations
 - **Space Requirements**: Very high - requires multiple TB storage
 - **Backup Strategy**: Critical due to massive library size

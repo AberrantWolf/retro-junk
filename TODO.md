@@ -19,6 +19,16 @@
 
 - [x] **Add space below table** both to fill the remainder of the view, as well as allow space to select the bottom row (mostly blocked by the scroll bar)
 
+## Analyzer: Compressed Disc Formats
+
+- [x] **GameCube/Wii compressed format identification** — RVZ, WIA, WBFS, CISO, and GCZ containers are now transparently decompressed via the `nod` crate (v1.4) for header identification. Shared helpers in `nintendo_disc.rs` (`is_compressed_disc()`, `open_compressed_disc()`) are used by both analyzers. No duplicated decompression code.
+
+- [ ] **Compressed disc hashing for DAT matching** — Hashing compressed disc images (RVZ, WBFS, etc.) against Redump DATs requires decompressing the full disc and hashing the raw data. The `compute_container_hashes()` trait method currently only receives `&mut dyn ReadSeek` (no file path), so it can't open `nod::Disc`. Needs a trait signature addition (`&AnalysisOptions` parameter) to pass the file path through.
+
+- [ ] **GameCube NKit support** — NKit is a lossy-compressed format (`.nkit.iso`, `.nkit.gcz`) that removes junk/padding data. Hashes will not match Redump unless converted back to full ISO. May need special handling or a warning that NKit images can't be verified against Redump.
+
+- [ ] **Check nod v2.0 stability** — The `nod` crate v2.0 may bring API changes. Check for stability and migration when it releases.
+
 ## Data Model & Import Pipeline
 
 - [x] **Work reconciliation by ScreenScraper ID** — Fully implemented: `reconcile_works()` in `retro-junk-import/src/reconcile.rs`, `find_reconcilable_works()` query in `retro-junk-db`, `catalog reconcile` CLI command, and auto-runs after `catalog enrich` (skippable via `--no-reconcile`).

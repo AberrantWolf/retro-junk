@@ -23,6 +23,7 @@ pub mod n3ds;
 pub mod n64;
 pub(crate) mod n64_byteorder;
 pub mod nes;
+pub(crate) mod nintendo_disc;
 pub mod snes;
 pub mod wii;
 pub mod wiiu;

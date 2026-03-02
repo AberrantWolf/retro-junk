@@ -51,6 +51,7 @@
 - [SNES / Super Famicom](formats/SNES.md)
 - [Nintendo 64](formats/N64.md)
 - [GameCube](formats/GameCube.md)
+- [Wii](formats/Wii.md)
 - [Nintendo DS](formats/NDS.md)
 - [Nintendo 3DS](formats/3DS.md)
 - [Master System / Game Gear](formats/MasterSystem.md)

@@ -4,7 +4,10 @@ description: Step-by-step guide for implementing a new ROM analyzer, including D
 
 # Implementing a New Analyzer
 
-Use `retro-junk-nintendo/src/nes.rs` as the reference implementation.
+**Reference implementations:**
+- **Cartridge-based:** `retro-junk-nintendo/src/nes.rs` (simplest), `retro-junk-nintendo/src/gba.rs` (with checksums and game code)
+- **Disc-based:** `retro-junk-nintendo/src/gamecube.rs` and `retro-junk-nintendo/src/wii.rs` (Redump DAT, shared parsing via `nintendo_disc.rs`)
+- **Disc-based (advanced):** `retro-junk-sony/src/ps2.rs` (multi-format: ISO, BIN, CUE, CHD; shared parsing via `sony_disc.rs`)
 
 1. Create `src/<console>.rs` in the platform crate
 2. Implement `RomAnalyzer` for your struct:
@@ -16,6 +19,8 @@ Use `retro-junk-nintendo/src/nes.rs` as the reference implementation.
    - Optionally override scraper methods (see below)
 3. Re-export from the platform crate's `lib.rs`
 4. Register in `retro-junk-cli/src/main.rs` `create_context()`
+
+**Shared modules:** When two consoles share the same disc/cartridge header format (e.g., GameCube/Wii, PS1/PS2), create a `pub(crate)` shared module (like `nintendo_disc.rs` or `sony_disc.rs`) that both analyzers delegate to. This avoids duplicating header parsing, magic detection, and region mapping.
 
 ## DAT Support via Trait Methods on `RomAnalyzer`
 
@@ -36,6 +41,6 @@ These methods control how an analyzer integrates with DAT file matching:
 ## DAT Source Selection
 
 - **No-Intro** (cartridge consoles): LibRetro enhanced DATs from `libretro/libretro-database` (`metadat/no-intro/`). `dat_download_ids()` defaults to `dat_names()`.
-- **Redump** (disc consoles): Downloaded from redump.org (`http://redump.org/datfile/{id}/serial,version`). `dat_download_ids()` returns system slugs (e.g., `"psx"`, `"ps2"`, `"dc"`).
+- **Redump** (disc consoles): Downloaded from redump.org (`http://redump.org/datfile/{id}/serial,version`). `dat_download_ids()` returns system slugs (e.g., `"psx"`, `"ps2"`, `"gc"`, `"wii"`, `"dc"`).
 
 See the [game-scraping skill](/Users/scott/Programming/rust/retro-junk/.claude/skills/game-scraping/SKILL.md) for full details on DAT sources, formats, and known issues.

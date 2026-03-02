@@ -8,3 +8,4 @@ retro-junk-core.workspace = true
 thiserror.workspace = true
 sha2.workspace = true
 crc32fast.workspace = true
+nod.workspace = true
