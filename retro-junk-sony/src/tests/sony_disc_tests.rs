@@ -1,143 +1,10 @@
 use super::*;
+use crate::disc_test_helpers::{make_iso, make_iso_with_system_cnf, make_raw_bin};
 use std::io::Cursor;
 
-// -- Test helpers --
-
-/// Build a minimal 2048-byte PVD sector with a given system identifier.
-fn make_pvd_sector(system_id: &str) -> [u8; 2048] {
-    let mut sector = [0u8; 2048];
-    sector[0] = 0x01; // PVD type
-    sector[1..6].copy_from_slice(b"CD001"); // standard identifier
-    sector[6] = 0x01; // version
-
-    // System identifier at offset 8, 32 bytes padded with spaces
-    let id_bytes = system_id.as_bytes();
-    let len = id_bytes.len().min(32);
-    sector[8..8 + len].copy_from_slice(&id_bytes[..len]);
-    for i in len..32 {
-        sector[8 + i] = b' ';
-    }
-
-    // Volume identifier at offset 40, 32 bytes
-    let vol = b"TEST_VOLUME";
-    sector[40..40 + vol.len()].copy_from_slice(vol);
-    for i in vol.len()..32 {
-        sector[40 + i] = b' ';
-    }
-
-    // Volume space size at offset 80 (LE) — say 200 sectors
-    sector[80..84].copy_from_slice(&200u32.to_le_bytes());
-    sector[84..88].copy_from_slice(&200u32.to_be_bytes());
-
-    // Root directory record at offset 156 (34 bytes)
-    sector[156] = 34; // record length
-    // extent LBA at record+2 (LE) — sector 18
-    sector[158..162].copy_from_slice(&18u32.to_le_bytes());
-    // data length at record+10 (LE) — 2048 bytes (1 sector)
-    sector[166..170].copy_from_slice(&2048u32.to_le_bytes());
-
-    sector
-}
-
-/// Build a minimal ISO: 16 sectors of padding + PVD at sector 16.
-fn make_iso(system_id: &str) -> Vec<u8> {
-    let mut data = vec![0u8; 16 * 2048]; // 16 empty sectors
-    let pvd = make_pvd_sector(system_id);
-    data.extend_from_slice(&pvd);
-    data
-}
-
-/// Wrap 2048 bytes of user data into a raw 2352-byte Mode 2 Form 1 sector.
-fn make_raw_sector(user_data: &[u8; 2048]) -> [u8; 2352] {
-    let mut sector = [0u8; 2352];
-    // 12 bytes sync
-    sector[0..12].copy_from_slice(&CD_SYNC_PATTERN);
-    // 4 bytes header (MSF + mode) — just set mode to 2
-    sector[15] = 0x02;
-    // 8 bytes subheader — zeros are fine
-    // 2048 bytes user data at offset 24
-    sector[24..24 + 2048].copy_from_slice(user_data);
-    // Remaining bytes (EDC/ECC) left as zero
-    sector
-}
-
-/// Build a raw BIN: 16 raw empty sectors + raw PVD sector.
-fn make_raw_bin(system_id: &str) -> Vec<u8> {
-    let empty_user = [0u8; 2048];
-    let mut data = Vec::new();
-    for _ in 0..16 {
-        data.extend_from_slice(&make_raw_sector(&empty_user));
-    }
-    let pvd = make_pvd_sector(system_id);
-    data.extend_from_slice(&make_raw_sector(&pvd));
-    data
-}
-
-/// Build a directory record for a file.
-fn make_dir_record(filename: &str, extent_lba: u32, data_length: u32) -> Vec<u8> {
-    let id_bytes = filename.as_bytes();
-    let id_len = id_bytes.len();
-    let record_len = 33 + id_len + (id_len % 2); // pad to even
-    let mut record = vec![0u8; record_len];
-    record[0] = record_len as u8;
-    record[2..6].copy_from_slice(&extent_lba.to_le_bytes());
-    record[10..14].copy_from_slice(&data_length.to_le_bytes());
-    record[25] = 0; // file flags (regular file)
-    record[32] = id_len as u8;
-    record[33..33 + id_len].copy_from_slice(id_bytes);
-    record
-}
-
-/// Build a full ISO with a root directory containing SYSTEM.CNF.
-fn make_iso_with_system_cnf(serial: &str) -> Vec<u8> {
-    let system_cnf_content = format!("BOOT = cdrom:\\{};1\r\nVMODE = NTSC\r\n", serial);
-    let cnf_bytes = system_cnf_content.as_bytes();
-
-    // Layout:
-    // Sectors 0-15: empty padding
-    // Sector 16: PVD (root dir at sector 18, 1 sector)
-    // Sector 17: empty (VD terminator)
-    // Sector 18: root directory (with "." ".." and "SYSTEM.CNF;1" entries)
-    // Sector 19: SYSTEM.CNF content
-
-    let mut data = vec![0u8; 16 * 2048]; // sectors 0-15
-
-    // Sector 16: PVD
-    let mut pvd = make_pvd_sector("PLAYSTATION");
-    // Point root dir to sector 18, size 2048
-    pvd[158..162].copy_from_slice(&18u32.to_le_bytes());
-    pvd[166..170].copy_from_slice(&2048u32.to_le_bytes());
-    data.extend_from_slice(&pvd);
-
-    // Sector 17: empty (VD set terminator would go here)
-    data.extend_from_slice(&[0u8; 2048]);
-
-    // Sector 18: root directory
-    let mut dir_sector = [0u8; 2048];
-    let mut pos = 0;
-
-    // "." entry (current directory)
-    let dot_record = make_dir_record("\0", 18, 2048);
-    dir_sector[pos..pos + dot_record.len()].copy_from_slice(&dot_record);
-    pos += dot_record.len();
-
-    // ".." entry (parent directory)
-    let dotdot_record = make_dir_record("\x01", 18, 2048);
-    dir_sector[pos..pos + dotdot_record.len()].copy_from_slice(&dotdot_record);
-    pos += dotdot_record.len();
-
-    // SYSTEM.CNF entry pointing to sector 19
-    let cnf_record = make_dir_record("SYSTEM.CNF;1", 19, cnf_bytes.len() as u32);
-    dir_sector[pos..pos + cnf_record.len()].copy_from_slice(&cnf_record);
-
-    data.extend_from_slice(&dir_sector);
-
-    // Sector 19: SYSTEM.CNF content
-    let mut cnf_sector = [0u8; 2048];
-    cnf_sector[..cnf_bytes.len()].copy_from_slice(cnf_bytes);
-    data.extend_from_slice(&cnf_sector);
-
-    data
+// sony_disc tests use "BOOT" key by default for SYSTEM.CNF
+fn make_boot_iso_with_system_cnf(serial: &str) -> Vec<u8> {
+    make_iso_with_system_cnf(serial, "BOOT")
 }
 
 // -- Format detection tests --
@@ -222,6 +89,7 @@ fn test_parse_system_cnf_standard() {
     let cnf = "BOOT = cdrom:\\SLUS_012.34;1\r\nVMODE = NTSC\r\n";
     let result = parse_system_cnf(cnf).unwrap();
     assert_eq!(result.boot_path, "cdrom:\\SLUS_012.34;1");
+    assert_eq!(result.boot_key, BootKey::Boot);
     assert_eq!(result.vmode.as_deref(), Some("NTSC"));
 }
 
@@ -230,7 +98,17 @@ fn test_parse_system_cnf_boot2() {
     let cnf = "BOOT2 = cdrom0:\\SLPS_123.45;1\r\n";
     let result = parse_system_cnf(cnf).unwrap();
     assert_eq!(result.boot_path, "cdrom0:\\SLPS_123.45;1");
+    assert_eq!(result.boot_key, BootKey::Boot2);
     assert_eq!(result.vmode, None);
+}
+
+#[test]
+fn test_parse_system_cnf_boot2_preferred_over_boot() {
+    // When both BOOT and BOOT2 are present, BOOT2 wins (PS2 is more specific)
+    let cnf = "BOOT = cdrom:\\OLD.EXE;1\r\nBOOT2 = cdrom0:\\SLUS_999.99;1\r\n";
+    let result = parse_system_cnf(cnf).unwrap();
+    assert_eq!(result.boot_path, "cdrom0:\\SLUS_999.99;1");
+    assert_eq!(result.boot_key, BootKey::Boot2);
 }
 
 #[test]
@@ -287,6 +165,15 @@ fn test_extract_serial_no_backslash() {
     assert_eq!(
         extract_serial("cdrom:SLUS_006.91;1"),
         Some("SLUS-00691".to_string())
+    );
+}
+
+#[test]
+fn test_extract_serial_ps2_cdrom0() {
+    // PS2 uses cdrom0: prefix
+    assert_eq!(
+        extract_serial("cdrom0:\\SLUS_200.62;1"),
+        Some("SLUS-20062".to_string())
     );
 }
 
@@ -363,7 +250,7 @@ FILE "game (Track 2).bin" BINARY
 
 #[test]
 fn test_find_system_cnf_in_iso() {
-    let data = make_iso_with_system_cnf("SLUS_012.34");
+    let data = make_boot_iso_with_system_cnf("SLUS_012.34");
     let mut cursor = Cursor::new(data);
     let pvd = read_pvd(&mut cursor, DiscFormat::Iso2048).unwrap();
     let content = find_file_in_root(&mut cursor, DiscFormat::Iso2048, &pvd, "SYSTEM.CNF").unwrap();
@@ -373,7 +260,7 @@ fn test_find_system_cnf_in_iso() {
 
 #[test]
 fn test_full_iso_serial_extraction() {
-    let data = make_iso_with_system_cnf("SLUS_012.34");
+    let data = make_boot_iso_with_system_cnf("SLUS_012.34");
     let mut cursor = Cursor::new(data);
     let pvd = read_pvd(&mut cursor, DiscFormat::Iso2048).unwrap();
     let content = find_file_in_root(&mut cursor, DiscFormat::Iso2048, &pvd, "SYSTEM.CNF").unwrap();
@@ -385,7 +272,7 @@ fn test_full_iso_serial_extraction() {
 
 #[test]
 fn test_file_not_found_in_root() {
-    let data = make_iso_with_system_cnf("SLUS_012.34");
+    let data = make_boot_iso_with_system_cnf("SLUS_012.34");
     let mut cursor = Cursor::new(data);
     let pvd = read_pvd(&mut cursor, DiscFormat::Iso2048).unwrap();
     assert!(find_file_in_root(&mut cursor, DiscFormat::Iso2048, &pvd, "NONEXIST.TXT").is_err());
@@ -404,7 +291,6 @@ fn make_multi_track_bin(data_sectors: usize, audio_sectors: usize) -> Vec<u8> {
         let mut sector = [0u8; RAW_SECTOR_SIZE as usize];
         sector[0..12].copy_from_slice(&CD_SYNC_PATTERN);
         sector[15] = 0x02; // Mode 2
-        // Fill user data area with a deterministic pattern
         for (j, byte) in sector[24..2072].iter_mut().enumerate() {
             *byte = ((i * 251 + j * 97) & 0xFF) as u8;
         }
@@ -412,11 +298,9 @@ fn make_multi_track_bin(data_sectors: usize, audio_sectors: usize) -> Vec<u8> {
     }
     for i in 0..audio_sectors {
         let mut sector = [0u8; RAW_SECTOR_SIZE as usize];
-        // Audio sectors: no sync pattern, fill with deterministic audio-like data
         for (j, byte) in sector.iter_mut().enumerate() {
             *byte = ((i * 173 + j * 59 + 0xAA) & 0xFF) as u8;
         }
-        // Ensure byte 0 is NOT 0x00 (first byte of sync pattern) to be safe
         sector[0] = 0xAA;
         bin.extend_from_slice(&sector);
     }
@@ -447,20 +331,16 @@ fn reference_hashes(data: &[u8]) -> (String, String, String) {
 
 #[test]
 fn test_find_raw_bin_data_track_boundary() {
-    // 10 data sectors + 5 audio sectors
     let bin = make_multi_track_bin(10, 5);
     let mut cursor = Cursor::new(bin);
-
     let result = find_raw_bin_data_track_size(&mut cursor).unwrap();
     assert_eq!(result, Some(10 * RAW_SECTOR_SIZE));
 }
 
 #[test]
 fn test_find_raw_bin_data_track_single_track() {
-    // All data, no audio — should return None (no trimming needed)
     let bin = make_multi_track_bin(10, 0);
     let mut cursor = Cursor::new(bin);
-
     let result = find_raw_bin_data_track_size(&mut cursor).unwrap();
     assert_eq!(result, None);
 }
@@ -471,11 +351,9 @@ fn test_multi_track_bin_hashes_data_only() {
     let audio_sectors = 8;
     let bin = make_multi_track_bin(data_sectors, audio_sectors);
 
-    // Compute reference hashes from just the data track portion
     let data_track_bytes = data_sectors * RAW_SECTOR_SIZE as usize;
     let (expected_crc, expected_sha1, expected_md5) = reference_hashes(&bin[..data_track_bytes]);
 
-    // Now run the analyzer's compute_container_hashes
     let mut cursor = Cursor::new(bin);
     let analyzer = crate::ps1::Ps1Analyzer;
     let algorithms = retro_junk_core::HashAlgorithms::All;
@@ -504,8 +382,6 @@ fn test_multi_track_bin_hashes_data_only() {
 
 #[test]
 fn test_single_track_bin_returns_none() {
-    // A single-track BIN (all data) should return None from compute_container_hashes,
-    // meaning the standard hasher path should be used (which hashes the whole file).
     let bin = make_multi_track_bin(20, 0);
     let mut cursor = Cursor::new(bin);
     let analyzer = crate::ps1::Ps1Analyzer;

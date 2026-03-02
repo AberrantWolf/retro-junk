@@ -9,11 +9,15 @@
 //! - PlayStation Vita
 
 pub mod ps1;
-mod ps1_disc;
 pub mod ps2;
 pub mod ps3;
 pub mod psp;
+pub(crate) mod sony_disc;
 pub mod vita;
+
+#[cfg(test)]
+#[path = "tests/disc_test_helpers.rs"]
+pub(crate) mod disc_test_helpers;
 
 pub use ps1::Ps1Analyzer;
 pub use ps2::Ps2Analyzer;

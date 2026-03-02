@@ -58,24 +58,50 @@ fn stream_chunks(
     Ok(())
 }
 
-/// Compute CRC32 of a file, using the analyzer's DAT trait methods for
-/// header stripping and byte-order normalization.
-pub fn compute_crc32(
+/// Unified internal hash engine. Computes whichever combination of CRC32/SHA1/MD5
+/// is requested by `algorithms`, optionally reporting progress via `on_progress`.
+fn compute_hashes_internal(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
+    algorithms: HashAlgorithms,
+    on_progress: Option<&dyn Fn(u64, u64)>,
 ) -> Result<FileHashes, DatError> {
-    if let Some(hashes) = try_container_hashes(reader, analyzer, HashAlgorithms::Crc32)? {
+    if let Some(hashes) = try_container_hashes(reader, analyzer, algorithms)? {
         return Ok(hashes);
     }
 
     let (data_size, mut normalizer) = setup_stream(reader, analyzer)?;
-    let mut hasher = crc32fast::Hasher::new();
-    stream_chunks(reader, &mut normalizer, |chunk| hasher.update(chunk))?;
+    let mut crc = crc32fast::Hasher::new();
+    let mut sha: Option<sha1::Sha1> = if algorithms.sha1() {
+        Some(sha1::Sha1::new())
+    } else {
+        None
+    };
+    let mut md5_ctx: Option<md5::Context> = if algorithms.md5() {
+        Some(md5::Context::new())
+    } else {
+        None
+    };
+
+    let mut processed: u64 = 0;
+    stream_chunks(reader, &mut normalizer, |chunk| {
+        crc.update(chunk);
+        if let Some(ref mut s) = sha {
+            s.update(chunk);
+        }
+        if let Some(ref mut m) = md5_ctx {
+            m.consume(chunk);
+        }
+        processed += chunk.len() as u64;
+        if let Some(cb) = on_progress {
+            cb(processed, data_size);
+        }
+    })?;
 
     Ok(FileHashes {
-        crc32: format!("{:08x}", hasher.finalize()),
-        sha1: None,
-        md5: None,
+        crc32: format!("{:08x}", crc.finalize()),
+        sha1: sha.map(|s| format!("{:x}", s.finalize())),
+        md5: md5_ctx.map(|m| format!("{:x}", m.compute())),
         data_size,
     })
 }
@@ -85,53 +111,26 @@ pub fn compute_crc32_sha1(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
 ) -> Result<FileHashes, DatError> {
-    let alg = HashAlgorithms::Crc32Sha1;
-    if let Some(hashes) = try_container_hashes(reader, analyzer, alg)? {
-        return Ok(hashes);
-    }
-
-    let (data_size, mut normalizer) = setup_stream(reader, analyzer)?;
-    let mut crc = crc32fast::Hasher::new();
-    let mut sha = sha1::Sha1::new();
-    stream_chunks(reader, &mut normalizer, |chunk| {
-        crc.update(chunk);
-        sha.update(chunk);
-    })?;
-
-    Ok(FileHashes {
-        crc32: format!("{:08x}", crc.finalize()),
-        sha1: Some(format!("{:x}", sha.finalize())),
-        md5: None,
-        data_size,
-    })
+    compute_hashes_internal(reader, analyzer, HashAlgorithms::Crc32Sha1, None)
 }
 
-/// Compute CRC32 with a progress callback, using the analyzer's DAT trait methods.
+/// Compute CRC32 and SHA1 with a progress callback.
 /// The callback receives (bytes_processed, total_bytes).
-pub fn compute_crc32_with_progress(
+pub fn compute_crc32_sha1_with_progress(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
     progress: &dyn Fn(u64, u64),
 ) -> Result<FileHashes, DatError> {
-    if let Some(hashes) = try_container_hashes(reader, analyzer, HashAlgorithms::Crc32)? {
-        return Ok(hashes);
-    }
+    compute_hashes_internal(reader, analyzer, HashAlgorithms::Crc32Sha1, Some(progress))
+}
 
-    let (data_size, mut normalizer) = setup_stream(reader, analyzer)?;
-    let mut hasher = crc32fast::Hasher::new();
-    let mut processed: u64 = 0;
-    stream_chunks(reader, &mut normalizer, |chunk| {
-        hasher.update(chunk);
-        processed += chunk.len() as u64;
-        progress(processed, data_size);
-    })?;
-
-    Ok(FileHashes {
-        crc32: format!("{:08x}", hasher.finalize()),
-        sha1: None,
-        md5: None,
-        data_size,
-    })
+/// Compute CRC32, MD5, and SHA1 of a file in a single pass.
+/// Used by the scraper for ScreenScraper API lookups.
+pub fn compute_all_hashes(
+    reader: &mut dyn ReadSeek,
+    analyzer: &dyn RomAnalyzer,
+) -> Result<FileHashes, DatError> {
+    compute_hashes_internal(reader, analyzer, HashAlgorithms::All, None)
 }
 
 /// Specification for padding bytes to prepend/append when computing hashes.
@@ -201,35 +200,6 @@ fn stream_padding(size: u64, fill_byte: u8, mut on_chunk: impl FnMut(&[u8])) {
         on_chunk(&fill_buf[..n]);
         remaining -= n as u64;
     }
-}
-
-/// Compute CRC32, MD5, and SHA1 of a file in a single pass.
-/// Used by the scraper for ScreenScraper API lookups.
-pub fn compute_all_hashes(
-    reader: &mut dyn ReadSeek,
-    analyzer: &dyn RomAnalyzer,
-) -> Result<FileHashes, DatError> {
-    let alg = HashAlgorithms::All;
-    if let Some(hashes) = try_container_hashes(reader, analyzer, alg)? {
-        return Ok(hashes);
-    }
-
-    let (data_size, mut normalizer) = setup_stream(reader, analyzer)?;
-    let mut crc = crc32fast::Hasher::new();
-    let mut sha = sha1::Sha1::new();
-    let mut md5_ctx = md5::Context::new();
-    stream_chunks(reader, &mut normalizer, |chunk| {
-        crc.update(chunk);
-        sha.update(chunk);
-        md5_ctx.consume(chunk);
-    })?;
-
-    Ok(FileHashes {
-        crc32: format!("{:08x}", crc.finalize()),
-        sha1: Some(format!("{:x}", sha.finalize())),
-        md5: Some(format!("{:x}", md5_ctx.compute())),
-        data_size,
-    })
 }
 
 #[cfg(test)]

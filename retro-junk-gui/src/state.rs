@@ -298,6 +298,9 @@ pub struct BackgroundOperation {
     pub progress_current: u64,
     pub progress_total: u64,
     pub cancel_token: Arc<AtomicBool>,
+    /// When true, progress_current/progress_total are byte counts and should
+    /// be displayed as "234.5 MB / 4.7 GB" instead of "3/10".
+    pub progress_is_bytes: bool,
 }
 
 impl BackgroundOperation {
@@ -308,6 +311,7 @@ impl BackgroundOperation {
             progress_current: 0,
             progress_total: 0,
             cancel_token,
+            progress_is_bytes: false,
         }
     }
 

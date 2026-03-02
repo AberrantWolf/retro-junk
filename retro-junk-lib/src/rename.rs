@@ -962,7 +962,7 @@ fn match_by_hash(
         .unwrap_or("?")
         .to_string();
 
-    let hashes = hasher::compute_crc32_with_progress(&mut file, analyzer, &|done, total| {
+    let hashes = hasher::compute_crc32_sha1_with_progress(&mut file, analyzer, &|done, total| {
         progress(RenameProgress::Hashing {
             file_name: file_name.clone(),
             bytes_done: done,
@@ -972,31 +972,10 @@ fn match_by_hash(
 
     let crc32 = hashes.crc32.clone();
     let data_size = hashes.data_size;
-
-    if let Some(result) = index.match_by_hash(hashes.data_size, &hashes) {
-        return Ok(HashMatchOutcome {
-            result: Some(result),
-            crc32,
-            data_size,
-        });
-    }
-
-    // If CRC32 didn't match, try SHA1 (recompute with SHA1)
-    // Only do this if we have size candidates (to avoid pointless rehashing)
-    if index.candidates_by_size(hashes.data_size).is_some() {
-        let mut file = fs::File::open(file_path)?;
-        let full_hashes = hasher::compute_crc32_sha1(&mut file, analyzer)?;
-        if let Some(result) = index.match_by_hash(full_hashes.data_size, &full_hashes) {
-            return Ok(HashMatchOutcome {
-                result: Some(result),
-                crc32,
-                data_size,
-            });
-        }
-    }
+    let result = index.match_by_hash(hashes.data_size, &hashes);
 
     Ok(HashMatchOutcome {
-        result: None,
+        result,
         crc32,
         data_size,
     })

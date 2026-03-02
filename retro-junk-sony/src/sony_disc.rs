@@ -1,7 +1,8 @@
-//! PS1 disc parsing utilities.
+//! Sony disc parsing utilities.
 //!
 //! Handles ISO 9660 filesystem parsing, CD sector formats, SYSTEM.CNF extraction,
 //! serial/region detection, CUE sheet parsing, and CHD disc reading.
+//! Shared by PS1, PS2, and other Sony disc-based console analyzers.
 
 use std::io::SeekFrom;
 
@@ -12,7 +13,7 @@ use retro_junk_core::{AnalysisError, Region};
 // ---------------------------------------------------------------------------
 
 /// CD sync pattern at the start of every raw (2352-byte) sector.
-const CD_SYNC_PATTERN: [u8; 12] = [
+pub const CD_SYNC_PATTERN: [u8; 12] = [
     0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00,
 ];
 
@@ -106,7 +107,7 @@ pub fn detect_disc_format(
 
     reader.seek(SeekFrom::Start(0))?;
     Err(AnalysisError::invalid_format(
-        "Not a recognized PS1 disc format",
+        "Not a recognized disc format",
     ))
 }
 
@@ -369,11 +370,22 @@ fn read_file_content(
 // SYSTEM.CNF parsing
 // ---------------------------------------------------------------------------
 
+/// Which key was used for the boot path in SYSTEM.CNF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BootKey {
+    /// PS1: `BOOT = cdrom:\...`
+    Boot,
+    /// PS2: `BOOT2 = cdrom0:\...`
+    Boot2,
+}
+
 /// Parsed SYSTEM.CNF contents.
 #[derive(Debug, Clone)]
 pub struct SystemCnf {
     /// Boot executable path, e.g. "cdrom:\SLUS_012.34;1"
     pub boot_path: String,
+    /// Which key was used (`BOOT` for PS1, `BOOT2` for PS2).
+    pub boot_key: BootKey,
     /// Video mode from VMODE key, if present.
     pub vmode: Option<String>,
 }
@@ -381,6 +393,7 @@ pub struct SystemCnf {
 /// Parse the contents of a SYSTEM.CNF file.
 pub fn parse_system_cnf(content: &str) -> Result<SystemCnf, AnalysisError> {
     let mut boot_path = None;
+    let mut boot_key = None;
     let mut vmode = None;
 
     for line in content.lines() {
@@ -394,9 +407,15 @@ pub fn parse_system_cnf(content: &str) -> Result<SystemCnf, AnalysisError> {
             let value = value.trim();
 
             match key.as_str() {
-                "BOOT" | "BOOT2" => {
+                "BOOT2" => {
+                    // BOOT2 is more specific (PS2); prefer it if both are present
+                    boot_path = Some(value.to_string());
+                    boot_key = Some(BootKey::Boot2);
+                }
+                "BOOT" => {
                     if boot_path.is_none() {
                         boot_path = Some(value.to_string());
+                        boot_key = Some(BootKey::Boot);
                     }
                 }
                 "VMODE" => {
@@ -407,12 +426,13 @@ pub fn parse_system_cnf(content: &str) -> Result<SystemCnf, AnalysisError> {
         }
     }
 
-    match boot_path {
-        Some(path) => Ok(SystemCnf {
+    match (boot_path, boot_key) {
+        (Some(path), Some(key)) => Ok(SystemCnf {
             boot_path: path,
+            boot_key: key,
             vmode,
         }),
-        None => Err(AnalysisError::corrupted_header(
+        _ => Err(AnalysisError::corrupted_header(
             "SYSTEM.CNF missing BOOT= line",
         )),
     }
@@ -441,7 +461,7 @@ pub fn extract_serial(boot_path: &str) -> Option<String> {
     }
 
     let prefix = &filename[..4];
-    if !is_ps1_serial_prefix(prefix) {
+    if !is_sony_serial_prefix(prefix) {
         return None;
     }
 
@@ -456,8 +476,8 @@ pub fn extract_serial(boot_path: &str) -> Option<String> {
     }
 }
 
-/// Check if a 4-character prefix is a known PS1 serial prefix.
-fn is_ps1_serial_prefix(prefix: &str) -> bool {
+/// Check if a 4-character prefix is a known Sony serial prefix.
+fn is_sony_serial_prefix(prefix: &str) -> bool {
     let upper = prefix.to_uppercase();
     matches!(
         upper.as_str(),
@@ -1015,5 +1035,5 @@ fn parse_meta_field<'a>(text: &'a str, field: &str) -> Option<&'a str> {
 }
 
 #[cfg(test)]
-#[path = "tests/ps1_disc_tests.rs"]
+#[path = "tests/sony_disc_tests.rs"]
 mod tests;

@@ -14,7 +14,7 @@ use retro_junk_core::{
     RomIdentification,
 };
 
-use crate::ps1_disc::{self, DiscFormat};
+use crate::sony_disc::{self, DiscFormat};
 
 /// Multi-disc PS1 games where the per-disc boot serial (from SYSTEM.CNF)
 /// differs from the catalog serial used in the DAT. Maps boot serial to the
@@ -52,7 +52,7 @@ impl Ps1Analyzer {
         let file_size = reader.seek(SeekFrom::End(0))?;
         reader.seek(SeekFrom::Start(0))?;
 
-        let pvd = ps1_disc::read_pvd(reader, format)?;
+        let pvd = sony_disc::read_pvd(reader, format)?;
 
         // Verify this is a PlayStation disc
         if !pvd.system_identifier.starts_with("PLAYSTATION") {
@@ -78,8 +78,17 @@ impl Ps1Analyzer {
         id.expected_size = Some(pvd.volume_space_size as u64 * sector_size);
 
         // Read SYSTEM.CNF for serial and region (fast: just 1-2 sector reads)
-        if let Ok(content) = ps1_disc::find_file_in_root(reader, format, &pvd, "SYSTEM.CNF") {
-            self.apply_system_cnf(&content, &mut id);
+        if let Ok(content) = sony_disc::find_file_in_root(reader, format, &pvd, "SYSTEM.CNF") {
+            let text = String::from_utf8_lossy(&content);
+            if let Ok(ref cnf) = sony_disc::parse_system_cnf(&text) {
+                // Reject PS2 discs (BOOT2) — let the PS2 analyzer handle them
+                if cnf.boot_key == sony_disc::BootKey::Boot2 {
+                    return Err(AnalysisError::invalid_format(
+                        "PS2 disc (BOOT2 in SYSTEM.CNF) — not a PS1 disc",
+                    ));
+                }
+                self.apply_system_cnf_parsed(cnf, &mut id);
+            }
         }
 
         Ok(id)
@@ -98,7 +107,7 @@ impl Ps1Analyzer {
         let mut cue_text = String::new();
         reader.read_to_string(&mut cue_text)?;
 
-        let sheet = ps1_disc::parse_cue(&cue_text)?;
+        let sheet = sony_disc::parse_cue(&cue_text)?;
 
         let mut id = RomIdentification::new().with_platform(Platform::Ps1);
         id.file_size = Some(file_size);
@@ -145,18 +154,18 @@ impl Ps1Analyzer {
                     && let Ok(mut bin_file) = std::fs::File::open(&bin_path)
                 {
                     // Detect format and analyze the BIN
-                    if let Ok(bin_format) = ps1_disc::detect_disc_format(&mut bin_file) {
+                    if let Ok(bin_format) = sony_disc::detect_disc_format(&mut bin_file) {
                         let bin_format = match bin_format {
                             DiscFormat::RawSector2352 => DiscFormat::RawSector2352,
                             _ => DiscFormat::Iso2048,
                         };
-                        if let Ok(pvd) = ps1_disc::read_pvd(&mut bin_file, bin_format)
+                        if let Ok(pvd) = sony_disc::read_pvd(&mut bin_file, bin_format)
                             && pvd.system_identifier.starts_with("PLAYSTATION")
                         {
                             if !pvd.volume_identifier.is_empty() {
                                 id.internal_name = Some(pvd.volume_identifier.clone());
                             }
-                            if let Ok(content) = ps1_disc::find_file_in_root(
+                            if let Ok(content) = sony_disc::find_file_in_root(
                                 &mut bin_file,
                                 bin_format,
                                 &pvd,
@@ -182,7 +191,7 @@ impl Ps1Analyzer {
         let file_size = reader.seek(SeekFrom::End(0))?;
         reader.seek(SeekFrom::Start(0))?;
 
-        let chd_info = ps1_disc::read_chd_info(reader)?;
+        let chd_info = sony_disc::read_chd_info(reader)?;
 
         let mut id = RomIdentification::new().with_platform(Platform::Ps1);
         id.file_size = Some(file_size);
@@ -197,7 +206,7 @@ impl Ps1Analyzer {
         );
 
         // Read SYSTEM.CNF from CHD (decompresses 1-2 hunks — fast enough)
-        match ps1_disc::read_system_cnf_from_chd(reader) {
+        match sony_disc::read_system_cnf_from_chd(reader) {
             Ok(content) => {
                 self.apply_system_cnf(&content, &mut id);
             }
@@ -209,20 +218,25 @@ impl Ps1Analyzer {
         Ok(id)
     }
 
-    /// Parse SYSTEM.CNF content and apply serial/region to the identification.
+    /// Parse raw SYSTEM.CNF bytes and apply serial/region to the identification.
     fn apply_system_cnf(&self, content: &[u8], id: &mut RomIdentification) {
         let text = String::from_utf8_lossy(content);
-        if let Ok(cnf) = ps1_disc::parse_system_cnf(&text) {
-            id.extra.insert("boot_path".into(), cnf.boot_path.clone());
-            if let Some(ref vmode) = cnf.vmode {
-                id.extra.insert("vmode".into(), vmode.clone());
+        if let Ok(ref cnf) = sony_disc::parse_system_cnf(&text) {
+            self.apply_system_cnf_parsed(cnf, id);
+        }
+    }
+
+    /// Apply parsed SYSTEM.CNF data to the identification.
+    fn apply_system_cnf_parsed(&self, cnf: &sony_disc::SystemCnf, id: &mut RomIdentification) {
+        id.extra.insert("boot_path".into(), cnf.boot_path.clone());
+        if let Some(ref vmode) = cnf.vmode {
+            id.extra.insert("vmode".into(), vmode.clone());
+        }
+        if let Some(serial) = sony_disc::extract_serial(&cnf.boot_path) {
+            if let Some(region) = sony_disc::serial_to_region(&serial) {
+                id.regions.push(region);
             }
-            if let Some(serial) = ps1_disc::extract_serial(&cnf.boot_path) {
-                if let Some(region) = ps1_disc::serial_to_region(&serial) {
-                    id.regions.push(region);
-                }
-                id.serial_number = Some(serial);
-            }
+            id.serial_number = Some(serial);
         }
     }
 }
@@ -233,7 +247,7 @@ impl RomAnalyzer for Ps1Analyzer {
         reader: &mut dyn ReadSeek,
         options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let format = ps1_disc::detect_disc_format(reader)?;
+        let format = sony_disc::detect_disc_format(reader)?;
 
         match format {
             DiscFormat::Iso2048 | DiscFormat::RawSector2352 => {
@@ -253,7 +267,7 @@ impl RomAnalyzer for Ps1Analyzer {
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
-        let format = match ps1_disc::detect_disc_format(reader) {
+        let format = match sony_disc::detect_disc_format(reader) {
             Ok(f) => f,
             Err(_) => return false,
         };
@@ -261,11 +275,25 @@ impl RomAnalyzer for Ps1Analyzer {
         match format {
             DiscFormat::Iso2048 | DiscFormat::RawSector2352 => {
                 // Verify PLAYSTATION system identifier in PVD
-                if let Ok(pvd) = ps1_disc::read_pvd(reader, format) {
-                    pvd.system_identifier.starts_with("PLAYSTATION")
-                } else {
-                    false
+                let pvd = match sony_disc::read_pvd(reader, format) {
+                    Ok(pvd) if pvd.system_identifier.starts_with("PLAYSTATION") => pvd,
+                    _ => return false,
+                };
+
+                // Differentiate PS1 from PS2 by checking SYSTEM.CNF boot key.
+                // PS1 uses BOOT, PS2 uses BOOT2. If we can read SYSTEM.CNF and
+                // it has BOOT2, this is a PS2 disc — reject it.
+                if let Ok(content) =
+                    sony_disc::find_file_in_root(reader, format, &pvd, "SYSTEM.CNF")
+                {
+                    let text = String::from_utf8_lossy(&content);
+                    if let Ok(cnf) = sony_disc::parse_system_cnf(&text) {
+                        return cnf.boot_key == sony_disc::BootKey::Boot;
+                    }
                 }
+
+                // No SYSTEM.CNF or unparseable — accept as PS1 (best guess)
+                true
             }
             // CUE and CHD: can't verify without reading disc data
             DiscFormat::Cue | DiscFormat::Chd => true,
@@ -281,12 +309,12 @@ impl RomAnalyzer for Ps1Analyzer {
         reader: &mut dyn ReadSeek,
         algorithms: HashAlgorithms,
     ) -> Result<Option<FileHashes>, AnalysisError> {
-        let format = ps1_disc::detect_disc_format(reader)?;
+        let format = sony_disc::detect_disc_format(reader)?;
 
         match format {
-            ps1_disc::DiscFormat::Chd => {
+            sony_disc::DiscFormat::Chd => {
                 log::info!("PS1 compute_container_hashes: CHD detected");
-                let hashes = ps1_disc::hash_chd_raw_sectors(reader, algorithms)?;
+                let hashes = sony_disc::hash_chd_raw_sectors(reader, algorithms)?;
                 log::info!(
                     "PS1 compute_container_hashes: done, crc32={}, data_size={}",
                     hashes.crc32,
@@ -294,10 +322,10 @@ impl RomAnalyzer for Ps1Analyzer {
                 );
                 Ok(Some(hashes))
             }
-            ps1_disc::DiscFormat::RawSector2352 => {
+            sony_disc::DiscFormat::RawSector2352 => {
                 // Multi-track BIN files contain data + audio tracks concatenated.
                 // Redump DATs hash only Track 1 (data), so detect the boundary.
-                if let Some(data_size) = ps1_disc::find_raw_bin_data_track_size(reader)? {
+                if let Some(data_size) = sony_disc::find_raw_bin_data_track_size(reader)? {
                     log::info!(
                         "PS1 compute_container_hashes: raw BIN, hashing Track 1 ({} bytes)",
                         data_size
@@ -337,7 +365,7 @@ impl RomAnalyzer for Ps1Analyzer {
 }
 
 /// Hash the first `data_size` bytes of a raw 2352-byte sector BIN file.
-fn hash_raw_bin_track1(
+pub(crate) fn hash_raw_bin_track1(
     reader: &mut dyn ReadSeek,
     algorithms: HashAlgorithms,
     data_size: u64,
