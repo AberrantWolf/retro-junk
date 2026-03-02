@@ -1065,12 +1065,15 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         }
                     }
 
-                    // Multi-disc serial matching: resolve each disc, derive game name
+                    // Multi-disc serial+hash matching: resolve each disc, derive game name
                     for entry in app.library.consoles[ci].entries.iter_mut() {
                         let discs = match entry.disc_identifications.as_mut() {
                             Some(d) if !d.is_empty() => d,
                             _ => continue,
                         };
+
+                        let prior_status = entry.status;
+                        let had_prior_dat_match = entry.dat_match.is_some();
 
                         let mut matched_names: Vec<String> = Vec::new();
                         let mut first_rom_name = String::new();
@@ -1095,12 +1098,31 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                             method: MatchMethod::Serial,
                                         });
                                         matched_names.push(name);
+                                        continue;
                                     }
-                                    SerialLookupResult::Ambiguous { .. } => {
-                                        any_ambiguous = true;
-                                    }
-                                    SerialLookupResult::NotFound => {}
+                                    SerialLookupResult::Ambiguous { .. }
+                                    | SerialLookupResult::NotFound => {}
                                 }
+                            }
+
+                            // Serial didn't resolve — try hash matching with cached hashes
+                            if let Some(ref hashes) = disc.hashes
+                                && let Some(m) = index.match_by_hash(hashes.data_size, hashes)
+                            {
+                                let name = index.games[m.game_index].name.clone();
+                                let rom_name =
+                                    index.games[m.game_index].roms[m.rom_index].name.clone();
+                                if first_rom_name.is_empty() {
+                                    first_rom_name = rom_name.clone();
+                                }
+                                disc.dat_match = Some(DatMatchInfo {
+                                    game_name: name.clone(),
+                                    rom_name,
+                                    method: m.method,
+                                });
+                                matched_names.push(name);
+                            } else {
+                                any_ambiguous = true;
                             }
                         }
                         if !matched_names.is_empty() {
@@ -1132,6 +1154,13 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             entry.ambiguous_candidates.clear();
                         } else if any_ambiguous {
                             entry.status = EntryStatus::Ambiguous;
+                        }
+
+                        // If re-matching couldn't fully resolve but the entry
+                        // already had a valid DAT match from a prior cycle,
+                        // restore its old status.
+                        if entry.status != EntryStatus::Matched && had_prior_dat_match {
+                            entry.status = prior_status;
                         }
                     }
                 }
