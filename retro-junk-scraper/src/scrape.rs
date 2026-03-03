@@ -533,13 +533,15 @@ async fn process_single_game(
     // Compute hashes if needed (for non-serial consoles or force_hash)
     let (crc32, md5, sha1) = if !systems::expects_serial(platform) || options.force_hash {
         match std::fs::File::open(rom_path) {
-            Ok(mut f) => match retro_junk_lib::hasher::compute_all_hashes(&mut f, analyzer) {
-                Ok(hashes) => (Some(hashes.crc32), hashes.md5, hashes.sha1),
-                Err(e) => {
-                    log::debug!("Failed to hash {}: {}", filename, e);
-                    (None, None, None)
+            Ok(mut f) => {
+                match retro_junk_lib::hasher::compute_all_hashes(&mut f, analyzer, Some(rom_path)) {
+                    Ok(hashes) => (Some(hashes.crc32), hashes.md5, hashes.sha1),
+                    Err(e) => {
+                        log::debug!("Failed to hash {}: {}", filename, e);
+                        (None, None, None)
+                    }
                 }
-            },
+            }
             Err(_) => (None, None, None),
         }
     } else {

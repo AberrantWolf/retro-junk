@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
 use retro_junk_core::Platform;
+use retro_junk_frontend::MediaType;
 use retro_junk_lib::async_util::cancellable;
 use retro_junk_scraper::ScrapeError;
 
@@ -84,14 +85,33 @@ fn is_fatal_scrape_error(err: &ScrapeError) -> bool {
     )
 }
 
-/// Scrape media from ScreenScraper for selected entries.
-///
-/// Collects work items on the UI thread, then spawns a background thread
-/// that creates a tokio runtime and calls the real ScreenScraper API.
+/// Re-scrape media (force redownload of all media types).
 pub fn rescrape_media_for_selection(
     app: &mut RetroJunkApp,
     console_idx: usize,
     ctx: &egui::Context,
+) {
+    scrape_media_for_selection(app, console_idx, ctx, true);
+}
+
+/// Scrape only missing media (skip types that already exist on disk).
+pub fn scrape_missing_media_for_selection(
+    app: &mut RetroJunkApp,
+    console_idx: usize,
+    ctx: &egui::Context,
+) {
+    scrape_media_for_selection(app, console_idx, ctx, false);
+}
+
+/// Scrape media from ScreenScraper for selected entries.
+///
+/// When `force_redownload` is true, re-downloads all media types and clears cached paths.
+/// When false, only downloads missing types and leaves existing paths visible during scrape.
+fn scrape_media_for_selection(
+    app: &mut RetroJunkApp,
+    console_idx: usize,
+    ctx: &egui::Context,
+    force_redownload: bool,
 ) {
     let console = &app.library.consoles[console_idx];
     let platform = console.platform;
@@ -156,19 +176,27 @@ pub fn rescrape_media_for_selection(
         return;
     }
 
-    // Clear cached media_paths for selected entries so the UI shows them as loading
-    for item in &work {
-        if let Some(entry) = app.library.consoles[console_idx]
-            .entries
-            .get_mut(item.entry_index)
-        {
-            entry.media_paths = None;
+    // When force-redownloading, clear cached media_paths so the UI shows them as loading.
+    // When scraping missing only, keep paths visible during the operation.
+    if force_redownload {
+        for item in &work {
+            if let Some(entry) = app.library.consoles[console_idx]
+                .entries
+                .get_mut(item.entry_index)
+            {
+                entry.media_paths = None;
+            }
         }
     }
 
     let media_dir_setting = app.settings.general.media_dir.clone();
     let ctx = ctx.clone();
-    let description = format!("Scraping media ({} entries)", work.len());
+    let verb = if force_redownload {
+        "Scraping media"
+    } else {
+        "Scraping missing media"
+    };
+    let description = format!("{} ({} entries)", verb, work.len());
 
     spawn_background_op(app, description, move |op_id, cancel, tx| {
         let rt = match tokio::runtime::Runtime::new() {
@@ -238,6 +266,10 @@ pub fn rescrape_media_for_selection(
             // Event channel for download_game_media (we don't consume events, just log)
             let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
 
+            // Load miximage layout once for auto-generation after each entry
+            let layout =
+                retro_junk_frontend::miximage_layout::MiximageLayout::load_or_create().ok();
+
             for (file_num, item) in work.iter().enumerate() {
                 if cancel.load(Ordering::Relaxed) {
                     break;
@@ -302,7 +334,7 @@ pub fn rescrape_media_for_selection(
                         &media_dir,
                         &item.rom_stem,
                         &item.preferred_region,
-                        true, // force redownload
+                        force_redownload,
                         file_num,
                         &item.filename,
                         &event_tx,
@@ -343,10 +375,17 @@ pub fn rescrape_media_for_selection(
                     }
                 }
 
+                // Auto-generate miximage from the freshly downloaded media
+                let final_media = if let Some(ref layout) = layout {
+                    generate_miximage_for_entry(&media_dir, &item.rom_stem, layout, &ctx)
+                } else {
+                    downloaded
+                };
+
                 let _ = tx.send(AppMessage::MediaLoaded {
                     folder_name: folder_name.clone(),
                     entry_index: item.entry_index,
-                    media: downloaded,
+                    media: final_media,
                 });
                 ctx.request_repaint();
             }
@@ -413,8 +452,6 @@ pub fn regenerate_miximages_for_selection(
             }
         };
 
-        let miximage_dir = media_dir.join("miximages");
-
         for (file_num, (entry_index, rom_stem)) in work.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 break;
@@ -427,37 +464,12 @@ pub fn regenerate_miximages_for_selection(
             });
             ctx.request_repaint();
 
-            let existing = state::collect_existing_media(&media_dir, rom_stem);
-            let output_path = miximage_dir.join(format!("{}.png", rom_stem));
+            let updated_media = generate_miximage_for_entry(&media_dir, rom_stem, &layout, &ctx);
 
-            match retro_junk_frontend::miximage::generate_miximage(&existing, &output_path, &layout)
-            {
-                Ok(generated) => {
-                    if generated {
-                        // Invalidate old egui texture and register the new one
-                        let uri = format!("bytes://media/{}", output_path.display());
-                        ctx.forget_image(&uri);
-                        if let Ok(bytes) = std::fs::read(&output_path) {
-                            ctx.include_bytes(uri, bytes);
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("Failed to generate miximage for {}: {}", rom_stem, e);
-                }
-            }
-
-            // Re-collect media to pick up the new/updated miximage
-            let updated_media = state::collect_existing_media(&media_dir, rom_stem);
-            for path in updated_media.values() {
-                let uri = format!("bytes://media/{}", path.display());
-                if !matches!(
-                    path.parent()
-                        .and_then(|p| p.file_name())
-                        .and_then(|n| n.to_str()),
-                    Some("miximages")
-                ) {
-                    // Only register non-miximage paths (miximage already handled above)
+            // Register all non-miximage images with egui (miximage already registered by helper)
+            for (mt, path) in &updated_media {
+                if *mt != MediaType::Miximage {
+                    let uri = format!("bytes://media/{}", path.display());
                     if let Ok(bytes) = std::fs::read(path) {
                         ctx.include_bytes(uri, bytes);
                     }
@@ -475,4 +487,77 @@ pub fn regenerate_miximages_for_selection(
         let _ = tx.send(AppMessage::OperationComplete { op_id });
         ctx.request_repaint();
     });
+}
+
+/// Discover media files for every entry in a console (cheap `path.exists()` calls).
+///
+/// Sends `MediaLoaded` messages so the table can show media status indicators
+/// without the user opening the detail panel for each entry.
+pub fn discover_media_for_console(
+    tx: mpsc::Sender<AppMessage>,
+    ctx: egui::Context,
+    root_path: PathBuf,
+    folder_name: String,
+    media_dir_setting: String,
+    entries: Vec<(usize, String)>, // (entry_index, rom_stem)
+) {
+    std::thread::spawn(move || {
+        let media_dir =
+            match state::media_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
+                Some(d) => d,
+                None => return,
+            };
+
+        for (entry_index, rom_stem) in entries {
+            let found = state::collect_existing_media(&media_dir, &rom_stem);
+
+            // Register image bytes with egui so they're available when the UI renders.
+            for path in found.values() {
+                let uri = format!("bytes://media/{}", path.display());
+                if let Ok(bytes) = std::fs::read(path) {
+                    ctx.include_bytes(uri, bytes);
+                }
+            }
+
+            let _ = tx.send(AppMessage::MediaLoaded {
+                folder_name: folder_name.clone(),
+                entry_index,
+                media: found,
+            });
+        }
+        ctx.request_repaint();
+    });
+}
+
+/// Generate a miximage for a single entry from its existing on-disk media.
+///
+/// Returns the updated media map (existing media + the new miximage) if generation
+/// succeeded, or the existing media map if it was skipped/failed.
+fn generate_miximage_for_entry(
+    media_dir: &Path,
+    rom_stem: &str,
+    layout: &retro_junk_frontend::miximage_layout::MiximageLayout,
+    ctx: &egui::Context,
+) -> HashMap<MediaType, PathBuf> {
+    let existing = state::collect_existing_media(media_dir, rom_stem);
+    let miximage_dir = media_dir.join("miximages");
+    let output_path = miximage_dir.join(format!("{}.png", rom_stem));
+
+    match retro_junk_frontend::miximage::generate_miximage(&existing, &output_path, layout) {
+        Ok(generated) => {
+            if generated {
+                let uri = format!("bytes://media/{}", output_path.display());
+                ctx.forget_image(&uri);
+                if let Ok(bytes) = std::fs::read(&output_path) {
+                    ctx.include_bytes(uri, bytes);
+                }
+            }
+        }
+        Err(e) => {
+            log::warn!("Failed to generate miximage for {}: {}", rom_stem, e);
+        }
+    }
+
+    // Re-collect to pick up the new/updated miximage
+    state::collect_existing_media(media_dir, rom_stem)
 }

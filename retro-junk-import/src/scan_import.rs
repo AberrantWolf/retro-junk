@@ -293,7 +293,7 @@ fn hash_file(
 ) -> Result<retro_junk_dat::matcher::FileHashes, ScanError> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
-    let hashes = retro_junk_lib::hasher::compute_crc32_sha1(&mut reader, analyzer)?;
+    let hashes = retro_junk_lib::hasher::compute_crc32_sha1(&mut reader, analyzer, Some(path))?;
     Ok(hashes)
 }
 

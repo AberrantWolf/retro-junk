@@ -308,6 +308,7 @@ impl RomAnalyzer for Ps1Analyzer {
         &self,
         reader: &mut dyn ReadSeek,
         algorithms: HashAlgorithms,
+        _file_path: Option<&std::path::Path>,
     ) -> Result<Option<FileHashes>, AnalysisError> {
         let format = sony_disc::detect_disc_format(reader)?;
 

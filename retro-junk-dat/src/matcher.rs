@@ -106,6 +106,24 @@ impl DatIndex {
                                 .entry(normalize_serial(trimmed))
                                 .or_default()
                                 .push((gi, ri));
+
+                            // Also index 4-char alphanumeric segments from hyphenated
+                            // product codes (e.g., "DL-DOL-GBIE-0-USA" → index "GBIE").
+                            // This allows short game codes extracted from disc headers
+                            // to match against full Redump product code serials.
+                            if trimmed.contains('-') {
+                                for segment in trimmed.split('-') {
+                                    let seg = segment.trim();
+                                    if seg.len() == 4
+                                        && seg.chars().all(|c| c.is_ascii_alphanumeric())
+                                    {
+                                        by_serial
+                                            .entry(seg.to_uppercase())
+                                            .or_default()
+                                            .push((gi, ri));
+                                    }
+                                }
+                            }
                         }
                     }
                 }

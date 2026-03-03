@@ -659,3 +659,34 @@ fn test_same_name_entries_resolve_as_match() {
     let result = expect_match(index.match_by_serial("AMTE", None));
     assert_eq!(index.games[result.game_index].name, "Metroid Fusion (USA)");
 }
+
+#[test]
+fn test_match_short_game_code_to_long_dat_serial() {
+    // Redump DATs use full product codes like "DL-DOL-GALE-0-USA"
+    // Analyzer extracts short 4-char game code "GALE" from disc header
+    let dat = DatFile {
+        name: "Test".into(),
+        description: "".into(),
+        version: "1".into(),
+        games: vec![DatGame {
+            name: "The Legend of Zelda - The Wind Waker (USA)".into(),
+            region: None,
+            roms: vec![DatRom {
+                name: "The Legend of Zelda - The Wind Waker (USA).iso".into(),
+                size: 1459978240,
+                crc: "d8e4d45a".into(),
+                sha1: None,
+                md5: None,
+                serial: Some("DL-DOL-GALE-0-USA".into()),
+            }],
+        }],
+    };
+    let index = DatIndex::from_dat(dat);
+
+    // Short game code should find the entry via sub-segment indexing
+    let result = expect_match(index.match_by_serial("GALE", Some("GALE")));
+    assert_eq!(
+        index.games[result.game_index].name,
+        "The Legend of Zelda - The Wind Waker (USA)"
+    );
+}

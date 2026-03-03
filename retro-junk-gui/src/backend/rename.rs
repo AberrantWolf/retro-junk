@@ -344,8 +344,12 @@ fn resolve_disc_file(
 ) -> Option<DiscMatchData> {
     let registered = context.get_by_platform(platform)?;
     let mut file = std::fs::File::open(file_path).ok()?;
-    let hashes =
-        retro_junk_lib::hasher::compute_crc32_sha1(&mut file, registered.analyzer.as_ref()).ok()?;
+    let hashes = retro_junk_lib::hasher::compute_crc32_sha1(
+        &mut file,
+        registered.analyzer.as_ref(),
+        Some(file_path.as_path()),
+    )
+    .ok()?;
     let m = dat_index.match_by_hash(hashes.data_size, &hashes)?;
     let game = &dat_index.games[m.game_index];
     let rom = &game.roms[m.rom_index];

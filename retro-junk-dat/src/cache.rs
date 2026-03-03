@@ -10,7 +10,7 @@ use retro_junk_core::DatSource;
 
 /// Cache format version. Bump this when changing DAT sources or format to
 /// invalidate stale cached DATs automatically.
-const CACHE_VERSION: u32 = 6;
+const CACHE_VERSION: u32 = 7;
 
 /// Metadata about a cached DAT file.
 #[derive(Debug, Clone, Serialize, Deserialize)]

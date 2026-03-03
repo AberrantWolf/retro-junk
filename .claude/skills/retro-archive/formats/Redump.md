@@ -137,6 +137,12 @@ serial data — serials only appear in the game title (e.g., the title says "Fin
 (Disc 1)" but there's no machine-readable serial field). Without the `/serial` parameter, any
 tool that needs to match by serial must fall back to hash-based identification.
 
+**LibRetro Redump DAT filenames on GitHub:** The LibRetro database hosts Redump DATs using the
+display name as the filename (e.g., `Nintendo - GameCube.dat`, `Sony - PlayStation 2.dat`), NOT
+the Redump system slug. This is distinct from direct redump.org downloads which use slugs like
+`gc`, `ps2`, etc. The `dat_download_ids()` for these systems must return the display name (matching
+`dat_names()`) when downloading from the LibRetro GitHub source.
+
 **Important:** No major GitHub mirror of Redump DATs currently uses the `/serial` parameter.
 This includes libretro-database, RetroArcher.dats, and others. As a result, serial data in
 derived databases is either absent or reconstructed (often incorrectly for multi-disc games).

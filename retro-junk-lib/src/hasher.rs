@@ -1,4 +1,5 @@
 use std::io::SeekFrom;
+use std::path::Path;
 
 use sha1::Digest;
 
@@ -15,9 +16,10 @@ fn try_container_hashes(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
     algorithms: HashAlgorithms,
+    file_path: Option<&Path>,
 ) -> Result<Option<FileHashes>, DatError> {
     analyzer
-        .compute_container_hashes(reader, algorithms)
+        .compute_container_hashes(reader, algorithms, file_path)
         .map_err(|e| DatError::cache(e.to_string()))
 }
 
@@ -65,8 +67,9 @@ fn compute_hashes_internal(
     analyzer: &dyn RomAnalyzer,
     algorithms: HashAlgorithms,
     on_progress: Option<&dyn Fn(u64, u64)>,
+    file_path: Option<&Path>,
 ) -> Result<FileHashes, DatError> {
-    if let Some(hashes) = try_container_hashes(reader, analyzer, algorithms)? {
+    if let Some(hashes) = try_container_hashes(reader, analyzer, algorithms, file_path)? {
         return Ok(hashes);
     }
 
@@ -110,8 +113,9 @@ fn compute_hashes_internal(
 pub fn compute_crc32_sha1(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
+    file_path: Option<&Path>,
 ) -> Result<FileHashes, DatError> {
-    compute_hashes_internal(reader, analyzer, HashAlgorithms::Crc32Sha1, None)
+    compute_hashes_internal(reader, analyzer, HashAlgorithms::Crc32Sha1, None, file_path)
 }
 
 /// Compute CRC32 and SHA1 with a progress callback.
@@ -120,8 +124,15 @@ pub fn compute_crc32_sha1_with_progress(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
     progress: &dyn Fn(u64, u64),
+    file_path: Option<&Path>,
 ) -> Result<FileHashes, DatError> {
-    compute_hashes_internal(reader, analyzer, HashAlgorithms::Crc32Sha1, Some(progress))
+    compute_hashes_internal(
+        reader,
+        analyzer,
+        HashAlgorithms::Crc32Sha1,
+        Some(progress),
+        file_path,
+    )
 }
 
 /// Compute CRC32, MD5, and SHA1 of a file in a single pass.
@@ -129,8 +140,9 @@ pub fn compute_crc32_sha1_with_progress(
 pub fn compute_all_hashes(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
+    file_path: Option<&Path>,
 ) -> Result<FileHashes, DatError> {
-    compute_hashes_internal(reader, analyzer, HashAlgorithms::All, None)
+    compute_hashes_internal(reader, analyzer, HashAlgorithms::All, None, file_path)
 }
 
 /// Specification for padding bytes to prepend/append when computing hashes.

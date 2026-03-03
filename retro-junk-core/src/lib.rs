@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Seek};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
 pub mod checksum;
@@ -329,6 +329,7 @@ pub trait RomAnalyzer: Send + Sync {
         &self,
         _reader: &mut dyn ReadSeek,
         _algorithms: HashAlgorithms,
+        _file_path: Option<&Path>,
     ) -> Result<Option<FileHashes>, AnalysisError> {
         Ok(None)
     }

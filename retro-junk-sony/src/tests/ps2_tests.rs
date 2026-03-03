@@ -220,9 +220,10 @@ fn test_dat_names() {
 }
 
 #[test]
-fn test_dat_download_ids() {
+fn test_dat_download_ids_defaults_to_dat_names() {
     let analyzer = Ps2Analyzer::new();
-    assert_eq!(analyzer.dat_download_ids(), &["ps2"]);
+    // dat_download_ids() should delegate to dat_names() (the default impl)
+    assert_eq!(analyzer.dat_download_ids(), &["Sony - PlayStation 2"]);
 }
 
 #[test]

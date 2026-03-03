@@ -1,5 +1,5 @@
 use super::*;
-use retro_junk_core::{AnalysisOptions, Region, RomAnalyzer};
+use retro_junk_core::{AnalysisOptions, HashAlgorithms, Region, RomAnalyzer};
 use std::io::Cursor;
 
 use crate::nintendo_disc;
@@ -148,6 +148,10 @@ fn test_basic_analysis() {
         Some("Nintendo R&D1")
     );
     assert_eq!(id.extra.get("format").map(|s| s.as_str()), Some("ISO"));
+    assert_eq!(
+        id.extra.get("product_code").map(|s| s.as_str()),
+        Some("DOL-GALE-0")
+    );
     assert_eq!(id.expected_size, Some(GCM_DISC_SIZE));
 }
 
@@ -268,13 +272,31 @@ fn test_dat_source() {
 }
 
 #[test]
-fn test_dat_download_ids() {
+fn test_dat_download_ids_defaults_to_dat_names() {
     let analyzer = GameCubeAnalyzer::new();
-    assert_eq!(analyzer.dat_download_ids(), &["gc"]);
+    // dat_download_ids() should delegate to dat_names() (the default impl)
+    assert_eq!(analyzer.dat_download_ids(), &["Nintendo - GameCube"]);
 }
 
 #[test]
 fn test_dat_names() {
     let analyzer = GameCubeAnalyzer::new();
     assert_eq!(analyzer.dat_names(), &["Nintendo - GameCube"]);
+}
+
+// ---------------------------------------------------------------------------
+// Container hash tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_container_hashes_returns_none_for_raw_iso() {
+    let disc = make_default_gc_disc();
+    let analyzer = GameCubeAnalyzer::new();
+    let result = analyzer
+        .compute_container_hashes(&mut Cursor::new(disc), HashAlgorithms::Crc32Sha1, None)
+        .unwrap();
+    assert!(
+        result.is_none(),
+        "Raw ISO should return None (use standard hasher)"
+    );
 }

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2
+
+- Fixed hashing of compressed GameCube/Wii disc images (RVZ, WIA, WBFS, CISO, GCZ) to decompress before hashing for correct Redump DAT matching
+- Added GameCube and Wii disc identification with RVZ/WBFS/CISO/GCZ compressed format support
+- Added PS2 disc identification and hashing
+- Refactored hashing code to share disc-hashing logic across PS1 and PS2
+- Fixed DAT download URLs for GameCube, Wii, and PS2 (was requesting wrong filenames from LibRetro GitHub)
+- Fixed serial matching for Redump product codes (e.g., `DL-DOL-GBIE-0-USA` now matchable by 4-char game code)
+- Fixed disc-based games reverting to "Ambiguous" status after rescan
+- Fixed "Ambiguous" status showing no explanation in GUI detail panel
+
 ## 0.1.1
 
 - Set up automated GitHub releases via cargo-dist

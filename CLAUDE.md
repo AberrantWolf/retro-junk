@@ -80,3 +80,4 @@ Platform crates own ALL console-specific knowledge. No console-specific code exi
 - **Don't Repeat Yourself** (DRY) means that if we're rewriting basically the same thing in multiple places, that should become a shared function
 - **Refactor** is better than rewrite
 - **Pointless tests** are the kind that are trivially provable -- creating a struct will obviously work, no need to test it, for instance
+- **Compressed format hashing** must decompress to the community-standard representation before hashing. DAT databases (Redump, No-Intro) store hashes of uncompressed data, not compressed containers. Analyzers that support compressed formats (e.g., RVZ, CHD) MUST implement `compute_container_hashes()` to decompress and hash the inner data. Never hash compressed container bytes for DAT matching.

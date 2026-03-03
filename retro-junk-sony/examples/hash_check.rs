@@ -51,7 +51,8 @@ fn main() {
     let analyzer = retro_junk_sony::Ps1Analyzer;
     let algorithms = retro_junk_core::HashAlgorithms::All;
     use retro_junk_core::RomAnalyzer;
-    match analyzer.compute_container_hashes(&mut file, algorithms) {
+    let file_path = std::path::Path::new(path);
+    match analyzer.compute_container_hashes(&mut file, algorithms, Some(file_path)) {
         Ok(Some(hashes)) => {
             println!("  CRC32:     {}", hashes.crc32);
             println!("  SHA1:      {}", hashes.sha1.as_deref().unwrap_or("n/a"));

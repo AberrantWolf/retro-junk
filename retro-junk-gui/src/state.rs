@@ -7,6 +7,30 @@ use std::sync::atomic::AtomicBool;
 use retro_junk_dat::{DatIndex, FileHashes, MatchMethod, SerialLookupResult};
 use retro_junk_frontend::MediaType;
 use retro_junk_lib::rename::BrokenReference;
+
+// -- Media status --
+
+/// The 5 scrapeable media types that `rescrape_media_for_selection` downloads
+/// (matches `MediaSelection::default()` minus Video, which `collect_existing_media` skips).
+pub const SCRAPEABLE_MEDIA_TYPES: &[MediaType] = &[
+    MediaType::Cover,
+    MediaType::Cover3D,
+    MediaType::Screenshot,
+    MediaType::Marquee,
+    MediaType::PhysicalMedia,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaStatus {
+    /// media_paths is None — not yet discovered
+    Unknown,
+    /// Discovered, no scrapeable media found
+    None,
+    /// Some but not all scrapeable media types present
+    Partial { found: u8, total: u8 },
+    /// All scrapeable media types present
+    Complete,
+}
 use retro_junk_lib::scanner::GameEntry;
 use retro_junk_lib::{AnalysisError, Platform, Region, RomIdentification};
 
@@ -207,6 +231,31 @@ impl LibraryEntry {
         } else {
             Vec::new()
         }
+    }
+
+    /// Compute the media status by checking `media_paths` against the scrapeable types.
+    pub fn media_status(&self) -> MediaStatus {
+        let media = match self.media_paths.as_ref() {
+            Some(m) => m,
+            None => return MediaStatus::Unknown,
+        };
+        let total = SCRAPEABLE_MEDIA_TYPES.len() as u8;
+        let found = SCRAPEABLE_MEDIA_TYPES
+            .iter()
+            .filter(|mt| media.contains_key(mt))
+            .count() as u8;
+        match found {
+            0 => MediaStatus::None,
+            n if n == total => MediaStatus::Complete,
+            n => MediaStatus::Partial { found: n, total },
+        }
+    }
+
+    /// Whether this entry has a generated miximage on disk.
+    pub fn has_miximage(&self) -> bool {
+        self.media_paths
+            .as_ref()
+            .is_some_and(|m| m.contains_key(&MediaType::Miximage))
     }
 }
 
@@ -1025,6 +1074,29 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         .unwrap_or(false)
             });
             app.save_library_cache();
+
+            // Discover media for newly scanned entries so the table shows media indicators.
+            if let Some(ci) = app.library.find_by_folder(&folder_name) {
+                if let Some(ref root) = app.root_path.clone() {
+                    let entries: Vec<(usize, String)> = app.library.consoles[ci]
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| e.media_paths.is_none())
+                        .map(|(i, e)| (i, e.game_entry.rom_stem().to_string()))
+                        .collect();
+                    if !entries.is_empty() {
+                        crate::backend::media::discover_media_for_console(
+                            app.message_tx.clone(),
+                            ctx.clone(),
+                            root.clone(),
+                            folder_name.clone(),
+                            app.settings.general.media_dir.clone(),
+                            entries,
+                        );
+                    }
+                }
+            }
         }
 
         AppMessage::DatLoaded {
@@ -1461,6 +1533,30 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     unchecked,
                     ctx.clone(),
                 );
+            }
+
+            // Discover media for cached consoles so the table shows media indicators
+            // on first load (before the user opens any detail panel).
+            if let Some(ref root) = app.root_path.clone() {
+                for console in &app.library.consoles {
+                    let entries: Vec<(usize, String)> = console
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| e.media_paths.is_none())
+                        .map(|(i, e)| (i, e.game_entry.rom_stem().to_string()))
+                        .collect();
+                    if !entries.is_empty() {
+                        crate::backend::media::discover_media_for_console(
+                            app.message_tx.clone(),
+                            ctx.clone(),
+                            root.clone(),
+                            console.folder_name.clone(),
+                            app.settings.general.media_dir.clone(),
+                            entries,
+                        );
+                    }
+                }
             }
         }
 

@@ -294,6 +294,7 @@ impl RomAnalyzer for Ps2Analyzer {
         &self,
         reader: &mut dyn ReadSeek,
         algorithms: HashAlgorithms,
+        _file_path: Option<&std::path::Path>,
     ) -> Result<Option<FileHashes>, AnalysisError> {
         let format = sony_disc::detect_disc_format(reader)?;
 
@@ -328,10 +329,6 @@ impl RomAnalyzer for Ps2Analyzer {
 
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sony - PlayStation 2"]
-    }
-
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["ps2"]
     }
 
     fn expects_serial(&self) -> bool {

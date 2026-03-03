@@ -2,36 +2,24 @@
 
 ## Bugs
 
-- [x] **Rescan game drops hashes** — Rescanning resets `entry.status` to `Ambiguous`/`Unrecognized` via the `EntryAnalyzed` handler (`state.rs:715`), but the hash-based re-promotion to `Matched` only runs on `DatLoaded`, which doesn't re-fire during a rescan. Green dots turn yellow just from rescanning. Fix: re-run DAT matching for rescanned entries after `EntryAnalyzed`.
-
-- [x] **Stale `broken_references` after rename** — After `RenameComplete` is handled (`state.rs:~1249`), file paths change but `entry.broken_references` is not reset to `None`. A rename that fixes broken CUE/M3U references still shows the warning triangle until the next full scan. Fix: reset `broken_references = None` for renamed entries so the next repaint or background pass rechecks.
-
-- [x] **Game list load delay** we should show SOMETHING when the app launches if there is a library loading, whether it's a "loading library" overlay or the first quick display of the library, right now it looks like no library is loaded for a few seconds
-
-- [x] **Deselect row doesn't appear deselected** when multiple selected rows, deselecting one doesn't visibly change until you add/remove another row
-
 
 ## Features
 
+- [ ] **Database management GUI** screen for all sorts of database tasks, including viewing and merging conflicts, importing and previewing enrichment, and maybe even direct database editing
+
 - [ ] **Move media and data on rename** — If we've already scraped media and rename a game, we need to move the data associated with it (images, gamelist.xml entries, etc. under `roms-media/`).
+
+- [ ] **Figure out multi-file WBFS setups** - I don't know what we're meant to do with them or how to treat them
 
 - [ ] **Custom multi-select view** in the game details panel, rather than showing details for the most-recent selection in the list
 
-- [x] **Add space below table** both to fill the remainder of the view, as well as allow space to select the bottom row (mostly blocked by the scroll bar)
-
 ## Analyzer: Compressed Disc Formats
-
-- [x] **GameCube/Wii compressed format identification** — RVZ, WIA, WBFS, CISO, and GCZ containers are now transparently decompressed via the `nod` crate (v1.4) for header identification. Shared helpers in `nintendo_disc.rs` (`is_compressed_disc()`, `open_compressed_disc()`) are used by both analyzers. No duplicated decompression code.
-
-- [ ] **Compressed disc hashing for DAT matching** — Hashing compressed disc images (RVZ, WBFS, etc.) against Redump DATs requires decompressing the full disc and hashing the raw data. The `compute_container_hashes()` trait method currently only receives `&mut dyn ReadSeek` (no file path), so it can't open `nod::Disc`. Needs a trait signature addition (`&AnalysisOptions` parameter) to pass the file path through.
 
 - [ ] **GameCube NKit support** — NKit is a lossy-compressed format (`.nkit.iso`, `.nkit.gcz`) that removes junk/padding data. Hashes will not match Redump unless converted back to full ISO. May need special handling or a warning that NKit images can't be verified against Redump.
 
 - [ ] **Check nod v2.0 stability** — The `nod` crate v2.0 may bring API changes. Check for stability and migration when it releases.
 
 ## Data Model & Import Pipeline
-
-- [x] **Work reconciliation by ScreenScraper ID** — Fully implemented: `reconcile_works()` in `retro-junk-import/src/reconcile.rs`, `find_reconcilable_works()` query in `retro-junk-db`, `catalog reconcile` CLI command, and auto-runs after `catalog enrich` (skippable via `--no-reconcile`).
 
 - [ ] **Re-import after migration v4** — Schema is now at version 4 (`screen_title`, `cover_title` columns added in v3). Run `catalog import all` followed by `catalog enrich` on existing databases to populate `revision`, `variant`, `screen_title`, and `cover_title` fields. This is a one-time user/ops action, not a code gap.
 
@@ -68,19 +56,15 @@
 
 - [ ] **Overrides YAML expansion** — The overrides system exists but has limited use. Expand with curated override sets for known problem areas: multi-disc serial mismatches (FF7, etc.), regional title corrections, and publisher name normalization.
 
-## Code Health: Error Handling
+- [ ] **Apply game mods** - Most mods come as binary modifications to known-good game hashes, and if your game library applies the mod, then it can also automatically flag it as a mod and adjust the metadata correctly and automatically.
 
-Audit findings from 2026-02-26. All items resolved — see commit history for details.
+- [ ] **Consider using an ORM** crate to help with data types and database management
 
 ## Code Health: DRY Violations
 
 Audit findings from 2026-02-26.
 
 ### Shared utility functions
-
-- [x] **Consolidate `format_size()` / `format_bytes()`** — Canonical `format_bytes()` and `format_bytes_approx()` now live in `retro-junk-core/src/util.rs`. All 5 former duplicates now import from core. `retro-junk-lib/src/util.rs` re-exports via `pub use retro_junk_core::util::*`.
-
-- [x] **Consolidate `read_ascii()`** — Canonical `read_ascii()` and `read_ascii_fixed()` now live in `retro-junk-core/src/util.rs`. `n3ds/common.rs` re-exports `pub(crate) use retro_junk_core::util::read_ascii`; `genesis.rs` imports `read_ascii_fixed` aliased as `read_ascii`.
 
 - [ ] **Consolidate byte-reading helpers within Nintendo crate** — `retro-junk-nintendo/src/ds.rs:85-98` still defines private `read_u16_le()` and `read_u32_le()` that duplicate what `n3ds/common.rs:18-68` provides as `pub(crate)`. Either have `ds.rs` import from `n3ds::common`, or extract to a shared `nintendo_util` module in the Nintendo crate.
 
@@ -129,8 +113,6 @@ Audit findings from 2026-02-27.
 ## Code Health: Cleanup
 
 - [ ] **Remove dead `CliError` variants** — `retro-junk-cli/src/error.rs:28,32` defines `DatError` and `Analysis` variants (and constructors at lines 56, 60) that are never constructed. Remove or use them.
-
-- [x] **Fix `unwrap()` panic risk in multi-disc DAT matching** — `state.rs:920` does `entry.disc_identifications.as_ref().unwrap()` outside a `Some` guard. If the prior mutable borrow changes flow, this will panic. Convert to `if let Some(discs)` or restructure to avoid the reborrow.
 
 ## Enrichment Pipeline Hardening
 

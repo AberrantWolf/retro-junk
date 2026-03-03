@@ -6,6 +6,9 @@ edition.workspace = true
 [dependencies]
 retro-junk-core.workspace = true
 thiserror.workspace = true
+sha1.workspace = true
 sha2.workspace = true
+md5.workspace = true
 crc32fast.workspace = true
+log.workspace = true
 nod.workspace = true

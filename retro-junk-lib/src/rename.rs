@@ -962,13 +962,18 @@ fn match_by_hash(
         .unwrap_or("?")
         .to_string();
 
-    let hashes = hasher::compute_crc32_sha1_with_progress(&mut file, analyzer, &|done, total| {
-        progress(RenameProgress::Hashing {
-            file_name: file_name.clone(),
-            bytes_done: done,
-            bytes_total: total,
-        });
-    })?;
+    let hashes = hasher::compute_crc32_sha1_with_progress(
+        &mut file,
+        analyzer,
+        &|done, total| {
+            progress(RenameProgress::Hashing {
+                file_name: file_name.clone(),
+                bytes_done: done,
+                bytes_total: total,
+            });
+        },
+        Some(file_path),
+    )?;
 
     let crc32 = hashes.crc32.clone();
     let data_size = hashes.data_size;

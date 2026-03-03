@@ -104,6 +104,7 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
                                 });
                             }
                         },
+                        Some(&item.path),
                     ) {
                         Ok(hashes) => {
                             let msg = if item.is_disc {

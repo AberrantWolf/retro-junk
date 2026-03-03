@@ -74,7 +74,7 @@ Wii uses **Redump** for DAT matching (disc-based console):
 - **DAT name:** `Nintendo - Wii`
 - **Redump system slug:** `wii` (download URL: `http://redump.org/datfile/wii/serial,version`)
 - **Hash method:** Hash the full ISO file directly (CRC32, MD5, SHA1). No header stripping needed.
-- **Serial in DAT:** Redump DATs use full product codes. The 4-byte game code from the disc header (e.g., `RSBE`) can be used for DAT serial matching.
+- **Serial in DAT:** Redump DATs use full product codes (e.g., `RVL-RSBE-0-USA`). The 4-byte game code from the disc header (e.g., `RSBE`) is matched against DAT serials via sub-segment indexing in the matcher — works with both short codes and full product codes like `RVL-RSBE-0-USA`.
 
 Compressed formats (WBFS, RVZ, CISO, WIA) require decompression before hashing.
 

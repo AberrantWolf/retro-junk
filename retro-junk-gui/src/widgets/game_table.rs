@@ -6,7 +6,7 @@ use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
 use crate::backend;
-use crate::state::EntryStatus;
+use crate::state::{EntryStatus, MediaStatus};
 use crate::util;
 use crate::widgets::status_badge;
 
@@ -91,6 +91,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     .broken_references
                     .as_ref()
                     .is_some_and(|refs| !refs.is_empty()),
+                media_status: entry.media_status(),
                 name: entry.game_entry.display_name().to_string(),
                 file_path: entry.game_entry.analysis_path().to_path_buf(),
                 serial: entry
@@ -154,7 +155,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 .resizable(true)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::exact(20.0)) // Status badge
+                .column(Column::exact(30.0)) // Status badge + media indicator
                 .column(Column::initial(280.0).at_least(100.0)) // Name
                 .column(Column::initial(120.0).at_least(60.0)) // Serial
                 .column(Column::initial(140.0).at_least(60.0)) // Internal Name
@@ -198,21 +199,27 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         // Highlight the entire row
                         row.set_selected(is_selected || is_focused);
 
-                        // Status badge with tooltip (includes warning triangle for broken refs)
+                        // Status badge with tooltip (includes warning triangle and media indicator)
                         let r1 = row.col(|ui| {
                             let resp = status_badge::show_with_warning(
                                 ui,
                                 data.status,
                                 data.has_broken_refs,
+                                data.media_status,
                             );
+                            let mut tip = data.status.tooltip().to_string();
                             if data.has_broken_refs {
-                                resp.on_hover_text(format!(
-                                    "{}\n\u{26a0} Broken file references",
-                                    data.status.tooltip()
-                                ));
-                            } else {
-                                resp.on_hover_text(data.status.tooltip());
+                                tip.push_str("\n\u{26a0} Broken file references");
                             }
+                            match data.media_status {
+                                MediaStatus::Unknown => {}
+                                MediaStatus::None => tip.push_str("\nNo scraped media"),
+                                MediaStatus::Partial { found, total } => {
+                                    tip.push_str(&format!("\nPartial media ({}/{})", found, total));
+                                }
+                                MediaStatus::Complete => tip.push_str("\nMedia complete"),
+                            }
+                            resp.on_hover_text(tip);
                         });
 
                         // Paint text directly in cells so no WidgetRect is created,
@@ -286,14 +293,69 @@ fn show_row_context_menu(
         ui.close_menu();
     }
 
-    if ui.button("Re-scrape Media").clicked() {
-        backend::media::rescrape_media_for_selection(app, console_idx, ctx);
-        ui.close_menu();
-    }
+    // Adaptive scrape menu items based on aggregate media state
+    {
+        let console = &app.library.consoles[console_idx];
+        let mut any_has_media = false;
+        let mut all_have_all_media = true;
+        let mut any_has_miximage = false;
+        for &i in &app.selected_entries {
+            if let Some(entry) = console.entries.get(i) {
+                let ms = entry.media_status();
+                match ms {
+                    MediaStatus::Complete => {
+                        any_has_media = true;
+                    }
+                    MediaStatus::Partial { .. } => {
+                        any_has_media = true;
+                        all_have_all_media = false;
+                    }
+                    _ => {
+                        all_have_all_media = false;
+                    }
+                }
+                if entry.has_miximage() {
+                    any_has_miximage = true;
+                }
+            }
+        }
 
-    if ui.button("Re-generate Miximages").clicked() {
-        backend::media::regenerate_miximages_for_selection(app, console_idx, ctx);
-        ui.close_menu();
+        if any_has_media && all_have_all_media {
+            // All entries have complete media
+            if ui.button("Re-scrape Media").clicked() {
+                backend::media::rescrape_media_for_selection(app, console_idx, ctx);
+                ui.close_menu();
+            }
+        } else if any_has_media {
+            // Some entries have partial media
+            if ui.button("Scrape All Media").clicked() {
+                backend::media::rescrape_media_for_selection(app, console_idx, ctx);
+                ui.close_menu();
+            }
+            if ui.button("Scrape Missing Media").clicked() {
+                backend::media::scrape_missing_media_for_selection(app, console_idx, ctx);
+                ui.close_menu();
+            }
+        } else {
+            // No entry has any media
+            if ui.button("Scrape Media").clicked() {
+                backend::media::rescrape_media_for_selection(app, console_idx, ctx);
+                ui.close_menu();
+            }
+        }
+
+        // Miximage menu items (hidden when no media at all — scraping will auto-generate)
+        if any_has_media {
+            let label = if any_has_miximage {
+                "Re-generate Miximages"
+            } else {
+                "Generate Miximages"
+            };
+            if ui.button(label).clicked() {
+                backend::media::regenerate_miximages_for_selection(app, console_idx, ctx);
+                ui.close_menu();
+            }
+        }
     }
 
     if ui.button("Auto Rename").clicked() {
@@ -473,6 +535,7 @@ struct RowData {
     entry_idx: usize,
     status: EntryStatus,
     has_broken_refs: bool,
+    media_status: MediaStatus,
     name: String,
     file_path: PathBuf,
     serial: Option<String>,

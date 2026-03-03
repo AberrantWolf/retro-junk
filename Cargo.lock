@@ -4080,7 +4080,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-catalog"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "serde",
@@ -4091,7 +4091,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "clap",
@@ -4116,7 +4116,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "thiserror 2.0.18",
@@ -4124,7 +4124,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-dat"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "csv",
  "dirs",
@@ -4139,7 +4139,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-db"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "retro-junk-catalog",
  "rusqlite",
@@ -4149,7 +4149,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-frontend"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "dirs",
@@ -4165,7 +4165,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-gui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "dirs",
@@ -4195,7 +4195,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-import"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "futures",
@@ -4213,7 +4213,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-lib"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "crc32fast",
  "dirs",
@@ -4234,7 +4234,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-microsoft"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "retro-junk-core",
  "thiserror 2.0.18",
@@ -4242,18 +4242,21 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-nintendo"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "crc32fast",
+ "log",
+ "md5",
  "nod",
  "retro-junk-core",
+ "sha1",
  "sha2",
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "retro-junk-scraper"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chrono",
  "dirs",
@@ -4272,7 +4275,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-sega"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "retro-junk-core",
  "thiserror 2.0.18",
@@ -4280,7 +4283,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-sony"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "chd",
  "crc32fast",

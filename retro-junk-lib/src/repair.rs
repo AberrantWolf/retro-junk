@@ -430,7 +430,7 @@ fn hash_and_match(
     index: &DatIndex,
 ) -> Result<Option<String>, DatError> {
     let mut file = fs::File::open(file_path)?;
-    let hashes = hasher::compute_crc32_sha1(&mut file, analyzer)?;
+    let hashes = hasher::compute_crc32_sha1(&mut file, analyzer, Some(file_path))?;
 
     if let Some(result) = index.match_by_hash(hashes.data_size, &hashes) {
         let game = &index.games[result.game_index];

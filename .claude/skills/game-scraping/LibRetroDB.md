@@ -68,6 +68,14 @@ Serial field availability varies significantly by system:
 
 Games without serials in the DAT still work fine — they fall back to hash-based matching only.
 
+### Redump Disc-Based Systems
+
+LibRetro also hosts Redump DATs in `metadat/redump/` for disc-based systems (GameCube, Wii, PS1,
+PS2, etc.). Serial coverage for these varies — some have full product code serials (e.g.,
+`DL-DOL-GALE-0-USA` for GameCube), others have limited or no serial data. The matcher's
+sub-segment indexing bridges the gap between short analyzer game codes (e.g., `GALE`) and these
+full product code serials.
+
 ## Comparison to Standard No-Intro DATs
 
 | Aspect           | Standard No-Intro                         | LibRetro Enhanced           |
@@ -108,6 +116,8 @@ game code from prefixed formats.
 | NDS     | `NTR-ADME-USA`  | `ADME`       | `ADME`                        |
 | Genesis | `T-48073-00`    | `T-48073-00` | (kept as-is)                  |
 | SNES    | `SNS-ZL-USA`    | `SNS-ZL-USA` | (kept as-is, variable length) |
+| GC      | `GALE`          | Unknown/TBD (LibRetro), `DL-DOL-GALE-0-USA` (Redump) | `GALE` |
+| Wii     | `RSBE`          | Unknown/TBD (LibRetro), `RVL-RSBE-0-USA` (Redump) | `RSBE` |
 
 The extraction handles `NUS-`, `AGB-`, `NTR-`, `DMG-`, `CGB-` prefixes by taking the second
 hyphen-delimited segment. Other formats (Sega product codes, SNES codes) are matched as-is.

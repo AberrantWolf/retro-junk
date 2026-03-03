@@ -359,7 +359,7 @@ fn test_multi_track_bin_hashes_data_only() {
     let algorithms = retro_junk_core::HashAlgorithms::All;
     use retro_junk_core::RomAnalyzer;
     let result = analyzer
-        .compute_container_hashes(&mut cursor, algorithms)
+        .compute_container_hashes(&mut cursor, algorithms, None)
         .expect("compute_container_hashes failed");
 
     let hashes = result.expect("Expected Some(hashes) for multi-track BIN");
@@ -388,7 +388,7 @@ fn test_single_track_bin_returns_none() {
     let algorithms = retro_junk_core::HashAlgorithms::All;
     use retro_junk_core::RomAnalyzer;
     let result = analyzer
-        .compute_container_hashes(&mut cursor, algorithms)
+        .compute_container_hashes(&mut cursor, algorithms, None)
         .expect("compute_container_hashes failed");
 
     assert!(result.is_none(), "Single-track BIN should return None");

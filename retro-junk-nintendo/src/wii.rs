@@ -13,10 +13,14 @@
 //! to the same `parse_disc_header()` used for raw ISOs.
 
 use std::io::SeekFrom;
+use std::path::Path;
 
 use retro_junk_core::ReadSeek;
 
-use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
+use retro_junk_core::{
+    AnalysisError, AnalysisOptions, FileHashes, HashAlgorithms, Platform, RomAnalyzer,
+    RomIdentification,
+};
 
 use crate::nintendo_disc;
 
@@ -91,16 +95,31 @@ impl RomAnalyzer for WiiAnalyzer {
             .unwrap_or(false)
     }
 
+    fn compute_container_hashes(
+        &self,
+        reader: &mut dyn ReadSeek,
+        algorithms: HashAlgorithms,
+        file_path: Option<&Path>,
+    ) -> Result<Option<FileHashes>, AnalysisError> {
+        if !nintendo_disc::is_compressed_disc(reader) {
+            return Ok(None);
+        }
+        let path = file_path.ok_or_else(|| {
+            AnalysisError::invalid_format(
+                "Compressed Wii disc detected but no file path provided for hashing",
+            )
+        })?;
+        log::info!("Wii: hashing compressed disc via nod");
+        let hashes = nintendo_disc::hash_compressed_disc(path, algorithms)?;
+        Ok(Some(hashes))
+    }
+
     fn dat_source(&self) -> retro_junk_core::DatSource {
         retro_junk_core::DatSource::Redump
     }
 
     fn dat_names(&self) -> &'static [&'static str] {
         &["Nintendo - Wii"]
-    }
-
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["wii"]
     }
 
     fn expects_serial(&self) -> bool {

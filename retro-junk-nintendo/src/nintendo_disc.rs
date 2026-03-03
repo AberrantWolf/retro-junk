@@ -15,7 +15,9 @@
 use std::io::SeekFrom;
 use std::path::Path;
 
-use retro_junk_core::{AnalysisError, Platform, ReadSeek, RomIdentification};
+use retro_junk_core::{
+    AnalysisError, FileHashes, HashAlgorithms, Platform, ReadSeek, RomIdentification,
+};
 
 use crate::constants::region_from_game_code;
 use crate::licensee::maker_code_name;
@@ -186,6 +188,19 @@ pub(crate) fn build_identification(
     // Maker code
     id.maker_code = Some(maker.clone());
 
+    // Composite product code for display (e.g., "DOL-GALE-0" for GC, "RVL-RSBE-0" for Wii)
+    let platform_prefix = match platform {
+        Platform::GameCube => "DOL",
+        Platform::Wii => "RVL",
+        _ => "",
+    };
+    if !platform_prefix.is_empty() {
+        id.extra.insert(
+            "product_code".into(),
+            format!("{}-{}-{}", platform_prefix, code, header.disc_id),
+        );
+    }
+
     // Extras
     id.extra.insert("game_code".into(), code);
     id.extra.insert("maker_code".into(), maker.clone());
@@ -287,4 +302,78 @@ pub(crate) fn open_compressed_disc(
     let header = parse_disc_header(&mut disc)?;
 
     Ok((header, format_name, disc_size))
+}
+
+// ---------------------------------------------------------------------------
+// Compressed disc hashing
+// ---------------------------------------------------------------------------
+
+const HASH_CHUNK_SIZE: usize = 64 * 1024; // 64 KB
+
+/// Decompress a compressed Nintendo disc image and hash the raw data.
+///
+/// Opens the disc via `nod::Disc::new(path)`, reads `disc_size()` bytes of
+/// decompressed data, and hashes with the requested algorithms. CRC32 is
+/// always computed; SHA1 and MD5 are conditional on `algorithms`.
+///
+/// This produces hashes matching Redump DATs, which store checksums of the
+/// uncompressed ISO — not the compressed container bytes.
+pub(crate) fn hash_compressed_disc(
+    path: &Path,
+    algorithms: HashAlgorithms,
+) -> Result<FileHashes, AnalysisError> {
+    use sha1::Digest;
+    use std::io::Read;
+
+    let mut disc = nod::Disc::new(path).map_err(|e| {
+        AnalysisError::invalid_format(&format!("Failed to open compressed disc for hashing: {e}"))
+    })?;
+
+    let data_size = disc.disc_size();
+
+    log::info!(
+        "Hashing compressed disc: {} ({} bytes uncompressed)",
+        path.display(),
+        data_size
+    );
+
+    let mut crc = crc32fast::Hasher::new();
+    let mut sha: Option<sha1::Sha1> = if algorithms.sha1() {
+        Some(sha1::Sha1::new())
+    } else {
+        None
+    };
+    let mut md5_ctx: Option<md5::Context> = if algorithms.md5() {
+        Some(md5::Context::new())
+    } else {
+        None
+    };
+
+    let mut buf = vec![0u8; HASH_CHUNK_SIZE];
+    let mut remaining = data_size;
+
+    while remaining > 0 {
+        let to_read = remaining.min(buf.len() as u64) as usize;
+        let n = disc.read(&mut buf[..to_read]).map_err(|e| {
+            AnalysisError::other(format!("Error reading decompressed disc data: {e}"))
+        })?;
+        if n == 0 {
+            break;
+        }
+        crc.update(&buf[..n]);
+        if let Some(ref mut s) = sha {
+            s.update(&buf[..n]);
+        }
+        if let Some(ref mut m) = md5_ctx {
+            m.consume(&buf[..n]);
+        }
+        remaining -= n as u64;
+    }
+
+    Ok(FileHashes {
+        crc32: format!("{:08x}", crc.finalize()),
+        sha1: sha.map(|s| format!("{:x}", s.finalize())),
+        md5: md5_ctx.map(|m| format!("{:x}", m.compute())),
+        data_size,
+    })
 }
