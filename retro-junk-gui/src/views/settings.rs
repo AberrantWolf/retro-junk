@@ -121,7 +121,7 @@ fn show_output_directories_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.horizontal(|ui| {
         ui.label("Media directory:");
         let response = ui.add(
-            egui::TextEdit::singleline(&mut app.settings.general.media_dir).desired_width(200.0),
+            egui::TextEdit::singleline(&mut app.settings.general.assets_dir).desired_width(200.0),
         );
         if response.lost_focus() || response.changed() {
             changed = true;

@@ -5,30 +5,30 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use retro_junk_dat::{DatIndex, FileHashes, MatchMethod, SerialLookupResult};
-use retro_junk_frontend::MediaType;
+use retro_junk_frontend::AssetType;
 use retro_junk_lib::rename::BrokenReference;
 
-// -- Media status --
+// -- Asset status --
 
-/// The 5 scrapeable media types that `rescrape_media_for_selection` downloads
-/// (matches `MediaSelection::default()` minus Video, which `collect_existing_media` skips).
-pub const SCRAPEABLE_MEDIA_TYPES: &[MediaType] = &[
-    MediaType::Cover,
-    MediaType::Cover3D,
-    MediaType::Screenshot,
-    MediaType::Marquee,
-    MediaType::PhysicalMedia,
+/// The 5 scrapeable asset types that `rescrape_media_for_selection` downloads
+/// (matches `AssetSelection::default()` minus Video, which `collect_existing_assets` skips).
+pub const SCRAPEABLE_ASSET_TYPES: &[AssetType] = &[
+    AssetType::Cover,
+    AssetType::Cover3D,
+    AssetType::Screenshot,
+    AssetType::Marquee,
+    AssetType::PhysicalMedia,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MediaStatus {
-    /// media_paths is None — not yet discovered
+pub enum AssetStatus {
+    /// asset_paths is None — not yet discovered
     Unknown,
-    /// Discovered, no scrapeable media found
+    /// Discovered, no scrapeable assets found
     None,
-    /// Some but not all scrapeable media types present
+    /// Some but not all scrapeable asset types present
     Partial { found: u8, total: u8 },
-    /// All scrapeable media types present
+    /// All scrapeable asset types present
     Complete,
 }
 use retro_junk_lib::scanner::GameEntry;
@@ -98,7 +98,7 @@ pub enum DatStatus {
 ///
 /// If `setting` is empty, uses the legacy `{root}-media` sibling convention.
 /// Otherwise, the setting is treated as a path (absolute or relative to `root_path`).
-pub fn media_dir_for_console(
+pub fn asset_dir_for_console(
     root_path: &Path,
     folder_name: &str,
     setting: &str,
@@ -143,42 +143,42 @@ fn resolve_dir(root_path: &Path, setting: &str) -> PathBuf {
 }
 
 /// Subdirectory name for a media type (matches ES-DE layout).
-fn media_subdir(mt: MediaType) -> &'static str {
+fn asset_subdir(mt: AssetType) -> &'static str {
     match mt {
-        MediaType::Cover => "covers",
-        MediaType::Cover3D => "3dboxes",
-        MediaType::Screenshot => "screenshots",
-        MediaType::TitleScreen => "titlescreens",
-        MediaType::Marquee => "marquees",
-        MediaType::Video => "videos",
-        MediaType::Fanart => "fanart",
-        MediaType::PhysicalMedia => "physicalmedia",
-        MediaType::Miximage => "miximages",
+        AssetType::Cover => "covers",
+        AssetType::Cover3D => "3dboxes",
+        AssetType::Screenshot => "screenshots",
+        AssetType::TitleScreen => "titlescreens",
+        AssetType::Marquee => "marquees",
+        AssetType::Video => "videos",
+        AssetType::Fanart => "fanart",
+        AssetType::PhysicalMedia => "physicalmedia",
+        AssetType::Miximage => "miximages",
     }
 }
 
 /// All displayable media types in preferred display order.
-pub const DISPLAY_MEDIA_TYPES: &[MediaType] = &[
-    MediaType::Cover,
-    MediaType::Cover3D,
-    MediaType::Screenshot,
-    MediaType::TitleScreen,
-    MediaType::Marquee,
-    MediaType::PhysicalMedia,
-    MediaType::Fanart,
-    MediaType::Miximage,
+pub const DISPLAY_ASSET_TYPES: &[AssetType] = &[
+    AssetType::Cover,
+    AssetType::Cover3D,
+    AssetType::Screenshot,
+    AssetType::TitleScreen,
+    AssetType::Marquee,
+    AssetType::PhysicalMedia,
+    AssetType::Fanart,
+    AssetType::Miximage,
 ];
 
 /// Discover media files on disk for a given ROM entry.
 ///
 /// Checks each media type subdirectory for a file matching `rom_stem.ext`.
-pub fn collect_existing_media(media_dir: &Path, rom_stem: &str) -> HashMap<MediaType, PathBuf> {
+pub fn collect_existing_assets(media_dir: &Path, rom_stem: &str) -> HashMap<AssetType, PathBuf> {
     let mut found = HashMap::new();
-    for &mt in DISPLAY_MEDIA_TYPES {
-        if mt == MediaType::Video {
+    for &mt in DISPLAY_ASSET_TYPES {
+        if mt == AssetType::Video {
             continue;
         }
-        let subdir = media_dir.join(media_subdir(mt));
+        let subdir = media_dir.join(asset_subdir(mt));
         let ext = mt.default_extension();
         let path = subdir.join(format!("{}.{}", rom_stem, ext));
         if path.exists() {
@@ -208,7 +208,7 @@ pub struct LibraryEntry {
     /// When status is Ambiguous, holds the candidate game names from the DAT.
     pub ambiguous_candidates: Vec<String>,
     /// Discovered media files on disk. `None` = not yet scanned, `Some(empty)` = scanned but none found.
-    pub media_paths: Option<HashMap<MediaType, PathBuf>>,
+    pub asset_paths: Option<HashMap<AssetType, PathBuf>>,
     /// User-set region override. When set, takes precedence over detected regions.
     pub region_override: Option<Region>,
     /// Box/cover title from catalog DB (e.g., the title printed on the game box).
@@ -233,29 +233,29 @@ impl LibraryEntry {
         }
     }
 
-    /// Compute the media status by checking `media_paths` against the scrapeable types.
-    pub fn media_status(&self) -> MediaStatus {
-        let media = match self.media_paths.as_ref() {
+    /// Compute the media status by checking `asset_paths` against the scrapeable types.
+    pub fn asset_status(&self) -> AssetStatus {
+        let media = match self.asset_paths.as_ref() {
             Some(m) => m,
-            None => return MediaStatus::Unknown,
+            None => return AssetStatus::Unknown,
         };
-        let total = SCRAPEABLE_MEDIA_TYPES.len() as u8;
-        let found = SCRAPEABLE_MEDIA_TYPES
+        let total = SCRAPEABLE_ASSET_TYPES.len() as u8;
+        let found = SCRAPEABLE_ASSET_TYPES
             .iter()
             .filter(|mt| media.contains_key(mt))
             .count() as u8;
         match found {
-            0 => MediaStatus::None,
-            n if n == total => MediaStatus::Complete,
-            n => MediaStatus::Partial { found: n, total },
+            0 => AssetStatus::None,
+            n if n == total => AssetStatus::Complete,
+            n => AssetStatus::Partial { found: n, total },
         }
     }
 
     /// Whether this entry has a generated miximage on disk.
     pub fn has_miximage(&self) -> bool {
-        self.media_paths
+        self.asset_paths
             .as_ref()
-            .is_some_and(|m| m.contains_key(&MediaType::Miximage))
+            .is_some_and(|m| m.contains_key(&AssetType::Miximage))
     }
 }
 
@@ -594,10 +594,10 @@ pub enum AppMessage {
     },
 
     // -- Media / Scraping --
-    MediaLoaded {
+    AssetsLoaded {
         folder_name: String,
         entry_index: usize,
-        media: HashMap<MediaType, PathBuf>,
+        assets: HashMap<AssetType, PathBuf>,
     },
     ScrapeEntryFailed {
         folder_name: String,
@@ -735,7 +735,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 dat_match: cached.dat_match.clone(),
                                 status: cached.status,
                                 ambiguous_candidates: cached.ambiguous_candidates.clone(),
-                                media_paths: cached.media_paths.clone(),
+                                asset_paths: cached.asset_paths.clone(),
                                 region_override: cached.region_override,
                                 cover_title: cached.cover_title.clone(),
                                 screen_title: cached.screen_title.clone(),
@@ -751,7 +751,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 dat_match: None,
                                 status: EntryStatus::Unknown,
                                 ambiguous_candidates: Vec::new(),
-                                media_paths: None,
+                                asset_paths: None,
                                 region_override: None,
                                 cover_title: None,
                                 screen_title: None,
@@ -1082,16 +1082,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         .entries
                         .iter()
                         .enumerate()
-                        .filter(|(_, e)| e.media_paths.is_none())
+                        .filter(|(_, e)| e.asset_paths.is_none())
                         .map(|(i, e)| (i, e.game_entry.rom_stem().to_string()))
                         .collect();
                     if !entries.is_empty() {
-                        crate::backend::media::discover_media_for_console(
+                        crate::backend::assets::discover_assets_for_console(
                             app.message_tx.clone(),
                             ctx.clone(),
                             root.clone(),
                             folder_name.clone(),
-                            app.settings.general.media_dir.clone(),
+                            app.settings.general.assets_dir.clone(),
                             entries,
                         );
                     }
@@ -1424,25 +1424,25 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             log::warn!("Hash failed for {} entry {}: {}", folder_name, index, error);
         }
 
-        AppMessage::MediaLoaded {
+        AppMessage::AssetsLoaded {
             folder_name,
             entry_index,
-            media,
+            assets,
         } => {
             if let Some(ci) = app.library.find_by_folder(&folder_name)
                 && let Some(entry) = app.library.consoles[ci].entries.get_mut(entry_index)
             {
-                // Invalidate stale cached textures when a media path changes
-                if let Some(ref old_media) = entry.media_paths {
-                    for (mt, old_path) in old_media {
-                        let new_path = media.get(mt);
+                // Invalidate stale cached textures when an asset path changes
+                if let Some(ref old_assets) = entry.asset_paths {
+                    for (at, old_path) in old_assets {
+                        let new_path = assets.get(at);
                         if new_path != Some(old_path) {
                             let old_uri = format!("bytes://media/{}", old_path.display());
                             ctx.forget_image(&old_uri);
                         }
                     }
                 }
-                entry.media_paths = Some(media);
+                entry.asset_paths = Some(assets);
             }
         }
 
@@ -1460,7 +1460,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             if let Some(ci) = app.library.find_by_folder(&folder_name)
                 && let Some(entry) = app.library.consoles[ci].entries.get_mut(entry_index)
             {
-                entry.media_paths = Some(HashMap::new());
+                entry.asset_paths = Some(HashMap::new());
             }
         }
 
@@ -1543,16 +1543,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         .entries
                         .iter()
                         .enumerate()
-                        .filter(|(_, e)| e.media_paths.is_none())
+                        .filter(|(_, e)| e.asset_paths.is_none())
                         .map(|(i, e)| (i, e.game_entry.rom_stem().to_string()))
                         .collect();
                     if !entries.is_empty() {
-                        crate::backend::media::discover_media_for_console(
+                        crate::backend::assets::discover_assets_for_console(
                             app.message_tx.clone(),
                             ctx.clone(),
                             root.clone(),
                             console.folder_name.clone(),
-                            app.settings.general.media_dir.clone(),
+                            app.settings.general.assets_dir.clone(),
                             entries,
                         );
                     }
@@ -1715,6 +1715,55 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::OperationComplete { op_id } => {
             app.operations.retain(|op| op.id != op_id);
+        }
+    }
+}
+
+// -- Tools state --
+
+/// Fields that can appear in disagreements (for the filter dropdown).
+pub const DISAGREEMENT_FIELDS: &[&str] = &[
+    "title",
+    "alt_title",
+    "release_date",
+    "game_serial",
+    "genre",
+    "players",
+    "description",
+    "media_serial",
+    "revision",
+    "status",
+];
+
+/// Context about the entity referenced by the selected disagreement.
+pub struct DisagreementContext {
+    pub entity_title: String,
+    pub platform_name: String,
+}
+
+/// Transient UI state for the Tools (catalog) view.
+pub struct ToolsState {
+    pub stats: Option<retro_junk_db::CatalogStats>,
+    pub platforms: Vec<retro_junk_db::PlatformRow>,
+    pub disagreements: Vec<retro_junk_catalog::types::Disagreement>,
+    pub selected_idx: Option<usize>,
+    pub filter_platform: Option<String>,
+    pub filter_field: Option<String>,
+    pub selected_context: Option<DisagreementContext>,
+    pub needs_refresh: bool,
+}
+
+impl Default for ToolsState {
+    fn default() -> Self {
+        Self {
+            stats: None,
+            platforms: Vec::new(),
+            disagreements: Vec::new(),
+            selected_idx: None,
+            filter_platform: None,
+            filter_field: None,
+            selected_context: None,
+            needs_refresh: true,
         }
     }
 }

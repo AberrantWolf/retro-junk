@@ -193,11 +193,11 @@ impl MediaStatus {
     }
 }
 
-// ── Media Asset ─────────────────────────────────────────────────────────────
+// ── Asset ────────────────────────────────────────────────────────────────────
 
 /// An art/media asset associated with a release or specific media.
 #[derive(Debug, Clone)]
-pub struct MediaAsset {
+pub struct Asset {
     pub id: i64,
     pub release_id: Option<String>,
     pub media_id: Option<String>,

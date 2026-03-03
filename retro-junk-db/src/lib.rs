@@ -10,7 +10,7 @@ pub mod schema;
 pub use operations::{
     OperationError, SeedStats, apply_disagreement_resolution, clear_not_found_flags,
     delete_orphan_works, delete_release, find_company_by_alias, find_media_by_dat_name,
-    find_release, find_work_by_name, insert_disagreement, insert_import_log, insert_media_asset,
+    find_release, find_work_by_name, insert_asset, insert_disagreement, insert_import_log,
     insert_work, mark_release_not_found, move_assets_to_release, move_disagreements_for_release,
     move_media_to_release, resolve_disagreement, seed_from_catalog, unenrich_releases,
     update_release_enrichment, update_releases_work_id, update_work_name, upsert_collection_entry,

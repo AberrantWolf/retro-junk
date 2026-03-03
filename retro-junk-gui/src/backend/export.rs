@@ -36,7 +36,7 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
     }
 
     let metadata_dir_setting = app.settings.general.metadata_dir.clone();
-    let media_dir_setting = app.settings.general.media_dir.clone();
+    let media_dir_setting = app.settings.general.assets_dir.clone();
     let ctx = ctx.clone();
     let description = format!("Exporting gamelist.xml for {}", folder_name);
 
@@ -74,7 +74,7 @@ fn do_generate(
     media_dir_setting: &str,
 ) -> Result<String, String> {
     let rom_dir = root_path.join(folder_name);
-    let media_dir = state::media_dir_for_console(root_path, folder_name, media_dir_setting)
+    let media_dir = state::asset_dir_for_console(root_path, folder_name, media_dir_setting)
         .ok_or_else(|| "Could not determine media directory".to_string())?;
     let metadata_dir =
         state::metadata_dir_for_console(root_path, folder_name, metadata_dir_setting)
@@ -83,8 +83,8 @@ fn do_generate(
     let games: Vec<ScrapedGame> = entries
         .iter()
         .map(|e| {
-            let media = state::collect_existing_media(&media_dir, &e.rom_stem);
-            // Convert HashMap<MediaType, PathBuf> — already the right type
+            let assets = state::collect_existing_assets(&media_dir, &e.rom_stem);
+            // Convert HashMap<AssetType, PathBuf> — already the right type
             ScrapedGame {
                 rom_stem: e.rom_stem.clone(),
                 rom_filename: e.rom_filename.clone(),
@@ -96,7 +96,7 @@ fn do_generate(
                 players: None,
                 rating: None,
                 release_date: None,
-                media,
+                assets,
                 cover_title: e.cover_title.clone(),
             }
         })

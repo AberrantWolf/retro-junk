@@ -140,7 +140,7 @@ fn show_console_context_menu(
         .clicked()
     {
         app.selected_entries = (0..entry_count).collect();
-        backend::media::rescrape_media_for_selection(app, console_idx, ctx);
+        backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
         ui.close_menu();
     }
 

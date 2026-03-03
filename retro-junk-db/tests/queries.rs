@@ -342,9 +342,9 @@ fn setup_db_with_assets() -> rusqlite::Connection {
     let conn = setup_db();
 
     // Insert assets for SMB1
-    insert_media_asset(
+    insert_asset(
         &conn,
-        &MediaAsset {
+        &Asset {
             id: 0,
             release_id: Some("smb1-nes-usa".to_string()),
             media_id: None,
@@ -362,9 +362,9 @@ fn setup_db_with_assets() -> rusqlite::Connection {
     )
     .unwrap();
 
-    insert_media_asset(
+    insert_asset(
         &conn,
-        &MediaAsset {
+        &Asset {
             id: 0,
             release_id: Some("smb1-nes-usa".to_string()),
             media_id: None,

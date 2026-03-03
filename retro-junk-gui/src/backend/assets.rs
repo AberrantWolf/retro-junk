@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
 use retro_junk_core::Platform;
-use retro_junk_frontend::MediaType;
+use retro_junk_frontend::AssetType;
 use retro_junk_lib::async_util::cancellable;
 use retro_junk_scraper::ScrapeError;
 
@@ -15,8 +15,8 @@ use crate::state::{self, AppMessage};
 /// Load media files for an entry on a background thread.
 ///
 /// Discovers media files on disk and registers their bytes with egui,
-/// then sends a `MediaLoaded` message to update the entry's `media_paths`.
-pub fn load_media_for_entry(
+/// then sends a `AssetsLoaded` message to update the entry's `asset_paths`.
+pub fn load_assets_for_entry(
     tx: mpsc::Sender<AppMessage>,
     ctx: egui::Context,
     root_path: PathBuf,
@@ -27,20 +27,20 @@ pub fn load_media_for_entry(
 ) {
     std::thread::spawn(move || {
         let media_dir =
-            match state::media_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
+            match state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
                 Some(d) => d,
                 None => {
-                    let _ = tx.send(AppMessage::MediaLoaded {
+                    let _ = tx.send(AppMessage::AssetsLoaded {
                         folder_name,
                         entry_index,
-                        media: HashMap::new(),
+                        assets: HashMap::new(),
                     });
                     ctx.request_repaint();
                     return;
                 }
             };
 
-        let found = state::collect_existing_media(&media_dir, &rom_stem);
+        let found = state::collect_existing_assets(&media_dir, &rom_stem);
 
         // Register image bytes with egui before sending the message,
         // so they're available by the time the UI renders.
@@ -51,10 +51,10 @@ pub fn load_media_for_entry(
             }
         }
 
-        let _ = tx.send(AppMessage::MediaLoaded {
+        let _ = tx.send(AppMessage::AssetsLoaded {
             folder_name,
             entry_index,
-            media: found,
+            assets: found,
         });
         ctx.request_repaint();
     });
@@ -176,7 +176,7 @@ fn scrape_media_for_selection(
         return;
     }
 
-    // When force-redownloading, clear cached media_paths so the UI shows them as loading.
+    // When force-redownloading, clear cached asset_paths so the UI shows them as loading.
     // When scraping missing only, keep paths visible during the operation.
     if force_redownload {
         for item in &work {
@@ -184,12 +184,12 @@ fn scrape_media_for_selection(
                 .entries
                 .get_mut(item.entry_index)
             {
-                entry.media_paths = None;
+                entry.asset_paths = None;
             }
         }
     }
 
-    let media_dir_setting = app.settings.general.media_dir.clone();
+    let media_dir_setting = app.settings.general.assets_dir.clone();
     let ctx = ctx.clone();
     let verb = if force_redownload {
         "Scraping media"
@@ -249,7 +249,7 @@ fn scrape_media_for_selection(
             };
 
             let media_dir =
-                match state::media_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
+                match state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
                     Some(d) => d,
                     None => {
                         log::error!("Cannot determine media directory for {}", folder_name);
@@ -262,7 +262,7 @@ fn scrape_media_for_selection(
                     }
                 };
 
-            let selection = retro_junk_scraper::MediaSelection::default();
+            let selection = retro_junk_scraper::AssetSelection::default();
             // Event channel for download_game_media (we don't consume events, just log)
             let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -327,7 +327,7 @@ fn scrape_media_for_selection(
 
                 // Download media
                 let downloaded = match cancellable(
-                    retro_junk_scraper::media::download_game_media(
+                    retro_junk_scraper::assets::download_game_assets(
                         &client,
                         &lookup_result.game,
                         &selection,
@@ -382,10 +382,10 @@ fn scrape_media_for_selection(
                     downloaded
                 };
 
-                let _ = tx.send(AppMessage::MediaLoaded {
+                let _ = tx.send(AppMessage::AssetsLoaded {
                     folder_name: folder_name.clone(),
                     entry_index: item.entry_index,
-                    media: final_media,
+                    assets: final_media,
                 });
                 ctx.request_repaint();
             }
@@ -428,13 +428,13 @@ pub fn regenerate_miximages_for_selection(
         return;
     }
 
-    let media_dir_setting = app.settings.general.media_dir.clone();
+    let media_dir_setting = app.settings.general.assets_dir.clone();
     let ctx = ctx.clone();
     let description = format!("Re-generating miximages ({} entries)", work.len());
 
     spawn_background_op(app, description, move |op_id, cancel, tx| {
         let media_dir =
-            match state::media_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
+            match state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
                 Some(d) => d,
                 None => {
                     log::error!("Cannot determine media directory for {}", folder_name);
@@ -468,7 +468,7 @@ pub fn regenerate_miximages_for_selection(
 
             // Register all non-miximage images with egui (miximage already registered by helper)
             for (mt, path) in &updated_media {
-                if *mt != MediaType::Miximage {
+                if *mt != AssetType::Miximage {
                     let uri = format!("bytes://media/{}", path.display());
                     if let Ok(bytes) = std::fs::read(path) {
                         ctx.include_bytes(uri, bytes);
@@ -476,10 +476,10 @@ pub fn regenerate_miximages_for_selection(
                 }
             }
 
-            let _ = tx.send(AppMessage::MediaLoaded {
+            let _ = tx.send(AppMessage::AssetsLoaded {
                 folder_name: folder_name.clone(),
                 entry_index: *entry_index,
-                media: updated_media,
+                assets: updated_media,
             });
             ctx.request_repaint();
         }
@@ -491,9 +491,9 @@ pub fn regenerate_miximages_for_selection(
 
 /// Discover media files for every entry in a console (cheap `path.exists()` calls).
 ///
-/// Sends `MediaLoaded` messages so the table can show media status indicators
+/// Sends `AssetsLoaded` messages so the table can show media status indicators
 /// without the user opening the detail panel for each entry.
-pub fn discover_media_for_console(
+pub fn discover_assets_for_console(
     tx: mpsc::Sender<AppMessage>,
     ctx: egui::Context,
     root_path: PathBuf,
@@ -503,13 +503,13 @@ pub fn discover_media_for_console(
 ) {
     std::thread::spawn(move || {
         let media_dir =
-            match state::media_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
+            match state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
                 Some(d) => d,
                 None => return,
             };
 
         for (entry_index, rom_stem) in entries {
-            let found = state::collect_existing_media(&media_dir, &rom_stem);
+            let found = state::collect_existing_assets(&media_dir, &rom_stem);
 
             // Register image bytes with egui so they're available when the UI renders.
             for path in found.values() {
@@ -519,10 +519,10 @@ pub fn discover_media_for_console(
                 }
             }
 
-            let _ = tx.send(AppMessage::MediaLoaded {
+            let _ = tx.send(AppMessage::AssetsLoaded {
                 folder_name: folder_name.clone(),
                 entry_index,
-                media: found,
+                assets: found,
             });
         }
         ctx.request_repaint();
@@ -538,8 +538,8 @@ fn generate_miximage_for_entry(
     rom_stem: &str,
     layout: &retro_junk_frontend::miximage_layout::MiximageLayout,
     ctx: &egui::Context,
-) -> HashMap<MediaType, PathBuf> {
-    let existing = state::collect_existing_media(media_dir, rom_stem);
+) -> HashMap<AssetType, PathBuf> {
+    let existing = state::collect_existing_assets(media_dir, rom_stem);
     let miximage_dir = media_dir.join("miximages");
     let output_path = miximage_dir.join(format!("{}.png", rom_stem));
 
@@ -559,5 +559,5 @@ fn generate_miximage_for_entry(
     }
 
     // Re-collect to pick up the new/updated miximage
-    state::collect_existing_media(media_dir, rom_stem)
+    state::collect_existing_assets(media_dir, rom_stem)
 }

@@ -199,7 +199,7 @@ pub fn load_library(root: &Path, context: &AnalysisContext) -> Option<(Library, 
                 dat_match: ce.dat_match,
                 status: ce.status,
                 ambiguous_candidates: ce.ambiguous_candidates,
-                media_paths: None, // re-discovered lazily
+                asset_paths: None, // re-discovered lazily
                 region_override: ce.region_override,
                 cover_title: ce.cover_title,
                 screen_title: ce.screen_title,

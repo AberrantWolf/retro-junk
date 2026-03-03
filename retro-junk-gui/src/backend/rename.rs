@@ -180,7 +180,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
         .root_path
         .as_ref()
         .and_then(|rp| {
-            state::media_dir_for_console(rp, &folder_name, &app.settings.general.media_dir)
+            state::asset_dir_for_console(rp, &folder_name, &app.settings.general.assets_dir)
         })
         .filter(|d| d.is_dir());
 

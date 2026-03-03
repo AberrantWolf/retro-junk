@@ -1,11 +1,11 @@
+pub mod asset_types;
 pub mod error;
 pub mod esde;
-pub mod media_types;
 pub mod miximage;
 pub mod miximage_layout;
 
+pub use asset_types::AssetType;
 pub use error::FrontendError;
-pub use media_types::MediaType;
 
 use std::path::Path;
 
@@ -32,8 +32,8 @@ pub struct ScrapedGame {
     pub rating: Option<f32>,
     /// Release date in YYYYMMDD format
     pub release_date: Option<String>,
-    /// Map of media type to downloaded file path
-    pub media: std::collections::HashMap<MediaType, std::path::PathBuf>,
+    /// Map of asset type to downloaded file path
+    pub assets: std::collections::HashMap<AssetType, std::path::PathBuf>,
     /// Box/cover title from catalog DB (used as ES-DE `<name>` when present)
     pub cover_title: Option<String>,
 }
@@ -51,6 +51,6 @@ pub trait Frontend {
         media_dir: &Path,
     ) -> Result<(), FrontendError>;
 
-    /// Return the expected media subdirectory layout for this frontend.
-    fn media_subdirs(&self) -> &[(&str, MediaType)];
+    /// Return the expected asset subdirectory layout for this frontend.
+    fn asset_subdirs(&self) -> &[(&str, AssetType)];
 }

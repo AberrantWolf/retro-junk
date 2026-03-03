@@ -7,19 +7,19 @@ use image::{Rgba, RgbaImage};
 use crate::miximage_layout::{
     AnchorPosition, FrameColor, MiximageLayout, PhysMediaPosition, ShadowConfig,
 };
-use crate::{FrontendError, MediaType};
+use crate::{AssetType, FrontendError};
 
 /// Generate a composite miximage from component images.
 ///
 /// Returns `Ok(true)` if the miximage was generated, `Ok(false)` if the
 /// screenshot was missing (the only required component).
 pub fn generate_miximage(
-    media: &HashMap<MediaType, PathBuf>,
+    media: &HashMap<AssetType, PathBuf>,
     output_path: &Path,
     layout: &MiximageLayout,
 ) -> Result<bool, FrontendError> {
     // Screenshot is required
-    let screenshot_path = match media.get(&MediaType::Screenshot) {
+    let screenshot_path = match media.get(&AssetType::Screenshot) {
         Some(p) if p.exists() => p,
         _ => return Ok(false),
     };
@@ -75,11 +75,11 @@ pub fn generate_miximage(
     // Box art (prefer 3D if configured and available)
     let box_path = if layout.box_art.prefer_3d {
         media
-            .get(&MediaType::Cover3D)
+            .get(&AssetType::Cover3D)
             .filter(|p| p.exists())
-            .or_else(|| media.get(&MediaType::Cover).filter(|p| p.exists()))
+            .or_else(|| media.get(&AssetType::Cover).filter(|p| p.exists()))
     } else {
-        media.get(&MediaType::Cover).filter(|p| p.exists())
+        media.get(&AssetType::Cover).filter(|p| p.exists())
     };
 
     if let Some(box_path) = box_path {
@@ -113,7 +113,7 @@ pub fn generate_miximage(
     }
 
     // Marquee / logo
-    if let Some(marquee_path) = media.get(&MediaType::Marquee).filter(|p| p.exists()) {
+    if let Some(marquee_path) = media.get(&AssetType::Marquee).filter(|p| p.exists()) {
         let marquee_img = image::open(marquee_path)?.into_rgba8();
         let (mw, mh) = scale_to_fit(
             marquee_img.width(),
@@ -142,7 +142,7 @@ pub fn generate_miximage(
     }
 
     // Physical media
-    if let Some(phys_path) = media.get(&MediaType::PhysicalMedia).filter(|p| p.exists()) {
+    if let Some(phys_path) = media.get(&AssetType::PhysicalMedia).filter(|p| p.exists()) {
         let phys_img = image::open(phys_path)?.into_rgba8();
         let (pw, ph) = scale_to_fit(
             phys_img.width(),

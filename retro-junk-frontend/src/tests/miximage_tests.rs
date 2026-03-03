@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use image::{Rgba, RgbaImage};
 
-use crate::MediaType;
+use crate::AssetType;
 use crate::miximage::{
     box_blur, fit_to_bounds, generate_drop_shadow, generate_miximage, sample_edge_color,
     scale_to_fit,
@@ -163,7 +163,7 @@ fn test_generate_miximage_screenshot_only() {
     ss.save(&ss_path).unwrap();
 
     let mut media = HashMap::new();
-    media.insert(MediaType::Screenshot, ss_path);
+    media.insert(AssetType::Screenshot, ss_path);
 
     let output = dir.join("miximage.png");
     let layout = MiximageLayout::default();
@@ -203,10 +203,10 @@ fn test_generate_miximage_all_components() {
     phys.save(&phys_path).unwrap();
 
     let mut media = HashMap::new();
-    media.insert(MediaType::Screenshot, ss_path);
-    media.insert(MediaType::Cover, cover_path);
-    media.insert(MediaType::Marquee, marquee_path);
-    media.insert(MediaType::PhysicalMedia, phys_path);
+    media.insert(AssetType::Screenshot, ss_path);
+    media.insert(AssetType::Cover, cover_path);
+    media.insert(AssetType::Marquee, marquee_path);
+    media.insert(AssetType::PhysicalMedia, phys_path);
 
     let output = dir.join("miximage_all.png");
     let layout = MiximageLayout::default();

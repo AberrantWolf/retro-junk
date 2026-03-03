@@ -1,4 +1,4 @@
-use crate::state::{EntryStatus, MediaStatus};
+use crate::state::{AssetStatus, EntryStatus};
 
 /// Draw a small colored circle indicating the entry's status.
 /// Returns the response for tooltip handling.
@@ -17,9 +17,9 @@ pub fn show_with_warning(
     ui: &mut egui::Ui,
     status: EntryStatus,
     has_broken_refs: bool,
-    media_status: MediaStatus,
+    media_status: AssetStatus,
 ) -> egui::Response {
-    let show_media = !matches!(media_status, MediaStatus::Unknown);
+    let show_media = !matches!(media_status, AssetStatus::Unknown);
     let width =
         10.0 + if has_broken_refs { 10.0 } else { 0.0 } + if show_media { 10.0 } else { 0.0 };
     let color = status.color();
@@ -44,23 +44,23 @@ pub fn show_with_warning(
             let half = 3.0;
             let sq_rect = egui::Rect::from_center_size(center, egui::vec2(half * 2.0, half * 2.0));
             match media_status {
-                MediaStatus::None => {
+                AssetStatus::None => {
                     // Hollow dim square
                     let stroke_color = ui.visuals().text_color().linear_multiply(0.25);
                     ui.painter()
                         .rect_stroke(sq_rect, 0.0, egui::Stroke::new(1.0, stroke_color));
                 }
-                MediaStatus::Partial { .. } => {
+                AssetStatus::Partial { .. } => {
                     // Orange/yellow filled square
                     ui.painter()
                         .rect_filled(sq_rect, 0.0, egui::Color32::from_rgb(230, 160, 30));
                 }
-                MediaStatus::Complete => {
+                AssetStatus::Complete => {
                     // Green filled square
                     ui.painter()
                         .rect_filled(sq_rect, 0.0, egui::Color32::from_rgb(50, 180, 50));
                 }
-                MediaStatus::Unknown => unreachable!(),
+                AssetStatus::Unknown => unreachable!(),
             }
         }
     }

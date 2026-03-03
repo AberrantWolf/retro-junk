@@ -2,7 +2,7 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-use crate::{Frontend, FrontendError, MediaType, ScrapedGame};
+use crate::{AssetType, Frontend, FrontendError, ScrapedGame};
 
 /// ES-DE (EmulationStation Desktop Edition) frontend.
 #[derive(Default)]
@@ -62,70 +62,70 @@ impl Frontend for EsDeFrontend {
 
             // Media paths — use relative paths from the ROM directory if possible
             // Prefer miximage for <image>, fall back to screenshot
-            if game.media.contains_key(&MediaType::Miximage) {
-                write_media_tag(
+            if game.assets.contains_key(&AssetType::Miximage) {
+                write_asset_tag(
                     &mut xml,
                     "image",
                     game,
-                    MediaType::Miximage,
+                    AssetType::Miximage,
                     rom_dir,
                     media_dir,
                 );
             } else {
-                write_media_tag(
+                write_asset_tag(
                     &mut xml,
                     "image",
                     game,
-                    MediaType::Screenshot,
+                    AssetType::Screenshot,
                     rom_dir,
                     media_dir,
                 );
             }
-            write_media_tag(
+            write_asset_tag(
                 &mut xml,
                 "cover",
                 game,
-                MediaType::Cover,
+                AssetType::Cover,
                 rom_dir,
                 media_dir,
             );
-            write_media_tag(
+            write_asset_tag(
                 &mut xml,
                 "marquee",
                 game,
-                MediaType::Marquee,
+                AssetType::Marquee,
                 rom_dir,
                 media_dir,
             );
-            write_media_tag(
+            write_asset_tag(
                 &mut xml,
                 "screenshot",
                 game,
-                MediaType::Screenshot,
+                AssetType::Screenshot,
                 rom_dir,
                 media_dir,
             );
-            write_media_tag(
+            write_asset_tag(
                 &mut xml,
                 "titlescreen",
                 game,
-                MediaType::TitleScreen,
+                AssetType::TitleScreen,
                 rom_dir,
                 media_dir,
             );
-            write_media_tag(
+            write_asset_tag(
                 &mut xml,
                 "video",
                 game,
-                MediaType::Video,
+                AssetType::Video,
                 rom_dir,
                 media_dir,
             );
-            write_media_tag(
+            write_asset_tag(
                 &mut xml,
                 "fanart",
                 game,
-                MediaType::Fanart,
+                AssetType::Fanart,
                 rom_dir,
                 media_dir,
             );
@@ -142,17 +142,17 @@ impl Frontend for EsDeFrontend {
         Ok(())
     }
 
-    fn media_subdirs(&self) -> &[(&str, MediaType)] {
+    fn asset_subdirs(&self) -> &[(&str, AssetType)] {
         &[
-            ("covers", MediaType::Cover),
-            ("screenshots", MediaType::Screenshot),
-            ("titlescreens", MediaType::TitleScreen),
-            ("marquees", MediaType::Marquee),
-            ("3dboxes", MediaType::Cover3D),
-            ("fanart", MediaType::Fanart),
-            ("physicalmedia", MediaType::PhysicalMedia),
-            ("miximages", MediaType::Miximage),
-            ("videos", MediaType::Video),
+            ("covers", AssetType::Cover),
+            ("screenshots", AssetType::Screenshot),
+            ("titlescreens", AssetType::TitleScreen),
+            ("marquees", AssetType::Marquee),
+            ("3dboxes", AssetType::Cover3D),
+            ("fanart", AssetType::Fanart),
+            ("physicalmedia", AssetType::PhysicalMedia),
+            ("miximages", AssetType::Miximage),
+            ("videos", AssetType::Video),
         ]
     }
 }
@@ -167,22 +167,22 @@ fn write_tag(xml: &mut String, tag: &str, value: &str) {
     xml.push_str(">\n");
 }
 
-fn write_media_tag(
+fn write_asset_tag(
     xml: &mut String,
     tag: &str,
     game: &ScrapedGame,
-    media_type: MediaType,
+    asset_type: AssetType,
     rom_dir: &Path,
     _media_dir: &Path,
 ) {
-    if let Some(media_path) = game.media.get(&media_type) {
-        // Compute a relative path from the ROM directory to the media file.
+    if let Some(asset_path) = game.assets.get(&asset_type) {
+        // Compute a relative path from the ROM directory to the asset file.
         // This handles sibling directories (e.g., roms-media/ next to roms/)
         // by producing paths with .. components.
-        let display_path = if let Some(rel) = pathdiff::diff_paths(media_path, rom_dir) {
+        let display_path = if let Some(rel) = pathdiff::diff_paths(asset_path, rom_dir) {
             format!("./{}", rel.display())
         } else {
-            media_path.display().to_string()
+            asset_path.display().to_string()
         };
         write_tag(xml, tag, &display_path);
     }

@@ -7,7 +7,9 @@ use retro_junk_dat::DatIndex;
 use retro_junk_lib::AnalysisContext;
 
 use crate::settings::AppSettings;
-use crate::state::{AppMessage, BackgroundOperation, Library, RenameOutcome, RenameResult, View};
+use crate::state::{
+    AppMessage, BackgroundOperation, Library, RenameOutcome, RenameResult, ToolsState, View,
+};
 use crate::views;
 use crate::widgets;
 
@@ -68,6 +70,9 @@ pub struct RetroJunkApp {
     /// Cleared when `StartFolderScan` is processed (the signal that the cache
     /// thread has finished, whether or not a cache existed).
     pub loading_library: bool,
+
+    /// Transient state for the Tools (catalog) view.
+    pub tools_state: ToolsState,
 }
 
 impl RetroJunkApp {
@@ -103,6 +108,7 @@ impl RetroJunkApp {
             catalog_db,
             rename_results: None,
             loading_library: false,
+            tools_state: ToolsState::default(),
         };
 
         // Restore last open root from settings
@@ -180,6 +186,7 @@ impl eframe::App for RetroJunkApp {
         }
 
         // Sidebar
+        let prev_view = self.current_view;
         egui::SidePanel::left("sidebar")
             .resizable(false)
             .exact_width(120.0)
@@ -195,6 +202,11 @@ impl eframe::App for RetroJunkApp {
                 ui.selectable_value(view, View::Tools, "Tools");
             });
 
+        // Trigger refresh when switching to Tools view
+        if self.current_view == View::Tools && prev_view != View::Tools {
+            self.tools_state.needs_refresh = true;
+        }
+
         // Activity bar (bottom, only when operations active)
         if self.has_active_operations() {
             egui::TopBottomPanel::bottom("activity_bar").show(ctx, |ui| {
@@ -206,7 +218,7 @@ impl eframe::App for RetroJunkApp {
         egui::CentralPanel::default().show(ctx, |ui| match self.current_view {
             View::Library => views::library::show(ui, self, ctx),
             View::Settings => views::settings::show(ui, self),
-            View::Tools => views::tools::show(ui),
+            View::Tools => views::tools::show(ui, self),
         });
 
         // Rename results modal dialog

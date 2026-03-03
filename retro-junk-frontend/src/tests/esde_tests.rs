@@ -26,7 +26,7 @@ fn make_game(name: &str, cover_title: Option<&str>) -> ScrapedGame {
         players: None,
         rating: None,
         release_date: None,
-        media: HashMap::new(),
+        assets: HashMap::new(),
         cover_title: cover_title.map(|s| s.to_string()),
     }
 }

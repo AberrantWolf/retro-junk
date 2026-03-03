@@ -710,7 +710,7 @@ pub async fn enrich_releases(
                             )?;
 
                             for asset in &downloaded_assets {
-                                let media_asset = MediaAsset {
+                                let asset_record = Asset {
                                     id: 0,
                                     release_id: Some(release.id.clone()),
                                     media_id: None,
@@ -725,7 +725,7 @@ pub async fn enrich_releases(
                                     height: None,
                                     created_at: String::new(),
                                 };
-                                operations::insert_media_asset(conn, &media_asset)?;
+                                operations::insert_asset(conn, &asset_record)?;
                             }
 
                             conn.execute_batch("COMMIT")?;
@@ -1003,7 +1003,7 @@ struct DownloadedAsset {
 /// Download media assets without touching the database.
 ///
 /// Returns a vec of successfully downloaded assets. The caller is responsible
-/// for inserting `MediaAsset` records inside its own transaction.
+/// for inserting `Asset` records inside its own transaction.
 async fn download_assets_only(
     client: &ScreenScraperClient,
     game: &GameInfo,

@@ -33,10 +33,10 @@ pub struct GeneralSettings {
     /// Default: `"."` (inline with ROMs, ES-DE legacy mode compatible).
     #[serde(default = "default_metadata_dir")]
     pub metadata_dir: String,
-    /// Media output directory. If empty, uses `"{root}-media"` sibling convention.
+    /// Asset output directory. If empty, uses `"{root}-media"` sibling convention.
     /// Relative paths resolve from the ROM root.
-    #[serde(default)]
-    pub media_dir: String,
+    #[serde(default, alias = "media_dir")]
+    pub assets_dir: String,
 }
 
 fn default_true() -> bool {
@@ -53,7 +53,7 @@ impl Default for GeneralSettings {
             auto_scan_on_open: true,
             warn_on_region_override: true,
             metadata_dir: default_metadata_dir(),
-            media_dir: String::new(),
+            assets_dir: String::new(),
         }
     }
 }

@@ -6,7 +6,7 @@ use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
 use crate::backend;
-use crate::state::{EntryStatus, MediaStatus};
+use crate::state::{AssetStatus, EntryStatus};
 use crate::util;
 use crate::widgets::status_badge;
 
@@ -91,7 +91,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     .broken_references
                     .as_ref()
                     .is_some_and(|refs| !refs.is_empty()),
-                media_status: entry.media_status(),
+                asset_status: entry.asset_status(),
                 name: entry.game_entry.display_name().to_string(),
                 file_path: entry.game_entry.analysis_path().to_path_buf(),
                 serial: entry
@@ -205,19 +205,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                                 ui,
                                 data.status,
                                 data.has_broken_refs,
-                                data.media_status,
+                                data.asset_status,
                             );
                             let mut tip = data.status.tooltip().to_string();
                             if data.has_broken_refs {
                                 tip.push_str("\n\u{26a0} Broken file references");
                             }
-                            match data.media_status {
-                                MediaStatus::Unknown => {}
-                                MediaStatus::None => tip.push_str("\nNo scraped media"),
-                                MediaStatus::Partial { found, total } => {
+                            match data.asset_status {
+                                AssetStatus::Unknown => {}
+                                AssetStatus::None => tip.push_str("\nNo scraped media"),
+                                AssetStatus::Partial { found, total } => {
                                     tip.push_str(&format!("\nPartial media ({}/{})", found, total));
                                 }
-                                MediaStatus::Complete => tip.push_str("\nMedia complete"),
+                                AssetStatus::Complete => tip.push_str("\nMedia complete"),
                             }
                             resp.on_hover_text(tip);
                         });
@@ -301,12 +301,12 @@ fn show_row_context_menu(
         let mut any_has_miximage = false;
         for &i in &app.selected_entries {
             if let Some(entry) = console.entries.get(i) {
-                let ms = entry.media_status();
+                let ms = entry.asset_status();
                 match ms {
-                    MediaStatus::Complete => {
+                    AssetStatus::Complete => {
                         any_has_media = true;
                     }
-                    MediaStatus::Partial { .. } => {
+                    AssetStatus::Partial { .. } => {
                         any_has_media = true;
                         all_have_all_media = false;
                     }
@@ -323,23 +323,23 @@ fn show_row_context_menu(
         if any_has_media && all_have_all_media {
             // All entries have complete media
             if ui.button("Re-scrape Media").clicked() {
-                backend::media::rescrape_media_for_selection(app, console_idx, ctx);
+                backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
                 ui.close_menu();
             }
         } else if any_has_media {
             // Some entries have partial media
             if ui.button("Scrape All Media").clicked() {
-                backend::media::rescrape_media_for_selection(app, console_idx, ctx);
+                backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
                 ui.close_menu();
             }
             if ui.button("Scrape Missing Media").clicked() {
-                backend::media::scrape_missing_media_for_selection(app, console_idx, ctx);
+                backend::assets::scrape_missing_media_for_selection(app, console_idx, ctx);
                 ui.close_menu();
             }
         } else {
             // No entry has any media
             if ui.button("Scrape Media").clicked() {
-                backend::media::rescrape_media_for_selection(app, console_idx, ctx);
+                backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
                 ui.close_menu();
             }
         }
@@ -352,7 +352,7 @@ fn show_row_context_menu(
                 "Generate Miximages"
             };
             if ui.button(label).clicked() {
-                backend::media::regenerate_miximages_for_selection(app, console_idx, ctx);
+                backend::assets::regenerate_miximages_for_selection(app, console_idx, ctx);
                 ui.close_menu();
             }
         }
@@ -535,7 +535,7 @@ struct RowData {
     entry_idx: usize,
     status: EntryStatus,
     has_broken_refs: bool,
-    media_status: MediaStatus,
+    asset_status: AssetStatus,
     name: String,
     file_path: PathBuf,
     serial: Option<String>,

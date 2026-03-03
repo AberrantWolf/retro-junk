@@ -107,6 +107,8 @@ Audit findings from 2026-02-27.
 
 ## Code Health: Cleanup
 
+- [ ] **Decide on user-facing "Media" vs "Assets" terminology** — Rust types were renamed from `MediaType`/`MediaStatus`/etc. to `AssetType`/`AssetStatus`/etc. to disambiguate from physical media types. However, UI strings still say "Scrape Media", "Re-scrape Media", "No scraped media", "Media complete", etc. Decide whether to keep user-facing labels as "Media" (more intuitive to users) or align them with the code terminology ("Assets").
+
 - [ ] **Remove dead `CliError` variants** — `retro-junk-cli/src/error.rs:28,32` defines `DatError` and `Analysis` variants (and constructors at lines 56, 60) that are never constructed. Remove or use them.
 
 ## Enrichment Pipeline Hardening

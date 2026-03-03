@@ -455,8 +455,8 @@ fn row_to_media(
 
 // ── Media Asset Operations ──────────────────────────────────────────────────
 
-/// Insert a media asset.
-pub fn insert_media_asset(conn: &Connection, asset: &MediaAsset) -> Result<i64, OperationError> {
+/// Insert an asset.
+pub fn insert_asset(conn: &Connection, asset: &Asset) -> Result<i64, OperationError> {
     conn.execute(
         "INSERT INTO media_assets (release_id, media_id, asset_type, region, source,
              file_path, source_url, scraped, file_hash, width, height)

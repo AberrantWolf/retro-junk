@@ -1,7 +1,7 @@
 use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
-use crate::state::{DISPLAY_MEDIA_TYPES, EntryStatus};
+use crate::state::{DISPLAY_ASSET_TYPES, EntryStatus};
 
 /// Render the detail panel for the focused entry.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -30,11 +30,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // Lazy media discovery: kick off background load on first focus.
     // Sets an empty sentinel immediately to prevent re-triggering.
     if app.library.consoles[console_idx].entries[entry_idx]
-        .media_paths
+        .asset_paths
         .is_none()
     {
         // Sentinel: mark as "loading" so we don't spawn again next frame
-        app.library.consoles[console_idx].entries[entry_idx].media_paths =
+        app.library.consoles[console_idx].entries[entry_idx].asset_paths =
             Some(std::collections::HashMap::new());
 
         if let Some(ref root_path) = app.root_path {
@@ -44,14 +44,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 .rom_stem()
                 .to_owned();
 
-            crate::backend::media::load_media_for_entry(
+            crate::backend::assets::load_assets_for_entry(
                 app.message_tx.clone(),
                 ui.ctx().clone(),
                 root_path.clone(),
                 folder_name,
                 entry_idx,
                 rom_stem,
-                app.settings.general.media_dir.clone(),
+                app.settings.general.assets_dir.clone(),
             );
         }
     }
@@ -471,7 +471,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
 
         // Media
-        if let Some(ref media) = entry.media_paths
+        if let Some(ref media) = entry.asset_paths
             && !media.is_empty()
         {
             ui.add_space(4.0);
@@ -481,7 +481,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
             let panel_width = ui.available_width();
 
-            for &mt in DISPLAY_MEDIA_TYPES {
+            for &mt in DISPLAY_ASSET_TYPES {
                 if let Some(path) = media.get(&mt) {
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(mt.to_string()).weak());

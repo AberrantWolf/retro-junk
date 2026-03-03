@@ -598,7 +598,7 @@ pub fn list_import_logs(
 pub fn assets_for_release(
     conn: &Connection,
     release_id: &str,
-) -> Result<Vec<MediaAsset>, OperationError> {
+) -> Result<Vec<Asset>, OperationError> {
     let mut stmt = conn.prepare(
         "SELECT id, release_id, media_id, asset_type, region, source,
                 file_path, source_url, scraped, file_hash, width, height, created_at
@@ -1107,8 +1107,8 @@ fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {
     })
 }
 
-fn row_to_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<MediaAsset> {
-    Ok(MediaAsset {
+fn row_to_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
+    Ok(Asset {
         id: row.get(0)?,
         release_id: row.get(1)?,
         media_id: row.get(2)?,

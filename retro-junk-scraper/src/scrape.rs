@@ -15,11 +15,11 @@ use tokio::time::Duration;
 /// Timeout for acquiring internal mutex locks (should be near-instant).
 const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 
+use crate::assets::{self, AssetSelection, asset_subdir};
 use crate::client::ScreenScraperClient;
 use crate::error::ScrapeError;
 use crate::log::{LogEntry, ScrapeLog};
 use crate::lookup::{self, RomInfo};
-use crate::media::{self, MediaSelection, media_subdir};
 use crate::systems;
 
 /// Options for a scraping session.
@@ -33,8 +33,8 @@ pub struct ScrapeOptions {
     pub language: String,
     /// Fallback language when "match" mode has no data for the matched language
     pub language_fallback: String,
-    /// Which media types to download
-    pub media_selection: MediaSelection,
+    /// Which asset types to download
+    pub asset_selection: AssetSelection,
     /// Directory for metadata files (gamelist.xml etc.)
     pub metadata_dir: PathBuf,
     /// Directory for media files
@@ -71,7 +71,7 @@ impl ScrapeOptions {
             region: "us".to_string(),
             language: "en".to_string(),
             language_fallback: "en".to_string(),
-            media_selection: MediaSelection::default(),
+            asset_selection: AssetSelection::default(),
             metadata_dir,
             media_dir,
             dry_run: false,
@@ -166,9 +166,9 @@ enum GameResult {
 /// Try to generate a miximage into `media_map`, or register an existing one.
 ///
 /// When `force` is true, always regenerates even if the file exists.
-/// Inserts `MediaType::Miximage` into `media_map` on success.
+/// Inserts `AssetType::Miximage` into `media_map` on success.
 fn try_generate_miximage(
-    media_map: &mut HashMap<retro_junk_frontend::MediaType, PathBuf>,
+    media_map: &mut HashMap<retro_junk_frontend::AssetType, PathBuf>,
     system_media_dir: &Path,
     rom_stem: &str,
     layout: &MiximageLayout,
@@ -178,7 +178,7 @@ fn try_generate_miximage(
     if force || !miximage_path.exists() {
         match retro_junk_frontend::miximage::generate_miximage(media_map, &miximage_path, layout) {
             Ok(true) => {
-                media_map.insert(retro_junk_frontend::MediaType::Miximage, miximage_path);
+                media_map.insert(retro_junk_frontend::AssetType::Miximage, miximage_path);
             }
             Ok(false) => {} // no screenshot, skip
             Err(e) => {
@@ -186,7 +186,7 @@ fn try_generate_miximage(
             }
         }
     } else {
-        media_map.insert(retro_junk_frontend::MediaType::Miximage, miximage_path);
+        media_map.insert(retro_junk_frontend::AssetType::Miximage, miximage_path);
     }
 }
 
@@ -437,9 +437,9 @@ async fn process_single_game(
     // Check if we can skip ScreenScraper entirely using existing media
     if !options.force_redownload {
         let existing =
-            media::collect_existing_media(&options.media_selection, system_media_dir, rom_stem);
+            assets::collect_existing_assets(&options.asset_selection, system_media_dir, rom_stem);
 
-        let has_screenshot = existing.contains_key(&retro_junk_frontend::MediaType::Screenshot);
+        let has_screenshot = existing.contains_key(&retro_junk_frontend::AssetType::Screenshot);
         let has_miximage = miximage_path(system_media_dir, rom_stem).exists();
         let needs_miximage = !options.no_miximage && !has_miximage;
 
@@ -451,7 +451,7 @@ async fn process_single_game(
                 try_generate_miximage(&mut media_map, system_media_dir, rom_stem, layout, false);
             } else if has_miximage {
                 media_map.insert(
-                    retro_junk_frontend::MediaType::Miximage,
+                    retro_junk_frontend::AssetType::Miximage,
                     miximage_path(system_media_dir, rom_stem),
                 );
             }
@@ -478,7 +478,7 @@ async fn process_single_game(
                 players: None,
                 rating: None,
                 release_date: None,
-                media: media_map,
+                assets: media_map,
                 cover_title: None,
             };
             return GameResult::Skipped {
@@ -603,10 +603,10 @@ async fn process_single_game(
                 file: filename.clone(),
             });
 
-            let mut media_map = media::download_game_media(
+            let mut media_map = assets::download_game_assets(
                 client,
                 &result.game,
-                &options.media_selection,
+                &options.asset_selection,
                 system_media_dir,
                 rom_stem,
                 &effective_region,
@@ -631,7 +631,7 @@ async fn process_single_game(
 
             let media_names: Vec<String> = media_map
                 .keys()
-                .map(|mt| media_subdir(*mt).to_string())
+                .map(|mt| asset_subdir(*mt).to_string())
                 .collect();
 
             let log_entry = if result.warnings.is_empty() {
@@ -680,7 +680,7 @@ async fn process_single_game(
                     .game
                     .date_for_region(&effective_region)
                     .map(|d| d.to_string()),
-                media: media_map,
+                assets: media_map,
                 cover_title: None,
             };
 

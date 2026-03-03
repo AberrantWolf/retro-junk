@@ -167,7 +167,7 @@ pub(crate) fn run_scrape(
         options.media_dir = mdir;
     }
     if let Some(ref types) = media_types {
-        options.media_selection = retro_junk_scraper::MediaSelection::from_names(types);
+        options.asset_selection = retro_junk_scraper::AssetSelection::from_names(types);
     }
 
     log::info!(

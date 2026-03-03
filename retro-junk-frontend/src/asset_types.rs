@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// Media types that can be scraped and used by frontends.
+/// Visual asset types that can be scraped and used by frontends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum MediaType {
+pub enum AssetType {
     /// In-game screenshot
     Screenshot,
     /// Title screen capture
@@ -24,27 +24,27 @@ pub enum MediaType {
     Miximage,
 }
 
-impl fmt::Display for MediaType {
+impl fmt::Display for AssetType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            MediaType::Screenshot => write!(f, "screenshot"),
-            MediaType::TitleScreen => write!(f, "title screen"),
-            MediaType::Cover => write!(f, "cover"),
-            MediaType::Cover3D => write!(f, "3D box"),
-            MediaType::Marquee => write!(f, "marquee"),
-            MediaType::Video => write!(f, "video"),
-            MediaType::Fanart => write!(f, "fanart"),
-            MediaType::PhysicalMedia => write!(f, "physical media"),
-            MediaType::Miximage => write!(f, "miximage"),
+            AssetType::Screenshot => write!(f, "screenshot"),
+            AssetType::TitleScreen => write!(f, "title screen"),
+            AssetType::Cover => write!(f, "cover"),
+            AssetType::Cover3D => write!(f, "3D box"),
+            AssetType::Marquee => write!(f, "marquee"),
+            AssetType::Video => write!(f, "video"),
+            AssetType::Fanart => write!(f, "fanart"),
+            AssetType::PhysicalMedia => write!(f, "physical media"),
+            AssetType::Miximage => write!(f, "miximage"),
         }
     }
 }
 
-impl MediaType {
-    /// File extension for this media type.
+impl AssetType {
+    /// File extension for this asset type.
     pub fn default_extension(&self) -> &'static str {
         match self {
-            MediaType::Video => "mp4",
+            AssetType::Video => "mp4",
             _ => "png",
         }
     }
