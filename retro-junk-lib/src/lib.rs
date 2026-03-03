@@ -25,37 +25,37 @@ pub fn create_default_context() -> AnalysisContext {
     let mut ctx = AnalysisContext::new();
 
     // Nintendo
-    ctx.register(retro_junk_nintendo::NesAnalyzer::new());
-    ctx.register(retro_junk_nintendo::SnesAnalyzer::new());
-    ctx.register(retro_junk_nintendo::N64Analyzer::new());
-    ctx.register(retro_junk_nintendo::GameCubeAnalyzer::new());
-    ctx.register(retro_junk_nintendo::WiiAnalyzer::new());
-    ctx.register(retro_junk_nintendo::WiiUAnalyzer::new());
-    ctx.register(retro_junk_nintendo::GameBoyAnalyzer::new());
-    ctx.register(retro_junk_nintendo::GbaAnalyzer::new());
-    ctx.register(retro_junk_nintendo::DsAnalyzer::new());
-    ctx.register(retro_junk_nintendo::N3dsAnalyzer::new());
+    ctx.register(retro_junk_nintendo::NesAnalyzer);
+    ctx.register(retro_junk_nintendo::SnesAnalyzer);
+    ctx.register(retro_junk_nintendo::N64Analyzer);
+    ctx.register(retro_junk_nintendo::GameCubeAnalyzer);
+    ctx.register(retro_junk_nintendo::WiiAnalyzer);
+    ctx.register(retro_junk_nintendo::WiiUAnalyzer);
+    ctx.register(retro_junk_nintendo::GameBoyAnalyzer);
+    ctx.register(retro_junk_nintendo::GbaAnalyzer);
+    ctx.register(retro_junk_nintendo::DsAnalyzer);
+    ctx.register(retro_junk_nintendo::N3dsAnalyzer);
 
     // Sony
-    ctx.register(retro_junk_sony::Ps1Analyzer::new());
-    ctx.register(retro_junk_sony::Ps2Analyzer::new());
-    ctx.register(retro_junk_sony::Ps3Analyzer::new());
-    ctx.register(retro_junk_sony::PspAnalyzer::new());
-    ctx.register(retro_junk_sony::VitaAnalyzer::new());
+    ctx.register(retro_junk_sony::Ps1Analyzer);
+    ctx.register(retro_junk_sony::Ps2Analyzer);
+    ctx.register(retro_junk_sony::Ps3Analyzer);
+    ctx.register(retro_junk_sony::PspAnalyzer);
+    ctx.register(retro_junk_sony::VitaAnalyzer);
 
     // Sega
-    ctx.register(retro_junk_sega::Sg1000Analyzer::new());
-    ctx.register(retro_junk_sega::MasterSystemAnalyzer::new());
-    ctx.register(retro_junk_sega::GenesisAnalyzer::new());
-    ctx.register(retro_junk_sega::SegaCdAnalyzer::new());
-    ctx.register(retro_junk_sega::Sega32xAnalyzer::new());
-    ctx.register(retro_junk_sega::SaturnAnalyzer::new());
-    ctx.register(retro_junk_sega::DreamcastAnalyzer::new());
-    ctx.register(retro_junk_sega::GameGearAnalyzer::new());
+    ctx.register(retro_junk_sega::Sg1000Analyzer);
+    ctx.register(retro_junk_sega::MasterSystemAnalyzer);
+    ctx.register(retro_junk_sega::GenesisAnalyzer);
+    ctx.register(retro_junk_sega::SegaCdAnalyzer);
+    ctx.register(retro_junk_sega::Sega32xAnalyzer);
+    ctx.register(retro_junk_sega::SaturnAnalyzer);
+    ctx.register(retro_junk_sega::DreamcastAnalyzer);
+    ctx.register(retro_junk_sega::GameGearAnalyzer);
 
     // Microsoft
-    ctx.register(retro_junk_microsoft::XboxAnalyzer::new());
-    ctx.register(retro_junk_microsoft::Xbox360Analyzer::new());
+    ctx.register(retro_junk_microsoft::XboxAnalyzer);
+    ctx.register(retro_junk_microsoft::Xbox360Analyzer);
 
     ctx
 }

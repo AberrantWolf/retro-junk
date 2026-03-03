@@ -213,7 +213,7 @@ pub(crate) fn run_scrape(
             None => return Ok(()),
         };
 
-        let esde = retro_junk_frontend::esde::EsDeFrontend::new();
+        let esde = retro_junk_frontend::esde::EsDeFrontend;
         let mut total_games = 0usize;
         let mut total_media = 0usize;
         let mut total_errors = 0usize;

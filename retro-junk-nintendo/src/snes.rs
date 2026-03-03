@@ -778,20 +778,13 @@ fn to_identification(
 #[derive(Debug, Default)]
 pub struct SnesAnalyzer;
 
-impl SnesAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for SnesAnalyzer {
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,
         options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
-        reader.seek(SeekFrom::Start(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         if file_size < MIN_FILE_SIZE {
             return Err(AnalysisError::TooSmall {
@@ -822,13 +815,9 @@ impl RomAnalyzer for SnesAnalyzer {
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
-        let file_size = match reader.seek(SeekFrom::End(0)) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        if reader.seek(SeekFrom::Start(0)).is_err() {
+        let Ok(file_size) = retro_junk_core::util::file_size(reader) else {
             return false;
-        }
+        };
         if file_size < MIN_FILE_SIZE {
             return false;
         }

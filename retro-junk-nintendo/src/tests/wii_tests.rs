@@ -72,14 +72,14 @@ fn make_default_wii_disc() -> Vec<u8> {
 #[test]
 fn test_can_handle_valid() {
     let disc = make_default_wii_disc();
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(disc)));
 }
 
 #[test]
 fn test_can_handle_too_small() {
     let data = vec![0u8; 16];
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
@@ -88,7 +88,7 @@ fn test_can_handle_bad_magic() {
     let mut disc = make_default_wii_disc();
     // Corrupt the Wii magic word
     disc[0x0018..0x001C].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(disc)));
 }
 
@@ -97,7 +97,7 @@ fn test_can_handle_gc_disc_rejected() {
     // A pure GameCube disc (GC magic only, no Wii magic) should be rejected
     let mut disc = vec![0u8; 8 * 1024];
     disc[0x001C..0x0020].copy_from_slice(&nintendo_disc::GC_MAGIC.to_be_bytes());
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(disc)));
 }
 
@@ -108,7 +108,7 @@ fn test_can_handle_gc_disc_rejected() {
 #[test]
 fn test_basic_analysis() {
     let disc = make_default_wii_disc();
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -128,7 +128,7 @@ fn test_basic_analysis() {
 #[test]
 fn test_region_japan() {
     let disc = make_wii_disc(b"RSBJ", b"01", 0, "Wii Sports");
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -138,7 +138,7 @@ fn test_region_japan() {
 #[test]
 fn test_region_europe() {
     let disc = make_wii_disc(b"RSBP", b"01", 0, "Wii Sports");
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -148,7 +148,7 @@ fn test_region_europe() {
 #[test]
 fn test_version_nonzero() {
     let disc = make_wii_disc(b"RSBE", b"01", 1, "Wii Sports");
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -159,7 +159,7 @@ fn test_version_nonzero() {
 fn test_dvd_layer_single() {
     // 8 KB file is well under 4.7 GB threshold
     let disc = make_default_wii_disc();
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -172,7 +172,7 @@ fn test_gc_disc_rejected_by_analyze() {
     let mut disc = make_default_wii_disc();
     disc[0x0018..0x001C].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
     disc[0x001C..0x0020].copy_from_slice(&nintendo_disc::GC_MAGIC.to_be_bytes());
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     let result = analyzer.analyze(&mut Cursor::new(disc), &AnalysisOptions::default());
     assert!(result.is_err());
 }
@@ -183,7 +183,7 @@ fn test_gc_disc_rejected_by_analyze() {
 
 #[test]
 fn test_extract_dat_game_code() {
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     assert_eq!(
         analyzer.extract_dat_game_code("RSBE"),
         Some("RSBE".to_string())
@@ -192,26 +192,26 @@ fn test_extract_dat_game_code() {
 
 #[test]
 fn test_expects_serial() {
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     assert!(analyzer.expects_serial());
 }
 
 #[test]
 fn test_dat_source() {
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     assert_eq!(analyzer.dat_source(), retro_junk_core::DatSource::Redump);
 }
 
 #[test]
 fn test_dat_download_ids_defaults_to_dat_names() {
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     // dat_download_ids() should delegate to dat_names() (the default impl)
     assert_eq!(analyzer.dat_download_ids(), &["Nintendo - Wii"]);
 }
 
 #[test]
 fn test_dat_names() {
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     assert_eq!(analyzer.dat_names(), &["Nintendo - Wii"]);
 }
 
@@ -222,7 +222,7 @@ fn test_dat_names() {
 #[test]
 fn test_container_hashes_returns_none_for_raw_iso() {
     let disc = make_default_wii_disc();
-    let analyzer = WiiAnalyzer::new();
+    let analyzer = WiiAnalyzer;
     let result = analyzer
         .compute_container_hashes(&mut Cursor::new(disc), HashAlgorithms::Crc32Sha1, None)
         .unwrap();

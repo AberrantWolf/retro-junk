@@ -154,28 +154,28 @@ fn test_crc32_ieee() {
 #[test]
 fn test_can_handle_z64() {
     let rom = make_n64_rom();
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_can_handle_v64() {
     let rom = to_v64(&make_n64_rom());
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_can_handle_n64() {
     let rom = to_n64_format(&make_n64_rom());
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_can_handle_too_small() {
     let data = vec![0x80, 0x37, 0x12]; // Only 3 bytes
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
@@ -183,7 +183,7 @@ fn test_can_handle_too_small() {
 fn test_can_handle_bad_magic() {
     let mut rom = make_n64_rom();
     rom[0] = 0xFF;
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
@@ -192,7 +192,7 @@ fn test_can_handle_bad_magic() {
 #[test]
 fn test_basic_analysis() {
     let rom = make_n64_rom();
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -212,7 +212,7 @@ fn test_region_japan() {
     let mut rom = make_n64_rom();
     rom[0x3E] = b'J';
     recompute_crc(&mut rom, CicVariant::Unknown);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -224,7 +224,7 @@ fn test_region_europe_p() {
     let mut rom = make_n64_rom();
     rom[0x3E] = b'P';
     recompute_crc(&mut rom, CicVariant::Unknown);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -236,7 +236,7 @@ fn test_region_europe_d() {
     let mut rom = make_n64_rom();
     rom[0x3E] = b'D';
     recompute_crc(&mut rom, CicVariant::Unknown);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -248,7 +248,7 @@ fn test_region_australia() {
     let mut rom = make_n64_rom();
     rom[0x3E] = b'U';
     recompute_crc(&mut rom, CicVariant::Unknown);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -260,7 +260,7 @@ fn test_region_world() {
     let mut rom = make_n64_rom();
     rom[0x3E] = b'A';
     recompute_crc(&mut rom, CicVariant::Unknown);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -272,7 +272,7 @@ fn test_region_brazil() {
     let mut rom = make_n64_rom();
     rom[0x3E] = b'B';
     recompute_crc(&mut rom, CicVariant::Unknown);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -284,7 +284,7 @@ fn test_region_brazil() {
 #[test]
 fn test_crc_ok() {
     let rom = make_n64_rom();
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -296,7 +296,7 @@ fn test_crc1_mismatch() {
     let mut rom = make_n64_rom();
     // Corrupt CRC1 in header
     rom[0x10] = rom[0x10].wrapping_add(1);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -318,7 +318,7 @@ fn test_crc2_mismatch() {
     let mut rom = make_n64_rom();
     // Corrupt CRC2 in header
     rom[0x14] = rom[0x14].wrapping_add(1);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -340,7 +340,7 @@ fn test_both_crc_mismatch() {
     let mut rom = make_n64_rom();
     rom[0x10] = rom[0x10].wrapping_add(1);
     rom[0x14] = rom[0x14].wrapping_add(1);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -352,7 +352,7 @@ fn test_both_crc_mismatch() {
 #[test]
 fn test_quick_mode_still_computes_crc() {
     let rom = make_n64_rom();
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let options = AnalysisOptions {
         quick: true,
         ..Default::default()
@@ -377,7 +377,7 @@ fn test_file_too_small_for_crc() {
     rom[0x3D] = b'Y';
     rom[0x3E] = b'E';
 
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -395,7 +395,7 @@ fn test_file_too_small_for_crc() {
 fn test_v64_analysis() {
     let z64 = make_n64_rom();
     let v64 = to_v64(&z64);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(v64), &AnalysisOptions::default())
         .unwrap();
@@ -410,7 +410,7 @@ fn test_v64_analysis() {
 fn test_n64_format_analysis() {
     let z64 = make_n64_rom();
     let n64 = to_n64_format(&z64);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(n64), &AnalysisOptions::default())
         .unwrap();
@@ -489,7 +489,7 @@ fn test_title_trimming_spaces() {
     let mut rom = make_n64_rom();
     rom[0x20..0x34].copy_from_slice(b"HI                  ");
     recompute_crc(&mut rom, CicVariant::Unknown);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -501,7 +501,7 @@ fn test_title_trimming_nulls() {
     let mut rom = make_n64_rom();
     rom[0x20..0x34].copy_from_slice(b"HI\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0");
     recompute_crc(&mut rom, CicVariant::Unknown);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -515,7 +515,7 @@ fn test_version_field() {
     let mut rom = make_n64_rom();
     rom[0x3F] = 2;
     recompute_crc(&mut rom, CicVariant::Unknown);
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -525,7 +525,7 @@ fn test_version_field() {
 #[test]
 fn test_boot_address_in_extra() {
     let rom = make_n64_rom();
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -535,7 +535,7 @@ fn test_boot_address_in_extra() {
 #[test]
 fn test_clock_rate_in_extra() {
     let rom = make_n64_rom();
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -545,7 +545,7 @@ fn test_clock_rate_in_extra() {
 #[test]
 fn test_category_code_in_extra() {
     let rom = make_n64_rom();
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -555,7 +555,7 @@ fn test_category_code_in_extra() {
 #[test]
 fn test_cic_in_extra() {
     let rom = make_n64_rom();
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
@@ -572,7 +572,7 @@ fn test_invalid_format_error_message() {
     data[1] = 0xAD;
     data[2] = 0xBE;
     data[3] = 0xEF;
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let err = analyzer
         .analyze(&mut Cursor::new(data), &AnalysisOptions::default())
         .unwrap_err();
@@ -602,7 +602,7 @@ fn test_invalid_format_error_message() {
 #[test]
 fn test_too_small_file() {
     let data = vec![0u8; 0x20]; // Not enough for header
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     let result = analyzer.analyze(&mut Cursor::new(data), &AnalysisOptions::default());
     assert!(result.is_err());
 }
@@ -611,7 +611,7 @@ fn test_too_small_file() {
 
 #[test]
 fn test_extract_scraper_serial_delegates_to_dat() {
-    let analyzer = N64Analyzer::new();
+    let analyzer = N64Analyzer;
     assert_eq!(
         analyzer.extract_scraper_serial("NUS-NSME-USA"),
         Some("NSME".to_string()),

@@ -136,21 +136,21 @@ fn recompute_snes_checksums(rom: &mut [u8], header_base: usize) {
 #[test]
 fn test_can_handle_lorom() {
     let rom = make_snes_rom();
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_can_handle_hirom() {
     let rom = make_snes_hirom();
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_can_handle_too_small() {
     let data = vec![0u8; 100];
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
@@ -163,7 +163,7 @@ fn test_can_handle_garbage() {
     data[LOROM_HEADER_BASE as usize + OFF_CHECKSUM] = 0xAD;
     data[HIROM_HEADER_BASE as usize + OFF_COMPLEMENT] = 0xBE;
     data[HIROM_HEADER_BASE as usize + OFF_CHECKSUM] = 0xEF;
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     // With all 0xFF bytes, the title check fails (0xFF is not valid ASCII)
     // and mapping checks fail -- should not be detected
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
@@ -174,7 +174,7 @@ fn test_can_handle_garbage() {
 #[test]
 fn test_analyze_lorom() {
     let rom = make_snes_rom();
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -191,7 +191,7 @@ fn test_analyze_lorom() {
 #[test]
 fn test_analyze_hirom() {
     let rom = make_snes_hirom();
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -208,7 +208,7 @@ fn test_analyze_hirom() {
 fn test_analyze_with_copier_header() {
     let rom = make_snes_rom();
     let rom_with_copier = add_copier_header(&rom);
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer
         .analyze(&mut Cursor::new(rom_with_copier), &options)
@@ -227,7 +227,7 @@ fn test_analyze_fastrom() {
     rom[base + OFF_MAP_MODE] = 0x30; // LoROM + FastROM
     recompute_snes_checksums(&mut rom, base);
 
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -254,7 +254,7 @@ fn test_analyze_extended_header() {
 
     recompute_snes_checksums(&mut rom, base);
 
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -269,7 +269,7 @@ fn test_analyze_extended_header() {
 #[test]
 fn test_checksum_valid() {
     let rom = make_snes_rom();
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -289,7 +289,7 @@ fn test_checksum_mismatch() {
     // Corrupt a byte outside the header to change the actual checksum
     rom[0] = 0xFF;
 
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -311,7 +311,7 @@ fn test_checksum_complement() {
 #[test]
 fn test_quick_mode_skips_checksum() {
     let rom = make_snes_rom();
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -336,7 +336,7 @@ fn test_country_to_region_mapping() {
 #[test]
 fn test_sram_detection() {
     let rom = make_snes_hirom();
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -350,7 +350,7 @@ fn test_version_number() {
     rom[base + OFF_VERSION] = 3;
     recompute_snes_checksums(&mut rom, base);
 
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -369,7 +369,7 @@ fn test_game_code_extraction() {
     rom[base + OFF_EXT_GAME_CODE + 3] = b'J';
     recompute_snes_checksums(&mut rom, base);
 
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -433,7 +433,7 @@ fn test_detect_mapping_with_copier() {
 #[test]
 fn test_expected_checksums_present() {
     let rom = make_snes_rom();
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -447,7 +447,7 @@ fn test_expected_checksums_present() {
 #[test]
 fn test_hirom_checksum_valid() {
     let rom = make_snes_hirom();
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -461,7 +461,7 @@ fn test_hirom_checksum_valid() {
 fn test_copier_header_checksum_valid() {
     let rom = make_snes_rom();
     let rom_with_copier = add_copier_header(&rom);
-    let analyzer = SnesAnalyzer::new();
+    let analyzer = SnesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer
         .analyze(&mut Cursor::new(rom_with_copier), &options)

@@ -219,8 +219,7 @@ fn compute_header_checksum(reader: &mut dyn ReadSeek) -> Result<u8, AnalysisErro
 
 /// Compute the global checksum (sum of all bytes in file except 0x014E-0x014F).
 fn compute_global_checksum(reader: &mut dyn ReadSeek) -> Result<u16, AnalysisError> {
-    let file_size = reader.seek(SeekFrom::End(0))?;
-    reader.seek(SeekFrom::Start(0))?;
+    retro_junk_core::util::file_size(reader)?; // seek to end and back to start
 
     let mut sum: u16 = 0;
     let mut buf = [0u8; 4096];
@@ -242,7 +241,6 @@ fn compute_global_checksum(reader: &mut dyn ReadSeek) -> Result<u16, AnalysisErr
         pos += n as u64;
     }
 
-    let _ = file_size; // used only to seek to end initially
     Ok(sum)
 }
 
@@ -385,20 +383,13 @@ fn to_identification(
 #[derive(Debug, Default)]
 pub struct GameBoyAnalyzer;
 
-impl GameBoyAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for GameBoyAnalyzer {
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,
         _options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
-        reader.seek(SeekFrom::Start(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         if file_size < MIN_FILE_SIZE {
             return Err(AnalysisError::TooSmall {
@@ -428,13 +419,9 @@ impl RomAnalyzer for GameBoyAnalyzer {
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
-        let file_size = match reader.seek(SeekFrom::End(0)) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        if reader.seek(SeekFrom::Start(0)).is_err() {
+        let Ok(file_size) = retro_junk_core::util::file_size(reader) else {
             return false;
-        }
+        };
         if file_size < MIN_FILE_SIZE {
             return false;
         }

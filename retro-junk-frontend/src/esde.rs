@@ -5,19 +5,8 @@ use std::path::Path;
 use crate::{Frontend, FrontendError, MediaType, ScrapedGame};
 
 /// ES-DE (EmulationStation Desktop Edition) frontend.
+#[derive(Default)]
 pub struct EsDeFrontend;
-
-impl EsDeFrontend {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for EsDeFrontend {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 impl Frontend for EsDeFrontend {
     fn name(&self) -> &'static str {

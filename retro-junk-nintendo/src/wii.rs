@@ -12,7 +12,6 @@
 //! transparently decompress disc containers. The decompressed data is passed
 //! to the same `parse_disc_header()` used for raw ISOs.
 
-use std::io::SeekFrom;
 use std::path::Path;
 
 use retro_junk_core::ReadSeek;
@@ -32,19 +31,13 @@ const DVD5_SIZE_THRESHOLD: u64 = 4_700_000_000;
 #[derive(Debug, Default)]
 pub struct WiiAnalyzer;
 
-impl WiiAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for WiiAnalyzer {
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,
         options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         // Detect compressed container (RVZ, WIA, WBFS, CISO, GCZ) or raw ISO.
         // For compressed formats, use the uncompressed disc size for DVD layer detection.

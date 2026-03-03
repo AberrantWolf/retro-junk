@@ -14,12 +14,6 @@ use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, Rom
 #[derive(Debug, Default)]
 pub struct PspAnalyzer;
 
-impl PspAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for PspAnalyzer {
     fn analyze(
         &self,

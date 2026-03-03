@@ -14,7 +14,7 @@ fn test_can_handle_ps1_iso() {
     // A PLAYSTATION ISO with no SYSTEM.CNF is accepted (best guess PS1)
     let data = make_iso("PLAYSTATION");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     assert!(analyzer.can_handle(&mut cursor));
 }
 
@@ -23,7 +23,7 @@ fn test_can_handle_ps1_iso_with_boot() {
     // A PLAYSTATION ISO with BOOT in SYSTEM.CNF is accepted
     let data = make_ps1_iso_with_serial("SLUS_012.34");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     assert!(analyzer.can_handle(&mut cursor));
 }
 
@@ -32,7 +32,7 @@ fn test_can_handle_ps2_iso_rejected() {
     // A PLAYSTATION ISO with BOOT2 in SYSTEM.CNF is rejected by PS1
     let data = make_iso_with_system_cnf("SLUS_012.34", "BOOT2");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     assert!(!analyzer.can_handle(&mut cursor));
 }
 
@@ -40,7 +40,7 @@ fn test_can_handle_ps2_iso_rejected() {
 fn test_can_handle_non_ps1_iso() {
     let data = make_iso("SOME_OTHER_SYS");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     assert!(!analyzer.can_handle(&mut cursor));
 }
 
@@ -48,7 +48,7 @@ fn test_can_handle_non_ps1_iso() {
 fn test_can_handle_raw_bin() {
     let data = make_raw_bin("PLAYSTATION");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     assert!(analyzer.can_handle(&mut cursor));
 }
 
@@ -56,7 +56,7 @@ fn test_can_handle_raw_bin() {
 fn test_can_handle_cue() {
     let cue = b"FILE \"game.bin\" BINARY\r\n  TRACK 01 MODE2/2352\r\n    INDEX 01 00:00:00\r\n";
     let mut cursor = Cursor::new(cue.to_vec());
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     assert!(analyzer.can_handle(&mut cursor));
 }
 
@@ -66,7 +66,7 @@ fn test_can_handle_cue() {
 fn test_analyze_iso_basic() {
     let data = make_iso("PLAYSTATION");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.platform, Some(Platform::Ps1));
@@ -81,7 +81,7 @@ fn test_analyze_iso_basic() {
 fn test_analyze_raw_bin_basic() {
     let data = make_raw_bin("PLAYSTATION");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.platform, Some(Platform::Ps1));
@@ -95,7 +95,7 @@ fn test_analyze_raw_bin_basic() {
 fn test_analyze_non_ps1_iso_rejected() {
     let data = make_iso("XBOX SYSTEM");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::default();
     assert!(analyzer.analyze(&mut cursor, &options).is_err());
 }
@@ -106,7 +106,7 @@ fn test_analyze_non_ps1_iso_rejected() {
 fn test_analyze_iso_with_serial() {
     let data = make_ps1_iso_with_serial("SLUS_012.34");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.serial_number.as_deref(), Some("SLUS-01234"));
@@ -119,7 +119,7 @@ fn test_analyze_iso_with_serial() {
 fn test_analyze_iso_quick_mode_still_extracts_serial() {
     let data = make_ps1_iso_with_serial("SLUS_012.34");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.serial_number.as_deref(), Some("SLUS-01234"));
@@ -130,7 +130,7 @@ fn test_analyze_iso_quick_mode_still_extracts_serial() {
 fn test_analyze_iso_european_serial() {
     let data = make_ps1_iso_with_serial("SLES_123.45");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.serial_number.as_deref(), Some("SLES-12345"));
@@ -141,7 +141,7 @@ fn test_analyze_iso_european_serial() {
 fn test_analyze_iso_japanese_serial() {
     let data = make_ps1_iso_with_serial("SLPS_000.01");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.serial_number.as_deref(), Some("SLPS-00001"));
@@ -153,7 +153,7 @@ fn test_analyze_ps2_disc_rejected() {
     // PS1 analyzer should reject discs with BOOT2 in SYSTEM.CNF
     let data = make_iso_with_system_cnf("SLUS_012.34", "BOOT2");
     let mut cursor = Cursor::new(data);
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::default();
     assert!(analyzer.analyze(&mut cursor, &options).is_err());
 }
@@ -164,7 +164,7 @@ fn test_analyze_ps2_disc_rejected() {
 fn test_analyze_cue_basic() {
     let cue = "FILE \"game.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n";
     let mut cursor = Cursor::new(cue.as_bytes().to_vec());
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(
@@ -202,7 +202,7 @@ fn test_analyze_cue_multi_track() {
     INDEX 01 50:32:00
 "#;
     let mut cursor = Cursor::new(cue.as_bytes().to_vec());
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(
@@ -223,7 +223,7 @@ fn test_analyze_cue_multi_track() {
 
 #[test]
 fn test_extract_dat_game_code() {
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     assert_eq!(
         analyzer.extract_dat_game_code("SLUS-01234"),
         Some("SLUS-01234".to_string())
@@ -232,7 +232,7 @@ fn test_extract_dat_game_code() {
 
 #[test]
 fn test_extract_dat_game_code_multi_disc_fixups() {
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
 
     assert_eq!(
         analyzer.extract_dat_game_code("SCUS-94164"),
@@ -256,7 +256,7 @@ fn test_extract_dat_game_code_multi_disc_fixups() {
 
 #[test]
 fn test_file_extensions() {
-    let analyzer = Ps1Analyzer::new();
+    let analyzer = Ps1Analyzer;
     let exts = analyzer.file_extensions();
     assert!(exts.contains(&"iso"));
     assert!(exts.contains(&"bin"));

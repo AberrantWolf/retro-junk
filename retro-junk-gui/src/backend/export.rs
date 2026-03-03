@@ -102,7 +102,7 @@ fn do_generate(
         })
         .collect();
 
-    let frontend = EsDeFrontend::new();
+    let frontend = EsDeFrontend;
     frontend
         .write_metadata(&games, &rom_dir, &metadata_dir, &media_dir)
         .map_err(|e| e.to_string())?;

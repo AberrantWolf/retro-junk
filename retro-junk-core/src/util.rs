@@ -27,6 +27,15 @@ pub fn format_bytes_approx(bytes: u64) -> String {
     }
 }
 
+/// Get the total size of a reader by seeking to end and back to start.
+///
+/// Returns the file size in bytes. The reader is left positioned at the start.
+pub fn file_size(reader: &mut dyn crate::ReadSeek) -> Result<u64, crate::AnalysisError> {
+    let size = reader.seek(std::io::SeekFrom::End(0))?;
+    reader.seek(std::io::SeekFrom::Start(0))?;
+    Ok(size)
+}
+
 /// Read a null-terminated ASCII string from a byte slice.
 ///
 /// Stops at the first null byte, filters out non-printable characters,

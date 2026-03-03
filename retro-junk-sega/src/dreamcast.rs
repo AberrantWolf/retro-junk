@@ -13,12 +13,6 @@ use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, Rom
 #[derive(Debug, Default)]
 pub struct DreamcastAnalyzer;
 
-impl DreamcastAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for DreamcastAnalyzer {
     fn analyze(
         &self,

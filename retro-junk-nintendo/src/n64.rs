@@ -424,20 +424,13 @@ fn to_identification(
 #[derive(Debug, Default)]
 pub struct N64Analyzer;
 
-impl N64Analyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for N64Analyzer {
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,
         _options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
-        reader.seek(SeekFrom::Start(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         if file_size < BOOT_CODE_END {
             return Err(AnalysisError::TooSmall {
@@ -466,13 +459,9 @@ impl RomAnalyzer for N64Analyzer {
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
-        let file_size = match reader.seek(SeekFrom::End(0)) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        if reader.seek(SeekFrom::Start(0)).is_err() {
+        let Ok(file_size) = retro_junk_core::util::file_size(reader) else {
             return false;
-        }
+        };
         if file_size < HEADER_SIZE {
             return false;
         }

@@ -64,8 +64,7 @@ enum N3dsFormat {
 
 /// Detect whether the file is CCI (NCSD) or CIA.
 fn detect_format(reader: &mut dyn ReadSeek) -> Result<Option<N3dsFormat>, AnalysisError> {
-    let file_size = reader.seek(SeekFrom::End(0))?;
-    reader.seek(SeekFrom::Start(0))?;
+    let file_size = retro_junk_core::util::file_size(reader)?;
 
     // Try NCSD: magic "NCSD" at offset 0x100
     if file_size >= MIN_CCI_SIZE {
@@ -119,20 +118,13 @@ fn detect_format(reader: &mut dyn ReadSeek) -> Result<Option<N3dsFormat>, Analys
 #[derive(Debug, Default)]
 pub struct N3dsAnalyzer;
 
-impl N3dsAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for N3dsAnalyzer {
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,
         options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
-        reader.seek(SeekFrom::Start(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         match detect_format(reader)? {
             Some(N3dsFormat::Cci) => ncsd::analyze_cci(reader, file_size, options),

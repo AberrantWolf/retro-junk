@@ -23,8 +23,7 @@ fn main() {
     let expected_size: Option<u64> = args.get(2).and_then(|s| s.parse().ok());
 
     let mut file = File::open(path).expect("Failed to open file");
-    let file_size = file.seek(SeekFrom::End(0)).unwrap();
-    file.seek(SeekFrom::Start(0)).unwrap();
+    let file_size = retro_junk_core::util::file_size(&mut file).unwrap();
 
     println!("File: {}", path);
     println!("File size: {} bytes", file_size);

@@ -13,7 +13,6 @@
 //! transparently decompress disc containers. The decompressed data is passed
 //! to the same `parse_disc_header()` used for raw ISOs.
 
-use std::io::SeekFrom;
 use std::path::Path;
 
 use retro_junk_core::ReadSeek;
@@ -32,19 +31,13 @@ const GCM_DISC_SIZE: u64 = 1_459_978_240;
 #[derive(Debug, Default)]
 pub struct GameCubeAnalyzer;
 
-impl GameCubeAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for GameCubeAnalyzer {
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,
         options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         // Detect compressed container (RVZ, WIA, WBFS, CISO, GCZ) or raw ISO
         let (header, format_name) = if nintendo_disc::is_compressed_disc(reader) {

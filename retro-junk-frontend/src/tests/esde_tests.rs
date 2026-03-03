@@ -40,7 +40,7 @@ fn test_cover_title_overrides_name_in_esde() {
     let media_dir = dir.path().join("media");
     std::fs::create_dir_all(&rom_dir).unwrap();
 
-    let esde = EsDeFrontend::new();
+    let esde = EsDeFrontend;
     use crate::Frontend;
     esde.write_metadata(&games, &rom_dir, &meta_dir, &media_dir)
         .unwrap();
@@ -59,7 +59,7 @@ fn test_name_used_when_cover_title_is_none() {
     let media_dir = dir.path().join("media");
     std::fs::create_dir_all(&rom_dir).unwrap();
 
-    let esde = EsDeFrontend::new();
+    let esde = EsDeFrontend;
     use crate::Frontend;
     esde.write_metadata(&games, &rom_dir, &meta_dir, &media_dir)
         .unwrap();

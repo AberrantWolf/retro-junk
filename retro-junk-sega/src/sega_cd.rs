@@ -13,12 +13,6 @@ use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, Rom
 #[derive(Debug, Default)]
 pub struct SegaCdAnalyzer;
 
-impl SegaCdAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for SegaCdAnalyzer {
     fn analyze(
         &self,

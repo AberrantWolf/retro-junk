@@ -13,12 +13,6 @@ use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, Rom
 #[derive(Debug, Default)]
 pub struct Ps3Analyzer;
 
-impl Ps3Analyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for Ps3Analyzer {
     fn analyze(
         &self,

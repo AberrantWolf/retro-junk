@@ -12,12 +12,6 @@ use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, Rom
 #[derive(Debug, Default)]
 pub struct MasterSystemAnalyzer;
 
-impl MasterSystemAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for MasterSystemAnalyzer {
     fn analyze(
         &self,

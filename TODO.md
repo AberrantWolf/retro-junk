@@ -68,19 +68,14 @@ Audit findings from 2026-02-26.
 
 - [ ] **Consolidate byte-reading helpers within Nintendo crate** — `retro-junk-nintendo/src/ds.rs:85-98` still defines private `read_u16_le()` and `read_u32_le()` that duplicate what `n3ds/common.rs:18-68` provides as `pub(crate)`. Either have `ds.rs` import from `n3ds::common`, or extract to a shared `nintendo_util` module in the Nintendo crate.
 
-- [ ] **Extract `get_file_size()` helper** — The seek-to-end/seek-to-start pattern for getting file size appears 26+ times across all analyzer crates:
-  ```rust
-  let file_size = reader.seek(SeekFrom::End(0))?;
-  reader.seek(SeekFrom::Start(0))?;
-  ```
-  Add a `pub fn file_size(reader: &mut dyn ReadSeek) -> Result<u64, AnalysisError>` to `retro-junk-core` (since all analyzers depend on it and use `ReadSeek`). Replace all 26+ instances.
+- [x] **Extract `get_file_size()` helper** — Added `retro_junk_core::util::file_size()` and replaced ~25 instances of the seek-to-end/seek-to-start pattern across all analyzer crates.
 
 - [ ] **Extract header-reading helper with TooSmall error mapping** — The pattern of `read_exact` + `map_err` converting `UnexpectedEof` to `AnalysisError::TooSmall` appears in `nes.rs:569`, `snes.rs:348`, `gameboy.rs:69`, `gba.rs:61`, `n64.rs:129`, `ds.rs:105`, `ncsd.rs:50`, `genesis.rs:176`, `ps1_disc.rs:161`, and others. Add a helper to `retro-junk-core`:
   ```rust
   pub fn read_header(reader: &mut dyn ReadSeek, buf: &mut [u8], expected: u64) -> Result<(), AnalysisError>
   ```
 
-- [ ] **Remove trivial `new()` methods from analyzer structs** — 25+ analyzer structs have manual `fn new() -> Self { Self }` that duplicates `#[derive(Default)]` which they all already have. Remove the manual `new()` methods and use `Default::default()` or struct literal syntax at call sites. Only keep `new()` if the struct has fields that need initialization.
+- [x] **Remove trivial `new()` methods from analyzer structs** — Removed 28 trivial `new()` methods from analyzer structs and `EsDeFrontend`. Updated ~250 call sites to use unit struct literals.
 
 - [ ] **Unify `check_broken_references` and `detect_broken_ref_files`** — `rename.rs` has two functions that both iterate a directory, filter by CUE/M3U extensions, read file contents, call `fmt.extract_reference(line)`, and check `.exists()`. They differ only in return type (`BrokenReference` structs vs. file paths). Unify so `detect_broken_ref_files` is implemented in terms of `check_broken_references`.
 

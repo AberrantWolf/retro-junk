@@ -58,14 +58,14 @@ fn recompute_checksum(rom: &mut Vec<u8>) {
 #[test]
 fn test_can_handle_valid() {
     let rom = make_gba_rom();
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_can_handle_too_small() {
     let data = vec![0u8; 0x80]; // Too small
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
@@ -73,7 +73,7 @@ fn test_can_handle_too_small() {
 fn test_can_handle_bad_logo() {
     let mut rom = make_gba_rom();
     rom[0x04] = 0xFF; // Corrupt logo
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
@@ -81,14 +81,14 @@ fn test_can_handle_bad_logo() {
 fn test_can_handle_bad_fixed_value() {
     let mut rom = make_gba_rom();
     rom[0xB2] = 0x00; // Wrong fixed value
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_basic_analysis() {
     let rom = make_gba_rom();
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -113,7 +113,7 @@ fn test_region_usa() {
     rom[0xAF] = b'E'; // USA
     recompute_checksum(&mut rom);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.regions, vec![Region::Usa]);
@@ -125,7 +125,7 @@ fn test_region_europe() {
     rom[0xAF] = b'P'; // Europe
     recompute_checksum(&mut rom);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.regions, vec![Region::Europe]);
@@ -137,7 +137,7 @@ fn test_region_europe_german() {
     rom[0xAF] = b'D'; // German → Europe
     recompute_checksum(&mut rom);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.regions, vec![Region::Europe]);
@@ -149,7 +149,7 @@ fn test_region_europe_french() {
     rom[0xAF] = b'F'; // French → Europe
     recompute_checksum(&mut rom);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.regions, vec![Region::Europe]);
@@ -161,7 +161,7 @@ fn test_region_korea() {
     rom[0xAF] = b'K'; // Korea
     recompute_checksum(&mut rom);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.regions, vec![Region::Korea]);
@@ -172,7 +172,7 @@ fn test_checksum_mismatch() {
     let mut rom = make_gba_rom();
     rom[0xBD] = rom[0xBD].wrapping_add(1); // Corrupt checksum
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -190,7 +190,7 @@ fn test_invalid_fixed_value() {
     rom[0xB2] = 0x42; // Wrong fixed value
     recompute_checksum(&mut rom);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     // can_handle would reject this, but analyze() still works
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
@@ -209,7 +209,7 @@ fn test_software_version() {
     rom[0xBC] = 3;
     recompute_checksum(&mut rom);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.version.as_deref(), Some("v3"));
@@ -238,7 +238,7 @@ fn test_save_type_sram() {
     let magic = b"SRAM_V";
     rom[0x1000..0x1000 + magic.len()].copy_from_slice(magic);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.extra.get("save_type").unwrap(), "SRAM");
@@ -250,7 +250,7 @@ fn test_save_type_flash1m() {
     let magic = b"FLASH1M_V";
     rom[0x1000..0x1000 + magic.len()].copy_from_slice(magic);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.extra.get("save_type").unwrap(), "Flash 1M");
@@ -262,7 +262,7 @@ fn test_save_type_eeprom() {
     let magic = b"EEPROM_V";
     rom[0x1000..0x1000 + magic.len()].copy_from_slice(magic);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.extra.get("save_type").unwrap(), "EEPROM");
@@ -274,7 +274,7 @@ fn test_quick_mode_skips_save_type() {
     let magic = b"SRAM_V";
     rom[0x1000..0x1000 + magic.len()].copy_from_slice(magic);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions {
         quick: true,
         ..Default::default()
@@ -290,7 +290,7 @@ fn test_title_trimming() {
     rom[0xA0..0xAC].copy_from_slice(b"HI\0\0\0\0\0\0\0\0\0\0");
     recompute_checksum(&mut rom);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.internal_name.as_deref(), Some("HI"));
@@ -299,7 +299,7 @@ fn test_title_trimming() {
 #[test]
 fn test_serial_number_format() {
     let rom = make_gba_rom();
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert!(result.serial_number.as_deref().unwrap().starts_with("AGB-"));
@@ -308,7 +308,7 @@ fn test_serial_number_format() {
 #[test]
 fn test_too_small_file() {
     let data = vec![0u8; 0x80]; // Not enough for header
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(data), &options);
     assert!(result.is_err());
@@ -320,7 +320,7 @@ fn test_device_type_nonzero() {
     rom[0xB4] = 0x01; // Non-zero device type
     recompute_checksum(&mut rom);
 
-    let analyzer = GbaAnalyzer::new();
+    let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.extra.get("device_type").unwrap(), "01");

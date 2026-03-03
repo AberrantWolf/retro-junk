@@ -56,7 +56,7 @@ fn test_parse_ines_basic() {
     // Mapper 0, 2x16KB PRG, 1x8KB CHR, horizontal mirroring
     let data = make_ines_header(2, 1, 0x00, 0x00);
     let mut cursor = Cursor::new(data);
-    let analyzer = NesAnalyzer::new();
+    let analyzer = NesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.extra.get("mapper").unwrap(), "0");
@@ -77,7 +77,7 @@ fn test_parse_ines_mapper4_vertical_battery() {
     //                   flags7 = 0b0000_0000 (mapper hi=0)
     let data = make_ines_header(16, 16, 0x43, 0x00);
     let mut cursor = Cursor::new(data);
-    let analyzer = NesAnalyzer::new();
+    let analyzer = NesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.extra.get("mapper").unwrap(), "4");
@@ -95,7 +95,7 @@ fn test_ines_size_with_trainer() {
     // Trainer bit set: flags6 bit 2
     let data = make_ines_header(1, 1, 0x04, 0x00);
     let mut cursor = Cursor::new(data);
-    let analyzer = NesAnalyzer::new();
+    let analyzer = NesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.extra.get("trainer").unwrap(), "Yes");
@@ -113,7 +113,7 @@ fn test_ines_exact_size_match() {
     data.extend(vec![0u8; 8192]);
 
     let mut cursor = Cursor::new(data);
-    let analyzer = NesAnalyzer::new();
+    let analyzer = NesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.file_size, result.expected_size);
@@ -124,7 +124,7 @@ fn test_parse_ines_chr_ram() {
     // CHR ROM = 0 means CHR RAM
     let data = make_ines_header(1, 0, 0x00, 0x00);
     let mut cursor = Cursor::new(data);
-    let analyzer = NesAnalyzer::new();
+    let analyzer = NesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.extra.get("chr_rom_size").unwrap(), "CHR RAM");
@@ -143,7 +143,7 @@ fn test_parse_nes2_header() {
     data[12] = 0x00;
 
     let mut cursor = Cursor::new(data);
-    let analyzer = NesAnalyzer::new();
+    let analyzer = NesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.extra.get("format").unwrap(), "NES 2.0");
@@ -157,7 +157,7 @@ fn test_parse_unif() {
     data[0..4].copy_from_slice(&UNIF_MAGIC);
     data[4] = 7;
     let mut cursor = Cursor::new(data);
-    let analyzer = NesAnalyzer::new();
+    let analyzer = NesAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.extra.get("format").unwrap(), "UNIF");
@@ -166,7 +166,7 @@ fn test_parse_unif() {
 
 #[test]
 fn test_can_handle() {
-    let analyzer = NesAnalyzer::new();
+    let analyzer = NesAnalyzer;
 
     let ines = make_ines_header(1, 1, 0, 0);
     assert!(analyzer.can_handle(&mut Cursor::new(ines)));

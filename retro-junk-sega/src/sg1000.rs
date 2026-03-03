@@ -12,12 +12,6 @@ use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, Rom
 #[derive(Debug, Default)]
 pub struct Sg1000Analyzer;
 
-impl Sg1000Analyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for Sg1000Analyzer {
     fn analyze(
         &self,

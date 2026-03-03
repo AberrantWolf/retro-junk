@@ -12,12 +12,6 @@ use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, Rom
 #[derive(Debug, Default)]
 pub struct Sega32xAnalyzer;
 
-impl Sega32xAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for Sega32xAnalyzer {
     fn analyze(
         &self,

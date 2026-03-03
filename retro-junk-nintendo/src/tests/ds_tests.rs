@@ -96,14 +96,14 @@ fn test_crc16_known_value() {
 #[test]
 fn test_can_handle_valid() {
     let rom = make_nds_rom();
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_can_handle_too_small() {
     let data = vec![0u8; 0x100]; // Too small
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
@@ -111,7 +111,7 @@ fn test_can_handle_too_small() {
 fn test_can_handle_bad_logo() {
     let mut rom = make_nds_rom();
     rom[0xC0] = 0xFF; // Corrupt logo
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
@@ -120,14 +120,14 @@ fn test_can_handle_bad_logo_checksum() {
     let mut rom = make_nds_rom();
     rom[0x15C] = 0x00; // Wrong logo checksum
     rom[0x15D] = 0x00;
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_basic_analysis() {
     let rom = make_nds_rom();
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -146,7 +146,7 @@ fn test_basic_analysis() {
 #[test]
 fn test_checksums_ok() {
     let rom = make_nds_rom();
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -176,7 +176,7 @@ fn test_encrypted_secure_area_crc_ok() {
     let mut rom = make_nds_rom();
     setup_encrypted_secure_area(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -197,7 +197,7 @@ fn test_encrypted_secure_area_crc_mismatch() {
     // Corrupt a byte in the secure area
     rom[0x5000] = 0xFF;
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -218,7 +218,7 @@ fn test_header_checksum_mismatch() {
     // Corrupt a byte in the header region without recomputing checksum
     rom[0x000] = b'X';
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -233,7 +233,7 @@ fn test_header_checksum_mismatch() {
 #[test]
 fn test_quick_mode_skips_secure_area() {
     let rom = make_nds_rom();
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions {
         quick: true,
         ..Default::default()
@@ -251,7 +251,7 @@ fn test_dsi_enhanced() {
     rom[0x00C] = b'I'; // DSi-enhanced category prefix
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -272,7 +272,7 @@ fn test_dsi_only() {
     rom[0x00C] = b'D'; // DSi-exclusive category prefix
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -291,7 +291,7 @@ fn test_region_japan() {
     rom[0x00F] = b'J'; // Japan
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.regions, vec![Region::Japan]);
@@ -303,7 +303,7 @@ fn test_region_europe() {
     rom[0x00F] = b'P'; // Europe/PAL
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.regions, vec![Region::Europe]);
@@ -315,7 +315,7 @@ fn test_region_korea() {
     rom[0x00F] = b'K'; // Korea
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.regions, vec![Region::Korea]);
@@ -327,7 +327,7 @@ fn test_region_world() {
     rom[0x00F] = b'W'; // Worldwide
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.regions, vec![Region::World]);
@@ -339,7 +339,7 @@ fn test_region_australia() {
     rom[0x00F] = b'U'; // Australia → Europe/PAL
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.regions, vec![Region::Europe]);
@@ -351,7 +351,7 @@ fn test_device_capacity() {
     rom[0x014] = 9; // 64 MB chip
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     // file_size == used_rom_size and both < chip_capacity → trimmed, OK
@@ -370,7 +370,7 @@ fn test_untrimmed_rom() {
     // used_rom_size stays at 0x10000 (64 KB), which is < capacity
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.file_size, Some(capacity as u64));
@@ -385,7 +385,7 @@ fn test_trimmed_rom() {
     rom[0x014] = 9; // 64 MB chip, much larger than 64 KB file
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.file_size, Some(0x10000));
@@ -402,7 +402,7 @@ fn test_partially_trimmed_rom() {
     rom.resize(0xC000, 0xFF); // file = 48 KB (between 32 KB and 256 KB)
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.file_size, Some(0xC000));
@@ -421,7 +421,7 @@ fn test_actually_truncated_rom() {
     recompute_header_checksum(&mut rom);
     // File is 64 KB but claims to need 128 KB
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions {
         quick: true,
         ..Default::default()
@@ -437,7 +437,7 @@ fn test_rom_version() {
     rom[0x01E] = 2;
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.version.as_deref(), Some("v2"));
@@ -449,7 +449,7 @@ fn test_title_trimming() {
     rom[0x000..0x00C].copy_from_slice(b"HI\0\0\0\0\0\0\0\0\0\0");
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.internal_name.as_deref(), Some("HI"));
@@ -461,7 +461,7 @@ fn test_nds_region_korea() {
     rom[0x01D] = 0x40; // Korea region lock
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.extra.get("nds_region_lock").unwrap(), "Korea");
@@ -473,7 +473,7 @@ fn test_nds_region_china() {
     rom[0x01D] = 0x80; // China region lock
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.extra.get("nds_region_lock").unwrap(), "China");
@@ -482,7 +482,7 @@ fn test_nds_region_china() {
 #[test]
 fn test_too_small_file() {
     let data = vec![0u8; 0x100]; // Not enough for header
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(data), &options);
     assert!(result.is_err());
@@ -507,7 +507,7 @@ fn test_banner_offset_reported() {
     rom[0x068..0x06C].copy_from_slice(&0x8000u32.to_le_bytes());
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.extra.get("banner_offset").unwrap(), "0x00008000");
@@ -516,7 +516,7 @@ fn test_banner_offset_reported() {
 #[test]
 fn test_serial_number_format_nds() {
     let rom = make_nds_rom();
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert!(result.serial_number.as_deref().unwrap().starts_with("NTR-"));
@@ -530,7 +530,7 @@ fn test_no_secure_area_for_small_file() {
     recompute_header_checksum(&mut rom);
     rom.truncate(0x2000); // 8 KB, too small for secure area
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert!(result.extra.get("secure_area").is_none());
@@ -543,7 +543,7 @@ fn test_homebrew_no_secure_area() {
     rom[0x020..0x024].copy_from_slice(&0x0200u32.to_le_bytes());
     recompute_header_checksum(&mut rom);
 
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.extra.get("secure_area").unwrap(), "None (homebrew)");
@@ -551,7 +551,7 @@ fn test_homebrew_no_secure_area() {
 
 #[test]
 fn test_extract_dat_game_code_ntr() {
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     assert_eq!(
         analyzer.extract_dat_game_code("NTR-ADME"),
         Some("ADME".to_string())
@@ -560,7 +560,7 @@ fn test_extract_dat_game_code_ntr() {
 
 #[test]
 fn test_extract_dat_game_code_twl() {
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     assert_eq!(
         analyzer.extract_dat_game_code("TWL-IRBO"),
         Some("IRBO".to_string())
@@ -569,6 +569,6 @@ fn test_extract_dat_game_code_twl() {
 
 #[test]
 fn test_extract_dat_game_code_unknown_prefix() {
-    let analyzer = DsAnalyzer::new();
+    let analyzer = DsAnalyzer;
     assert_eq!(analyzer.extract_dat_game_code("XXX-ABCD"), None);
 }

@@ -147,12 +147,6 @@ fn compute_checksum(reader: &mut dyn ReadSeek, rom_end: u32) -> Result<u16, Anal
 #[derive(Debug, Default)]
 pub struct GenesisAnalyzer;
 
-impl GenesisAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for GenesisAnalyzer {
     fn analyze(
         &self,
@@ -160,8 +154,7 @@ impl RomAnalyzer for GenesisAnalyzer {
         _options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
         // Get file size
-        let file_size = reader.seek(SeekFrom::End(0))?;
-        reader.seek(SeekFrom::Start(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         if file_size < MIN_HEADER_SIZE {
             return Err(AnalysisError::TooSmall {

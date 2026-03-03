@@ -97,14 +97,14 @@ fn make_default_gc_disc() -> Vec<u8> {
 #[test]
 fn test_can_handle_valid() {
     let disc = make_default_gc_disc();
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(disc)));
 }
 
 #[test]
 fn test_can_handle_too_small() {
     let data = vec![0u8; 16];
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
@@ -113,7 +113,7 @@ fn test_can_handle_bad_magic() {
     let mut disc = make_default_gc_disc();
     // Corrupt the GC magic word
     disc[0x001C..0x0020].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(disc)));
 }
 
@@ -122,7 +122,7 @@ fn test_can_handle_wii_disc_rejected() {
     let mut disc = make_default_gc_disc();
     // Set Wii magic at 0x0018 — this should NOT be detected as GameCube
     disc[0x0018..0x001C].copy_from_slice(&nintendo_disc::WII_MAGIC.to_be_bytes());
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(disc)));
 }
 
@@ -133,7 +133,7 @@ fn test_can_handle_wii_disc_rejected() {
 #[test]
 fn test_basic_analysis() {
     let disc = make_default_gc_disc();
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -158,7 +158,7 @@ fn test_basic_analysis() {
 #[test]
 fn test_region_usa() {
     let disc = make_gc_disc(b"GALE", b"01", 0, "GAME");
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -168,7 +168,7 @@ fn test_region_usa() {
 #[test]
 fn test_region_japan() {
     let disc = make_gc_disc(b"GALJ", b"01", 0, "GAME");
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -178,7 +178,7 @@ fn test_region_japan() {
 #[test]
 fn test_region_europe() {
     let disc = make_gc_disc(b"GALP", b"01", 0, "GAME");
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -188,7 +188,7 @@ fn test_region_europe() {
 #[test]
 fn test_region_korea() {
     let disc = make_gc_disc(b"GALK", b"01", 0, "GAME");
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -198,7 +198,7 @@ fn test_region_korea() {
 #[test]
 fn test_version_nonzero() {
     let disc = make_gc_disc(b"GALE", b"01", 2, "GAME");
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -208,7 +208,7 @@ fn test_version_nonzero() {
 #[test]
 fn test_version_zero_is_none() {
     let disc = make_gc_disc(b"GALE", b"01", 0, "GAME");
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -219,7 +219,7 @@ fn test_version_zero_is_none() {
 fn test_game_name_trimming() {
     // Name followed by nulls should be trimmed
     let disc = make_gc_disc(b"GALE", b"01", 0, "TEST GAME");
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
@@ -232,7 +232,7 @@ fn test_wii_disc_rejected_by_analyze() {
     // Set Wii magic, clear GC magic
     disc[0x0018..0x001C].copy_from_slice(&nintendo_disc::WII_MAGIC.to_be_bytes());
     disc[0x001C..0x0020].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     let result = analyzer.analyze(&mut Cursor::new(disc), &AnalysisOptions::default());
     assert!(result.is_err());
 }
@@ -243,7 +243,7 @@ fn test_wii_disc_rejected_by_analyze() {
 
 #[test]
 fn test_extract_dat_game_code() {
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     assert_eq!(
         analyzer.extract_dat_game_code("GALE"),
         Some("GALE".to_string())
@@ -252,7 +252,7 @@ fn test_extract_dat_game_code() {
 
 #[test]
 fn test_extract_dat_game_code_invalid() {
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     // Too long
     assert_eq!(analyzer.extract_dat_game_code("GALE01"), None);
     // Too short
@@ -261,26 +261,26 @@ fn test_extract_dat_game_code_invalid() {
 
 #[test]
 fn test_expects_serial() {
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     assert!(analyzer.expects_serial());
 }
 
 #[test]
 fn test_dat_source() {
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     assert_eq!(analyzer.dat_source(), retro_junk_core::DatSource::Redump);
 }
 
 #[test]
 fn test_dat_download_ids_defaults_to_dat_names() {
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     // dat_download_ids() should delegate to dat_names() (the default impl)
     assert_eq!(analyzer.dat_download_ids(), &["Nintendo - GameCube"]);
 }
 
 #[test]
 fn test_dat_names() {
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     assert_eq!(analyzer.dat_names(), &["Nintendo - GameCube"]);
 }
 
@@ -291,7 +291,7 @@ fn test_dat_names() {
 #[test]
 fn test_container_hashes_returns_none_for_raw_iso() {
     let disc = make_default_gc_disc();
-    let analyzer = GameCubeAnalyzer::new();
+    let analyzer = GameCubeAnalyzer;
     let result = analyzer
         .compute_container_hashes(&mut Cursor::new(disc), HashAlgorithms::Crc32Sha1, None)
         .unwrap();

@@ -138,8 +138,7 @@ fn expected_rom_size(file_size: u64) -> Option<u64> {
 /// Scan ROM data for save type magic strings.
 /// Returns the detected save type, or None.
 fn detect_save_type(reader: &mut dyn ReadSeek) -> Result<Option<&'static str>, AnalysisError> {
-    let file_size = reader.seek(SeekFrom::End(0))?;
-    reader.seek(SeekFrom::Start(0))?;
+    let file_size = retro_junk_core::util::file_size(reader)?;
 
     // Read the entire ROM into memory for scanning
     let read_size = file_size.min(MAX_ROM_SIZE) as usize;
@@ -271,20 +270,13 @@ fn to_identification(
 #[derive(Debug, Default)]
 pub struct GbaAnalyzer;
 
-impl GbaAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for GbaAnalyzer {
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,
         options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
-        reader.seek(SeekFrom::Start(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         if file_size < MIN_FILE_SIZE {
             return Err(AnalysisError::TooSmall {
@@ -319,13 +311,9 @@ impl RomAnalyzer for GbaAnalyzer {
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
-        let file_size = match reader.seek(SeekFrom::End(0)) {
-            Ok(s) => s,
-            Err(_) => return false,
-        };
-        if reader.seek(SeekFrom::Start(0)).is_err() {
+        let Ok(file_size) = retro_junk_core::util::file_size(reader) else {
             return false;
-        }
+        };
         if file_size < MIN_FILE_SIZE {
             return false;
         }

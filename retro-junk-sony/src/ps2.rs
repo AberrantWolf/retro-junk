@@ -35,12 +35,6 @@ const MULTI_DISC_SERIAL_FIXUPS: &[(&str, &str)] = &[];
 pub struct Ps2Analyzer;
 
 impl Ps2Analyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Ps2Analyzer {
     /// Analyze an ISO or raw BIN disc image.
     fn analyze_disc_image(
         &self,
@@ -48,8 +42,7 @@ impl Ps2Analyzer {
         _options: &AnalysisOptions,
         format: DiscFormat,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
-        reader.seek(SeekFrom::Start(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         let pvd = sony_disc::read_pvd(reader, format)?;
 
@@ -102,8 +95,7 @@ impl Ps2Analyzer {
         reader: &mut dyn ReadSeek,
         options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
-        reader.seek(SeekFrom::Start(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         // Read the CUE text
         let mut cue_text = String::new();
@@ -192,8 +184,7 @@ impl Ps2Analyzer {
         reader: &mut dyn ReadSeek,
         _options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
-        reader.seek(SeekFrom::Start(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         let chd_info = sony_disc::read_chd_info(reader)?;
 

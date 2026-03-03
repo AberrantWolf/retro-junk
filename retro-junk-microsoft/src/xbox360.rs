@@ -13,12 +13,6 @@ use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, Rom
 #[derive(Debug, Default)]
 pub struct Xbox360Analyzer;
 
-impl Xbox360Analyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for Xbox360Analyzer {
     fn analyze(
         &self,

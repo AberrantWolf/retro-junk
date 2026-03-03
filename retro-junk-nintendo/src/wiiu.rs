@@ -12,12 +12,6 @@ use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, Rom
 #[derive(Debug, Default)]
 pub struct WiiUAnalyzer;
 
-impl WiiUAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for WiiUAnalyzer {
     fn analyze(
         &self,

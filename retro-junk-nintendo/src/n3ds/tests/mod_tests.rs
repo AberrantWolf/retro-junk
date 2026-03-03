@@ -95,28 +95,28 @@ fn make_cia_minimal() -> Vec<u8> {
 #[test]
 fn test_can_handle_cci() {
     let rom = make_cci_minimal();
-    let analyzer = N3dsAnalyzer::new();
+    let analyzer = N3dsAnalyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_can_handle_cia() {
     let cia = make_cia_minimal();
-    let analyzer = N3dsAnalyzer::new();
+    let analyzer = N3dsAnalyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(cia)));
 }
 
 #[test]
 fn test_can_handle_invalid() {
     let data = vec![0u8; 0x10000];
-    let analyzer = N3dsAnalyzer::new();
+    let analyzer = N3dsAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
 #[test]
 fn test_can_handle_too_small() {
     let data = vec![0u8; 0x100];
-    let analyzer = N3dsAnalyzer::new();
+    let analyzer = N3dsAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
@@ -144,7 +144,7 @@ fn test_detect_format_unknown() {
 #[test]
 fn test_full_cci_via_analyzer() {
     let rom = make_cci_minimal();
-    let analyzer = N3dsAnalyzer::new();
+    let analyzer = N3dsAnalyzer;
     let options = AnalysisOptions {
         quick: true,
         ..Default::default()
@@ -159,7 +159,7 @@ fn test_full_cci_via_analyzer() {
 #[test]
 fn test_full_cia_via_analyzer() {
     let cia = make_cia_minimal();
-    let analyzer = N3dsAnalyzer::new();
+    let analyzer = N3dsAnalyzer;
     let options = AnalysisOptions {
         quick: true,
         ..Default::default()

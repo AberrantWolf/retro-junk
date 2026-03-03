@@ -586,8 +586,7 @@ fn analyze_ines(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> 
 }
 
 fn analyze_fds(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> {
-    let total_size = reader.seek(SeekFrom::End(0))?;
-    reader.seek(SeekFrom::Start(0))?;
+    let total_size = retro_junk_core::util::file_size(reader)?;
 
     let mut magic = [0u8; 4];
     reader
@@ -884,20 +883,13 @@ fn detect_format(reader: &mut dyn ReadSeek) -> Result<NesFormat, AnalysisError> 
 #[derive(Debug, Default)]
 pub struct NesAnalyzer;
 
-impl NesAnalyzer {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
 impl RomAnalyzer for NesAnalyzer {
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,
         _options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
-        let file_size = reader.seek(SeekFrom::End(0))?;
-        reader.seek(SeekFrom::Start(0))?;
+        let file_size = retro_junk_core::util::file_size(reader)?;
 
         let format = detect_format(reader)?;
 

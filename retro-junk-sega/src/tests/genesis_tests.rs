@@ -71,21 +71,21 @@ fn test_can_handle_valid() {
         "GM 00001009-00",
         "JUE",
     );
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_can_handle_invalid() {
     let data = vec![0xFFu8; 0x200];
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
 #[test]
 fn test_can_handle_too_small() {
     let data = vec![0u8; 16];
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
@@ -98,7 +98,7 @@ fn test_header_fields() {
         "GM 00001009-00",
         "JUE",
     );
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -115,7 +115,7 @@ fn test_header_fields() {
 #[test]
 fn test_region_decode_multi() {
     let rom = make_genesis_rom("SEGA GENESIS", "TEST", "TEST", "GM 00000000-00", "JUE");
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -128,7 +128,7 @@ fn test_region_decode_multi() {
 #[test]
 fn test_region_decode_single() {
     let rom = make_genesis_rom("SEGA GENESIS", "TEST", "TEST", "GM 00000000-00", "U");
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -138,7 +138,7 @@ fn test_region_decode_single() {
 #[test]
 fn test_checksum_valid() {
     let rom = make_genesis_rom("SEGA MEGA DRIVE", "TEST", "TEST", "GM 00000000-00", "J");
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -152,7 +152,7 @@ fn test_checksum_invalid() {
     rom[0x18E] = 0xFF;
     rom[0x18F] = 0xFF;
 
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -166,7 +166,7 @@ fn test_checksum_invalid() {
 #[test]
 fn test_expected_size_exact() {
     let rom = make_genesis_rom("SEGA MEGA DRIVE", "TEST", "TEST", "GM 00000000-00", "J");
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -180,7 +180,7 @@ fn test_padded_rom_not_oversized() {
     let mut rom = make_genesis_rom("SEGA MEGA DRIVE", "TEST", "TEST", "GM 00000000-00", "J");
     // Pad to a larger power-of-2 size (simulates a real dump)
     rom.resize(0x80000, 0x00); // 512 KB
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -194,7 +194,7 @@ fn test_padded_rom_not_oversized() {
 #[test]
 fn test_too_small_rom() {
     let data = vec![0u8; 0x100]; // Too small for header
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(data), &options);
     assert!(result.is_err());
@@ -203,7 +203,7 @@ fn test_too_small_rom() {
 #[test]
 fn test_address_ranges() {
     let rom = make_genesis_rom("SEGA MEGA DRIVE", "TEST", "TEST", "GM 00000000-00", "J");
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -219,7 +219,7 @@ fn test_address_ranges() {
 
 #[test]
 fn test_extract_dat_game_code_sega() {
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     // Standard Sega first-party serial
     assert_eq!(
         analyzer.extract_dat_game_code("GM MK-1058 -00"),
@@ -229,7 +229,7 @@ fn test_extract_dat_game_code_sega() {
 
 #[test]
 fn test_extract_dat_game_code_third_party() {
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     // Third-party T-prefixed serial
     assert_eq!(
         analyzer.extract_dat_game_code("GM T-70176 -00"),
@@ -239,7 +239,7 @@ fn test_extract_dat_game_code_third_party() {
 
 #[test]
 fn test_extract_dat_game_code_japanese() {
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     // Japanese G-prefixed serial with extra spaces
     assert_eq!(
         analyzer.extract_dat_game_code("GM G-5512   00"),
@@ -249,7 +249,7 @@ fn test_extract_dat_game_code_japanese() {
 
 #[test]
 fn test_extract_dat_game_code_no_prefix() {
-    let analyzer = GenesisAnalyzer::new();
+    let analyzer = GenesisAnalyzer;
     // No type prefix — should return None
     assert_eq!(analyzer.extract_dat_game_code("MK-1058-00"), None);
 }

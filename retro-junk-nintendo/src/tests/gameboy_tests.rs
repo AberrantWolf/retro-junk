@@ -59,14 +59,14 @@ fn make_gb_rom() -> Vec<u8> {
 #[test]
 fn test_can_handle_valid() {
     let rom = make_gb_rom();
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     assert!(analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_can_handle_too_small() {
     let data = vec![0u8; 0x0100]; // Too small
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(data)));
 }
 
@@ -74,14 +74,14 @@ fn test_can_handle_too_small() {
 fn test_can_handle_bad_logo() {
     let mut rom = make_gb_rom();
     rom[0x0104] = 0xFF; // Corrupt logo
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     assert!(!analyzer.can_handle(&mut Cursor::new(rom)));
 }
 
 #[test]
 fn test_basic_analysis() {
     let rom = make_gb_rom();
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -106,7 +106,7 @@ fn test_cgb_compatible() {
     // Recompute checksums
     recompute_checksums(&mut rom);
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -127,7 +127,7 @@ fn test_cgb_exclusive() {
     rom[0x0143] = 0xC0; // CGB Only
     recompute_checksums(&mut rom);
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -148,7 +148,7 @@ fn test_sgb_flag() {
     rom[0x0146] = 0x03; // SGB features
     recompute_checksums(&mut rom);
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -161,7 +161,7 @@ fn test_japan_region() {
     rom[0x014A] = 0x00; // Japan
     recompute_checksums(&mut rom);
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -182,7 +182,7 @@ fn test_header_checksum_mismatch() {
     rom[0x014D] = rom[0x014D].wrapping_add(1); // Corrupt header checksum
     // Don't recompute global (it would fix it)
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -209,7 +209,7 @@ fn test_global_checksum_mismatch() {
     rom[0x014E] = 0xFF; // Corrupt global checksum
     rom[0x014F] = 0xFF;
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -229,7 +229,7 @@ fn test_new_licensee_code() {
     rom[0x0145] = b'1'; // "01" = Nintendo R&D1
     recompute_checksums(&mut rom);
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -246,7 +246,7 @@ fn test_title_with_cgb_flag() {
     rom[0x0134..0x0134 + 11].copy_from_slice(title);
     recompute_checksums(&mut rom);
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -261,7 +261,7 @@ fn test_title_full_16_chars() {
     rom[0x0134..0x0134 + 16].copy_from_slice(title);
     recompute_checksums(&mut rom);
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -275,7 +275,7 @@ fn test_size_mismatch_truncated() {
     rom[0x0148] = 0x01; // 64 KB
     recompute_checksums(&mut rom);
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
@@ -286,7 +286,7 @@ fn test_size_mismatch_truncated() {
 #[test]
 fn test_too_small_file() {
     let data = vec![0u8; 0x0100]; // Not enough for header
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(data), &options);
     assert!(result.is_err());
@@ -299,7 +299,7 @@ fn test_cartridge_with_ram() {
     rom[0x0149] = 0x03; // 32 KB RAM
     recompute_checksums(&mut rom);
 
-    let analyzer = GameBoyAnalyzer::new();
+    let analyzer = GameBoyAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
