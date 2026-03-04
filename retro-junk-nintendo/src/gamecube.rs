@@ -62,6 +62,10 @@ impl RomAnalyzer for GameCubeAnalyzer {
         id.file_size = Some(file_size);
         id.expected_size = Some(GCM_DISC_SIZE);
         id.extra.insert("format".into(), format_name.into());
+        id.extra.insert(
+            "detected_extension".into(),
+            format_name.to_ascii_lowercase(),
+        );
 
         Ok(id)
     }

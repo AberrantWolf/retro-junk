@@ -1,13 +1,12 @@
 use egui_extras::{Column, TableBuilder};
 
 use crate::app::RetroJunkApp;
-use crate::state::{DISAGREEMENT_FIELDS, DisagreementContext, ToolsState};
+use crate::state::{DISAGREEMENT_FIELDS, DisagreementContext, ToolsState, ToolsTab};
 
 /// Render the Tools (catalog management) view.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.heading("Catalog Tools");
     ui.separator();
-    ui.add_space(8.0);
 
     let has_db = app.catalog_db.is_some();
     if !has_db {
@@ -15,17 +14,36 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         return;
     }
 
-    // Refresh data from DB when flagged
-    if app.tools_state.needs_refresh {
-        let conn = app.catalog_db.as_ref().unwrap();
-        refresh_data(&mut app.tools_state, conn);
-    }
-
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        show_stats_section(ui, &app.tools_state);
-        ui.add_space(16.0);
-        show_disagreements_section(ui, app);
+    // Tab bar
+    ui.horizontal(|ui| {
+        ui.selectable_value(
+            &mut app.tools_state.active_tab,
+            ToolsTab::Dashboard,
+            "Dashboard",
+        );
+        ui.selectable_value(&mut app.tools_state.active_tab, ToolsTab::Browse, "Browse");
     });
+    ui.separator();
+    ui.add_space(4.0);
+
+    match app.tools_state.active_tab {
+        ToolsTab::Dashboard => {
+            // Refresh data from DB when flagged
+            if app.tools_state.needs_refresh {
+                let conn = app.catalog_db.as_ref().unwrap();
+                refresh_data(&mut app.tools_state, conn);
+            }
+
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                show_stats_section(ui, &app.tools_state);
+                ui.add_space(16.0);
+                show_disagreements_section(ui, app);
+            });
+        }
+        ToolsTab::Browse => {
+            super::tools_browse::show(ui, app);
+        }
+    }
 }
 
 fn show_no_database(ui: &mut egui::Ui) {
@@ -103,7 +121,7 @@ fn stat_row(ui: &mut egui::Ui, label: &str, value: i64) {
     ui.end_row();
 }
 
-fn format_number(n: i64) -> String {
+pub(crate) fn format_number(n: i64) -> String {
     if n < 1_000 {
         return n.to_string();
     }
@@ -475,7 +493,7 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     }
 }
 
-fn truncate_str(s: &str, max: usize) -> String {
+pub(crate) fn truncate_str(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {

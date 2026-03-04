@@ -283,6 +283,37 @@ pub struct WorkRow {
     pub canonical_name: String,
 }
 
+/// A work row with release count for a specific platform.
+#[derive(Debug)]
+pub struct WorkWithCount {
+    pub id: String,
+    pub canonical_name: String,
+    pub release_count: i64,
+}
+
+/// List works that have releases on a given platform, with release count per work.
+pub fn works_for_platform(
+    conn: &Connection,
+    platform_id: &str,
+) -> Result<Vec<WorkWithCount>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT w.id, w.canonical_name, COUNT(r.id) as release_count \
+         FROM works w \
+         JOIN releases r ON r.work_id = w.id \
+         WHERE r.platform_id = ?1 \
+         GROUP BY w.id \
+         ORDER BY w.canonical_name",
+    )?;
+    let rows = stmt.query_map(params![platform_id], |row| {
+        Ok(WorkWithCount {
+            id: row.get(0)?,
+            canonical_name: row.get(1)?,
+            release_count: row.get(2)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 // ── Statistics ──────────────────────────────────────────────────────────────
 
 /// Get overall catalog statistics.

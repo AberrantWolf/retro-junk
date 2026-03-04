@@ -59,7 +59,17 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 match rom_name {
                     Some(target_name) => {
                         let source = entry.game_entry.analysis_path().to_path_buf();
-                        let target = source.parent().unwrap_or(&source).join(&target_name);
+                        let detected_ext = entry
+                            .identification
+                            .as_ref()
+                            .and_then(|id| id.extra.get("detected_extension"))
+                            .map(|s| s.as_str());
+                        let corrected = retro_junk_lib::rename::target_filename_for_rename(
+                            &target_name,
+                            &source,
+                            detected_ext,
+                        );
+                        let target = source.parent().unwrap_or(&source).join(&corrected);
 
                         if source == target {
                             results.push(RenameResult {
@@ -109,12 +119,22 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 if let Some(ref discs) = entry.disc_identifications {
                     for disc in discs {
                         if let Some(ref dm) = disc.dat_match {
+                            let detected_ext = disc
+                                .identification
+                                .extra
+                                .get("detected_extension")
+                                .map(|s| s.as_str());
                             disc_resolved.insert(
                                 disc.path.clone(),
                                 DiscMatchData {
                                     file_path: disc.path.clone(),
                                     game_name: dm.game_name.clone(),
-                                    target_filename: dm.rom_name.clone(),
+                                    target_filename:
+                                        retro_junk_lib::rename::target_filename_for_rename(
+                                            &dm.rom_name,
+                                            &disc.path,
+                                            detected_ext,
+                                        ),
                                 },
                             );
                         }
@@ -356,7 +376,9 @@ fn resolve_disc_file(
     Some(DiscMatchData {
         file_path: file_path.clone(),
         game_name: game.name.clone(),
-        target_filename: rom.name.clone(),
+        target_filename: retro_junk_lib::rename::target_filename_for_rename(
+            &rom.name, file_path, None,
+        ),
     })
 }
 

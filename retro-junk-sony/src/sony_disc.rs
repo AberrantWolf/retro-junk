@@ -62,6 +62,15 @@ impl DiscFormat {
             Self::Chd => "CHD",
         }
     }
+
+    pub fn extension(&self) -> &'static str {
+        match self {
+            Self::Iso2048 => "iso",
+            Self::RawSector2352 => "bin",
+            Self::Cue => "cue",
+            Self::Chd => "chd",
+        }
+    }
 }
 
 /// Detect the disc image format by examining the reader content.

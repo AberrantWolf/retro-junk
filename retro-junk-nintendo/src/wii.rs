@@ -62,6 +62,10 @@ impl RomAnalyzer for WiiAnalyzer {
         let mut id = nintendo_disc::build_identification(&header, Platform::Wii);
         id.file_size = Some(file_size);
         id.extra.insert("format".into(), format_name.into());
+        id.extra.insert(
+            "detected_extension".into(),
+            format_name.to_ascii_lowercase(),
+        );
 
         // Detect DVD layer type from uncompressed disc size
         let layer = if layer_size > DVD5_SIZE_THRESHOLD {

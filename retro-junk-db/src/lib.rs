@@ -18,8 +18,8 @@ pub use operations::{
 };
 pub use queries::{
     CatalogStats, CollectionRow, DisagreementFilter, PlatformRow, ReconcileGroup, ReleaseCollision,
-    WorkRow, asset_counts_by_type, asset_coverage_summary, assets_for_release, catalog_stats,
-    check_release_collision, collection_counts_by_platform, count_enriched_releases,
+    WorkRow, WorkWithCount, asset_counts_by_type, asset_coverage_summary, assets_for_release,
+    catalog_stats, check_release_collision, collection_counts_by_platform, count_enriched_releases,
     count_releases_for_work, find_collection_entry, find_media_by_crc32, find_media_by_md5,
     find_media_by_serial, find_media_by_sha1, find_reconcilable_works, find_release_by_serial,
     get_company_name, get_disagreement, get_media_by_id, get_platform_by_id,
@@ -28,6 +28,7 @@ pub use queries::{
     platform_media_counts, platform_release_counts, releases_for_platform, releases_for_work,
     releases_missing_asset_type, releases_to_enrich, releases_with_no_assets, search_media,
     search_releases, search_releases_filtered, search_releases_paged, search_works,
+    works_for_platform,
 };
 pub use rusqlite::Connection;
 pub use schema::{open_database, open_memory};

@@ -1741,6 +1741,29 @@ pub struct DisagreementContext {
     pub platform_name: String,
 }
 
+/// Active tab in the Tools view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ToolsTab {
+    #[default]
+    Dashboard,
+    Browse,
+}
+
+/// State for the database browser in the Browse tab.
+#[derive(Default)]
+pub struct BrowseState {
+    pub selected_platform: Option<String>,
+    pub works: Vec<retro_junk_db::WorkWithCount>,
+    pub filter_text: String,
+    pub selected_work_idx: Option<usize>,
+    pub releases: Vec<retro_junk_catalog::types::Release>,
+    pub selected_release_idx: Option<usize>,
+    pub release_media: Vec<retro_junk_catalog::types::Media>,
+    pub platform_release_counts: HashMap<String, i64>,
+    pub counts_loaded: bool,
+    pub company_name_cache: HashMap<String, String>,
+}
+
 /// Transient UI state for the Tools (catalog) view.
 pub struct ToolsState {
     pub stats: Option<retro_junk_db::CatalogStats>,
@@ -1751,6 +1774,8 @@ pub struct ToolsState {
     pub filter_field: Option<String>,
     pub selected_context: Option<DisagreementContext>,
     pub needs_refresh: bool,
+    pub active_tab: ToolsTab,
+    pub browse: BrowseState,
 }
 
 impl Default for ToolsState {
@@ -1764,6 +1789,8 @@ impl Default for ToolsState {
             filter_field: None,
             selected_context: None,
             needs_refresh: true,
+            active_tab: ToolsTab::default(),
+            browse: BrowseState::default(),
         }
     }
 }

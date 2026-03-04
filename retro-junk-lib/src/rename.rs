@@ -209,6 +209,30 @@ pub enum SerialWarningKind {
     Missing,
 }
 
+/// Compute target filename: DAT-canonical stem + correct extension.
+///
+/// Extension priority:
+/// 1. `detected_extension` from analyzer (auto-corrects mismatched extensions)
+/// 2. Original file extension (preserves container format)
+/// 3. DAT rom name as-is (fallback when no extension info available)
+pub fn target_filename_for_rename(
+    dat_rom_name: &str,
+    source_path: &Path,
+    detected_extension: Option<&str>,
+) -> String {
+    let dat_stem = Path::new(dat_rom_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(dat_rom_name);
+
+    let ext = detected_extension.or_else(|| source_path.extension().and_then(|e| e.to_str()));
+
+    match ext {
+        Some(e) => format!("{}.{}", dat_stem, e),
+        None => dat_rom_name.to_string(),
+    }
+}
+
 /// Internal result from serial matching, carrying diagnostic info.
 struct SerialMatchOutcome {
     result: Option<MatchResult>,
@@ -218,6 +242,8 @@ struct SerialMatchOutcome {
     game_code: Option<String>,
     /// When serial matched multiple games, the candidate names
     ambiguous_candidates: Option<Vec<String>>,
+    /// Detected file format extension from analyzer (e.g., "iso", "chd", "rvz")
+    detected_extension: Option<String>,
 }
 
 /// A planned M3U folder rename + playlist write for a multi-disc set.
@@ -644,7 +670,7 @@ pub fn plan_renames(
         // Track hash info for diagnostics if the file ends up unmatched
         let mut last_hash: Option<(String, u64)> = None;
 
-        let match_result = if options.hash_mode {
+        let (match_result, detected_ext) = if options.hash_mode {
             // Hash mode: hash is authoritative, but also check serial for discrepancies
             let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
             last_hash = Some((hash_outcome.crc32, hash_outcome.data_size));
@@ -661,13 +687,14 @@ pub fn plan_renames(
                 });
             }
 
-            hash_outcome.result
+            (hash_outcome.result, serial_outcome.detected_extension)
         } else {
             // Default mode: try serial first, then always fall back to hash
             let serial_outcome = match_by_serial(file_path, analyzer, &analysis_options, &index);
+            let det_ext = serial_outcome.detected_extension.clone();
 
             if serial_outcome.result.is_some() {
-                serial_outcome.result
+                (serial_outcome.result, det_ext)
             } else {
                 // Serial failed — try hash, then create serial warning with hash info
                 let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
@@ -707,7 +734,7 @@ pub fn plan_renames(
                     });
                 }
 
-                hash_outcome.result
+                (hash_outcome.result, det_ext)
             }
         };
 
@@ -715,16 +742,10 @@ pub fn plan_renames(
             let game = &index.games[result.game_index];
             let rom = &game.roms[result.rom_index];
 
-            // Target path: same directory as the source file, DAT-canonical stem + original extension
             let parent = file_path.parent().unwrap_or(folder);
-            let dat_stem = Path::new(&rom.name)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(&rom.name);
-            let target = match file_path.extension().and_then(|e| e.to_str()) {
-                Some(ext) => parent.join(format!("{}.{}", dat_stem, ext)),
-                None => parent.join(&rom.name),
-            };
+            let target_name =
+                target_filename_for_rename(&rom.name, file_path, detected_ext.as_deref());
+            let target = parent.join(&target_name);
 
             let target_filename = target
                 .file_name()
@@ -898,6 +919,7 @@ fn match_by_serial(
         full_serial: None,
         game_code: None,
         ambiguous_candidates: None,
+        detected_extension: None,
     };
 
     let mut file = match fs::File::open(file_path) {
@@ -909,9 +931,16 @@ fn match_by_serial(
         Err(_) => return no_match,
     };
 
+    let detected_extension = info.extra.get("detected_extension").cloned();
+
     let serial = match info.serial_number {
         Some(s) => s,
-        None => return no_match,
+        None => {
+            return SerialMatchOutcome {
+                detected_extension,
+                ..no_match
+            };
+        }
     };
 
     let game_code = analyzer.extract_dat_game_code(&serial);
@@ -923,18 +952,21 @@ fn match_by_serial(
             full_serial: Some(serial),
             game_code,
             ambiguous_candidates: None,
+            detected_extension,
         },
         SerialLookupResult::Ambiguous { candidates } => SerialMatchOutcome {
             result: None,
             full_serial: Some(serial),
             game_code,
             ambiguous_candidates: Some(candidates),
+            detected_extension,
         },
         SerialLookupResult::NotFound => SerialMatchOutcome {
             result: None,
             full_serial: Some(serial),
             game_code,
             ambiguous_candidates: None,
+            detected_extension,
         },
     }
 }

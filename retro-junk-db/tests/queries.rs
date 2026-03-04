@@ -483,6 +483,27 @@ fn asset_queries_with_collection_filter() {
     assert_eq!(missing[0].1, "Super Mario Bros.");
 }
 
+// ── Works For Platform Tests ──────────────────────────────────────────────
+
+#[test]
+fn works_for_platform_returns_with_counts() {
+    let conn = setup_db();
+    let works = works_for_platform(&conn, "nes").unwrap();
+    assert_eq!(works.len(), 2);
+    // Alphabetical: Super Mario Bros. before The Legend of Zelda
+    assert_eq!(works[0].canonical_name, "Super Mario Bros.");
+    assert_eq!(works[0].release_count, 1);
+    assert_eq!(works[1].canonical_name, "The Legend of Zelda");
+    assert_eq!(works[1].release_count, 1);
+}
+
+#[test]
+fn works_for_platform_empty_for_unknown() {
+    let conn = setup_db();
+    let works = works_for_platform(&conn, "snes").unwrap();
+    assert!(works.is_empty());
+}
+
 // ── Lookup Query Tests ────────────────────────────────────────────────────
 
 #[test]

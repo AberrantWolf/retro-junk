@@ -58,6 +58,8 @@ impl Ps1Analyzer {
         let mut id = RomIdentification::new().with_platform(Platform::Ps1);
         id.file_size = Some(file_size);
         id.extra.insert("format".into(), format.name().into());
+        id.extra
+            .insert("detected_extension".into(), format.extension().into());
 
         if !pvd.volume_identifier.is_empty() {
             id.internal_name = Some(pvd.volume_identifier.clone());
@@ -104,6 +106,7 @@ impl Ps1Analyzer {
         let mut id = RomIdentification::new().with_platform(Platform::Ps1);
         id.file_size = Some(file_size);
         id.extra.insert("format".into(), "CUE Sheet".into());
+        id.extra.insert("detected_extension".into(), "cue".into());
 
         // Count data and audio tracks
         let total_tracks: usize = sheet.files.iter().map(|f| f.tracks.len()).sum();
@@ -187,6 +190,7 @@ impl Ps1Analyzer {
         let mut id = RomIdentification::new().with_platform(Platform::Ps1);
         id.file_size = Some(file_size);
         id.extra.insert("format".into(), "CHD".into());
+        id.extra.insert("detected_extension".into(), "chd".into());
         id.extra
             .insert("chd_version".into(), format!("v{}", chd_info.version));
         id.extra
