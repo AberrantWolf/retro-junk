@@ -11,11 +11,12 @@ use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
 use crate::state::{self, AppMessage, RenameOutcome, RenameResult};
 
-/// A single rename job prepared on the UI thread.
+/// A single rename job. Target is resolved on the background thread.
 struct RenameJob {
     entry_index: usize,
     source: PathBuf,
-    target: PathBuf,
+    /// Raw DAT rom name (e.g., "Game (USA).iso") — extension corrected at rename time.
+    dat_rom_name: String,
 }
 
 /// An M3U rename job that needs background resolution of disc files.
@@ -23,7 +24,8 @@ struct M3uJob {
     entry_index: usize,
     /// All disc files in this multi-disc set
     files: Vec<PathBuf>,
-    /// Already-resolved disc data (from cached dat_match on the primary disc)
+    /// Already-resolved disc data — target_filename holds raw DAT rom_name,
+    /// corrected on the background thread before execution.
     resolved_discs: Vec<DiscMatchData>,
     /// File paths that still need hash-based resolution
     unresolved_files: Vec<PathBuf>,
@@ -33,8 +35,8 @@ struct M3uJob {
 
 /// Rename selected entries to their DAT-matched filenames.
 ///
-/// Determines target filenames on the UI thread (using cached dat_match/hashes/serial),
-/// then spawns a background thread to execute the filesystem renames.
+/// Collects DAT match info on the UI thread, then spawns a background thread
+/// to detect file formats, compute correct extensions, and execute renames.
 pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
     let console = &app.library.consoles[console_idx];
     let folder_name = console.folder_name.clone();
@@ -57,32 +59,13 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 let rom_name = get_target_rom_name(app, &folder_name, entry);
 
                 match rom_name {
-                    Some(target_name) => {
+                    Some(dat_rom_name) => {
                         let source = entry.game_entry.analysis_path().to_path_buf();
-                        let detected_ext = entry
-                            .identification
-                            .as_ref()
-                            .and_then(|id| id.extra.get("detected_extension"))
-                            .map(|s| s.as_str());
-                        let corrected = retro_junk_lib::rename::target_filename_for_rename(
-                            &target_name,
-                            &source,
-                            detected_ext,
-                        );
-                        let target = source.parent().unwrap_or(&source).join(&corrected);
-
-                        if source == target {
-                            results.push(RenameResult {
-                                entry_index: i,
-                                outcome: RenameOutcome::AlreadyCorrect,
-                            });
-                        } else {
-                            jobs.push(RenameJob {
-                                entry_index: i,
-                                source,
-                                target,
-                            });
-                        }
+                        jobs.push(RenameJob {
+                            entry_index: i,
+                            source,
+                            dat_rom_name,
+                        });
                     }
                     None => {
                         results.push(RenameResult {
@@ -108,7 +91,8 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     continue;
                 };
 
-                // Build what we can from per-disc cached dat_match (set by serial or hash matching)
+                // Build what we can from per-disc cached dat_match (set by serial or hash matching).
+                // Store the raw DAT rom_name — extension correction happens on the background thread.
                 let mut resolved = Vec::new();
                 let mut unresolved = Vec::new();
 
@@ -119,22 +103,12 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 if let Some(ref discs) = entry.disc_identifications {
                     for disc in discs {
                         if let Some(ref dm) = disc.dat_match {
-                            let detected_ext = disc
-                                .identification
-                                .extra
-                                .get("detected_extension")
-                                .map(|s| s.as_str());
                             disc_resolved.insert(
                                 disc.path.clone(),
                                 DiscMatchData {
                                     file_path: disc.path.clone(),
                                     game_name: dm.game_name.clone(),
-                                    target_filename:
-                                        retro_junk_lib::rename::target_filename_for_rename(
-                                            &dm.rom_name,
-                                            &disc.path,
-                                            detected_ext,
-                                        ),
+                                    target_filename: dm.rom_name.clone(),
                                 },
                             );
                         }
@@ -220,13 +194,34 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
             });
             file_num += 1;
 
-            match std::fs::rename(&job.source, &job.target) {
+            // Detect actual format extension from file content
+            let detected_ext = sniff_detected_extension(&job.source, &context, platform);
+            let target_name = retro_junk_lib::rename::target_filename_for_rename(
+                &job.dat_rom_name,
+                &job.source,
+                detected_ext.as_deref(),
+            );
+            let target = job
+                .source
+                .parent()
+                .unwrap_or(&job.source)
+                .join(&target_name);
+
+            if job.source == target {
+                results.push(RenameResult {
+                    entry_index: job.entry_index,
+                    outcome: RenameOutcome::AlreadyCorrect,
+                });
+                continue;
+            }
+
+            match std::fs::rename(&job.source, &target) {
                 Ok(()) => {
                     results.push(RenameResult {
                         entry_index: job.entry_index,
                         outcome: RenameOutcome::Renamed {
                             source: job.source.clone(),
-                            target: job.target.clone(),
+                            target,
                         },
                     });
                 }
@@ -254,7 +249,23 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
             });
             file_num += 1;
 
-            let mut all_discs = m3u_job.resolved_discs.clone();
+            // Fix up target_filename extensions for resolved discs
+            let mut all_discs: Vec<DiscMatchData> = m3u_job
+                .resolved_discs
+                .iter()
+                .map(|d| {
+                    let detected_ext = sniff_detected_extension(&d.file_path, &context, platform);
+                    DiscMatchData {
+                        file_path: d.file_path.clone(),
+                        game_name: d.game_name.clone(),
+                        target_filename: retro_junk_lib::rename::target_filename_for_rename(
+                            &d.target_filename,
+                            &d.file_path,
+                            detected_ext.as_deref(),
+                        ),
+                    }
+                })
+                .collect();
 
             // Resolve unresolved disc files via hashing
             if let Some(ref di) = dat_index_arc {
@@ -356,6 +367,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 }
 
 /// Resolve a single disc file by hashing it and matching against the DatIndex.
+/// Runs on the background thread, so it can sniff the format extension directly.
 fn resolve_disc_file(
     file_path: &PathBuf,
     dat_index: &DatIndex,
@@ -373,11 +385,15 @@ fn resolve_disc_file(
     let m = dat_index.match_by_hash(hashes.data_size, &hashes)?;
     let game = &dat_index.games[m.game_index];
     let rom = &game.roms[m.rom_index];
+
+    let detected_ext = sniff_detected_extension(file_path, context, platform);
     Some(DiscMatchData {
         file_path: file_path.clone(),
         game_name: game.name.clone(),
         target_filename: retro_junk_lib::rename::target_filename_for_rename(
-            &rom.name, file_path, None,
+            &rom.name,
+            file_path,
+            detected_ext.as_deref(),
         ),
     })
 }
@@ -505,4 +521,23 @@ fn build_stem_map_from_results(
     }
 
     stem_map
+}
+
+/// Quick-analyze a file to detect its format extension.
+///
+/// Opens the file, runs a quick analysis, and returns the detected extension
+/// (e.g., "rvz", "iso", "chd"). Used on the background thread to determine
+/// the correct file extension regardless of what the file is currently named.
+fn sniff_detected_extension(
+    file_path: &Path,
+    context: &AnalysisContext,
+    platform: retro_junk_lib::Platform,
+) -> Option<String> {
+    let registered = context.get_by_platform(platform)?;
+    let mut file = std::fs::File::open(file_path).ok()?;
+    let opts = retro_junk_lib::AnalysisOptions::new()
+        .quick(true)
+        .file_path(file_path);
+    let info = registered.analyzer.analyze(&mut file, &opts).ok()?;
+    info.extra.get("detected_extension").cloned()
 }

@@ -652,8 +652,6 @@ pub fn plan_renames(
     let mut serial_warnings = Vec::new();
     // Track file → (game_name, target_filename) for M3U post-processing
     let mut file_game_names: HashMap<PathBuf, (String, String)> = HashMap::new();
-    let analysis_options = AnalysisOptions::new().quick(true);
-
     for (i, file_path) in files.iter().enumerate() {
         let file_name = file_path
             .file_name()
@@ -674,7 +672,7 @@ pub fn plan_renames(
             // Hash mode: hash is authoritative, but also check serial for discrepancies
             let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
             last_hash = Some((hash_outcome.crc32, hash_outcome.data_size));
-            let serial_outcome = match_by_serial(file_path, analyzer, &analysis_options, &index);
+            let serial_outcome = match_by_serial(file_path, analyzer, &index);
 
             // Report discrepancy if both matched but to different games
             if let (Some(hr), Some(sr)) = (&hash_outcome.result, &serial_outcome.result)
@@ -690,7 +688,7 @@ pub fn plan_renames(
             (hash_outcome.result, serial_outcome.detected_extension)
         } else {
             // Default mode: try serial first, then always fall back to hash
-            let serial_outcome = match_by_serial(file_path, analyzer, &analysis_options, &index);
+            let serial_outcome = match_by_serial(file_path, analyzer, &index);
             let det_ext = serial_outcome.detected_extension.clone();
 
             if serial_outcome.result.is_some() {
@@ -911,9 +909,9 @@ pub fn plan_renames(
 fn match_by_serial(
     file_path: &Path,
     analyzer: &dyn RomAnalyzer,
-    analysis_options: &AnalysisOptions,
     index: &DatIndex,
 ) -> SerialMatchOutcome {
+    let analysis_options = AnalysisOptions::new().quick(true).file_path(file_path);
     let no_match = SerialMatchOutcome {
         result: None,
         full_serial: None,
@@ -926,7 +924,7 @@ fn match_by_serial(
         Ok(f) => f,
         Err(_) => return no_match,
     };
-    let info = match analyzer.analyze(&mut file, analysis_options) {
+    let info = match analyzer.analyze(&mut file, &analysis_options) {
         Ok(i) => i,
         Err(_) => return no_match,
     };
