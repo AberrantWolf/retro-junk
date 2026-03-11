@@ -8,8 +8,12 @@ repository.workspace = true
 name = "retro-junk-gui"
 path = "src/main.rs"
 
+[lib]
+name = "retro_junk_gui"
+path = "src/lib.rs"
+
 [features]
-default = ["cjk-full"]
+default = []
 cjk-full = []
 cjk-jp = []
 
@@ -40,4 +44,11 @@ tokio.workspace = true
 env_logger.workspace = true
 
 [package.metadata.dist]
-dist = false
+dist = true
+
+[package.metadata.dist.dependencies.apt]
+libgtk-3-dev = '*'
+libxcb-render0-dev = '*'
+libxcb-shape0-dev = '*'
+libxcb-xfixes0-dev = '*'
+libxkbcommon-dev = '*'

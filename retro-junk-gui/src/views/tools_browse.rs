@@ -1,342 +1,292 @@
-use std::collections::HashMap;
-
 use egui_extras::{Column, TableBuilder};
 
 use crate::app::RetroJunkApp;
+use crate::state::{BrowseTable, TableViewState};
 use crate::views::tools::{format_number, truncate_str};
 
 /// Render the database browser tab.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
-    let conn = app.catalog_db.as_ref().unwrap();
-
     // Load platforms if not yet loaded (shared with Dashboard)
     if app.tools_state.platforms.is_empty() {
+        let conn = app.catalog_db.as_ref().unwrap();
         app.tools_state.platforms = retro_junk_db::list_platforms(conn).unwrap_or_default();
     }
 
-    // Load release counts per platform on first open
-    if !app.tools_state.browse.counts_loaded {
-        app.tools_state.browse.counts_loaded = true;
-        if let Ok(counts) = retro_junk_db::platform_release_counts(conn) {
-            app.tools_state.browse.platform_release_counts =
-                counts.into_iter().collect::<HashMap<_, _>>();
-        }
+    // Toolbar: table selector + search + platform filter
+    let query_changed = show_toolbar(ui, app);
+    if query_changed {
+        app.tools_state.browse.table_state.reset_query();
     }
 
-    // Two-pane layout: platform tree (left) + content (right)
-    egui::SidePanel::left("browse_platform_tree")
-        .resizable(true)
-        .default_width(200.0)
-        .width_range(150.0..=300.0)
-        .show_inside(ui, |ui| {
-            ui.add_space(4.0);
-            ui.strong("Platforms");
-            ui.separator();
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                show_platform_tree(ui, app);
-            });
-        });
+    ui.add_space(4.0);
 
-    // Right content area
-    egui::CentralPanel::default().show_inside(ui, |ui| {
-        if app.tools_state.browse.selected_platform.is_none() {
-            ui.add_space(32.0);
-            ui.centered_and_justified(|ui| {
-                ui.weak("Select a platform to browse its catalog.");
-            });
-        } else if app.tools_state.browse.selected_work_idx.is_some() {
-            show_work_releases(ui, app);
-        } else {
-            show_works_list(ui, app);
-        }
-    });
+    // Run query if needed
+    if app.tools_state.browse.table_state.needs_query {
+        run_query(app);
+    }
+
+    // Results count + table
+    let total = app.tools_state.browse.table_state.total_count;
+    ui.label(format!("{} result(s)", format_number(total)));
+    ui.add_space(4.0);
+
+    match app.tools_state.browse.active_table {
+        BrowseTable::Releases => show_releases_table(ui, app),
+        BrowseTable::Media => show_media_table(ui, app),
+        BrowseTable::Works => show_works_table(ui, app),
+        BrowseTable::Companies => show_companies_table(ui, app),
+        BrowseTable::Collection => show_collection_table(ui, app),
+        BrowseTable::ImportLog => show_import_log_table(ui, app),
+    }
+
+    // Pagination footer
+    ui.add_space(4.0);
+    let page_changed = show_pagination(ui, &mut app.tools_state.browse.table_state);
+    if page_changed {
+        app.tools_state.browse.table_state.needs_query = true;
+    }
 }
 
-/// Render the manufacturer-grouped platform tree with release counts.
-fn show_platform_tree(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
-    // Collect platform data needed for rendering (avoids borrow conflicts)
-    let platform_info: Vec<(String, String, String)> = app
-        .tools_state
-        .platforms
-        .iter()
-        .map(|p| (p.id.clone(), p.short_name.clone(), p.manufacturer.clone()))
-        .collect();
+// ── Toolbar ─────────────────────────────────────────────────────────────────
 
-    // Collect unique manufacturers in order
-    let manufacturers: Vec<&str> = {
-        let mut seen = Vec::new();
-        for (_, _, mfr) in &platform_info {
-            if !seen.contains(&mfr.as_str()) {
-                seen.push(mfr.as_str());
-            }
-        }
-        seen
-    };
+/// Returns true if the query parameters changed (table, search, or platform filter).
+fn show_toolbar(ui: &mut egui::Ui, app: &mut RetroJunkApp) -> bool {
+    let mut changed = false;
+    let browse = &mut app.tools_state.browse;
+    let active = browse.active_table;
 
-    let mut clicked_platform: Option<String> = None;
-
-    for mfr in &manufacturers {
-        egui::CollapsingHeader::new(egui::RichText::new(*mfr).strong())
-            .id_salt(format!("browse_mfr_{}", mfr))
-            .default_open(true)
-            .show(ui, |ui| {
-                for (id, short_name, p_mfr) in &platform_info {
-                    if p_mfr.as_str() != *mfr {
-                        continue;
-                    }
-
-                    let count = app
-                        .tools_state
-                        .browse
-                        .platform_release_counts
-                        .get(id)
-                        .copied()
-                        .unwrap_or(0);
-                    let label = if count > 0 {
-                        format!("{} ({})", short_name, format_number(count))
-                    } else {
-                        short_name.clone()
-                    };
-
-                    let is_selected =
-                        app.tools_state.browse.selected_platform.as_deref() == Some(id.as_str());
-
-                    if ui.selectable_label(is_selected, &label).clicked() && !is_selected {
-                        clicked_platform = Some(id.clone());
+    ui.horizontal(|ui| {
+        // Table selector dropdown
+        ui.label("View:");
+        egui::ComboBox::from_id_salt("browse_table_select")
+            .selected_text(active.label())
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for &table in BrowseTable::ALL {
+                    if ui
+                        .selectable_value(&mut browse.active_table, table, table.label())
+                        .changed()
+                    {
+                        changed = true;
+                        // Clear platform filter if new table doesn't support it
+                        if !table.has_platform_filter() {
+                            browse.table_state.platform_filter = None;
+                        }
                     }
                 }
             });
-    }
 
-    if let Some(pid) = clicked_platform {
-        select_platform(app, &pid);
-    }
-}
-
-/// Handle platform selection: load works for the platform.
-fn select_platform(app: &mut RetroJunkApp, platform_id: &str) {
-    let browse = &mut app.tools_state.browse;
-    browse.selected_platform = Some(platform_id.to_string());
-    browse.selected_work_idx = None;
-    browse.releases.clear();
-    browse.selected_release_idx = None;
-    browse.release_media.clear();
-    browse.filter_text.clear();
-
-    let conn = app.catalog_db.as_ref().unwrap();
-    browse.works = retro_junk_db::works_for_platform(conn, platform_id).unwrap_or_default();
-}
-
-/// Render the filterable works list for the selected platform.
-fn show_works_list(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
-    let platform_name = app
-        .tools_state
-        .browse
-        .selected_platform
-        .as_deref()
-        .and_then(|pid| {
-            app.tools_state
-                .platforms
-                .iter()
-                .find(|p| p.id == pid)
-                .map(|p| p.display_name.as_str())
-        })
-        .unwrap_or("Unknown");
-
-    ui.strong(format!("Works on {}", platform_name));
-    ui.add_space(4.0);
-
-    // Filter box
-    ui.horizontal(|ui| {
-        ui.label("Filter:");
-        ui.add(
-            egui::TextEdit::singleline(&mut app.tools_state.browse.filter_text)
-                .desired_width(250.0)
-                .hint_text("Type to filter..."),
-        );
-        if !app.tools_state.browse.filter_text.is_empty() && ui.small_button("Clear").clicked() {
-            app.tools_state.browse.filter_text.clear();
+        // Search box
+        if active.has_search() {
+            ui.add_space(12.0);
+            ui.label("Search:");
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut browse.table_state.search_text)
+                    .desired_width(200.0)
+                    .hint_text("Type to search..."),
+            );
+            if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                changed = true;
+            }
+            if !browse.table_state.search_text.is_empty() {
+                if ui.small_button("Go").clicked() {
+                    changed = true;
+                }
+                if ui.small_button("Clear").clicked() {
+                    browse.table_state.search_text.clear();
+                    changed = true;
+                }
+            }
         }
-    });
 
-    // Build filtered indices
-    let filter_lower = app.tools_state.browse.filter_text.to_lowercase();
-    let filtered_indices: Vec<usize> = app
-        .tools_state
-        .browse
-        .works
-        .iter()
-        .enumerate()
-        .filter(|(_, w)| {
-            filter_lower.is_empty() || w.canonical_name.to_lowercase().contains(&filter_lower)
-        })
-        .map(|(i, _)| i)
-        .collect();
-
-    ui.add_space(4.0);
-    ui.label(format!(
-        "{} work(s){}",
-        filtered_indices.len(),
-        if !filter_lower.is_empty() {
-            format!(" (of {} total)", app.tools_state.browse.works.len())
-        } else {
-            String::new()
-        }
-    ));
-    ui.add_space(4.0);
-
-    if filtered_indices.is_empty() {
-        ui.weak("No works match the filter.");
-        return;
-    }
-
-    // Works table
-    let row_height = 20.0;
-    let available = ui.available_width();
-    let count_col = 80.0;
-    let title_col = (available - count_col - 16.0).max(200.0);
-
-    let mut clicked_work_idx: Option<usize> = None;
-    let max_table_height = ui.available_height() - 20.0;
-
-    TableBuilder::new(ui)
-        .striped(true)
-        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .max_scroll_height(max_table_height)
-        .column(Column::exact(title_col))
-        .column(Column::exact(count_col))
-        .header(row_height, |mut header| {
-            header.col(|ui| {
-                ui.strong("Title");
-            });
-            header.col(|ui| {
-                ui.strong("Releases");
-            });
-        })
-        .body(|body| {
-            body.rows(row_height, filtered_indices.len(), |mut row| {
-                let fi = row.index();
-                let work_idx = filtered_indices[fi];
-                let work = &app.tools_state.browse.works[work_idx];
-
-                row.col(|ui| {
+        // Platform filter
+        if active.has_platform_filter() {
+            ui.add_space(12.0);
+            ui.label("Platform:");
+            let current_label = match &browse.table_state.platform_filter {
+                Some(pid) => app
+                    .tools_state
+                    .platforms
+                    .iter()
+                    .find(|p| p.id == *pid)
+                    .map(|p| p.short_name.as_str())
+                    .unwrap_or("???"),
+                None => "All",
+            };
+            egui::ComboBox::from_id_salt("browse_platform_filter")
+                .selected_text(current_label)
+                .width(150.0)
+                .show_ui(ui, |ui| {
                     if ui
-                        .selectable_label(false, truncate_str(&work.canonical_name, 80))
-                        .clicked()
+                        .selectable_value(&mut browse.table_state.platform_filter, None, "All")
+                        .changed()
                     {
-                        clicked_work_idx = Some(work_idx);
+                        changed = true;
+                    }
+                    for p in &app.tools_state.platforms {
+                        if ui
+                            .selectable_value(
+                                &mut browse.table_state.platform_filter,
+                                Some(p.id.clone()),
+                                &p.short_name,
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                        }
                     }
                 });
-                row.col(|ui| {
-                    ui.label(format_number(work.release_count));
-                });
-            });
-        });
-
-    // Handle click after table (borrow resolved)
-    if let Some(work_idx) = clicked_work_idx {
-        select_work(app, work_idx);
-    }
-}
-
-/// Handle work selection: load releases for this work on the selected platform.
-fn select_work(app: &mut RetroJunkApp, work_idx: usize) {
-    let browse = &mut app.tools_state.browse;
-    browse.selected_work_idx = Some(work_idx);
-    browse.selected_release_idx = None;
-    browse.release_media.clear();
-
-    let work_id = &browse.works[work_idx].id;
-    let platform_id = browse.selected_platform.as_deref().unwrap_or("");
-    let conn = app.catalog_db.as_ref().unwrap();
-
-    // Get all releases for this work, filter to current platform
-    let all_releases = retro_junk_db::releases_for_work(conn, work_id).unwrap_or_default();
-    browse.releases = all_releases
-        .into_iter()
-        .filter(|r| r.platform_id == platform_id)
-        .collect();
-}
-
-/// Render the releases view for a selected work (breadcrumb + table + detail).
-fn show_work_releases(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
-    let work_idx = match app.tools_state.browse.selected_work_idx {
-        Some(idx) => idx,
-        None => return,
-    };
-
-    let work_name = app
-        .tools_state
-        .browse
-        .works
-        .get(work_idx)
-        .map(|w| w.canonical_name.as_str())
-        .unwrap_or("Unknown");
-
-    let platform_name = app
-        .tools_state
-        .browse
-        .selected_platform
-        .as_deref()
-        .and_then(|pid| {
-            app.tools_state
-                .platforms
-                .iter()
-                .find(|p| p.id == pid)
-                .map(|p| p.short_name.as_str())
-        })
-        .unwrap_or("???");
-
-    // Breadcrumb navigation
-    ui.horizontal(|ui| {
-        if ui.small_button(platform_name).clicked() {
-            app.tools_state.browse.selected_work_idx = None;
-            app.tools_state.browse.releases.clear();
-            app.tools_state.browse.selected_release_idx = None;
-            app.tools_state.browse.release_media.clear();
-            return;
         }
-        ui.label(">");
-        ui.strong(work_name);
     });
 
-    ui.separator();
-    ui.add_space(4.0);
+    changed
+}
 
-    ui.label(format!(
-        "{} release(s)",
-        app.tools_state.browse.releases.len()
-    ));
-    ui.add_space(4.0);
+// ── Pagination ──────────────────────────────────────────────────────────────
 
-    if app.tools_state.browse.releases.is_empty() {
-        ui.weak("No releases found for this work on this platform.");
-        return;
+/// Render Prev / [page input] / N Next pagination. Returns true if page changed.
+fn show_pagination(ui: &mut egui::Ui, state: &mut TableViewState) -> bool {
+    let total_pages = state.total_pages().max(1);
+    let mut changed = false;
+
+    ui.horizontal(|ui| {
+        // Prev button
+        if ui
+            .add_enabled(state.page > 0, egui::Button::new("Prev"))
+            .clicked()
+        {
+            state.page = state.page.saturating_sub(1);
+            state.page_input = (state.page + 1).to_string();
+            changed = true;
+        }
+
+        // Editable page number (1-indexed for display)
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut state.page_input)
+                .desired_width(40.0)
+                .horizontal_align(egui::Align::Center),
+        );
+        if resp.lost_focus() {
+            if let Ok(n) = state.page_input.trim().parse::<u32>() {
+                let clamped = n.clamp(1, total_pages);
+                if clamped - 1 != state.page {
+                    state.page = clamped - 1;
+                    changed = true;
+                }
+                state.page_input = clamped.to_string();
+            } else {
+                // Reset to current
+                state.page_input = (state.page + 1).to_string();
+            }
+        }
+
+        ui.label(format!("/ {}", total_pages));
+
+        // Next button
+        if ui
+            .add_enabled(state.page + 1 < total_pages, egui::Button::new("Next"))
+            .clicked()
+        {
+            state.page += 1;
+            state.page_input = (state.page + 1).to_string();
+            changed = true;
+        }
+    });
+
+    changed
+}
+
+// ── Query Execution ─────────────────────────────────────────────────────────
+
+fn run_query(app: &mut RetroJunkApp) {
+    let conn = app.catalog_db.as_ref().unwrap();
+    let browse = &mut app.tools_state.browse;
+    let ts = &mut browse.table_state;
+    ts.needs_query = false;
+
+    let query = if ts.search_text.is_empty() {
+        "%"
+    } else {
+        &ts.search_text
+    };
+    let pid = ts.platform_filter.as_deref();
+    let limit = ts.page_size;
+    let offset = ts.offset();
+
+    match browse.active_table {
+        BrowseTable::Releases => {
+            ts.total_count = retro_junk_db::count_releases_search(conn, query, pid).unwrap_or(0);
+            browse.releases = retro_junk_db::search_releases_paged(conn, query, pid, limit, offset)
+                .unwrap_or_default();
+        }
+        BrowseTable::Media => {
+            ts.total_count = retro_junk_db::count_media_search(conn, query, pid).unwrap_or(0);
+            browse.media_rows =
+                retro_junk_db::search_media(conn, query, pid, limit, offset).unwrap_or_default();
+        }
+        BrowseTable::Works => {
+            ts.total_count = retro_junk_db::count_works_search(conn, query).unwrap_or(0);
+            // search_works doesn't return release_count; use WorkRow and wrap
+            let work_rows =
+                retro_junk_db::search_works(conn, query, limit, offset).unwrap_or_default();
+            browse.works = work_rows
+                .into_iter()
+                .map(|w| retro_junk_db::WorkWithCount {
+                    id: w.id,
+                    canonical_name: w.canonical_name,
+                    release_count: 0,
+                })
+                .collect();
+        }
+        BrowseTable::Companies => {
+            ts.total_count = retro_junk_db::count_companies_search(conn, query).unwrap_or(0);
+            browse.companies =
+                retro_junk_db::search_companies(conn, query, limit, offset).unwrap_or_default();
+        }
+        BrowseTable::Collection => {
+            ts.total_count = retro_junk_db::count_collection(conn, pid).unwrap_or(0);
+            browse.collection =
+                retro_junk_db::list_collection_paged(conn, pid, limit, offset).unwrap_or_default();
+        }
+        BrowseTable::ImportLog => {
+            // Import log doesn't paginate heavily; just load all
+            browse.import_logs =
+                retro_junk_db::list_import_logs(conn, Some(500)).unwrap_or_default();
+            ts.total_count = browse.import_logs.len() as i64;
+        }
     }
+}
 
-    // Releases table
-    let row_height = 20.0;
+// ── Table Renderers ─────────────────────────────────────────────────────────
+
+const ROW_HEIGHT: f32 = 20.0;
+
+fn show_releases_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     let available = ui.available_width();
+    let platform_col = 80.0;
     let region_col = 60.0;
-    let serial_col = 120.0;
-    let date_col = 100.0;
-    let title_col = (available - region_col - serial_col - date_col - 24.0).max(150.0);
+    let serial_col = 110.0;
+    let date_col = 90.0;
+    let title_col =
+        (available - platform_col - region_col - serial_col - date_col - 24.0).max(150.0);
 
-    let mut clicked_release_idx: Option<usize> = None;
-
-    let selected_release = app.tools_state.browse.selected_release_idx;
+    let max_height = ui.available_height() - 40.0;
 
     TableBuilder::new(ui)
         .striped(true)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-        .max_scroll_height(200.0)
+        .max_scroll_height(max_height)
         .column(Column::exact(title_col))
+        .column(Column::exact(platform_col))
         .column(Column::exact(region_col))
         .column(Column::exact(serial_col))
         .column(Column::exact(date_col))
-        .header(row_height, |mut header| {
+        .header(ROW_HEIGHT, |mut header| {
             header.col(|ui| {
                 ui.strong("Title");
+            });
+            header.col(|ui| {
+                ui.strong("Platform");
             });
             header.col(|ui| {
                 ui.strong("Region");
@@ -350,216 +300,278 @@ fn show_work_releases(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         })
         .body(|body| {
             body.rows(
-                row_height,
+                ROW_HEIGHT,
                 app.tools_state.browse.releases.len(),
                 |mut row| {
-                    let idx = row.index();
-                    let release = &app.tools_state.browse.releases[idx];
-                    let selected = selected_release == Some(idx);
-
-                    row.set_selected(selected);
-
+                    let r = &app.tools_state.browse.releases[row.index()];
                     row.col(|ui| {
-                        if ui
-                            .selectable_label(selected, truncate_str(&release.title, 60))
-                            .clicked()
-                        {
-                            clicked_release_idx = Some(idx);
-                        }
+                        ui.label(truncate_str(&r.title, 60));
                     });
                     row.col(|ui| {
-                        ui.label(&release.region);
+                        ui.label(&r.platform_id);
                     });
                     row.col(|ui| {
-                        ui.label(release.game_serial.as_deref().unwrap_or(""));
+                        ui.label(&r.region);
                     });
                     row.col(|ui| {
-                        ui.label(release.release_date.as_deref().unwrap_or(""));
+                        ui.label(r.game_serial.as_deref().unwrap_or(""));
+                    });
+                    row.col(|ui| {
+                        ui.label(r.release_date.as_deref().unwrap_or(""));
                     });
                 },
             );
         });
-
-    // Handle click after table
-    if let Some(idx) = clicked_release_idx {
-        select_release(app, idx);
-    }
-
-    // Show detail for selected release
-    if app.tools_state.browse.selected_release_idx.is_some() {
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(4.0);
-        show_release_detail(ui, app);
-    }
 }
 
-/// Handle release selection: load media for this release.
-fn select_release(app: &mut RetroJunkApp, idx: usize) {
-    let browse = &mut app.tools_state.browse;
-    browse.selected_release_idx = Some(idx);
+fn show_media_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    let available = ui.available_width();
+    let source_col = 80.0;
+    let size_col = 80.0;
+    let sha1_col = 120.0;
+    let name_col = (available - source_col - size_col - sha1_col - 20.0).max(150.0);
 
-    let release_id = &browse.releases[idx].id;
-    let conn = app.catalog_db.as_ref().unwrap();
-    browse.release_media = retro_junk_db::media_for_release(conn, release_id).unwrap_or_default();
-}
+    let max_height = ui.available_height() - 40.0;
 
-/// Render the detail panel for a selected release.
-fn show_release_detail(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
-    let idx = match app.tools_state.browse.selected_release_idx {
-        Some(i) => i,
-        None => return,
-    };
-
-    let release = match app.tools_state.browse.releases.get(idx) {
-        Some(r) => r,
-        None => return,
-    };
-
-    ui.strong("Release Detail");
-    ui.add_space(4.0);
-
-    // Resolve company names lazily
-    let conn = app.catalog_db.as_ref().unwrap();
-    let publisher_name = resolve_company_name(
-        &mut app.tools_state.browse.company_name_cache,
-        conn,
-        release.publisher_id.as_deref(),
-    );
-    let developer_name = resolve_company_name(
-        &mut app.tools_state.browse.company_name_cache,
-        conn,
-        release.developer_id.as_deref(),
-    );
-
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        // Metadata grid
-        egui::Grid::new("release_detail_grid")
-            .num_columns(2)
-            .spacing([16.0, 4.0])
-            .show(ui, |ui| {
-                detail_row(ui, "Title", &release.title);
-                if let Some(ref alt) = release.alt_title {
-                    detail_row(ui, "Alt Title", alt);
-                }
-                detail_row(ui, "Region", &release.region);
-                if !release.revision.is_empty() {
-                    detail_row(ui, "Revision", &release.revision);
-                }
-                if !release.variant.is_empty() {
-                    detail_row(ui, "Variant", &release.variant);
-                }
-                if let Some(ref serial) = release.game_serial {
-                    detail_row(ui, "Serial", serial);
-                }
-                if let Some(ref date) = release.release_date {
-                    detail_row(ui, "Released", date);
-                }
-                if let Some(ref name) = publisher_name {
-                    detail_row(ui, "Publisher", name);
-                }
-                if let Some(ref name) = developer_name {
-                    detail_row(ui, "Developer", name);
-                }
-                if let Some(ref genre) = release.genre {
-                    detail_row(ui, "Genre", genre);
-                }
-                if let Some(ref players) = release.players {
-                    detail_row(ui, "Players", players);
-                }
-                if let Some(rating) = release.rating {
-                    detail_row(ui, "Rating", &format!("{:.1}", rating));
-                }
-                if let Some(ref ss_id) = release.screenscraper_id {
-                    detail_row(ui, "ScreenScraper ID", ss_id);
-                }
+    TableBuilder::new(ui)
+        .striped(true)
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .max_scroll_height(max_height)
+        .column(Column::exact(name_col))
+        .column(Column::exact(source_col))
+        .column(Column::exact(size_col))
+        .column(Column::exact(sha1_col))
+        .header(ROW_HEIGHT, |mut header| {
+            header.col(|ui| {
+                ui.strong("DAT Name");
             });
-
-        // Description
-        if let Some(ref desc) = release.description {
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Description").strong());
-            ui.add_space(2.0);
-            ui.label(desc);
-        }
-
-        // Media table
-        if !app.tools_state.browse.release_media.is_empty() {
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("Media Entries").strong());
-            ui.add_space(4.0);
-
-            let media_row_height = 20.0;
-            let avail = ui.available_width();
-            let name_col = (avail * 0.5).max(150.0);
-            let source_col = 80.0;
-            let size_col = 80.0;
-
-            TableBuilder::new(ui)
-                .striped(true)
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .max_scroll_height(200.0)
-                .column(Column::exact(name_col))
-                .column(Column::exact(source_col))
-                .column(Column::exact(size_col))
-                .header(media_row_height, |mut header| {
-                    header.col(|ui| {
-                        ui.strong("DAT Name");
+            header.col(|ui| {
+                ui.strong("Source");
+            });
+            header.col(|ui| {
+                ui.strong("Size");
+            });
+            header.col(|ui| {
+                ui.strong("SHA1");
+            });
+        })
+        .body(|body| {
+            body.rows(
+                ROW_HEIGHT,
+                app.tools_state.browse.media_rows.len(),
+                |mut row| {
+                    let m = &app.tools_state.browse.media_rows[row.index()];
+                    row.col(|ui| {
+                        ui.label(truncate_str(
+                            m.dat_name.as_deref().unwrap_or("(unnamed)"),
+                            60,
+                        ));
                     });
-                    header.col(|ui| {
-                        ui.strong("Source");
+                    row.col(|ui| {
+                        ui.label(m.dat_source.as_deref().unwrap_or(""));
                     });
-                    header.col(|ui| {
-                        ui.strong("Size");
+                    row.col(|ui| {
+                        let s = m.file_size.map(format_file_size).unwrap_or_default();
+                        ui.label(s);
                     });
-                })
-                .body(|body| {
-                    body.rows(
-                        media_row_height,
-                        app.tools_state.browse.release_media.len(),
-                        |mut row| {
-                            let m = &app.tools_state.browse.release_media[row.index()];
-                            row.col(|ui| {
-                                ui.label(truncate_str(
-                                    m.dat_name.as_deref().unwrap_or("(unnamed)"),
-                                    60,
-                                ));
-                            });
-                            row.col(|ui| {
-                                ui.label(m.dat_source.as_deref().unwrap_or(""));
-                            });
-                            row.col(|ui| {
-                                let size_str =
-                                    m.file_size.map(|s| format_file_size(s)).unwrap_or_default();
-                                ui.label(size_str);
-                            });
-                        },
-                    );
+                    row.col(|ui| {
+                        ui.label(truncate_str(m.sha1.as_deref().unwrap_or(""), 16));
+                    });
+                },
+            );
+        });
+}
+
+fn show_works_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    let available = ui.available_width();
+    let name_col = (available - 16.0).max(200.0);
+
+    let max_height = ui.available_height() - 40.0;
+
+    TableBuilder::new(ui)
+        .striped(true)
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .max_scroll_height(max_height)
+        .column(Column::exact(name_col))
+        .header(ROW_HEIGHT, |mut header| {
+            header.col(|ui| {
+                ui.strong("Canonical Name");
+            });
+        })
+        .body(|body| {
+            body.rows(ROW_HEIGHT, app.tools_state.browse.works.len(), |mut row| {
+                let w = &app.tools_state.browse.works[row.index()];
+                row.col(|ui| {
+                    ui.label(truncate_str(&w.canonical_name, 100));
                 });
-        }
-    });
+            });
+        });
 }
 
-fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.label(egui::RichText::new(format!("{}:", label)).weak());
-    ui.label(value);
-    ui.end_row();
+fn show_companies_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    let available = ui.available_width();
+    let country_col = 80.0;
+    let aliases_col = 70.0;
+    let name_col = (available - country_col - aliases_col - 16.0).max(150.0);
+
+    let max_height = ui.available_height() - 40.0;
+
+    TableBuilder::new(ui)
+        .striped(true)
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .max_scroll_height(max_height)
+        .column(Column::exact(name_col))
+        .column(Column::exact(country_col))
+        .column(Column::exact(aliases_col))
+        .header(ROW_HEIGHT, |mut header| {
+            header.col(|ui| {
+                ui.strong("Name");
+            });
+            header.col(|ui| {
+                ui.strong("Country");
+            });
+            header.col(|ui| {
+                ui.strong("Aliases");
+            });
+        })
+        .body(|body| {
+            body.rows(
+                ROW_HEIGHT,
+                app.tools_state.browse.companies.len(),
+                |mut row| {
+                    let c = &app.tools_state.browse.companies[row.index()];
+                    row.col(|ui| {
+                        ui.label(truncate_str(&c.name, 60));
+                    });
+                    row.col(|ui| {
+                        ui.label(c.country.as_deref().unwrap_or(""));
+                    });
+                    row.col(|ui| {
+                        ui.label(format_number(c.alias_count));
+                    });
+                },
+            );
+        });
 }
 
-/// Resolve a company ID to its display name, caching results.
-fn resolve_company_name(
-    cache: &mut HashMap<String, String>,
-    conn: &retro_junk_db::Connection,
-    company_id: Option<&str>,
-) -> Option<String> {
-    let id = company_id?;
-    if let Some(name) = cache.get(id) {
-        return Some(name.clone());
-    }
-    let name = retro_junk_db::get_company_name(conn, id).ok().flatten()?;
-    cache.insert(id.to_string(), name.clone());
-    Some(name)
+fn show_collection_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    let available = ui.available_width();
+    let platform_col = 80.0;
+    let region_col = 60.0;
+    let verified_col = 80.0;
+    let title_col = (available - platform_col - region_col - verified_col - 20.0).max(150.0);
+
+    let max_height = ui.available_height() - 40.0;
+
+    TableBuilder::new(ui)
+        .striped(true)
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .max_scroll_height(max_height)
+        .column(Column::exact(title_col))
+        .column(Column::exact(platform_col))
+        .column(Column::exact(region_col))
+        .column(Column::exact(verified_col))
+        .header(ROW_HEIGHT, |mut header| {
+            header.col(|ui| {
+                ui.strong("Title");
+            });
+            header.col(|ui| {
+                ui.strong("Platform");
+            });
+            header.col(|ui| {
+                ui.strong("Region");
+            });
+            header.col(|ui| {
+                ui.strong("Verified");
+            });
+        })
+        .body(|body| {
+            body.rows(
+                ROW_HEIGHT,
+                app.tools_state.browse.collection.len(),
+                |mut row| {
+                    let c = &app.tools_state.browse.collection[row.index()];
+                    row.col(|ui| {
+                        ui.label(truncate_str(&c.title, 60));
+                    });
+                    row.col(|ui| {
+                        ui.label(&c.platform_id);
+                    });
+                    row.col(|ui| {
+                        ui.label(&c.region);
+                    });
+                    row.col(|ui| {
+                        let label = if c.verified_at.is_some() { "Yes" } else { "" };
+                        ui.label(label);
+                    });
+                },
+            );
+        });
 }
+
+fn show_import_log_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    let available = ui.available_width();
+    let type_col = 80.0;
+    let date_col = 140.0;
+    let created_col = 70.0;
+    let updated_col = 70.0;
+    let name_col = (available - type_col - date_col - created_col - updated_col - 24.0).max(120.0);
+
+    let max_height = ui.available_height() - 40.0;
+
+    TableBuilder::new(ui)
+        .striped(true)
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .max_scroll_height(max_height)
+        .column(Column::exact(name_col))
+        .column(Column::exact(type_col))
+        .column(Column::exact(date_col))
+        .column(Column::exact(created_col))
+        .column(Column::exact(updated_col))
+        .header(ROW_HEIGHT, |mut header| {
+            header.col(|ui| {
+                ui.strong("Source");
+            });
+            header.col(|ui| {
+                ui.strong("Type");
+            });
+            header.col(|ui| {
+                ui.strong("Imported At");
+            });
+            header.col(|ui| {
+                ui.strong("Created");
+            });
+            header.col(|ui| {
+                ui.strong("Updated");
+            });
+        })
+        .body(|body| {
+            body.rows(
+                ROW_HEIGHT,
+                app.tools_state.browse.import_logs.len(),
+                |mut row| {
+                    let log = &app.tools_state.browse.import_logs[row.index()];
+                    row.col(|ui| {
+                        ui.label(truncate_str(&log.source_name, 40));
+                    });
+                    row.col(|ui| {
+                        ui.label(&log.source_type);
+                    });
+                    row.col(|ui| {
+                        ui.label(&log.imported_at);
+                    });
+                    row.col(|ui| {
+                        ui.label(format_number(log.records_created));
+                    });
+                    row.col(|ui| {
+                        ui.label(format_number(log.records_updated));
+                    });
+                },
+            );
+        });
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn format_file_size(bytes: i64) -> String {
     if bytes < 1024 {

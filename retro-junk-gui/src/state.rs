@@ -1749,19 +1749,122 @@ pub enum ToolsTab {
     Browse,
 }
 
+/// Which table is being viewed in the Browse tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BrowseTable {
+    #[default]
+    Releases,
+    Media,
+    Works,
+    Companies,
+    Collection,
+    ImportLog,
+}
+
+impl BrowseTable {
+    pub const ALL: &[BrowseTable] = &[
+        BrowseTable::Releases,
+        BrowseTable::Media,
+        BrowseTable::Works,
+        BrowseTable::Companies,
+        BrowseTable::Collection,
+        BrowseTable::ImportLog,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Releases => "Releases",
+            Self::Media => "Media",
+            Self::Works => "Works",
+            Self::Companies => "Companies",
+            Self::Collection => "Collection",
+            Self::ImportLog => "Import Log",
+        }
+    }
+
+    /// Whether this table supports the platform filter dropdown.
+    pub fn has_platform_filter(self) -> bool {
+        matches!(self, Self::Releases | Self::Media | Self::Collection)
+    }
+
+    /// Whether this table supports a text search box.
+    pub fn has_search(self) -> bool {
+        !matches!(self, Self::ImportLog)
+    }
+}
+
+/// Shared pagination + search state used by every browse table.
+pub struct TableViewState {
+    pub search_text: String,
+    pub platform_filter: Option<String>,
+    pub page: u32,
+    pub page_size: u32,
+    pub total_count: i64,
+    pub page_input: String,
+    /// Set to true to trigger a data reload.
+    pub needs_query: bool,
+}
+
+impl Default for TableViewState {
+    fn default() -> Self {
+        Self {
+            search_text: String::new(),
+            platform_filter: None,
+            page: 0,
+            page_size: 50,
+            total_count: 0,
+            page_input: "1".to_string(),
+            needs_query: true,
+        }
+    }
+}
+
+impl TableViewState {
+    pub fn total_pages(&self) -> u32 {
+        ((self.total_count as u32).saturating_add(self.page_size - 1)) / self.page_size
+    }
+
+    pub fn offset(&self) -> u32 {
+        self.page * self.page_size
+    }
+
+    /// Reset to page 0 and flag for reload.
+    pub fn reset_query(&mut self) {
+        self.page = 0;
+        self.page_input = "1".to_string();
+        self.needs_query = true;
+    }
+}
+
 /// State for the database browser in the Browse tab.
-#[derive(Default)]
 pub struct BrowseState {
-    pub selected_platform: Option<String>,
-    pub works: Vec<retro_junk_db::WorkWithCount>,
-    pub filter_text: String,
-    pub selected_work_idx: Option<usize>,
+    pub active_table: BrowseTable,
+    pub table_state: TableViewState,
+    /// Cached rows for the current table view.
     pub releases: Vec<retro_junk_catalog::types::Release>,
-    pub selected_release_idx: Option<usize>,
-    pub release_media: Vec<retro_junk_catalog::types::Media>,
-    pub platform_release_counts: HashMap<String, i64>,
-    pub counts_loaded: bool,
+    pub media_rows: Vec<retro_junk_catalog::types::Media>,
+    pub works: Vec<retro_junk_db::WorkWithCount>,
+    pub companies: Vec<retro_junk_db::CompanyRow>,
+    pub collection: Vec<retro_junk_db::CollectionRow>,
+    pub import_logs: Vec<retro_junk_catalog::types::ImportLog>,
+    /// Company name cache (for resolving publisher/developer IDs in release rows).
     pub company_name_cache: HashMap<String, String>,
+}
+
+impl Default for BrowseState {
+    fn default() -> Self {
+        Self {
+            active_table: BrowseTable::default(),
+            table_state: TableViewState::default(),
+            releases: Vec::new(),
+            media_rows: Vec::new(),
+            works: Vec::new(),
+            companies: Vec::new(),
+            collection: Vec::new(),
+            import_logs: Vec::new(),
+            company_name_cache: HashMap::new(),
+        }
+    }
 }
 
 /// Transient UI state for the Tools (catalog) view.

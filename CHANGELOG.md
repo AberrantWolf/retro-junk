@@ -2,9 +2,11 @@
 
 ## 0.1.2
 
+- Added GUI to cargo-dist releases with per-platform builds (macOS, Linux, Windows)
+- Added separate `retro-junk-gui-cjk` download variant with full CJK font support (~16MB larger); base `retro-junk-gui` ships without CJK fonts for a smaller download
 - Added GameCube and Wii disc identification with RVZ/WBFS/CISO/GCZ compressed format support
 - Added PS2 disc identification and hashing
-- Added catalog database browser tab in GUI Tools view with platform/work/release navigation
+- Added initial database viewer in GUI Tools view for browsing platforms, works, and releases
 - Added `works_for_platform` query to catalog database
 - Fixed GUI renames losing file extensions (e.g., PS2 `.iso` becoming `.bin`, GC `.rvz` becoming `.iso`) by centralizing extension handling in a single `target_filename_for_rename()` function used by both CLI and GUI
 - Fixed auto-correction of previously damaged file extensions: renames now detect the actual file format at rename time, so misnamed files (e.g., RVZ named `.iso`) get the correct extension

@@ -15,6 +15,7 @@ members = [
     "retro-junk-catalog",
     "retro-junk-db",
     "retro-junk-import",
+    "retro-junk-gui-cjk",
 ]
 
 [workspace.package]

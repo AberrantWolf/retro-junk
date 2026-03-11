@@ -1115,6 +1115,190 @@ pub fn count_enriched_releases(
     Ok(count as u64)
 }
 
+// ── Count Queries (for pagination) ──────────────────────────────────────────
+
+/// Count releases matching a title search with optional platform filter.
+pub fn count_releases_search(
+    conn: &Connection,
+    query: &str,
+    platform_id: Option<&str>,
+) -> Result<i64, OperationError> {
+    let pattern = format!("%{}%", query);
+    let count: i64 = match platform_id {
+        Some(pid) => conn.query_row(
+            "SELECT COUNT(*) FROM releases WHERE title LIKE ?1 AND platform_id = ?2",
+            params![pattern, pid],
+            |r| r.get(0),
+        )?,
+        None => conn.query_row(
+            "SELECT COUNT(*) FROM releases WHERE title LIKE ?1",
+            params![pattern],
+            |r| r.get(0),
+        )?,
+    };
+    Ok(count)
+}
+
+/// Count media matching a dat_name search with optional platform filter.
+pub fn count_media_search(
+    conn: &Connection,
+    query: &str,
+    platform_id: Option<&str>,
+) -> Result<i64, OperationError> {
+    let pattern = format!("%{}%", query);
+    let count: i64 = match platform_id {
+        Some(pid) => conn.query_row(
+            "SELECT COUNT(*) FROM media m \
+             JOIN releases r ON m.release_id = r.id \
+             WHERE m.dat_name LIKE ?1 AND r.platform_id = ?2",
+            params![pattern, pid],
+            |r| r.get(0),
+        )?,
+        None => conn.query_row(
+            "SELECT COUNT(*) FROM media WHERE dat_name LIKE ?1",
+            params![pattern],
+            |r| r.get(0),
+        )?,
+    };
+    Ok(count)
+}
+
+/// Count works matching a canonical_name search.
+pub fn count_works_search(conn: &Connection, query: &str) -> Result<i64, OperationError> {
+    let pattern = format!("%{}%", query);
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM works WHERE canonical_name LIKE ?1",
+        params![pattern],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+/// Count collection entries with optional platform filter.
+pub fn count_collection(
+    conn: &Connection,
+    platform_id: Option<&str>,
+) -> Result<i64, OperationError> {
+    let count: i64 = match platform_id {
+        Some(pid) => conn.query_row(
+            "SELECT COUNT(*) FROM collection c \
+             JOIN media m ON c.media_id = m.id \
+             JOIN releases r ON m.release_id = r.id \
+             WHERE r.platform_id = ?1",
+            params![pid],
+            |r| r.get(0),
+        )?,
+        None => conn.query_row("SELECT COUNT(*) FROM collection", [], |r| r.get(0))?,
+    };
+    Ok(count)
+}
+
+// ── Company Queries ─────────────────────────────────────────────────────────
+
+/// A company row from a query.
+#[derive(Debug)]
+pub struct CompanyRow {
+    pub id: String,
+    pub name: String,
+    pub country: Option<String>,
+    pub alias_count: i64,
+}
+
+/// Search companies by name (case-insensitive LIKE) with pagination.
+pub fn search_companies(
+    conn: &Connection,
+    query: &str,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<CompanyRow>, OperationError> {
+    let pattern = format!("%{}%", query);
+    let sql = format!(
+        "SELECT c.id, c.name, c.country, \
+                (SELECT COUNT(*) FROM company_aliases ca WHERE ca.company_id = c.id) as alias_count \
+         FROM companies c \
+         WHERE c.name LIKE ?1 \
+         ORDER BY c.name LIMIT {limit} OFFSET {offset}"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![pattern], |row| {
+        Ok(CompanyRow {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            country: row.get(2)?,
+            alias_count: row.get(3)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Count companies matching a name search.
+pub fn count_companies_search(conn: &Connection, query: &str) -> Result<i64, OperationError> {
+    let pattern = format!("%{}%", query);
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM companies WHERE name LIKE ?1",
+        params![pattern],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+/// List collection entries with optional platform filter and pagination.
+pub fn list_collection_paged(
+    conn: &Connection,
+    platform_id: Option<&str>,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<CollectionRow>, OperationError> {
+    let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match platform_id {
+        Some(pid) => (
+            format!(
+                "SELECT c.id, c.media_id, m.release_id, r.platform_id, r.title, r.region,
+                        m.dat_name, m.crc32, m.sha1, c.rom_path, c.verified_at, c.owned
+                 FROM collection c
+                 JOIN media m ON c.media_id = m.id
+                 JOIN releases r ON m.release_id = r.id
+                 WHERE r.platform_id = ?1
+                 ORDER BY r.title
+                 LIMIT {limit} OFFSET {offset}"
+            ),
+            vec![Box::new(pid.to_string())],
+        ),
+        None => (
+            format!(
+                "SELECT c.id, c.media_id, m.release_id, r.platform_id, r.title, r.region,
+                        m.dat_name, m.crc32, m.sha1, c.rom_path, c.verified_at, c.owned
+                 FROM collection c
+                 JOIN media m ON c.media_id = m.id
+                 JOIN releases r ON m.release_id = r.id
+                 ORDER BY r.platform_id, r.title
+                 LIMIT {limit} OFFSET {offset}"
+            ),
+            vec![],
+        ),
+    };
+
+    let mut stmt = conn.prepare(&sql)?;
+    let params: Vec<&dyn rusqlite::types::ToSql> =
+        param_values.iter().map(|v| v.as_ref()).collect();
+    let rows = stmt.query_map(params.as_slice(), |row| {
+        Ok(CollectionRow {
+            collection_id: row.get(0)?,
+            media_id: row.get(1)?,
+            release_id: row.get(2)?,
+            platform_id: row.get(3)?,
+            title: row.get(4)?,
+            region: row.get(5)?,
+            dat_name: row.get(6)?,
+            crc32: row.get(7)?,
+            sha1: row.get(8)?,
+            rom_path: row.get(9)?,
+            verified_at: row.get(10)?,
+            owned: row.get(11)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 // ── Row Mapping Helpers ─────────────────────────────────────────────────────
 
 fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {
