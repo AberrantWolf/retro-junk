@@ -68,13 +68,17 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     crate::views::library::switch_to_root(app, path, &ctx);
                 }
                 RecentAction::ClearCache(path) => {
-                    if let Err(e) = crate::cache::delete_cache(&path) {
+                    if let Some(ref conn) = app.catalog_db
+                        && let Err(e) = crate::cache::delete_cache(conn, &path)
+                    {
                         log::warn!("Failed to clear cache: {}", e);
                     }
                 }
                 RecentAction::Remove(idx) => {
                     let path = app.settings.library.recent_roots[idx].path.clone();
-                    let _ = crate::cache::delete_cache(&path);
+                    if let Some(ref conn) = app.catalog_db {
+                        let _ = crate::cache::delete_cache(conn, &path);
+                    }
                     app.settings.library.recent_roots.remove(idx);
                     let _ = crate::settings::save_settings(&app.settings);
                 }
@@ -136,21 +140,19 @@ fn show_output_directories_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     }
 }
 
-fn show_cache_section(ui: &mut egui::Ui, _app: &mut RetroJunkApp) {
+fn show_cache_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.strong("Cache Management");
     ui.add_space(4.0);
 
-    // Library cache
-    let lib_cache_size = crate::cache::total_cache_size();
+    // Library cache (stored in SQLite)
     ui.horizontal(|ui| {
-        ui.label(format!(
-            "Library cache: {}",
-            format_bytes_approx(lib_cache_size)
-        ));
-        if ui.small_button("Clear All").clicked()
-            && let Err(e) = crate::cache::clear_all_caches()
-        {
-            log::warn!("Failed to clear library caches: {}", e);
+        ui.label("Library cache: stored in catalog DB");
+        if ui.small_button("Clear All").clicked() {
+            if let Some(ref conn) = app.catalog_db
+                && let Err(e) = crate::cache::clear_all_caches(conn)
+            {
+                log::warn!("Failed to clear library caches: {}", e);
+            }
         }
     });
 

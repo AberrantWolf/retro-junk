@@ -6,8 +6,9 @@ use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
 use crate::backend;
-use crate::state::{AssetStatus, EntryStatus};
+use crate::state::{AssetStatus, EntryStatus, FocusedPanel, TagDialog};
 use crate::util;
+use crate::widgets::keyboard_nav;
 use crate::widgets::status_badge;
 
 /// Render the sortable, filterable game table for the selected console.
@@ -60,22 +61,70 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         app.selected_entries = filtered_indices.iter().copied().collect();
     }
 
+    // Keyboard navigation (only when game table has focus)
+    if app.focused_panel == FocusedPanel::GameTable {
+        let current_filtered_pos = filtered_indices
+            .iter()
+            .position(|&i| Some(i) == app.focused_entry);
+
+        let text_height_estimate = egui::TextStyle::Body
+            .resolve(ui.style())
+            .size
+            .max(ui.spacing().interact_size.y);
+        let page_size = (ui.available_height() / text_height_estimate).max(1.0) as usize;
+
+        if let Some(action) = keyboard_nav::process_list_nav(
+            ui,
+            current_filtered_pos,
+            filtered_indices.len(),
+            page_size,
+        ) {
+            let entry_idx = filtered_indices[action.new_index];
+
+            if action.extend_selection {
+                // Shift: extend selection from focused to new position
+                if let Some(focused) = app.focused_entry {
+                    let start = focused.min(entry_idx);
+                    let end = focused.max(entry_idx);
+                    for i in start..=end {
+                        if filtered_indices.contains(&i) {
+                            app.selected_entries.insert(i);
+                        }
+                    }
+                } else {
+                    app.selected_entries.insert(entry_idx);
+                }
+            } else {
+                app.selected_entries.clear();
+                app.selected_entries.insert(entry_idx);
+            }
+
+            app.focused_entry = Some(entry_idx);
+            app.scroll_to_row = Some(action.new_index);
+        }
+    }
+
     // Status summary
     let total = console.entries.len();
     let matched = console
         .entries
         .iter()
-        .filter(|e| e.status == EntryStatus::Matched)
+        .filter(|e| e.effective_status() == EntryStatus::Matched)
         .count();
     let ambiguous = console
         .entries
         .iter()
-        .filter(|e| e.status == EntryStatus::Ambiguous)
+        .filter(|e| e.effective_status() == EntryStatus::Ambiguous)
         .count();
     let unrecognized = console
         .entries
         .iter()
-        .filter(|e| e.status == EntryStatus::Unrecognized)
+        .filter(|e| e.effective_status() == EntryStatus::Unrecognized)
+        .count();
+    let tagged = console
+        .entries
+        .iter()
+        .filter(|e| matches!(e.effective_status(), EntryStatus::Tagged(_)))
         .count();
     let showing = filtered_indices.len();
 
@@ -86,7 +135,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             let entry = &console.entries[i];
             RowData {
                 entry_idx: i,
-                status: entry.status,
+                status: entry.effective_status(),
                 has_broken_refs: entry
                     .broken_references
                     .as_ref()
@@ -126,10 +175,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         .collect();
 
     ui.horizontal(|ui| {
-        ui.label(format!(
-            "{} entries | {} matched | {} ambiguous | {} unrecognized | showing {}",
-            total, matched, ambiguous, unrecognized, showing
-        ));
+        let mut summary = format!(
+            "{} entries | {} matched | {} ambiguous | {} unrecognized",
+            total, matched, ambiguous, unrecognized
+        );
+        if tagged > 0 {
+            summary.push_str(&format!(" | {} tagged", tagged));
+        }
+        summary.push_str(&format!(" | showing {}", showing));
+        ui.label(summary);
     });
 
     ui.add_space(2.0);
@@ -248,6 +302,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             paint_cell_text(ui, data.dat_match.as_deref().unwrap_or(""));
                         });
 
+                        // Scroll-to-row: when keyboard navigation targets this row
+                        if app.scroll_to_row == Some(row_idx) {
+                            r1.1.scroll_to_me(Some(egui::Align::Center));
+                        }
+
                         // Union all column responses for click and context menu
                         let row_resp = r1.1 | r2.1 | r3.1 | r4.1 | r5.1 | r6.1 | r7.1;
 
@@ -264,6 +323,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         if row_resp.clicked() {
                             let modifiers = ctx.input(|i| i.modifiers);
                             handle_row_click(app, data.entry_idx, modifiers);
+                            app.focused_panel = FocusedPanel::GameTable;
                         }
 
                         // Context menu on unioned response
@@ -273,6 +333,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     });
                 });
         });
+
+    // Clear scroll-to-row after rendering
+    app.scroll_to_row = None;
 }
 
 /// Render the context menu for a game table row.
@@ -365,6 +428,12 @@ fn show_row_context_menu(
 
     // Set Region submenu
     show_set_region_submenu(ui, app, console_idx);
+
+    // Tag menu items (only for single selection)
+    if app.selected_entries.len() == 1 {
+        let entry_idx = *app.selected_entries.iter().next().unwrap();
+        show_tag_menu_items(ui, app, console_idx, entry_idx);
+    }
 
     ui.separator();
 
@@ -469,12 +538,13 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
 
     ui.menu_button("Set Region", |ui| {
         if ui.button("Auto-detect").clicked() {
-            for &i in &app.selected_entries.clone() {
+            let indices: Vec<usize> = app.selected_entries.iter().copied().collect();
+            for &i in &indices {
                 if let Some(entry) = app.library.consoles[console_idx].entries.get_mut(i) {
                     entry.region_override = None;
                 }
             }
-            app.save_library_cache();
+            app.save_entry_cache(console_idx, &indices);
             ui.close_menu();
         }
 
@@ -483,12 +553,13 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
             ui.label("Recommended");
             for &region in Region::ALL {
                 if recommended.contains(&region) && ui.button(region.name()).clicked() {
-                    for &i in &app.selected_entries.clone() {
+                    let indices: Vec<usize> = app.selected_entries.iter().copied().collect();
+                    for &i in &indices {
                         if let Some(entry) = app.library.consoles[console_idx].entries.get_mut(i) {
                             entry.region_override = Some(region);
                         }
                     }
-                    app.save_library_cache();
+                    app.save_entry_cache(console_idx, &indices);
                     ui.close_menu();
                 }
             }
@@ -498,12 +569,13 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
         ui.label("Other Regions");
         for &region in Region::ALL {
             if !recommended.contains(&region) && ui.button(region.name()).clicked() {
-                for &i in &app.selected_entries.clone() {
+                let indices: Vec<usize> = app.selected_entries.iter().copied().collect();
+                for &i in &indices {
                     if let Some(entry) = app.library.consoles[console_idx].entries.get_mut(i) {
                         entry.region_override = Some(region);
                     }
                 }
-                app.save_library_cache();
+                app.save_entry_cache(console_idx, &indices);
                 ui.close_menu();
             }
         }
@@ -585,6 +657,60 @@ fn handle_row_click(app: &mut RetroJunkApp, entry_idx: usize, modifiers: egui::M
 ///
 /// Text is clipped to the cell's available rect so it doesn't bleed into
 /// adjacent columns.
+/// Render tag-related context menu items for a single entry.
+fn show_tag_menu_items(
+    ui: &mut egui::Ui,
+    app: &mut RetroJunkApp,
+    console_idx: usize,
+    entry_idx: usize,
+) {
+    let entry = match app
+        .library
+        .consoles
+        .get(console_idx)
+        .and_then(|c| c.entries.get(entry_idx))
+    {
+        Some(e) => e,
+        None => return,
+    };
+    let effective = entry.effective_status();
+
+    match effective {
+        EntryStatus::Unrecognized => {
+            ui.separator();
+            if ui.button("Mark as Homebrew\u{2026}").clicked() {
+                // Pre-fill with cleaned filename
+                let name = entry.game_entry.display_name().to_string();
+                app.tag_dialog = TagDialog::Homebrew {
+                    name,
+                    console_idx,
+                    entry_idx,
+                };
+                ui.close_menu();
+            }
+            if ui.button("Mark as Modded Version of\u{2026}").clicked() {
+                app.tag_dialog = TagDialog::ModSearch {
+                    query: String::new(),
+                    results: Vec::new(),
+                    selected: None,
+                    console_idx,
+                    entry_idx,
+                };
+                ui.close_menu();
+            }
+        }
+        EntryStatus::Tagged(_) => {
+            ui.separator();
+            if ui.button("Remove Tag").clicked() {
+                app.library.consoles[console_idx].entries[entry_idx].tag = None;
+                app.save_entry_cache(console_idx, &[entry_idx]);
+                ui.close_menu();
+            }
+        }
+        _ => {}
+    }
+}
+
 fn paint_cell_text(ui: &mut egui::Ui, text: &str) {
     if text.is_empty() {
         return;

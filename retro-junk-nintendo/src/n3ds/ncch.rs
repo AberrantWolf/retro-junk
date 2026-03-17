@@ -66,16 +66,17 @@ pub(crate) fn parse_ncch_header(
         )));
     }
 
-    let content_size_mu = read_u32_le(&buf, 0x104);
-    let partition_id = read_u64_le(&buf, 0x108);
+    let trunc = || AnalysisError::corrupted_header("NCCH header data truncated");
+    let content_size_mu = read_u32_le(&buf, 0x104).ok_or_else(trunc)?;
+    let partition_id = read_u64_le(&buf, 0x108).ok_or_else(trunc)?;
     let maker_code = read_ascii(&buf[0x110..0x112]);
-    let ncch_version = super::common::read_u16_le(&buf, 0x112);
-    let program_id = read_u64_le(&buf, 0x118);
+    let ncch_version = super::common::read_u16_le(&buf, 0x112).ok_or_else(trunc)?;
+    let program_id = read_u64_le(&buf, 0x118).ok_or_else(trunc)?;
     let product_code = read_ascii(&buf[0x150..0x160]);
 
     let mut exheader_hash = [0u8; 32];
     exheader_hash.copy_from_slice(&buf[0x160..0x180]);
-    let exheader_size = read_u32_le(&buf, 0x180);
+    let exheader_size = read_u32_le(&buf, 0x180).ok_or_else(trunc)?;
 
     let flags = &buf[0x188..0x190];
     let crypto_method = flags[3];
@@ -83,16 +84,16 @@ pub(crate) fn parse_ncch_header(
     let content_type_flags = flags[5];
     let no_crypto = flags[7] & 0x04 != 0;
 
-    let plain_region_offset_mu = read_u32_le(&buf, 0x190);
-    let plain_region_size_mu = read_u32_le(&buf, 0x194);
-    let logo_region_offset_mu = read_u32_le(&buf, 0x198);
-    let logo_region_size_mu = read_u32_le(&buf, 0x19C);
-    let exefs_offset_mu = read_u32_le(&buf, 0x1A0);
-    let exefs_size_mu = read_u32_le(&buf, 0x1A4);
-    let exefs_hash_region_size_mu = read_u32_le(&buf, 0x1A8);
-    let romfs_offset_mu = read_u32_le(&buf, 0x1B0);
-    let romfs_size_mu = read_u32_le(&buf, 0x1B4);
-    let romfs_hash_region_size_mu = read_u32_le(&buf, 0x1B8);
+    let plain_region_offset_mu = read_u32_le(&buf, 0x190).ok_or_else(trunc)?;
+    let plain_region_size_mu = read_u32_le(&buf, 0x194).ok_or_else(trunc)?;
+    let logo_region_offset_mu = read_u32_le(&buf, 0x198).ok_or_else(trunc)?;
+    let logo_region_size_mu = read_u32_le(&buf, 0x19C).ok_or_else(trunc)?;
+    let exefs_offset_mu = read_u32_le(&buf, 0x1A0).ok_or_else(trunc)?;
+    let exefs_size_mu = read_u32_le(&buf, 0x1A4).ok_or_else(trunc)?;
+    let exefs_hash_region_size_mu = read_u32_le(&buf, 0x1A8).ok_or_else(trunc)?;
+    let romfs_offset_mu = read_u32_le(&buf, 0x1B0).ok_or_else(trunc)?;
+    let romfs_size_mu = read_u32_le(&buf, 0x1B4).ok_or_else(trunc)?;
+    let romfs_hash_region_size_mu = read_u32_le(&buf, 0x1B8).ok_or_else(trunc)?;
 
     let mut logo_hash = [0u8; 32];
     logo_hash.copy_from_slice(&buf[0x130..0x150]);

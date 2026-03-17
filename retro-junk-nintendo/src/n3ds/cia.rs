@@ -31,7 +31,8 @@ pub(crate) fn parse_cia_header(reader: &mut dyn ReadSeek) -> Result<CiaHeader, A
     let mut buf = [0u8; 0x20];
     reader.read_exact(&mut buf)?;
 
-    let header_size = read_u32_le(&buf, 0x00);
+    let trunc = || AnalysisError::corrupted_header("CIA header data truncated");
+    let header_size = read_u32_le(&buf, 0x00).ok_or_else(trunc)?;
     if header_size != CIA_HEADER_SIZE {
         return Err(AnalysisError::invalid_format(format!(
             "Unexpected CIA header size: 0x{:X}",
@@ -41,11 +42,11 @@ pub(crate) fn parse_cia_header(reader: &mut dyn ReadSeek) -> Result<CiaHeader, A
 
     Ok(CiaHeader {
         header_size,
-        cert_chain_size: read_u32_le(&buf, 0x08),
-        ticket_size: read_u32_le(&buf, 0x0C),
-        tmd_size: read_u32_le(&buf, 0x10),
-        meta_size: read_u32_le(&buf, 0x14),
-        content_size: read_u64_le(&buf, 0x18),
+        cert_chain_size: read_u32_le(&buf, 0x08).ok_or_else(trunc)?,
+        ticket_size: read_u32_le(&buf, 0x0C).ok_or_else(trunc)?,
+        tmd_size: read_u32_le(&buf, 0x10).ok_or_else(trunc)?,
+        meta_size: read_u32_le(&buf, 0x14).ok_or_else(trunc)?,
+        content_size: read_u64_le(&buf, 0x18).ok_or_else(trunc)?,
     })
 }
 
@@ -84,7 +85,8 @@ pub(crate) fn parse_cia_tmd(
     reader.seek(SeekFrom::Start(tmd_offset))?;
     let mut sig_type_buf = [0u8; 4];
     reader.read_exact(&mut sig_type_buf)?;
-    let sig_type = read_u32_be(&sig_type_buf, 0);
+    let sig_type = read_u32_be(&sig_type_buf, 0)
+        .ok_or_else(|| AnalysisError::corrupted_header("TMD signature type truncated"))?;
 
     let sig_block_size = signature_block_size(sig_type).ok_or_else(|| {
         AnalysisError::invalid_format(format!("Unknown TMD signature type: 0x{:08X}", sig_type))
@@ -99,9 +101,10 @@ pub(crate) fn parse_cia_tmd(
         .read_exact(&mut tmd_buf)
         .map_err(|_| AnalysisError::corrupted_header("TMD header truncated"))?;
 
-    let title_id = read_u64_be(&tmd_buf, 0x4C);
-    let title_version = read_u16_be(&tmd_buf, 0x9C);
-    let content_count = read_u16_be(&tmd_buf, 0x9E);
+    let trunc = || AnalysisError::corrupted_header("TMD header data truncated");
+    let title_id = read_u64_be(&tmd_buf, 0x4C).ok_or_else(trunc)?;
+    let title_version = read_u16_be(&tmd_buf, 0x9C).ok_or_else(trunc)?;
+    let content_count = read_u16_be(&tmd_buf, 0x9E).ok_or_else(trunc)?;
 
     Ok(CiaTmdInfo {
         title_id,
@@ -122,7 +125,8 @@ fn parse_cia_ticket_title_id(
     reader.seek(SeekFrom::Start(ticket_offset))?;
     let mut sig_type_buf = [0u8; 4];
     reader.read_exact(&mut sig_type_buf)?;
-    let sig_type = read_u32_be(&sig_type_buf, 0);
+    let sig_type = read_u32_be(&sig_type_buf, 0)
+        .ok_or_else(|| AnalysisError::corrupted_header("Ticket signature type truncated"))?;
 
     let sig_block_size = signature_block_size(sig_type).ok_or_else(|| {
         AnalysisError::invalid_format(format!("Unknown Ticket signature type: 0x{:08X}", sig_type))
@@ -132,7 +136,8 @@ fn parse_cia_ticket_title_id(
     reader.seek(SeekFrom::Start(ticket_data_offset + 0x9C))?;
     let mut tid_buf = [0u8; 8];
     reader.read_exact(&mut tid_buf)?;
-    Ok(read_u64_be(&tid_buf, 0))
+    read_u64_be(&tid_buf, 0)
+        .ok_or_else(|| AnalysisError::corrupted_header("Ticket title ID truncated"))
 }
 
 // ---------------------------------------------------------------------------

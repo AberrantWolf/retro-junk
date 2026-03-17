@@ -257,6 +257,11 @@ fn parse_ines_header(header: &[u8; 16]) -> Result<INesHeader, AnalysisError> {
         let prg_rom_size = if prg_rom_msb == 0x0F {
             // Exponent-multiplier notation
             let exponent = (header[4] >> 2) & 0x3F;
+            if exponent >= 32 {
+                return Err(AnalysisError::corrupted_header(
+                    "NES 2.0 PRG ROM exponent out of range",
+                ));
+            }
             let multiplier = (header[4] & 0x03) * 2 + 1;
             (1u32 << exponent) * multiplier as u32
         } else {
@@ -266,6 +271,11 @@ fn parse_ines_header(header: &[u8; 16]) -> Result<INesHeader, AnalysisError> {
 
         let chr_rom_size = if chr_rom_msb == 0x0F {
             let exponent = (header[5] >> 2) & 0x3F;
+            if exponent >= 32 {
+                return Err(AnalysisError::corrupted_header(
+                    "NES 2.0 CHR ROM exponent out of range",
+                ));
+            }
             let multiplier = (header[5] & 0x03) * 2 + 1;
             (1u32 << exponent) * multiplier as u32
         } else {

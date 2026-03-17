@@ -447,8 +447,15 @@ async fn process_single_game(
             let mut media_map = existing;
 
             if needs_miximage {
-                let layout = options.miximage_layout.as_ref().unwrap();
-                try_generate_miximage(&mut media_map, system_media_dir, rom_stem, layout, false);
+                if let Some(layout) = options.miximage_layout.as_ref() {
+                    try_generate_miximage(
+                        &mut media_map,
+                        system_media_dir,
+                        rom_stem,
+                        layout,
+                        false,
+                    );
+                }
             } else if has_miximage {
                 media_map.insert(
                     retro_junk_frontend::AssetType::Miximage,

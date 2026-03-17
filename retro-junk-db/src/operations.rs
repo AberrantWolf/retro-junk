@@ -373,8 +373,8 @@ pub fn unenrich_releases(
 pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationError> {
     conn.execute(
         "INSERT INTO media (id, release_id, media_serial, disc_number, disc_label,
-             revision, status, dat_name, dat_source, file_size, crc32, sha1, md5)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             revision, status, tag, dat_name, dat_source, file_size, crc32, sha1, md5)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT(id) DO UPDATE SET
              release_id = excluded.release_id,
              media_serial = excluded.media_serial,
@@ -382,6 +382,7 @@ pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationErr
              disc_label = excluded.disc_label,
              revision = excluded.revision,
              status = excluded.status,
+             tag = excluded.tag,
              dat_name = excluded.dat_name,
              dat_source = excluded.dat_source,
              file_size = excluded.file_size,
@@ -397,6 +398,7 @@ pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationErr
             media.disc_label,
             media.revision,
             media.status.as_str(),
+            media.tag.map(|t| t.as_str()),
             media.dat_name,
             media.dat_source,
             media.file_size,
@@ -415,7 +417,7 @@ pub fn find_media_by_dat_name(
 ) -> Result<Option<Media>, OperationError> {
     let mut stmt = conn.prepare(
         "SELECT id, release_id, media_serial, disc_number, disc_label,
-                revision, status, dat_name, dat_source, file_size,
+                revision, status, tag, dat_name, dat_source, file_size,
                 crc32, sha1, md5, created_at, updated_at
          FROM media WHERE dat_name = ?1 LIMIT 1",
     )?;
@@ -428,6 +430,7 @@ fn row_to_media(
 ) -> Result<Option<Media>, OperationError> {
     let result = stmt.query_row(params, |row| {
         let status_str: String = row.get(6)?;
+        let tag_str: Option<String> = row.get(7)?;
         Ok(Media {
             id: row.get(0)?,
             release_id: row.get(1)?,
@@ -436,14 +439,15 @@ fn row_to_media(
             disc_label: row.get(4)?,
             revision: row.get(5)?,
             status: MediaStatus::from_str_loose(&status_str),
-            dat_name: row.get(7)?,
-            dat_source: row.get(8)?,
-            file_size: row.get(9)?,
-            crc32: row.get(10)?,
-            sha1: row.get(11)?,
-            md5: row.get(12)?,
-            created_at: row.get(13)?,
-            updated_at: row.get(14)?,
+            tag: tag_str.as_deref().and_then(CatalogTag::from_str_loose),
+            dat_name: row.get(8)?,
+            dat_source: row.get(9)?,
+            file_size: row.get(10)?,
+            crc32: row.get(11)?,
+            sha1: row.get(12)?,
+            md5: row.get(13)?,
+            created_at: row.get(14)?,
+            updated_at: row.get(15)?,
         })
     });
     match result {
@@ -451,6 +455,178 @@ fn row_to_media(
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+// ── Tag Operations ─────────────────────────────────────────────────────────
+
+/// Set or clear a tag on a Work.
+pub fn set_work_tag(
+    conn: &Connection,
+    work_id: &str,
+    tag: Option<CatalogTag>,
+) -> Result<(), OperationError> {
+    let changed = conn.execute(
+        "UPDATE works SET tag = ?2, updated_at = datetime('now') WHERE id = ?1",
+        params![work_id, tag.map(|t| t.as_str())],
+    )?;
+    if changed == 0 {
+        return Err(OperationError::NotFound {
+            entity_type: "work".to_string(),
+            id: work_id.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Set or clear a tag on a Media entry.
+pub fn set_media_tag(
+    conn: &Connection,
+    media_id: &str,
+    tag: Option<CatalogTag>,
+) -> Result<(), OperationError> {
+    let changed = conn.execute(
+        "UPDATE media SET tag = ?2, updated_at = datetime('now') WHERE id = ?1",
+        params![media_id, tag.map(|t| t.as_str())],
+    )?;
+    if changed == 0 {
+        return Err(OperationError::NotFound {
+            entity_type: "media".to_string(),
+            id: media_id.to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Create a homebrew Work with a Release and empty Media entry in a transaction.
+///
+/// Returns the created Work ID.
+pub fn create_homebrew_work(
+    conn: &Connection,
+    name: &str,
+    platform_id: &str,
+    region: &str,
+) -> Result<String, OperationError> {
+    let slug = slugify(name);
+    let work_id = format!("{platform_id}:homebrew:{slug}");
+    let release_id = format!("{work_id}:{platform_id}:{region}");
+    let media_id = format!("{release_id}:media");
+
+    conn.execute(
+        "INSERT INTO works (id, canonical_name, tag) VALUES (?1, ?2, 'homebrew')",
+        params![work_id, name],
+    )?;
+    conn.execute(
+        "INSERT INTO releases (id, work_id, platform_id, region, title)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![release_id, work_id, platform_id, region, name],
+    )?;
+    conn.execute(
+        "INSERT INTO media (id, release_id, tag) VALUES (?1, ?2, 'homebrew')",
+        params![media_id, release_id],
+    )?;
+
+    Ok(work_id)
+}
+
+/// Hash parameters for creating a media entry.
+pub struct MediaHashes {
+    pub crc32: String,
+    pub sha1: Option<String>,
+    pub md5: Option<String>,
+    pub file_size: i64,
+}
+
+/// Create a modded Media entry linked to an existing Work.
+///
+/// Finds or creates a Release under the given Work, then creates
+/// a Media entry tagged as modded. Returns the created Media ID.
+pub fn create_modded_media(
+    conn: &Connection,
+    work_id: &str,
+    platform_id: &str,
+    region: &str,
+    hashes: Option<&MediaHashes>,
+) -> Result<String, OperationError> {
+    // Find an existing release or create one
+    let release_id = match find_release(conn, work_id, platform_id, region, "", "")? {
+        Some(r) => r.id,
+        None => {
+            let rid = format!("{work_id}:{platform_id}:{region}:modded");
+            // Get work name for the release title
+            let work_name: String = conn
+                .query_row(
+                    "SELECT canonical_name FROM works WHERE id = ?1",
+                    params![work_id],
+                    |row| row.get(0),
+                )
+                .map_err(|_| OperationError::NotFound {
+                    entity_type: "work".to_string(),
+                    id: work_id.to_string(),
+                })?;
+            conn.execute(
+                "INSERT INTO releases (id, work_id, platform_id, region, title)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![rid, work_id, platform_id, region, work_name],
+            )?;
+            rid
+        }
+    };
+
+    // Use hash or system time for uniqueness
+    let media_suffix = match hashes {
+        Some(h) => h.crc32.clone(),
+        None => std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string(),
+    };
+    let media_id = format!("{release_id}:modded:{media_suffix}");
+    let (crc32, sha1, md5, file_size) = match hashes {
+        Some(h) => (
+            Some(h.crc32.clone()),
+            h.sha1.clone(),
+            h.md5.clone(),
+            Some(h.file_size as i64),
+        ),
+        None => (None, None, None, None),
+    };
+
+    conn.execute(
+        "INSERT INTO media (id, release_id, tag, crc32, sha1, md5, file_size)
+         VALUES (?1, ?2, 'modded', ?3, ?4, ?5, ?6)",
+        params![media_id, release_id, crc32, sha1, md5, file_size],
+    )?;
+
+    Ok(media_id)
+}
+
+/// Remove a modded Media entry and clean up its Release if no other media reference it.
+pub fn detach_modded_media(conn: &Connection, media_id: &str) -> Result<(), OperationError> {
+    let release_id: String = conn
+        .query_row(
+            "SELECT release_id FROM media WHERE id = ?1",
+            params![media_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| OperationError::NotFound {
+            entity_type: "media".to_string(),
+            id: media_id.to_string(),
+        })?;
+
+    conn.execute("DELETE FROM media WHERE id = ?1", params![media_id])?;
+
+    // Clean up release if no other media reference it
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM media WHERE release_id = ?1",
+        params![release_id],
+        |row| row.get(0),
+    )?;
+    if count == 0 {
+        conn.execute("DELETE FROM releases WHERE id = ?1", params![release_id])?;
+    }
+
+    Ok(())
 }
 
 // ── Media Asset Operations ──────────────────────────────────────────────────
@@ -783,6 +959,25 @@ pub fn delete_orphan_works(conn: &Connection) -> Result<u64, OperationError> {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Convert a string to a URL-friendly slug (lowercase, hyphens, no trailing hyphen).
+fn slugify(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut last_was_separator = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            result.push(c.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator && !result.is_empty() {
+            result.push('-');
+            last_was_separator = true;
+        }
+    }
+    if result.ends_with('-') {
+        result.pop();
+    }
+    result
+}
 
 fn media_type_str(mt: &MediaType) -> &'static str {
     match mt {

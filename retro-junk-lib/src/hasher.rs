@@ -106,6 +106,7 @@ fn compute_hashes_internal(
         sha1: sha.map(|s| format!("{:x}", s.finalize())),
         md5: md5_ctx.map(|m| format!("{:x}", m.compute())),
         data_size,
+        warnings: vec![],
     })
 }
 
@@ -197,6 +198,7 @@ pub fn compute_crc32_sha1_with_padding(
         sha1: Some(format!("{:x}", sha.finalize())),
         md5: None,
         data_size: total_data_size,
+        warnings: vec![],
     })
 }
 

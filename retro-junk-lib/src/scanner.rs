@@ -104,7 +104,7 @@ pub fn scan_game_entries(
             && let Some(name) = path.file_name().and_then(|n| n.to_str())
             && name.ends_with(".m3u")
         {
-            let disc_files = collect_matching_files(&path, extensions);
+            let disc_files = collect_m3u_disc_files(&path, extensions);
             if !disc_files.is_empty() {
                 game_entries.push(GameEntry::MultiDisc {
                     name: name.to_string(),
@@ -148,8 +148,57 @@ fn has_matching_extension(path: &Path, extensions: &HashSet<String>) -> bool {
         .unwrap_or(false)
 }
 
+/// Collect disc files for a `.m3u` directory.
+///
+/// Reads the `.m3u` playlist file inside the directory and returns only the
+/// files it references. This avoids counting raw data files (e.g. `.img`)
+/// that are already pointed to by a `.cue` entry in the playlist.
+///
+/// Falls back to extension-based scanning only if no `.m3u` playlist exists.
+fn collect_m3u_disc_files(dir: &Path, extensions: &HashSet<String>) -> Vec<PathBuf> {
+    // Find the .m3u playlist file inside the directory
+    if let Some(playlist) = find_m3u_playlist(dir) {
+        if let Ok(contents) = std::fs::read_to_string(&playlist) {
+            let files: Vec<PathBuf> = contents
+                .lines()
+                .map(|line| line.trim())
+                .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(|line| dir.join(line))
+                .filter(|p| p.is_file())
+                .collect();
+            if !files.is_empty() {
+                return files;
+            }
+        }
+    }
+
+    // Fallback: no playlist found — collect all matching files with CUE dedup
+    let all_files = collect_all_matching_files(dir, extensions);
+    let cue_stems = collect_cue_stems(&all_files);
+    if cue_stems.is_empty() {
+        all_files
+    } else {
+        all_files
+            .into_iter()
+            .filter(|p| !is_data_file_covered_by_cue(p, &cue_stems))
+            .collect()
+    }
+}
+
+/// Find the `.m3u` playlist file inside a directory (if any).
+fn find_m3u_playlist(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries.flatten().map(|e| e.path()).find(|p| {
+        p.is_file()
+            && p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("m3u"))
+                .unwrap_or(false)
+    })
+}
+
 /// Collect all files with matching extensions from a directory (sorted).
-fn collect_matching_files(dir: &Path, extensions: &HashSet<String>) -> Vec<PathBuf> {
+fn collect_all_matching_files(dir: &Path, extensions: &HashSet<String>) -> Vec<PathBuf> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return Vec::new(),

@@ -37,6 +37,30 @@ fn test_region_european_variants() {
 }
 
 #[test]
+fn test_read_helpers_bounds_checking() {
+    // Valid reads
+    let buf = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+    assert_eq!(read_u16_le(&buf, 0), Some(0x0201));
+    assert_eq!(read_u32_le(&buf, 0), Some(0x04030201));
+    assert_eq!(read_u64_le(&buf, 0), Some(0x0807060504030201));
+    assert_eq!(read_u16_be(&buf, 0), Some(0x0102));
+    assert_eq!(read_u32_be(&buf, 0), Some(0x01020304));
+    assert_eq!(read_u64_be(&buf, 0), Some(0x0102030405060708));
+
+    // Out-of-bounds reads return None
+    assert_eq!(read_u16_le(&buf, 7), None);
+    assert_eq!(read_u32_le(&buf, 5), None);
+    assert_eq!(read_u64_le(&buf, 1), None);
+    assert_eq!(read_u16_be(&buf, 8), None);
+    assert_eq!(read_u32_be(&buf, 6), None);
+    assert_eq!(read_u64_be(&buf, 2), None);
+
+    // Empty buffer
+    assert_eq!(read_u16_le(&[], 0), None);
+    assert_eq!(read_u32_le(&[0, 1], 0), None);
+}
+
+#[test]
 fn test_sha256_verification() {
     use sha2::{Digest, Sha256};
 

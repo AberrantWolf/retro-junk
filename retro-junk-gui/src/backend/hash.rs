@@ -14,7 +14,7 @@ const PROGRESS_THROTTLE: u64 = 4 * 1024 * 1024;
 
 /// A single unit of hash work: either a whole entry or one disc of a multi-disc entry.
 struct HashWork {
-    entry_index: usize,
+    entry_name: String,
     path: PathBuf,
     file_size: u64,
     is_disc: bool,
@@ -32,15 +32,16 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
         .selected_entries
         .iter()
         .copied()
-        .filter_map(|i| console.entries.get(i).map(|e| (i, e)))
-        .flat_map(|(i, entry)| {
+        .filter_map(|i| console.entries.get(i))
+        .flat_map(|entry| {
+            let name = entry.game_entry.display_name().to_string();
             if let Some(ref discs) = entry.disc_identifications {
                 discs
                     .iter()
                     .map(|d| {
                         let file_size = std::fs::metadata(&d.path).map(|m| m.len()).unwrap_or(0);
                         HashWork {
-                            entry_index: i,
+                            entry_name: name.clone(),
                             path: d.path.clone(),
                             file_size,
                             is_disc: true,
@@ -51,7 +52,7 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
                 let path = entry.game_entry.analysis_path().to_path_buf();
                 let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 vec![HashWork {
-                    entry_index: i,
+                    entry_name: name,
                     path,
                     file_size,
                     is_disc: false,
@@ -110,14 +111,14 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
                             let msg = if item.is_disc {
                                 AppMessage::DiscHashComplete {
                                     folder_name: folder_name.clone(),
-                                    entry_index: item.entry_index,
+                                    entry_name: item.entry_name.clone(),
                                     disc_path: item.path.clone(),
                                     hashes,
                                 }
                             } else {
                                 AppMessage::HashComplete {
                                     folder_name: folder_name.clone(),
-                                    index: item.entry_index,
+                                    entry_name: item.entry_name.clone(),
                                     hashes,
                                 }
                             };
@@ -126,7 +127,7 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
                         Err(e) => {
                             let _ = tx.send(AppMessage::HashFailed {
                                 folder_name: folder_name.clone(),
-                                index: item.entry_index,
+                                entry_name: item.entry_name.clone(),
                                 error: e.to_string(),
                             });
                         }
@@ -135,7 +136,7 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
                 Err(e) => {
                     let _ = tx.send(AppMessage::HashFailed {
                         folder_name: folder_name.clone(),
-                        index: item.entry_index,
+                        entry_name: item.entry_name.clone(),
                         error: e.to_string(),
                     });
                 }

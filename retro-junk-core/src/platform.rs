@@ -192,7 +192,7 @@ impl Platform {
             ],
             Self::SegaCd => &["segacd", "sega cd", "megacd", "mega cd"],
             Self::Sega32x => &["32x", "sega32x", "sega 32x"],
-            Self::Saturn => &["saturn", "sega saturn"],
+            Self::Saturn => &["saturn", "saturnjp", "sega saturn"],
             Self::Dreamcast => &["dreamcast", "dc"],
             Self::GameGear => &["gamegear", "game gear", "gg"],
             Self::Ps1 => &["ps1", "psx", "playstation", "playstation1"],

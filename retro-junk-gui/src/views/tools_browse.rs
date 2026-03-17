@@ -149,6 +149,22 @@ fn show_pagination(ui: &mut egui::Ui, state: &mut TableViewState) -> bool {
     let total_pages = state.total_pages().max(1);
     let mut changed = false;
 
+    // Left/Right arrow keys for prev/next page
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft))
+        && state.page > 0
+    {
+        state.page = state.page.saturating_sub(1);
+        state.page_input = (state.page + 1).to_string();
+        changed = true;
+    }
+    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight))
+        && state.page + 1 < total_pages
+    {
+        state.page += 1;
+        state.page_input = (state.page + 1).to_string();
+        changed = true;
+    }
+
     ui.horizontal(|ui| {
         // Prev button
         if ui

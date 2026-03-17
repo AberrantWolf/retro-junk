@@ -106,7 +106,9 @@ pub fn region_to_ss_code(region: &Region) -> &'static str {
         Region::Korea => "kr",
         Region::China => "cn",
         Region::Taiwan => "tw",
+        Region::Asia => "asi",
         Region::Brazil => "br",
+        Region::LatinAmerica => "br", // closest ScreenScraper code
         Region::World => "wor",
         Region::Unknown => "us",
     }
@@ -122,7 +124,9 @@ pub fn region_to_language(region: &Region) -> &'static str {
         Region::Korea => "ko",
         Region::China => "zh",
         Region::Taiwan => "zh",
+        Region::Asia => "en",
         Region::Brazil => "pt",
+        Region::LatinAmerica => "es",
         Region::World => "en",
         Region::Unknown => "en",
     }

@@ -116,7 +116,7 @@ fn decode_regions(region_codes: &str) -> Vec<Region> {
 /// header — any padding beyond that (common in dumped ROMs) is excluded.
 fn compute_checksum(reader: &mut dyn ReadSeek, rom_end: u32) -> Result<u16, AnalysisError> {
     let checksum_start = 0x200u64;
-    let checksum_end = rom_end as u64 + 1; // exclusive end
+    let checksum_end = u64::from(rom_end) + 1; // exclusive end
     if checksum_end <= checksum_start {
         return Ok(0);
     }

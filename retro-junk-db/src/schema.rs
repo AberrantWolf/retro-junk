@@ -12,13 +12,14 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 4;
+pub const CURRENT_VERSION: i32 = 6;
 
 /// Create all tables and indexes if they don't exist.
 ///
 /// This is idempotent — safe to call on an existing database.
 pub fn create_schema(conn: &Connection) -> Result<(), SchemaError> {
     conn.execute_batch(SCHEMA_SQL)?;
+    conn.execute_batch(LIBRARY_TABLES_SQL)?;
     set_schema_version(conn, CURRENT_VERSION)?;
     Ok(())
 }
@@ -108,6 +109,15 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                      ALTER TABLE releases ADD COLUMN cover_title TEXT;",
                 )?;
             }
+            4 => {
+                conn.execute_batch(
+                    "ALTER TABLE works ADD COLUMN tag TEXT;
+                     ALTER TABLE media ADD COLUMN tag TEXT;",
+                )?;
+            }
+            5 => {
+                conn.execute_batch(LIBRARY_TABLES_SQL)?;
+            }
             _ => {}
         }
         version += 1;
@@ -116,6 +126,53 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
 
     Ok(())
 }
+
+const LIBRARY_TABLES_SQL: &str = r#"
+-- Library cache: one row per library root directory
+CREATE TABLE IF NOT EXISTS library_roots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_path TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Per-console folder within a root
+CREATE TABLE IF NOT EXISTS library_consoles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    root_id INTEGER NOT NULL REFERENCES library_roots(id) ON DELETE CASCADE,
+    platform TEXT NOT NULL,
+    folder_name TEXT NOT NULL,
+    folder_path TEXT NOT NULL,
+    fingerprint_hash TEXT NOT NULL,
+    dat_game_count INTEGER,
+    UNIQUE(root_id, folder_name)
+);
+
+-- Per-entry (ROM/disc) within a console
+CREATE TABLE IF NOT EXISTS library_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    console_id INTEGER NOT NULL REFERENCES library_consoles(id) ON DELETE CASCADE,
+    display_name TEXT NOT NULL,
+    game_entry_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    tag TEXT,
+    crc32 TEXT,
+    sha1 TEXT,
+    md5 TEXT,
+    data_size INTEGER,
+    dat_game_name TEXT,
+    dat_rom_name TEXT,
+    dat_match_method TEXT,
+    region_override TEXT,
+    cover_title TEXT,
+    screen_title TEXT,
+    identification_json TEXT,
+    disc_identifications_json TEXT,
+    broken_references_json TEXT,
+    ambiguous_candidates_json TEXT,
+    UNIQUE(console_id, display_name)
+);
+CREATE INDEX IF NOT EXISTS idx_library_entries_console ON library_entries(console_id);
+"#;
 
 const SCHEMA_SQL: &str = r#"
 -- Schema version tracking
@@ -168,6 +225,7 @@ CREATE TABLE IF NOT EXISTS company_aliases (
 CREATE TABLE IF NOT EXISTS works (
     id TEXT PRIMARY KEY,
     canonical_name TEXT NOT NULL,
+    tag TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -216,6 +274,7 @@ CREATE TABLE IF NOT EXISTS media (
     disc_label TEXT,
     revision TEXT,
     status TEXT NOT NULL DEFAULT 'verified',
+    tag TEXT,
     dat_name TEXT,
     dat_source TEXT,
     file_size INTEGER,

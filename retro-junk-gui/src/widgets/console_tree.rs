@@ -1,7 +1,8 @@
 use crate::app::RetroJunkApp;
 use crate::backend;
-use crate::state::ScanStatus;
+use crate::state::{FocusedPanel, ScanStatus};
 use crate::util;
+use crate::widgets::keyboard_nav;
 use crate::widgets::status_badge;
 
 /// Render the manufacturer-grouped console tree.
@@ -25,6 +26,41 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         }
         seen
     };
+
+    // Build ordered console indices (manufacturer-grouped, matching render order)
+    let ordered_console_indices: Vec<usize> = {
+        let consoles = &app.library.consoles;
+        manufacturers
+            .iter()
+            .flat_map(|&mfr| (0..consoles.len()).filter(move |&i| consoles[i].manufacturer == mfr))
+            .collect()
+    };
+
+    // Keyboard navigation (only when console tree has focus)
+    if app.focused_panel == FocusedPanel::ConsoleTree {
+        let current_pos = app
+            .selected_console
+            .and_then(|sel| ordered_console_indices.iter().position(|&i| i == sel));
+
+        if let Some(action) = keyboard_nav::process_list_nav(
+            ui,
+            current_pos,
+            ordered_console_indices.len(),
+            10, // page size for console tree
+        ) {
+            let new_console_idx = ordered_console_indices[action.new_index];
+            if app.selected_console != Some(new_console_idx) {
+                app.selected_console = Some(new_console_idx);
+                app.focused_entry = None;
+                app.selected_entries.clear();
+                app.filter_text.clear();
+
+                if app.library.consoles[new_console_idx].scan_status == ScanStatus::NotScanned {
+                    backend::scan::quick_scan_console(app, new_console_idx, ctx);
+                }
+            }
+        }
+    }
 
     for mfr in manufacturers {
         egui::CollapsingHeader::new(egui::RichText::new(mfr).strong())
@@ -54,7 +90,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         console
                             .entries
                             .iter()
-                            .map(|e| e.status)
+                            .map(|e| e.effective_status())
                             .max_by_key(|s| s.severity())
                     } else {
                         None
@@ -78,11 +114,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         app.focused_entry = None;
                         app.selected_entries.clear();
                         app.filter_text.clear();
+                        app.focused_panel = FocusedPanel::ConsoleTree;
 
                         // Trigger quick-scan if not already scanned
                         if app.library.consoles[i].scan_status == ScanStatus::NotScanned {
                             backend::scan::quick_scan_console(app, i, ctx);
                         }
+                    }
+
+                    // Scroll to selected console when navigated via keyboard
+                    if is_selected {
+                        label_resp.scroll_to_me(Some(egui::Align::Center));
                     }
 
                     // Context menu on the selectable label

@@ -172,6 +172,7 @@ fn media_upsert_and_find() {
         disc_label: None,
         revision: None,
         status: MediaStatus::Verified,
+        tag: None,
         dat_name: Some("Super Mario Bros. (USA).nes".to_string()),
         dat_source: Some("no-intro".to_string()),
         file_size: Some(40976),
@@ -312,4 +313,206 @@ fn apply_disagreement_resolution_rejects_unsafe_field() {
         "different-work",
     );
     assert!(result.is_err());
+}
+
+#[test]
+fn set_and_clear_work_tag() {
+    let conn = open_memory().unwrap();
+    insert_work(&conn, "test:homebrew-game", "Homebrew Game").unwrap();
+
+    // Set tag
+    set_work_tag(
+        &conn,
+        "test:homebrew-game",
+        Some(retro_junk_catalog::CatalogTag::Homebrew),
+    )
+    .unwrap();
+    let tag: Option<String> = conn
+        .query_row(
+            "SELECT tag FROM works WHERE id = 'test:homebrew-game'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(tag.as_deref(), Some("homebrew"));
+
+    // Clear tag
+    set_work_tag(&conn, "test:homebrew-game", None).unwrap();
+    let tag: Option<String> = conn
+        .query_row(
+            "SELECT tag FROM works WHERE id = 'test:homebrew-game'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(tag.is_none());
+}
+
+#[test]
+fn set_and_clear_media_tag() {
+    let conn = open_memory().unwrap();
+    let platform = test_platform();
+    upsert_platform(&conn, &platform).unwrap();
+    insert_work(&conn, "test:game", "Test Game").unwrap();
+
+    let release = Release {
+        id: "test:game:nes:usa".to_string(),
+        work_id: "test:game".to_string(),
+        platform_id: "nes".to_string(),
+        region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
+        title: "Test Game".to_string(),
+        alt_title: None,
+        publisher_id: None,
+        developer_id: None,
+        release_date: None,
+        game_serial: None,
+        genre: None,
+        players: None,
+        rating: None,
+        description: None,
+        screen_title: None,
+        cover_title: None,
+        screenscraper_id: None,
+        scraper_not_found: false,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    upsert_release(&conn, &release).unwrap();
+
+    let media = Media {
+        id: "test-media".to_string(),
+        release_id: "test:game:nes:usa".to_string(),
+        media_serial: None,
+        disc_number: None,
+        disc_label: None,
+        revision: None,
+        status: MediaStatus::Verified,
+        tag: None,
+        dat_name: None,
+        dat_source: None,
+        file_size: None,
+        crc32: None,
+        sha1: None,
+        md5: None,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    upsert_media(&conn, &media).unwrap();
+
+    // Set tag
+    set_media_tag(
+        &conn,
+        "test-media",
+        Some(retro_junk_catalog::CatalogTag::Modded),
+    )
+    .unwrap();
+    let tag: Option<String> = conn
+        .query_row("SELECT tag FROM media WHERE id = 'test-media'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(tag.as_deref(), Some("modded"));
+
+    // Clear tag
+    set_media_tag(&conn, "test-media", None).unwrap();
+    let tag: Option<String> = conn
+        .query_row("SELECT tag FROM media WHERE id = 'test-media'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(tag.is_none());
+}
+
+#[test]
+fn create_homebrew_work_creates_work_release_media() {
+    let conn = open_memory().unwrap();
+    let platform = test_platform();
+    upsert_platform(&conn, &platform).unwrap();
+
+    let work_id = create_homebrew_work(&conn, "My Homebrew Game", "nes", "usa").unwrap();
+
+    // Work should exist with homebrew tag
+    let tag: Option<String> = conn
+        .query_row("SELECT tag FROM works WHERE id = ?1", [&work_id], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(tag.as_deref(), Some("homebrew"));
+
+    // Release should exist
+    let release_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM releases WHERE work_id = ?1",
+            [&work_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(release_count, 1);
+
+    // Media should exist with homebrew tag
+    let media_tag: Option<String> = conn
+        .query_row(
+            "SELECT m.tag FROM media m JOIN releases r ON m.release_id = r.id WHERE r.work_id = ?1",
+            [&work_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(media_tag.as_deref(), Some("homebrew"));
+}
+
+#[test]
+fn create_modded_media_and_detach() {
+    let conn = open_memory().unwrap();
+    let platform = test_platform();
+    upsert_platform(&conn, &platform).unwrap();
+    insert_work(&conn, "nes:smb", "Super Mario Bros.").unwrap();
+
+    let release = Release {
+        id: "nes:smb:nes:usa".to_string(),
+        work_id: "nes:smb".to_string(),
+        platform_id: "nes".to_string(),
+        region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
+        title: "Super Mario Bros.".to_string(),
+        alt_title: None,
+        publisher_id: None,
+        developer_id: None,
+        release_date: None,
+        game_serial: None,
+        genre: None,
+        players: None,
+        rating: None,
+        description: None,
+        screen_title: None,
+        cover_title: None,
+        screenscraper_id: None,
+        scraper_not_found: false,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    upsert_release(&conn, &release).unwrap();
+
+    let media_id = create_modded_media(&conn, "nes:smb", "nes", "usa", None).unwrap();
+
+    // Media should exist with modded tag
+    let tag: Option<String> = conn
+        .query_row("SELECT tag FROM media WHERE id = ?1", [&media_id], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(tag.as_deref(), Some("modded"));
+
+    // Detach should remove the media
+    detach_modded_media(&conn, &media_id).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM media WHERE id = ?1",
+            [&media_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
 }

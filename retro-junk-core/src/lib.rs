@@ -155,6 +155,9 @@ pub struct FileHashes {
     pub md5: Option<String>,
     /// Size of the data that was hashed (after header stripping or container extraction)
     pub data_size: u64,
+    /// Warnings about potential issues with the hash calculation.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 /// Which hash algorithms to compute.

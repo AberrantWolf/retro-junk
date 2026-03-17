@@ -1,3 +1,4 @@
+use retro_junk_catalog::CatalogTag;
 use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
@@ -39,17 +40,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
         if let Some(ref root_path) = app.root_path {
             let folder_name = app.library.consoles[console_idx].folder_name.clone();
-            let rom_stem = app.library.consoles[console_idx].entries[entry_idx]
-                .game_entry
-                .rom_stem()
-                .to_owned();
+            let entry = &app.library.consoles[console_idx].entries[entry_idx];
+            let entry_name = entry.game_entry.display_name().to_string();
+            let rom_stem = entry.game_entry.rom_stem().to_owned();
 
             crate::backend::assets::load_assets_for_entry(
                 app.message_tx.clone(),
                 ui.ctx().clone(),
                 root_path.clone(),
                 folder_name,
-                entry_idx,
+                entry_name,
                 rom_stem,
                 app.settings.general.assets_dir.clone(),
             );
@@ -64,11 +64,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         // Status
         ui.horizontal(|ui| {
             ui.label("Status:");
-            let (text, color) = match entry.status {
-                EntryStatus::Unknown => ("Unknown", entry.status.color()),
-                EntryStatus::Unrecognized => ("Unrecognized", entry.status.color()),
-                EntryStatus::Ambiguous => ("Ambiguous", entry.status.color()),
-                EntryStatus::Matched => ("Matched", entry.status.color()),
+            let effective = entry.effective_status();
+            let (text, color) = match effective {
+                EntryStatus::Unknown => ("Unknown", effective.color()),
+                EntryStatus::Unrecognized => ("Unrecognized", effective.color()),
+                EntryStatus::Ambiguous => ("Ambiguous", effective.color()),
+                EntryStatus::Matched => ("Matched", effective.color()),
+                EntryStatus::Tagged(CatalogTag::Homebrew) => ("Homebrew", effective.color()),
+                EntryStatus::Tagged(CatalogTag::Modded) => ("Modded", effective.color()),
             };
             ui.colored_label(color, text);
         });
@@ -215,7 +218,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         // Apply override change
         if new_override != current_override {
             app.library.consoles[console_idx].entries[entry_idx].region_override = new_override;
-            app.save_library_cache();
+            app.save_entry_cache(console_idx, &[entry_idx]);
         }
 
         // Warning text
@@ -370,6 +373,20 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                         });
                     }
                 }
+                if let Some(ref hashes) = disc.hashes
+                    && !hashes.warnings.is_empty()
+                {
+                    for warning in &hashes.warnings {
+                        ui.horizontal(|ui| {
+                            ui.add_space(16.0);
+                            ui.label(
+                                egui::RichText::new(format!("\u{26a0} {}", warning))
+                                    .small()
+                                    .color(egui::Color32::from_rgb(220, 180, 30)),
+                            );
+                        });
+                    }
+                }
                 if let Some(ref dm) = disc.dat_match {
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
@@ -444,6 +461,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 "Data Size",
                 &retro_junk_lib::util::format_bytes(hashes.data_size),
             );
+            for warning in &hashes.warnings {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("\u{26a0} {}", warning))
+                            .small()
+                            .color(egui::Color32::from_rgb(220, 180, 30)),
+                    );
+                });
+            }
         }
 
         // DAT match

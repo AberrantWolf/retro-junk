@@ -121,10 +121,13 @@ pub fn collect_existing_assets(
             continue;
         }
         let subdir = media_dir.join(asset_subdir(at));
-        let ext = at.default_extension();
-        let path = subdir.join(format!("{}.{}", rom_stem, ext));
-        if path.exists() {
-            found.insert(at, path);
+        // Check all plausible extensions — ScreenScraper may return JPG instead of PNG.
+        for ext in at.discovery_extensions() {
+            let path = subdir.join(format!("{}.{}", rom_stem, ext));
+            if path.exists() {
+                found.insert(at, path);
+                break;
+            }
         }
     }
 

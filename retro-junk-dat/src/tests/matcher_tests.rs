@@ -79,6 +79,7 @@ fn test_match_by_crc32() {
         sha1: None,
         md5: None,
         data_size: 524288,
+        warnings: vec![],
     };
     let result = index.match_by_hash(524288, &hashes).unwrap();
     assert_eq!(result.game_index, 0);
@@ -137,6 +138,7 @@ fn test_hash_distinguishes_regions() {
         sha1: None,
         md5: None,
         data_size: 8388608,
+        warnings: vec![],
     };
     let usa = index.match_by_hash(8388608, &usa_hashes).unwrap();
     assert_eq!(index.games[usa.game_index].name, "Super Mario 64 (USA)");
@@ -146,6 +148,7 @@ fn test_hash_distinguishes_regions() {
         sha1: None,
         md5: None,
         data_size: 8388608,
+        warnings: vec![],
     };
     let jpn = index.match_by_hash(8388608, &jpn_hashes).unwrap();
     assert_eq!(index.games[jpn.game_index].name, "Super Mario 64 (Japan)");
@@ -159,6 +162,7 @@ fn test_no_match() {
         sha1: None,
         md5: None,
         data_size: 999,
+        warnings: vec![],
     };
     assert!(index.match_by_hash(999, &hashes).is_none());
     assert!(matches!(
@@ -221,6 +225,7 @@ fn test_from_dats_merge() {
         sha1: None,
         md5: None,
         data_size: 2048,
+        warnings: vec![],
     };
     let hash_result = index.match_by_hash(2048, &hashes).unwrap();
     assert_eq!(index.games[hash_result.game_index].name, "Game B (USA)");
@@ -235,6 +240,7 @@ fn test_crc32_requires_matching_size() {
         sha1: None,
         md5: None,
         data_size: 524288,
+        warnings: vec![],
     };
     assert!(index.match_by_hash(999, &hashes).is_none());
 }

@@ -66,7 +66,7 @@ Audit findings from 2026-02-26.
 
 ### Shared utility functions
 
-- [ ] **Consolidate byte-reading helpers within Nintendo crate** — `retro-junk-nintendo/src/ds.rs:85-98` still defines private `read_u16_le()` and `read_u32_le()` that duplicate what `n3ds/common.rs:18-68` provides as `pub(crate)`. Either have `ds.rs` import from `n3ds::common`, or extract to a shared `nintendo_util` module in the Nintendo crate.
+- [x] **Consolidate byte-reading helpers within Nintendo crate** — Deleted `ds.rs` private helpers and imported from `n3ds::common` (made `pub(crate)`). Also added bounds checking (`Option<T>` return) to the shared helpers.
 
 - [x] **Extract `get_file_size()` helper** — Added `retro_junk_core::util::file_size()` and replaced ~25 instances of the seek-to-end/seek-to-start pattern across all analyzer crates.
 
@@ -110,6 +110,106 @@ Audit findings from 2026-02-27.
 - [ ] **Decide on user-facing "Media" vs "Assets" terminology** — Rust types were renamed from `MediaType`/`MediaStatus`/etc. to `AssetType`/`AssetStatus`/etc. to disambiguate from physical media types. However, UI strings still say "Scrape Media", "Re-scrape Media", "No scraped media", "Media complete", etc. Decide whether to keep user-facing labels as "Media" (more intuitive to users) or align them with the code terminology ("Assets").
 
 - [ ] **Remove dead `CliError` variants** — `retro-junk-cli/src/error.rs:28,32` defines `DatError` and `Analysis` variants (and constructors at lines 56, 60) that are never constructed. Remove or use them.
+
+## Code Health: Safety & Robustness
+
+Audit findings from 2026-03-17. Focus: panic-prone parsing, silent errors, inconsistent patterns.
+
+### Phase 1: Panic-Prone Parsing (Critical)
+
+- [x] **SNES checksum divide-by-zero** — False positive: the else branch only runs when `power != rom_size`, guaranteeing `remainder` is non-empty (`rom_size > power` always holds).
+
+- [x] **N3DS unchecked buffer indexing** — Changed all six helpers in `n3ds/common.rs` to return `Option<T>` with bounds-checked `buf.get()`. Updated all callers in ncsd.rs, ncch.rs, cia.rs, mod.rs. Also consolidated DS duplicate helpers (resolves DRY TODO).
+
+- [x] **Nintendo disc `unwrap()` on slice conversions** — Replaced `try_into().unwrap()` with direct array construction (e.g., `[buf[0x18], buf[0x19], ...]`). Safe because buffer is `[0u8; 0x440]` with all accesses within bounds.
+
+- [x] **ISO 9660 directory record buffer overrun** — Added `if data.len() < 33 { return None; }` upfront check in `parse_directory_record()`.
+
+- [x] **NES header length not validated** — False positive: `parse_ines_header` takes `&[u8; 16]`, a fixed-size array reference. All indexing is compile-time safe.
+
+- [x] **iNES exponent overflow** — Added `if exponent >= 32` guard before both PRG and CHR ROM `1u32 << exponent` shifts, returning `AnalysisError::corrupted_header`.
+
+- [x] **ISO 9660 unbounded memory allocation** — Added `MAX_ISO_FILE_SIZE` (256 MB) constant and validation in both `read_file_content()` and `read_file_from_chd()`.
+
+### Phase 2: Correctness & Data Integrity
+
+- [x] **WiiU missing `dat_source()` override** — Added `fn dat_source() -> DatSource::Redump` to WiiU analyzer.
+
+- [x] **Remove debug `println!` in GameBoy** — Deleted the `println!("gb/c serial: {}", serial)` line.
+
+- [x] **ClrMamePro DAT silent size parsing failure** — Replaced `unwrap_or(0)` with explicit `match` that logs a warning and returns `None` to skip entries with invalid sizes.
+
+- [x] **Miximage `unwrap()` panic** — Replaced `unwrap()` with `if let Some(layout)` pattern.
+
+- [ ] **`unchecked_transaction()` prevents auto-rollback** — `transaction()` requires `&mut Connection` but public API uses `&Connection`. Changing signatures would be a larger refactor. The `unchecked_transaction()` usage is correct for these top-level, non-nested contexts; rollback happens on drop.
+
+- [x] **u64-to-i64 overflow in DAT import** — Replaced bare `as` casts with `i64::try_from().ok()` and `i32::try_from().ok()`.
+
+- [x] **Genesis checksum overflow** — False positive: `u32::MAX as u64 + 1` fits in u64. Replaced `as u64` with explicit `u64::from()` for clarity.
+
+### Phase 3: GUI Silent Error Modes
+
+- [x] **Error dialog for failed operations** — Added `UserError` struct, `error_list` field, `push_error()` helper, and `error_dialog` widget. `HashFailed`, `ScrapeEntryFailed`, `ScrapeFatalError`, `ExportComplete(Err)`, `DatLoadFailed`, and tag dialog DB failures now show a modal error dialog. (Note: these messages were always matched in `handle_message()` and logged, but never surfaced to the user.)
+
+- [ ] **Folder scan errors silent** — `retro-junk-gui/src/backend/scan.rs:40-43`: Scan errors are logged but never shown to users. Empty results are indistinguishable from errors. Low priority — background noise, not user-initiated.
+
+- [ ] **Cache save failures silent** — `retro-junk-gui/src/app.rs:200-228`: `save_library_cache()`, `save_console_cache()`, `save_entry_cache()` failures only produce `log::warn!()`. Low priority — background housekeeping, visible in log viewer.
+
+- [ ] **Loading state can persist forever** — `retro-junk-gui/src/app.rs:73-76`: `loading_library` flag has no timeout. If startup thread crashes, UI shows "Loading..." forever. Same issue with `ScanStatus::Scanning` in `state.rs:95-100`. This is a UI state management issue, not an error dialog issue.
+
+- [ ] **Rate-limit batch error dialogs** — During large batch operations (e.g. hashing hundreds of files), many `HashFailed` errors could flood the dialog. Consider capping displayed errors (e.g. show first N, then "and X more...").
+
+- [ ] **Error dialog "copy to clipboard" button** — Add a button to copy error details for bug reports.
+
+### Phase 4: Analyzer Consistency
+
+- [ ] **Missing `expects_serial()` in 4 analyzers** — NES, SNES, GameBoy, Genesis all implement `extract_dat_game_code()` but don't declare `expects_serial()`, creating ambiguity for DAT diagnostics.
+
+- [ ] **Genesis missing "format" key** — `retro-junk-sega/src/genesis.rs`: All other analyzers insert a `"format"` key into the `extra` HashMap; Genesis does not. Breaks UI display consistency.
+
+- [ ] **Inconsistent seek/rewind in `can_handle()`** — SNES `can_handle()` calls `detect_mapping()` which seeks multiple times but doesn't guarantee reader position reset. Other analyzers (GBA, GameBoy) mix `let _ = reader.seek()` with explicit error checking.
+
+### Phase 5: API & Type Polish
+
+- [ ] **Add missing trait derives** — `FileHashes` and `AnalysisProgress` should derive `PartialEq, Eq`. `DiscGroup` should derive `PartialEq, Eq, Hash`. All fields support these traits.
+
+- [ ] **Complete `RomIdentification` builder pattern** — Only 4 of 11 fields have builder methods (`with_serial`, `with_internal_name`, `with_region`, `with_platform`). Add `with_version()`, `with_file_size()`, `with_expected_size()`, `with_maker_code()`, `with_checksum()`, `with_extra()`.
+
+- [ ] **Make `PlatformParseError` field private** — `retro-junk-core/src/platform.rs:222`: Public `String` field is never accessed directly. Make it `(String)` (private) for encapsulation.
+
+- [ ] **No SQL LIMIT/OFFSET bounds** — `retro-junk-db/src/queries.rs` (8+ functions): Pagination parameters are interpolated without validation. A limit of `u32::MAX` could exhaust memory. Add reasonable caps.
+
+## Code Health: UX Consistency
+
+Audit findings from 2026-03-17.
+
+### Naming & Terminology
+
+- [ ] **"ROM" vs "entry" vs "game" inconsistency** — CLI help says "ROMs" but data model is `GameEntry` which includes multi-disc folders. Standardize to "entries" or "games" in user-facing text.
+
+- [ ] **"Catalog" vs "Database" mixed** — GUI code uses `catalog_db` and "Catalog Tools" but also "Library cache: stored in catalog DB". Pick one term for user-facing text.
+
+- [ ] **"Compute" vs "Calculate" hashes** — Hash backend says "Computing hashes" but buttons say "Calculate All Hashes". Pick one verb.
+
+- [ ] **`RomFilterArgs` filters consoles, not ROMs** — `retro-junk-cli/src/cli_types.rs:34`: Struct name is misleading. Consider renaming to `ConsoleFilterArgs`.
+
+### Missing User Feedback
+
+- [ ] **Keyboard shortcuts undocumented** — Ctrl+1/2/3 (view switching), Cmd+A (select all), arrow keys, Page Up/Down, Enter, Escape are implemented but never documented in UI. Add a help dialog or tooltips.
+
+- [ ] **Settings path validation absent** — `retro-junk-gui/src/views/settings.rs:110-141`: Invalid metadata/media directory paths accepted without feedback. User discovers the problem only on first use.
+
+- [ ] **DAT status not visible in console tree** — Console tree shows scan status and entry count but no indicator for DAT load state. Users can't tell why serial matching isn't working.
+
+- [ ] **Cancellation lacks confirmation** — Clicking Cancel on an operation provides no visual acknowledgment. Add a brief "Cancelled" state.
+
+## Code Health: DRY Violations (2026-03-17)
+
+- [ ] **Repeated path extension checking** — `retro-junk-lib/src/scanner.rs` has 4+ copies of the `.extension().and_then().map().unwrap_or(false)` pattern. Extract `has_extension(path, ext)` utility function.
+
+- [x] **Hardcoded disc sector sizes** — Extracted to `retro-junk-disc::sector` as `RAW_SECTOR_SIZE`, `ISO_SECTOR_SIZE`, `MODE1_DATA_OFFSET`, `MODE2_FORM1_DATA_OFFSET`, etc. Used by both Sony and Sega crates.
+
+- [x] **Near-duplicate `read_file_content` / `read_file_from_chd`** — Unified in `retro-junk-disc` crate. Both functions now live in `iso9660.rs` and `chd.rs` respectively, with shared `DirectoryRecord` type and consistent interfaces.
 
 ## Enrichment Pipeline Hardening
 

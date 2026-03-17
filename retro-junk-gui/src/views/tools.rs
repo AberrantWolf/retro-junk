@@ -160,6 +160,25 @@ fn show_disagreements_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         return;
     }
 
+    // Keyboard navigation for disagreements
+    {
+        let page_size = 15; // approximate visible rows in 300px max height
+        if let Some(action) = crate::widgets::keyboard_nav::process_list_nav(
+            ui,
+            app.tools_state.selected_idx,
+            app.tools_state.disagreements.len(),
+            page_size,
+        ) {
+            let idx = action.new_index;
+            if Some(idx) != app.tools_state.selected_idx {
+                app.tools_state.selected_idx = Some(idx);
+                app.tools_state.selected_context = None;
+                let conn = app.catalog_db.as_ref().unwrap();
+                load_disagreement_context(&mut app.tools_state, conn, idx);
+            }
+        }
+    }
+
     let new_selection = show_disagreement_table(ui, &app.tools_state);
     if let Some(idx) = new_selection
         && Some(idx) != app.tools_state.selected_idx

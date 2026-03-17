@@ -9,7 +9,7 @@
 
 use std::env;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -88,31 +88,15 @@ fn main() {
 }
 
 fn hash_range(file: &mut File, offset: u64, length: u64) {
-    use sha1::Digest;
-
     file.seek(SeekFrom::Start(offset)).unwrap();
-
-    let mut crc = crc32fast::Hasher::new();
-    let mut sha = sha1::Sha1::new();
-    let mut md5_ctx = md5::Context::new();
-
-    let mut buf = [0u8; 64 * 1024];
-    let mut remaining = length;
-
-    while remaining > 0 {
-        let to_read = remaining.min(buf.len() as u64) as usize;
-        let n = file.read(&mut buf[..to_read]).unwrap();
-        if n == 0 {
-            break;
+    let algorithms = retro_junk_core::HashAlgorithms::All;
+    match retro_junk_disc::hash::hash_raw_bin_track1(file, algorithms, length) {
+        Ok(hashes) => {
+            println!("  CRC32:     {}", hashes.crc32);
+            println!("  SHA1:      {}", hashes.sha1.as_deref().unwrap_or("n/a"));
+            println!("  MD5:       {}", hashes.md5.as_deref().unwrap_or("n/a"));
+            println!("  Data size: {}", hashes.data_size);
         }
-        crc.update(&buf[..n]);
-        sha.update(&buf[..n]);
-        md5_ctx.consume(&buf[..n]);
-        remaining -= n as u64;
+        Err(e) => println!("  Error: {}", e),
     }
-
-    println!("  CRC32:     {:08x}", crc.finalize());
-    println!("  SHA1:      {:x}", sha.finalize());
-    println!("  MD5:       {:x}", md5_ctx.compute());
-    println!("  Data size: {}", length);
 }

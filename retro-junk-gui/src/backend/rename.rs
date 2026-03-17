@@ -13,7 +13,7 @@ use crate::state::{self, AppMessage, RenameOutcome, RenameResult};
 
 /// A single rename job. Target is resolved on the background thread.
 struct RenameJob {
-    entry_index: usize,
+    entry_name: String,
     source: PathBuf,
     /// Raw DAT rom name (e.g., "Game (USA).iso") — extension corrected at rename time.
     dat_rom_name: String,
@@ -21,7 +21,7 @@ struct RenameJob {
 
 /// An M3U rename job that needs background resolution of disc files.
 struct M3uJob {
-    entry_index: usize,
+    entry_name: String,
     /// All disc files in this multi-disc set
     files: Vec<PathBuf>,
     /// Already-resolved disc data — target_filename holds raw DAT rom_name,
@@ -53,6 +53,8 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
             None => continue,
         };
 
+        let entry_name = entry.game_entry.display_name().to_string();
+
         match &entry.game_entry {
             GameEntry::SingleFile(_) => {
                 // Determine target ROM name from existing dat_match or try DAT lookup
@@ -62,14 +64,14 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     Some(dat_rom_name) => {
                         let source = entry.game_entry.analysis_path().to_path_buf();
                         jobs.push(RenameJob {
-                            entry_index: i,
+                            entry_name,
                             source,
                             dat_rom_name,
                         });
                     }
                     None => {
                         results.push(RenameResult {
-                            entry_index: i,
+                            entry_name,
                             outcome: RenameOutcome::NoMatch {
                                 reason: format!(
                                     "No DAT match for '{}'",
@@ -83,7 +85,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
             GameEntry::MultiDisc { files, .. } => {
                 let Some(_di) = dat_index else {
                     results.push(RenameResult {
-                        entry_index: i,
+                        entry_name,
                         outcome: RenameOutcome::NoMatch {
                             reason: "No DAT loaded for multi-disc rename".to_string(),
                         },
@@ -125,7 +127,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
                 if resolved.is_empty() && unresolved.is_empty() {
                     results.push(RenameResult {
-                        entry_index: i,
+                        entry_name,
                         outcome: RenameOutcome::NoMatch {
                             reason: format!(
                                 "No DAT match for '{}'",
@@ -137,7 +139,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 }
 
                 m3u_jobs.push(M3uJob {
-                    entry_index: i,
+                    entry_name,
                     files: files.clone(),
                     resolved_discs: resolved,
                     unresolved_files: unresolved,
@@ -209,7 +211,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
             if job.source == target {
                 results.push(RenameResult {
-                    entry_index: job.entry_index,
+                    entry_name: job.entry_name.clone(),
                     outcome: RenameOutcome::AlreadyCorrect,
                 });
                 continue;
@@ -218,7 +220,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
             match std::fs::rename(&job.source, &target) {
                 Ok(()) => {
                     results.push(RenameResult {
-                        entry_index: job.entry_index,
+                        entry_name: job.entry_name.clone(),
                         outcome: RenameOutcome::Renamed {
                             source: job.source.clone(),
                             target,
@@ -227,7 +229,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 }
                 Err(e) => {
                     results.push(RenameResult {
-                        entry_index: job.entry_index,
+                        entry_name: job.entry_name.clone(),
                         outcome: RenameOutcome::Error {
                             message: format!("Failed to rename '{}': {}", job.source.display(), e),
                         },
@@ -281,7 +283,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
             if all_discs.is_empty() {
                 results.push(RenameResult {
-                    entry_index: m3u_job.entry_index,
+                    entry_name: m3u_job.entry_name.clone(),
                     outcome: RenameOutcome::NoMatch {
                         reason: "Could not resolve any disc files".to_string(),
                     },
@@ -310,7 +312,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
             if any_work {
                 results.push(RenameResult {
-                    entry_index: m3u_job.entry_index,
+                    entry_name: m3u_job.entry_name.clone(),
                     outcome: RenameOutcome::M3uRenamed {
                         target_folder: m3u_result.final_folder,
                         discs_renamed: m3u_result.discs_renamed,
@@ -321,12 +323,12 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 });
             } else if m3u_result.errors.is_empty() {
                 results.push(RenameResult {
-                    entry_index: m3u_job.entry_index,
+                    entry_name: m3u_job.entry_name.clone(),
                     outcome: RenameOutcome::AlreadyCorrect,
                 });
             } else {
                 results.push(RenameResult {
-                    entry_index: m3u_job.entry_index,
+                    entry_name: m3u_job.entry_name.clone(),
                     outcome: RenameOutcome::Error {
                         message: m3u_result.errors.join("; "),
                     },
@@ -476,10 +478,7 @@ fn build_stem_map_from_results(
             }
             RenameOutcome::M3uRenamed { target_folder, .. } => {
                 // Find the corresponding M3uJob to get disc-level stems
-                if let Some(m3u_job) = m3u_jobs
-                    .iter()
-                    .find(|j| j.entry_index == result.entry_index)
-                {
+                if let Some(m3u_job) = m3u_jobs.iter().find(|j| j.entry_name == result.entry_name) {
                     // Disc-level renames
                     for disc in &m3u_job.resolved_discs {
                         let old_stem = disc

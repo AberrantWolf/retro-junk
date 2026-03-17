@@ -452,7 +452,6 @@ impl RomAnalyzer for GameBoyAnalyzer {
         // DMG-XXXX-YYY or CGB-XXXX-YYY → XXXX (YYYY is optional)
         let parts: Vec<&str> = serial.split('-').collect();
         if parts.len() >= 2 && (parts[0] == "DMG" || parts[0] == "CGB") {
-            println!("gb/c serial: {}", serial);
             Some(parts[1].to_string())
         } else {
             None

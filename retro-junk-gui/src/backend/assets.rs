@@ -21,7 +21,7 @@ pub fn load_assets_for_entry(
     ctx: egui::Context,
     root_path: PathBuf,
     folder_name: String,
-    entry_index: usize,
+    entry_name: String,
     rom_stem: String,
     media_dir_setting: String,
 ) {
@@ -32,7 +32,7 @@ pub fn load_assets_for_entry(
                 None => {
                     let _ = tx.send(AppMessage::AssetsLoaded {
                         folder_name,
-                        entry_index,
+                        entry_name,
                         assets: HashMap::new(),
                     });
                     ctx.request_repaint();
@@ -53,7 +53,7 @@ pub fn load_assets_for_entry(
 
         let _ = tx.send(AppMessage::AssetsLoaded {
             folder_name,
-            entry_index,
+            entry_name,
             assets: found,
         });
         ctx.request_repaint();
@@ -62,7 +62,7 @@ pub fn load_assets_for_entry(
 
 /// Data collected on the UI thread for each entry to scrape.
 struct ScrapeWorkItem {
-    entry_index: usize,
+    entry_name: String,
     rom_stem: String,
     filename: String,
     file_size: u64,
@@ -157,7 +157,7 @@ fn scrape_media_for_selection(
                 .unwrap_or_else(|| "us".to_string());
 
             Some(ScrapeWorkItem {
-                entry_index: i,
+                entry_name: entry.game_entry.display_name().to_string(),
                 rom_stem: entry.game_entry.rom_stem().to_string(),
                 filename,
                 file_size,
@@ -180,9 +180,7 @@ fn scrape_media_for_selection(
     // When scraping missing only, keep paths visible during the operation.
     if force_redownload {
         for item in &work {
-            if let Some(entry) = app.library.consoles[console_idx]
-                .entries
-                .get_mut(item.entry_index)
+            if let Some(entry) = app.library.consoles[console_idx].find_entry_mut(&item.entry_name)
             {
                 entry.asset_paths = None;
             }
@@ -317,7 +315,7 @@ fn scrape_media_for_selection(
                         log::warn!("Lookup failed for {}: {}", item.filename, e);
                         let _ = tx.send(AppMessage::ScrapeEntryFailed {
                             folder_name: folder_name.clone(),
-                            entry_index: item.entry_index,
+                            entry_name: item.entry_name.clone(),
                             error: e.to_string(),
                         });
                         ctx.request_repaint();
@@ -358,7 +356,7 @@ fn scrape_media_for_selection(
                         log::warn!("Media download failed for {}: {}", item.filename, e);
                         let _ = tx.send(AppMessage::ScrapeEntryFailed {
                             folder_name: folder_name.clone(),
-                            entry_index: item.entry_index,
+                            entry_name: item.entry_name.clone(),
                             error: e.to_string(),
                         });
                         ctx.request_repaint();
@@ -384,7 +382,7 @@ fn scrape_media_for_selection(
 
                 let _ = tx.send(AppMessage::AssetsLoaded {
                     folder_name: folder_name.clone(),
-                    entry_index: item.entry_index,
+                    entry_name: item.entry_name.clone(),
                     assets: final_media,
                 });
                 ctx.request_repaint();
@@ -413,14 +411,17 @@ pub fn regenerate_miximages_for_selection(
         None => return,
     };
 
-    // Collect (entry_index, rom_stem) for selected entries
-    let work: Vec<(usize, String)> = app
+    // Collect (entry_name, rom_stem) for selected entries
+    let work: Vec<(String, String)> = app
         .selected_entries
         .iter()
         .copied()
         .filter_map(|i| {
             let entry = console.entries.get(i)?;
-            Some((i, entry.game_entry.rom_stem().to_string()))
+            Some((
+                entry.game_entry.display_name().to_string(),
+                entry.game_entry.rom_stem().to_string(),
+            ))
         })
         .collect();
 
@@ -452,7 +453,7 @@ pub fn regenerate_miximages_for_selection(
             }
         };
 
-        for (file_num, (entry_index, rom_stem)) in work.iter().enumerate() {
+        for (file_num, (entry_name, rom_stem)) in work.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 break;
             }
@@ -478,7 +479,7 @@ pub fn regenerate_miximages_for_selection(
 
             let _ = tx.send(AppMessage::AssetsLoaded {
                 folder_name: folder_name.clone(),
-                entry_index: *entry_index,
+                entry_name: entry_name.clone(),
                 assets: updated_media,
             });
             ctx.request_repaint();
@@ -499,7 +500,7 @@ pub fn discover_assets_for_console(
     root_path: PathBuf,
     folder_name: String,
     media_dir_setting: String,
-    entries: Vec<(usize, String)>, // (entry_index, rom_stem)
+    entries: Vec<(String, String)>, // (entry_name, rom_stem)
 ) {
     std::thread::spawn(move || {
         let media_dir =
@@ -508,7 +509,7 @@ pub fn discover_assets_for_console(
                 None => return,
             };
 
-        for (entry_index, rom_stem) in entries {
+        for (entry_name, rom_stem) in entries {
             let found = state::collect_existing_assets(&media_dir, &rom_stem);
 
             // Register image bytes with egui so they're available when the UI renders.
@@ -521,7 +522,7 @@ pub fn discover_assets_for_console(
 
             let _ = tx.send(AppMessage::AssetsLoaded {
                 folder_name: folder_name.clone(),
-                entry_index,
+                entry_name,
                 assets: found,
             });
         }

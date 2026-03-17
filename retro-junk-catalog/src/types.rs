@@ -86,6 +86,7 @@ pub struct Company {
 pub struct Work {
     pub id: String,
     pub canonical_name: String,
+    pub tag: Option<CatalogTag>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -145,6 +146,7 @@ pub struct Media {
     pub disc_label: Option<String>,
     pub revision: Option<String>,
     pub status: MediaStatus,
+    pub tag: Option<CatalogTag>,
     pub dat_name: Option<String>,
     pub dat_source: Option<String>,
     pub file_size: Option<i64>,
@@ -167,6 +169,31 @@ pub enum MediaStatus {
     Prototype,
     Beta,
     Sample,
+}
+
+/// A user-applied tag for homebrew or modded games.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CatalogTag {
+    Homebrew,
+    Modded,
+}
+
+impl CatalogTag {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Homebrew => "homebrew",
+            Self::Modded => "modded",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "homebrew" => Some(Self::Homebrew),
+            "modded" => Some(Self::Modded),
+            _ => None,
+        }
+    }
 }
 
 impl MediaStatus {

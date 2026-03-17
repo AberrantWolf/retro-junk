@@ -246,7 +246,7 @@ impl RomAnalyzer for Ps2Analyzer {
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {
-        &["iso", "bin", "chd"]
+        &["iso", "bin", "img", "cue", "chd"]
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
@@ -289,37 +289,9 @@ impl RomAnalyzer for Ps2Analyzer {
         &self,
         reader: &mut dyn ReadSeek,
         algorithms: HashAlgorithms,
-        _file_path: Option<&std::path::Path>,
+        file_path: Option<&std::path::Path>,
     ) -> Result<Option<FileHashes>, AnalysisError> {
-        let format = sony_disc::detect_disc_format(reader)?;
-
-        match format {
-            DiscFormat::Chd => {
-                log::info!("PS2 compute_container_hashes: CHD detected");
-                let hashes = sony_disc::hash_chd_raw_sectors(reader, algorithms)?;
-                log::info!(
-                    "PS2 compute_container_hashes: done, crc32={}, data_size={}",
-                    hashes.crc32,
-                    hashes.data_size
-                );
-                Ok(Some(hashes))
-            }
-            DiscFormat::RawSector2352 => {
-                // Multi-track BIN files contain data + audio tracks concatenated.
-                // Redump DATs hash only Track 1 (data), so detect the boundary.
-                if let Some(data_size) = sony_disc::find_raw_bin_data_track_size(reader)? {
-                    log::info!(
-                        "PS2 compute_container_hashes: raw BIN, hashing Track 1 ({} bytes)",
-                        data_size
-                    );
-                    let hashes = crate::ps1::hash_raw_bin_track1(reader, algorithms, data_size)?;
-                    Ok(Some(hashes))
-                } else {
-                    Ok(None)
-                }
-            }
-            _ => Ok(None),
-        }
+        sony_disc::hash_disc_container(reader, algorithms, file_path, "PS2")
     }
 
     fn dat_names(&self) -> &'static [&'static str] {

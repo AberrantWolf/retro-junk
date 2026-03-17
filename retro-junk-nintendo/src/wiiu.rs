@@ -38,4 +38,8 @@ impl RomAnalyzer for WiiUAnalyzer {
     fn dat_names(&self) -> &'static [&'static str] {
         &["Nintendo - Wii U (Digital)"]
     }
+
+    fn dat_source(&self) -> retro_junk_core::DatSource {
+        retro_junk_core::DatSource::Redump
+    }
 }

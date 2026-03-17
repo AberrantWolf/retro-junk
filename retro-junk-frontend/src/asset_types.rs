@@ -48,4 +48,16 @@ impl AssetType {
             _ => "png",
         }
     }
+
+    /// All file extensions to check when discovering assets on disk.
+    ///
+    /// ScreenScraper may return media in different formats (e.g., JPG instead
+    /// of PNG for screenshots), so discovery must check all plausible extensions.
+    /// The default extension is always first.
+    pub fn discovery_extensions(&self) -> &'static [&'static str] {
+        match self {
+            AssetType::Video => &["mp4"],
+            _ => &["png", "jpg"],
+        }
+    }
 }

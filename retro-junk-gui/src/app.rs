@@ -8,7 +8,8 @@ use retro_junk_lib::AnalysisContext;
 
 use crate::settings::AppSettings;
 use crate::state::{
-    AppMessage, BackgroundOperation, Library, RenameOutcome, RenameResult, ToolsState, View,
+    AppMessage, BackgroundOperation, FocusedPanel, Library, RenameOutcome, RenameResult,
+    ToolsState, View,
 };
 use crate::views;
 use crate::widgets;
@@ -59,9 +60,12 @@ pub struct RetroJunkApp {
     /// Persistent settings (library roots, preferences).
     pub settings: AppSettings,
 
-    /// Connection to the catalog database (for cover/screen title enrichment).
-    /// `None` if the catalog DB doesn't exist yet (user hasn't run catalog import).
+    /// Connection to the catalog database (for enrichment + library cache).
+    /// `None` only if the database file could not be opened.
     pub catalog_db: Option<retro_junk_db::Connection>,
+
+    /// Path to the catalog database file (for opening separate connections in background threads).
+    pub db_path: Option<std::path::PathBuf>,
 
     /// Results from the last rename operation. When `Some`, the rename results dialog is shown.
     pub rename_results: Option<Vec<crate::state::RenameResult>>,
@@ -73,6 +77,21 @@ pub struct RetroJunkApp {
 
     /// Transient state for the Tools (catalog) view.
     pub tools_state: ToolsState,
+
+    /// Which panel currently has keyboard focus for arrow-key navigation.
+    pub focused_panel: FocusedPanel,
+
+    /// When set, the game table will scroll to this filtered row index.
+    pub scroll_to_row: Option<usize>,
+
+    /// State for the homebrew/modded tagging dialog.
+    pub tag_dialog: crate::state::TagDialog,
+
+    /// State for the log viewer panel.
+    pub log_viewer: crate::widgets::log_viewer::LogViewerState,
+
+    /// Accumulated errors to show in the error dialog. Non-empty triggers the dialog.
+    pub error_list: Vec<crate::state::UserError>,
 }
 
 impl RetroJunkApp {
@@ -83,12 +102,13 @@ impl RetroJunkApp {
         let context = Arc::new(retro_junk_lib::create_default_context());
         let settings = crate::settings::load_settings();
 
-        // Try to open the catalog DB for title enrichment
-        let catalog_db = retro_junk_dat::cache::cache_dir()
+        // Always open (or create) the catalog DB — used for enrichment + library cache
+        let db_path = retro_junk_dat::cache::cache_dir()
             .ok()
-            .map(|p| p.join("catalog.db"))
-            .filter(|p| p.exists())
-            .and_then(|p| retro_junk_db::open_database(&p).ok());
+            .map(|p| p.join("catalog.db"));
+        let catalog_db = db_path
+            .as_ref()
+            .and_then(|p| retro_junk_db::open_database(p).ok());
 
         let mut app = Self {
             context,
@@ -106,9 +126,15 @@ impl RetroJunkApp {
             detail_panel_open: true,
             settings,
             catalog_db,
+            db_path,
             rename_results: None,
             loading_library: false,
             tools_state: ToolsState::default(),
+            focused_panel: FocusedPanel::default(),
+            scroll_to_row: None,
+            tag_dialog: crate::state::TagDialog::None,
+            log_viewer: crate::widgets::log_viewer::LogViewerState::default(),
+            error_list: Vec::new(),
         };
 
         // Restore last open root from settings
@@ -131,18 +157,31 @@ impl RetroJunkApp {
             let tx = app.message_tx.clone();
             let context = app.context.clone();
             let root_bg = root.clone();
+            let db_path_bg = app.db_path.clone();
             let ctx_bg = cc.egui_ctx.clone();
             std::thread::spawn(move || {
-                if let Some((library, stale)) = crate::cache::load_library(&root_bg, &context) {
-                    log::info!(
-                        "Restored {} consoles from cache ({} stale)",
-                        library.consoles.len(),
-                        stale.len()
-                    );
-                    let _ = tx.send(crate::state::AppMessage::CacheLoaded { library });
-                    // Repaint immediately so cached entries are visible before
-                    // the folder scan starts (which may take a moment).
-                    ctx_bg.request_repaint();
+                // Open a separate DB connection for this thread (WAL allows concurrent readers)
+                let bg_conn = db_path_bg
+                    .as_ref()
+                    .and_then(|p| retro_junk_db::open_database(p).ok());
+
+                if let Some(ref conn) = bg_conn {
+                    // Migrate legacy JSON cache if it exists
+                    crate::cache::migrate_json_cache(conn, &root_bg, &context);
+
+                    if let Some((library, stale)) =
+                        crate::cache::load_library(conn, &root_bg, &context)
+                    {
+                        log::info!(
+                            "Restored {} consoles from cache ({} stale)",
+                            library.consoles.len(),
+                            stale.len()
+                        );
+                        let _ = tx.send(crate::state::AppMessage::CacheLoaded { library });
+                        // Repaint immediately so cached entries are visible before
+                        // the folder scan starts (which may take a moment).
+                        ctx_bg.request_repaint();
+                    }
                 }
                 // Always trigger a folder scan to discover new/removed consoles.
                 let _ = tx.send(crate::state::AppMessage::StartFolderScan);
@@ -165,13 +204,44 @@ impl RetroJunkApp {
         !self.operations.is_empty()
     }
 
-    /// Save the current library state to disk cache.
+    /// Save the full library state to the database.
     pub fn save_library_cache(&self) {
         if let Some(ref root) = self.root_path
-            && let Err(e) = crate::cache::save_library(root, &self.library)
+            && let Some(ref conn) = self.catalog_db
+            && let Err(e) = crate::cache::save_library(conn, root, &self.library)
         {
             log::warn!("Failed to save library cache: {}", e);
         }
+    }
+
+    /// Save one console's entries to the database.
+    pub fn save_console_cache(&self, console_idx: usize) {
+        if let Some(ref root) = self.root_path
+            && let Some(ref conn) = self.catalog_db
+            && let Some(console) = self.library.consoles.get(console_idx)
+            && let Err(e) = crate::cache::save_console(conn, root, console)
+        {
+            log::warn!("Failed to save console cache: {}", e);
+        }
+    }
+
+    /// Save specific entries within a console to the database.
+    pub fn save_entry_cache(&self, console_idx: usize, entry_indices: &[usize]) {
+        if let Some(ref root) = self.root_path
+            && let Some(ref conn) = self.catalog_db
+            && let Some(console) = self.library.consoles.get(console_idx)
+            && let Err(e) = crate::cache::save_entries(conn, root, console, entry_indices)
+        {
+            log::warn!("Failed to save entry cache: {}", e);
+        }
+    }
+
+    /// Push an error that will be shown to the user in a modal dialog.
+    pub fn push_error(&mut self, category: impl Into<String>, message: impl Into<String>) {
+        self.error_list.push(crate::state::UserError {
+            category: category.into(),
+            message: message.into(),
+        });
     }
 }
 
@@ -179,6 +249,17 @@ impl eframe::App for RetroJunkApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Drain background messages
         self.process_messages(ctx);
+
+        // Global view switching: Ctrl+1/2/3
+        ctx.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::CTRL, egui::Key::Num1) {
+                self.current_view = View::Library;
+            } else if i.consume_key(egui::Modifiers::CTRL, egui::Key::Num2) {
+                self.current_view = View::Settings;
+            } else if i.consume_key(egui::Modifiers::CTRL, egui::Key::Num3) {
+                self.current_view = View::Tools;
+            }
+        });
 
         // Schedule repaint while operations are running
         if self.has_active_operations() {
@@ -207,6 +288,13 @@ impl eframe::App for RetroJunkApp {
             self.tools_state.needs_refresh = true;
         }
 
+        // Bottom panels render in order: status bar (bottommost), log viewer, activity bar.
+        // egui stacks bottom panels upward, so the first one rendered sits at the very bottom.
+        if widgets::status_bar::show(ctx) {
+            self.log_viewer.open = !self.log_viewer.open;
+        }
+        widgets::log_viewer::show(ctx, &mut self.log_viewer);
+
         // Activity bar (bottom, only when operations active)
         if self.has_active_operations() {
             egui::TopBottomPanel::bottom("activity_bar").show(ctx, |ui| {
@@ -225,6 +313,12 @@ impl eframe::App for RetroJunkApp {
         if self.rename_results.is_some() {
             show_rename_results_dialog(ctx, &mut self.rename_results);
         }
+
+        // Tag dialog
+        widgets::tag_dialog::show(ctx, self);
+
+        // Error dialog
+        widgets::error_dialog::show(ctx, &mut self.error_list);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -301,7 +395,7 @@ fn show_rename_results_dialog(ctx: &egui::Context, results: &mut Option<Vec<Rena
                             }
                             RenameOutcome::AlreadyCorrect => {
                                 ui.colored_label(egui::Color32::GRAY, "OK");
-                                ui.label(format!("Entry {} already correct", item.entry_index));
+                                ui.label(format!("{} already correct", item.entry_name));
                             }
                             RenameOutcome::NoMatch { reason } => {
                                 ui.colored_label(egui::Color32::from_rgb(220, 180, 30), "No match");

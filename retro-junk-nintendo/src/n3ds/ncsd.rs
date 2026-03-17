@@ -65,14 +65,18 @@ pub(crate) fn parse_ncsd_header(reader: &mut dyn ReadSeek) -> Result<NcsdHeader,
 
     let signature_is_zero = is_all_zeros(&buf[0x000..0x100]);
 
-    let image_size_mu = read_u32_le(&buf, 0x104);
-    let media_id = read_u64_le(&buf, 0x108);
+    let trunc = || AnalysisError::corrupted_header("NCSD header data truncated");
+    let image_size_mu = read_u32_le(&buf, 0x104).ok_or_else(trunc)?;
+    let media_id = read_u64_le(&buf, 0x108).ok_or_else(trunc)?;
 
     // Partition table at 0x120: 8 entries of (u32 offset, u32 size)
     let mut partitions = [(0u32, 0u32); 8];
     for (i, partition) in partitions.iter_mut().enumerate() {
         let base = 0x120 + i * 8;
-        *partition = (read_u32_le(&buf, base), read_u32_le(&buf, base + 4));
+        *partition = (
+            read_u32_le(&buf, base).ok_or_else(trunc)?,
+            read_u32_le(&buf, base + 4).ok_or_else(trunc)?,
+        );
     }
 
     // Partition flags at 0x188
@@ -80,14 +84,14 @@ pub(crate) fn parse_ncsd_header(reader: &mut dyn ReadSeek) -> Result<NcsdHeader,
     let media_type = buf[0x188 + 5];
 
     // Card info header at 0x200
-    let writable_address = read_u32_le(&buf, 0x200);
-    let title_version = read_u16_le(&buf, 0x310);
-    let card_revision = read_u16_le(&buf, 0x312);
+    let writable_address = read_u32_le(&buf, 0x200).ok_or_else(trunc)?;
+    let title_version = read_u16_le(&buf, 0x310).ok_or_else(trunc)?;
+    let card_revision = read_u16_le(&buf, 0x312).ok_or_else(trunc)?;
 
     // Filled size at NCSD offset 0x300: this is a 4-byte LE value representing
     // the actual used content size in bytes (NOT in media units). Used by
     // trimming tools to know where real data ends.
-    let filled_size_raw = read_u32_le(&buf, 0x300);
+    let filled_size_raw = read_u32_le(&buf, 0x300).ok_or_else(trunc)?;
     let filled_size = filled_size_raw as u64;
 
     // Card seed at 0x1000

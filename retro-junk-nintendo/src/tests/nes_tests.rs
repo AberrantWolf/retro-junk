@@ -174,3 +174,22 @@ fn test_can_handle() {
     let garbage = vec![0xFFu8; 16];
     assert!(!analyzer.can_handle(&mut Cursor::new(garbage)));
 }
+
+#[test]
+fn test_nes2_exponent_overflow_rejected() {
+    // Craft a NES 2.0 header where PRG ROM uses exponent-multiplier notation
+    // with an exponent of 63 (header[4] >> 2 = 63), which would overflow 1u32 << 63.
+    // NES 2.0: flags7 bits 2-3 = 0b10 (0x08), prg_rom_msb (header[9] & 0x0F) = 0x0F.
+    let mut h = vec![0u8; 16];
+    h[0..4].copy_from_slice(&INES_MAGIC);
+    h[4] = 0xFF; // exponent = (0xFF >> 2) & 0x3F = 0x3F = 63, multiplier = 0xFF & 0x03 = 3
+    h[5] = 0; // CHR ROM
+    h[6] = 0;
+    h[7] = 0x08; // NES 2.0 marker
+    h[9] = 0x0F; // prg_rom_msb = 0x0F triggers exponent-multiplier mode
+
+    // Should produce a PRG ROM size with 16K * some banks, but we need
+    // PRG ROM to hit exponent path: prg_rom_msb == 0x0F
+    let result = parse_ines_header(&h.try_into().unwrap());
+    assert!(result.is_err(), "Expected error for oversized exponent");
+}

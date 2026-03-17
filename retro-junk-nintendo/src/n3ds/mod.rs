@@ -13,7 +13,7 @@
 //! (NoCrypto flag set).
 
 mod cia;
-mod common;
+pub(crate) mod common;
 mod ncch;
 pub(crate) mod ncsd;
 
@@ -81,13 +81,13 @@ fn detect_format(reader: &mut dyn ReadSeek) -> Result<Option<N3dsFormat>, Analys
         reader.seek(SeekFrom::Start(0))?;
         let mut header_buf = [0u8; 0x20];
         if reader.read_exact(&mut header_buf).is_ok() {
-            let header_size = read_u32_le(&header_buf, 0x00);
-            let cia_type = read_u16_le(&header_buf, 0x04);
-            let cia_version = read_u16_le(&header_buf, 0x06);
-            let cert_size = read_u32_le(&header_buf, 0x08);
-            let ticket_size = read_u32_le(&header_buf, 0x0C);
-            let tmd_size = read_u32_le(&header_buf, 0x10);
-            let content_size = read_u64_le(&header_buf, 0x18);
+            let header_size = read_u32_le(&header_buf, 0x00).unwrap_or(0);
+            let cia_type = read_u16_le(&header_buf, 0x04).unwrap_or(u16::MAX);
+            let cia_version = read_u16_le(&header_buf, 0x06).unwrap_or(u16::MAX);
+            let cert_size = read_u32_le(&header_buf, 0x08).unwrap_or(0);
+            let ticket_size = read_u32_le(&header_buf, 0x0C).unwrap_or(0);
+            let tmd_size = read_u32_le(&header_buf, 0x10).unwrap_or(0);
+            let content_size = read_u64_le(&header_buf, 0x18).unwrap_or(0);
 
             if header_size == CIA_HEADER_SIZE
                 && cia_type <= 1

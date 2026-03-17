@@ -209,7 +209,7 @@ fn import_game(
             // Check if anything changed
             let same_hashes = existing_media.crc32.as_deref() == Some(&rom.crc)
                 && existing_media.sha1.as_deref() == rom.sha1.as_deref()
-                && existing_media.file_size == Some(rom.size as i64);
+                && existing_media.file_size == i64::try_from(rom.size).ok();
             if same_hashes {
                 stats.media_unchanged += 1;
                 continue;
@@ -223,13 +223,14 @@ fn import_game(
             id: media_id,
             release_id: effective_release_id.clone(),
             media_serial: rom.serial.clone(),
-            disc_number: parsed.disc_number.map(|n| n as i32),
+            disc_number: parsed.disc_number.and_then(|n| i32::try_from(n).ok()),
             disc_label: parsed.disc_label.clone(),
             revision: parsed.revision.clone(),
             status,
+            tag: None,
             dat_name: Some(game.name.clone()),
             dat_source: Some(dat_source.to_string()),
-            file_size: Some(rom.size as i64),
+            file_size: i64::try_from(rom.size).ok(),
             crc32: Some(rom.crc.clone()),
             sha1: rom.sha1.clone(),
             md5: rom.md5.clone(),

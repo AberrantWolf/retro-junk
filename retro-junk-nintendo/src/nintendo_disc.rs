@@ -94,15 +94,15 @@ pub(crate) fn parse_disc_header(
         }
     })?;
 
-    let game_code: [u8; 4] = buf[0x0000..0x0004].try_into().unwrap();
-    let maker_code: [u8; 2] = buf[0x0004..0x0006].try_into().unwrap();
+    let game_code: [u8; 4] = [buf[0x0000], buf[0x0001], buf[0x0002], buf[0x0003]];
+    let maker_code: [u8; 2] = [buf[0x0004], buf[0x0005]];
     let disc_id = buf[0x0006];
     let version = buf[0x0007];
     let audio_streaming = buf[0x0008] != 0;
     let stream_buffer_size = buf[0x0009];
 
-    let wii_magic = u32::from_be_bytes(buf[0x0018..0x001C].try_into().unwrap());
-    let gc_magic = u32::from_be_bytes(buf[0x001C..0x0020].try_into().unwrap());
+    let wii_magic = u32::from_be_bytes([buf[0x0018], buf[0x0019], buf[0x001A], buf[0x001B]]);
+    let gc_magic = u32::from_be_bytes([buf[0x001C], buf[0x001D], buf[0x001E], buf[0x001F]]);
 
     // Game name: null-terminated string in 992 bytes at offset 0x0020
     let name_bytes = &buf[0x0020..0x0400];
@@ -114,9 +114,9 @@ pub(crate) fn parse_disc_header(
         .trim()
         .to_string();
 
-    let dol_offset = u32::from_be_bytes(buf[0x0420..0x0424].try_into().unwrap());
-    let fst_offset = u32::from_be_bytes(buf[0x0424..0x0428].try_into().unwrap());
-    let fst_size = u32::from_be_bytes(buf[0x0428..0x042C].try_into().unwrap());
+    let dol_offset = u32::from_be_bytes([buf[0x0420], buf[0x0421], buf[0x0422], buf[0x0423]]);
+    let fst_offset = u32::from_be_bytes([buf[0x0424], buf[0x0425], buf[0x0426], buf[0x0427]]);
+    let fst_size = u32::from_be_bytes([buf[0x0428], buf[0x0429], buf[0x042A], buf[0x042B]]);
 
     Ok(NintendoDiscHeader {
         game_code,
@@ -237,8 +237,8 @@ pub(crate) fn check_magic(reader: &mut dyn ReadSeek) -> Result<(bool, bool), Ana
     }
     reader.seek(SeekFrom::Start(0))?;
 
-    let wii_magic = u32::from_be_bytes(buf[0x0018..0x001C].try_into().unwrap());
-    let gc_magic = u32::from_be_bytes(buf[0x001C..0x0020].try_into().unwrap());
+    let wii_magic = u32::from_be_bytes([buf[0x0018], buf[0x0019], buf[0x001A], buf[0x001B]]);
+    let gc_magic = u32::from_be_bytes([buf[0x001C], buf[0x001D], buf[0x001E], buf[0x001F]]);
 
     Ok((
         gc_magic == GC_MAGIC && wii_magic != WII_MAGIC,
@@ -375,5 +375,6 @@ pub(crate) fn hash_compressed_disc(
         sha1: sha.map(|s| format!("{:x}", s.finalize())),
         md5: md5_ctx.map(|m| format!("{:x}", m.compute())),
         data_size,
+        warnings: vec![],
     })
 }

@@ -15,56 +15,34 @@ use retro_junk_core::{AnalysisError, ReadSeek};
 // Byte reading helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn read_u16_le(buf: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([buf[offset], buf[offset + 1]])
+pub(crate) fn read_u16_le(buf: &[u8], offset: usize) -> Option<u16> {
+    buf.get(offset..offset + 2)
+        .map(|s| u16::from_le_bytes(s.try_into().unwrap()))
 }
 
-pub(crate) fn read_u32_le(buf: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        buf[offset],
-        buf[offset + 1],
-        buf[offset + 2],
-        buf[offset + 3],
-    ])
+pub(crate) fn read_u32_le(buf: &[u8], offset: usize) -> Option<u32> {
+    buf.get(offset..offset + 4)
+        .map(|s| u32::from_le_bytes(s.try_into().unwrap()))
 }
 
-pub(crate) fn read_u64_le(buf: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes([
-        buf[offset],
-        buf[offset + 1],
-        buf[offset + 2],
-        buf[offset + 3],
-        buf[offset + 4],
-        buf[offset + 5],
-        buf[offset + 6],
-        buf[offset + 7],
-    ])
+pub(crate) fn read_u64_le(buf: &[u8], offset: usize) -> Option<u64> {
+    buf.get(offset..offset + 8)
+        .map(|s| u64::from_le_bytes(s.try_into().unwrap()))
 }
 
-pub(crate) fn read_u16_be(buf: &[u8], offset: usize) -> u16 {
-    u16::from_be_bytes([buf[offset], buf[offset + 1]])
+pub(crate) fn read_u16_be(buf: &[u8], offset: usize) -> Option<u16> {
+    buf.get(offset..offset + 2)
+        .map(|s| u16::from_be_bytes(s.try_into().unwrap()))
 }
 
-pub(crate) fn read_u32_be(buf: &[u8], offset: usize) -> u32 {
-    u32::from_be_bytes([
-        buf[offset],
-        buf[offset + 1],
-        buf[offset + 2],
-        buf[offset + 3],
-    ])
+pub(crate) fn read_u32_be(buf: &[u8], offset: usize) -> Option<u32> {
+    buf.get(offset..offset + 4)
+        .map(|s| u32::from_be_bytes(s.try_into().unwrap()))
 }
 
-pub(crate) fn read_u64_be(buf: &[u8], offset: usize) -> u64 {
-    u64::from_be_bytes([
-        buf[offset],
-        buf[offset + 1],
-        buf[offset + 2],
-        buf[offset + 3],
-        buf[offset + 4],
-        buf[offset + 5],
-        buf[offset + 6],
-        buf[offset + 7],
-    ])
+pub(crate) fn read_u64_be(buf: &[u8], offset: usize) -> Option<u64> {
+    buf.get(offset..offset + 8)
+        .map(|s| u64::from_be_bytes(s.try_into().unwrap()))
 }
 
 /// Align a value up to a 64-byte boundary.

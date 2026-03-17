@@ -153,7 +153,11 @@ pub fn switch_to_root(app: &mut RetroJunkApp, new_root: std::path::PathBuf, ctx:
     app.root_path = Some(new_root.clone());
 
     // Load cache to restore previously computed work (hashes, DAT matches, etc.)
-    if let Some((library, stale)) = crate::cache::load_library(&new_root, &app.context) {
+    let loaded = app
+        .catalog_db
+        .as_ref()
+        .and_then(|conn| crate::cache::load_library(conn, &new_root, &app.context));
+    if let Some((library, stale)) = loaded {
         log::info!(
             "Restored {} consoles from cache ({} stale)",
             library.consoles.len(),

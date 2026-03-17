@@ -261,8 +261,8 @@ fn test_file_extensions() {
     assert!(exts.contains(&"iso"));
     assert!(exts.contains(&"bin"));
     assert!(exts.contains(&"chd"));
-    assert!(!exts.contains(&"cue"));
-    assert!(!exts.contains(&"img"));
+    assert!(exts.contains(&"cue"));
+    assert!(exts.contains(&"img"));
     assert!(!exts.contains(&"pbp"));
     assert!(!exts.contains(&"ecm"));
 }

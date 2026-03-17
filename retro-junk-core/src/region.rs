@@ -17,8 +17,12 @@ pub enum Region {
     China,
     /// Taiwan / Hong Kong
     Taiwan,
+    /// Asia (non-Japan, NTSC-compatible)
+    Asia,
     /// Brazil
     Brazil,
+    /// Latin America (non-Brazil)
+    LatinAmerica,
     /// World / Region-free
     World,
     /// Unknown region
@@ -35,7 +39,9 @@ impl Region {
         Self::Korea,
         Self::China,
         Self::Taiwan,
+        Self::Asia,
         Self::Brazil,
+        Self::LatinAmerica,
         Self::World,
     ];
 
@@ -49,7 +55,9 @@ impl Region {
             Self::Korea => "KOR",
             Self::China => "CHN",
             Self::Taiwan => "TWN",
+            Self::Asia => "ASI",
             Self::Brazil => "BRA",
+            Self::LatinAmerica => "LAT",
             Self::World => "WLD",
             Self::Unknown => "UNK",
         }
@@ -65,7 +73,9 @@ impl Region {
             Self::Korea => "Korea",
             Self::China => "China",
             Self::Taiwan => "Taiwan",
+            Self::Asia => "Asia",
             Self::Brazil => "Brazil",
+            Self::LatinAmerica => "Latin America",
             Self::World => "World",
             Self::Unknown => "Unknown",
         }
@@ -80,6 +90,7 @@ impl Region {
             'A' => Some(Self::Australia),
             'K' => Some(Self::Korea),
             'C' => Some(Self::China),
+            'T' => Some(Self::Taiwan),
             'W' => Some(Self::World),
             _ => None,
         }

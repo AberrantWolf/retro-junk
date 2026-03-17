@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Added Sega Saturn disc identification (ISO, BIN/CUE, CHD) with serial, region, and game name extraction
+- Added CHD support for Saturn disc images (all compression codecs supported)
+- Added `Region::Asia` and `Region::LatinAmerica` to the region enum
+- Added `saturnjp` folder alias for Saturn
+- Extracted shared disc utilities into `retro-junk-disc` crate for reuse across Sony, Sega, and future disc-based consoles
+- Hardened ROM/disc parsing against malformed input
+- Fixed WiiU DAT source, ClrMamePro size parsing, and miximage panic
+- Added GUI keyboard navigation (arrow keys, Home/End, Page Up/Down, Ctrl+1/2/3 view switching, Shift+arrow selection)
+- Fixed background operations (scan, hash, scrape, rename) targeting the wrong entry when the list changed mid-operation
+- Fixed multi-disc `.m3u` folder scanning miscounting discs
+- Added in-app log viewer and error dialogs for failed operations
+
 ## 0.1.2
 
 - Added GUI to cargo-dist releases with per-platform builds (macOS, Linux, Windows)

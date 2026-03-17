@@ -185,8 +185,7 @@ fn test_file_extensions() {
     assert!(exts.contains(&"iso"));
     assert!(exts.contains(&"bin"));
     assert!(exts.contains(&"chd"));
-    // cue excluded (matches PS1 convention)
-    assert!(!exts.contains(&"cue"));
+    assert!(exts.contains(&"cue"));
 }
 
 // -- DVD layer detection --

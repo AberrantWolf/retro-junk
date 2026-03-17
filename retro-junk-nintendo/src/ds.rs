@@ -82,20 +82,7 @@ struct NdsHeader {
 // Parsing
 // ---------------------------------------------------------------------------
 
-/// Read a little-endian u16 from a byte slice.
-fn read_u16_le(buf: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes([buf[offset], buf[offset + 1]])
-}
-
-/// Read a little-endian u32 from a byte slice.
-fn read_u32_le(buf: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        buf[offset],
-        buf[offset + 1],
-        buf[offset + 2],
-        buf[offset + 3],
-    ])
-}
+use crate::n3ds::common::{read_u16_le, read_u32_le};
 
 /// Read and parse the NDS header from the first 512 bytes.
 fn parse_header(reader: &mut dyn ReadSeek) -> Result<NdsHeader, AnalysisError> {
@@ -135,6 +122,7 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<NdsHeader, AnalysisError> {
         .map(|&b| b as char)
         .collect();
 
+    let trunc = || AnalysisError::corrupted_header("NDS header data truncated");
     Ok(NdsHeader {
         title,
         game_code,
@@ -143,15 +131,15 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<NdsHeader, AnalysisError> {
         device_capacity: buf[0x014],
         nds_region: buf[0x01D],
         rom_version: buf[0x01E],
-        arm9_rom_offset: read_u32_le(&buf, 0x020),
-        arm9_size: read_u32_le(&buf, 0x02C),
-        arm7_rom_offset: read_u32_le(&buf, 0x030),
-        arm7_size: read_u32_le(&buf, 0x03C),
-        icon_title_offset: read_u32_le(&buf, 0x068),
-        secure_area_checksum: read_u16_le(&buf, 0x06C),
-        total_used_rom_size: read_u32_le(&buf, 0x080),
-        logo_checksum: read_u16_le(&buf, 0x15C),
-        header_checksum: read_u16_le(&buf, 0x15E),
+        arm9_rom_offset: read_u32_le(&buf, 0x020).ok_or_else(trunc)?,
+        arm9_size: read_u32_le(&buf, 0x02C).ok_or_else(trunc)?,
+        arm7_rom_offset: read_u32_le(&buf, 0x030).ok_or_else(trunc)?,
+        arm7_size: read_u32_le(&buf, 0x03C).ok_or_else(trunc)?,
+        icon_title_offset: read_u32_le(&buf, 0x068).ok_or_else(trunc)?,
+        secure_area_checksum: read_u16_le(&buf, 0x06C).ok_or_else(trunc)?,
+        total_used_rom_size: read_u32_le(&buf, 0x080).ok_or_else(trunc)?,
+        logo_checksum: read_u16_le(&buf, 0x15C).ok_or_else(trunc)?,
+        header_checksum: read_u16_le(&buf, 0x15E).ok_or_else(trunc)?,
     })
 }
 

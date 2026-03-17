@@ -7,6 +7,7 @@ mod app;
 mod backend;
 mod cache;
 pub mod fonts;
+pub mod log_capture;
 mod settings;
 mod state;
 mod util;
@@ -15,7 +16,7 @@ mod widgets;
 
 /// Run the retro-junk GUI application.
 pub fn run() -> eframe::Result {
-    env_logger::init();
+    log_capture::init();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])

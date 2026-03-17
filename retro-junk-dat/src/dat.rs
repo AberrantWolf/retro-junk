@@ -388,7 +388,16 @@ fn parse_clr_rom_inline(inner: &str) -> Option<DatRom> {
             "size" => {
                 i += 1;
                 if i < tokens.len() {
-                    rom.size = tokens[i].parse().unwrap_or(0);
+                    match tokens[i].parse() {
+                        Ok(s) => rom.size = s,
+                        Err(_) => {
+                            log::warn!(
+                                "Invalid ROM size '{}' in ClrMamePro DAT, skipping entry",
+                                tokens[i]
+                            );
+                            return None;
+                        }
+                    }
                 }
             }
             "crc" => {

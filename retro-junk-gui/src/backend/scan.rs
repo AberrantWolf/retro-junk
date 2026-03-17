@@ -97,9 +97,9 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
         ctx.request_repaint();
 
         // Analyze each entry
-        let indexed: Vec<(usize, &scanner::GameEntry)> = entries.iter().enumerate().collect();
+        let refs: Vec<&scanner::GameEntry> = entries.iter().collect();
         analyze_entries(
-            &indexed,
+            &refs,
             registered.analyzer.as_ref(),
             &tx,
             &folder_name,
@@ -122,11 +122,11 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
 /// Re-analyze selected entries without rediscovering the folder.
 pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
     let console = &app.library.consoles[console_idx];
-    let selected: Vec<(usize, scanner::GameEntry)> = app
+    let selected: Vec<scanner::GameEntry> = app
         .selected_entries
         .iter()
         .copied()
-        .filter_map(|i| console.entries.get(i).map(|e| (i, e.game_entry.clone())))
+        .filter_map(|i| console.entries.get(i).map(|e| e.game_entry.clone()))
         .collect();
 
     if selected.is_empty() {
@@ -152,8 +152,7 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
             }
         };
 
-        let refs: Vec<(usize, &scanner::GameEntry)> =
-            selected.iter().map(|(i, e)| (*i, e)).collect();
+        let refs: Vec<&scanner::GameEntry> = selected.iter().collect();
         analyze_entries(
             &refs,
             registered.analyzer.as_ref(),
@@ -175,15 +174,15 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 /// `BrokenRefsChecked` for each entry whose `broken_references` is `None`.
 pub fn check_broken_refs_background(
     tx: mpsc::Sender<AppMessage>,
-    entries: Vec<(String, usize, scanner::GameEntry)>,
+    entries: Vec<(String, String, scanner::GameEntry)>,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
-        for (folder_name, index, entry) in &entries {
+        for (folder_name, entry_name, entry) in &entries {
             let broken = rename::check_broken_references(entry);
             let _ = tx.send(AppMessage::BrokenRefsChecked {
                 folder_name: folder_name.clone(),
-                index: *index,
+                entry_name: entry_name.clone(),
                 broken_refs: broken,
             });
         }
@@ -191,11 +190,11 @@ pub fn check_broken_refs_background(
     });
 }
 
-/// Analyze a set of (index, entry) pairs and send results via the message channel.
+/// Analyze a set of entries and send results via the message channel.
 ///
 /// Shared by `quick_scan_console` (all entries) and `rescan_selected_entries` (subset).
 fn analyze_entries(
-    entries: &[(usize, &scanner::GameEntry)],
+    entries: &[&scanner::GameEntry],
     analyzer: &dyn RomAnalyzer,
     tx: &mpsc::Sender<AppMessage>,
     folder_name: &str,
@@ -206,10 +205,12 @@ fn analyze_entries(
     let options = AnalysisOptions::new().quick(true);
     let total = entries.len();
 
-    for (progress_idx, &(entry_idx, entry)) in entries.iter().enumerate() {
+    for (progress_idx, entry) in entries.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
+
+        let entry_name = entry.display_name().to_string();
 
         match entry {
             scanner::GameEntry::SingleFile(_) => {
@@ -227,7 +228,7 @@ fn analyze_entries(
 
                 let _ = tx.send(AppMessage::EntryAnalyzed {
                     folder_name: folder_name.to_string(),
-                    index: entry_idx,
+                    entry_name: entry_name.clone(),
                     result,
                 });
             }
@@ -254,7 +255,7 @@ fn analyze_entries(
 
                 let _ = tx.send(AppMessage::MultiDiscAnalyzed {
                     folder_name: folder_name.to_string(),
-                    index: entry_idx,
+                    entry_name: entry_name.clone(),
                     disc_results,
                 });
             }
@@ -264,7 +265,7 @@ fn analyze_entries(
         let broken_refs = rename::check_broken_references(entry);
         let _ = tx.send(AppMessage::BrokenRefsChecked {
             folder_name: folder_name.to_string(),
-            index: entry_idx,
+            entry_name,
             broken_refs,
         });
 

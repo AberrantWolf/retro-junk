@@ -26,6 +26,7 @@ cargo run -p retro-junk-cli -- analyze --root /path/to/roms
 - `retro-junk-sony` — PS1, PS2, PS3, PSP, Vita
 - `retro-junk-sega` — SG-1000, Master System, Genesis, Sega CD, 32X, Saturn, Dreamcast, Game Gear
 - `retro-junk-microsoft` — Xbox, Xbox 360
+- `retro-junk-disc` — shared CD-ROM/optical disc utilities: ISO 9660 parsing, CUE sheets, CHD reading, track-aware hashing. Used by `retro-junk-sony` and `retro-junk-sega`.
 - `retro-junk-dat` — DAT file parsing and caching ONLY (no console-specific logic)
 - `retro-junk-lib` — glue layer: hasher, rename/matching, `AnalysisContext`. Re-exports `retro-junk-core` types for convenience.
 - `retro-junk-cli` — CLI frontend (clap)
@@ -34,6 +35,8 @@ cargo run -p retro-junk-cli -- analyze --root /path/to/roms
 **Dependency graph:**
 ```
 retro-junk-core          (types, traits)
+       |
+retro-junk-disc          (shared CD-ROM: ISO 9660, CUE, CHD, track hashing)
        |
   +----+----+----+
   |    |    |    |
@@ -47,6 +50,8 @@ retro-junk-core          (types, traits)
        |
   CLI / GUI          (thin presentation)
 ```
+
+Note: `retro-junk-disc` is used by disc-based platform crates (`sony`, `sega`). Cartridge-only crates (`nintendo` for NES/SNES/GB etc.) depend only on `core`. Nintendo disc analyzers (GameCube, Wii) use the `nod` crate directly rather than `retro-junk-disc`.
 
 **Key types:**
 - `RomAnalyzer` trait (in `retro-junk-core`) — central abstraction; each console implements this, including DAT-related methods
@@ -65,7 +70,11 @@ Platform crates own ALL console-specific knowledge. No console-specific code exi
 - **Serial format normalization** lives in `retro-junk-dat/src/matcher.rs` — the single place bridging analyzer serial output to DAT serial lookup.
 - **DAT sources:** No-Intro (cartridge, via LibRetro enhanced DATs) and Redump (disc, from redump.org). See `.claude/skills/game-scraping/` for full details.
 
-**IMPORTANT**: Prioritize code change suggestions that avoid repeated code! Actively look for ways to keep the codebase "DRY". With every plan, include a section about how the plan keeps the code base from having meaningful chunks of repeated logic in multiple places.
+**IMPORTANT**: Prioritize code change suggestions that avoid repeated code! Actively look for ways to keep the codebase "DRY". With every plan, include a section about how the plan keeps the code base DRY, and how the plan improves the codebase.
+
+**IMPORTANT**: Include in the plan a section about how the plan maintains and improves best practices.
+
+**NOTE**: If DRY and best-practices improvements are out of scope for a plan, include a section to document in TODO.md the potential improvements for later updates.
 
 ## Conventions
 

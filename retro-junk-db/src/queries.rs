@@ -10,7 +10,7 @@ use crate::operations::OperationError;
 // ── Column Constants ────────────────────────────────────────────────────────
 
 const MEDIA_COLUMNS: &str = "id, release_id, media_serial, disc_number, disc_label, \
-     revision, status, dat_name, dat_source, file_size, \
+     revision, status, tag, dat_name, dat_source, file_size, \
      crc32, sha1, md5, created_at, updated_at";
 
 const RELEASE_COLUMNS: &str = "id, work_id, platform_id, region, revision, variant, \
@@ -281,6 +281,7 @@ pub struct PlatformRow {
 pub struct WorkRow {
     pub id: String,
     pub canonical_name: String,
+    pub tag: Option<CatalogTag>,
 }
 
 /// A work row with release count for a specific platform.
@@ -830,17 +831,12 @@ pub fn search_works(
 ) -> Result<Vec<WorkRow>, OperationError> {
     let pattern = format!("%{}%", query);
     let sql = format!(
-        "SELECT id, canonical_name FROM works \
+        "SELECT id, canonical_name, tag FROM works \
          WHERE canonical_name LIKE ?1 \
          ORDER BY canonical_name LIMIT {limit} OFFSET {offset}"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![pattern], |row| {
-        Ok(WorkRow {
-            id: row.get(0)?,
-            canonical_name: row.get(1)?,
-        })
-    })?;
+    let rows = stmt.query_map(params![pattern], row_to_work)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
@@ -915,14 +911,9 @@ pub fn search_releases_paged(
 /// Get a single work by its ID.
 pub fn get_work_by_id(conn: &Connection, id: &str) -> Result<Option<WorkRow>, OperationError> {
     let result = conn.query_row(
-        "SELECT id, canonical_name FROM works WHERE id = ?1",
+        "SELECT id, canonical_name, tag FROM works WHERE id = ?1",
         params![id],
-        |row| {
-            Ok(WorkRow {
-                id: row.get(0)?,
-                canonical_name: row.get(1)?,
-            })
-        },
+        row_to_work,
     );
     match result {
         Ok(w) => Ok(Some(w)),
@@ -941,6 +932,26 @@ pub fn get_media_by_id(conn: &Connection, id: &str) -> Result<Option<Media>, Ope
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Find works with a specific tag.
+pub fn find_works_by_tag(
+    conn: &Connection,
+    tag: CatalogTag,
+) -> Result<Vec<WorkRow>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, canonical_name, tag FROM works WHERE tag = ?1 ORDER BY canonical_name",
+    )?;
+    let rows = stmt.query_map(params![tag.as_str()], row_to_work)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Find media entries with a specific tag.
+pub fn find_media_by_tag(conn: &Connection, tag: CatalogTag) -> Result<Vec<Media>, OperationError> {
+    let sql = format!("SELECT {MEDIA_COLUMNS} FROM media WHERE tag = ?1 ORDER BY id");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![tag.as_str()], row_to_media)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 /// Get a single platform by its ID.
@@ -1303,6 +1314,7 @@ pub fn list_collection_paged(
 
 fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {
     let status_str: String = row.get(6)?;
+    let tag_str: Option<String> = row.get(7)?;
     Ok(Media {
         id: row.get(0)?,
         release_id: row.get(1)?,
@@ -1311,14 +1323,24 @@ fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {
         disc_label: row.get(4)?,
         revision: row.get(5)?,
         status: MediaStatus::from_str_loose(&status_str),
-        dat_name: row.get(7)?,
-        dat_source: row.get(8)?,
-        file_size: row.get(9)?,
-        crc32: row.get(10)?,
-        sha1: row.get(11)?,
-        md5: row.get(12)?,
-        created_at: row.get(13)?,
-        updated_at: row.get(14)?,
+        tag: tag_str.as_deref().and_then(CatalogTag::from_str_loose),
+        dat_name: row.get(8)?,
+        dat_source: row.get(9)?,
+        file_size: row.get(10)?,
+        crc32: row.get(11)?,
+        sha1: row.get(12)?,
+        md5: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
+    })
+}
+
+fn row_to_work(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkRow> {
+    let tag_str: Option<String> = row.get(2)?;
+    Ok(WorkRow {
+        id: row.get(0)?,
+        canonical_name: row.get(1)?,
+        tag: tag_str.as_deref().and_then(CatalogTag::from_str_loose),
     })
 }
 

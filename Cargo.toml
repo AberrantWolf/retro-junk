@@ -16,10 +16,11 @@ members = [
     "retro-junk-db",
     "retro-junk-import",
     "retro-junk-gui-cjk",
+    "retro-junk-disc",
 ]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/AberrantWolf/retro-junk"
@@ -32,6 +33,7 @@ retro-junk-sony = { path = "retro-junk-sony" }
 retro-junk-sega = { path = "retro-junk-sega" }
 retro-junk-microsoft = { path = "retro-junk-microsoft" }
 retro-junk-dat = { path = "retro-junk-dat" }
+retro-junk-disc = { path = "retro-junk-disc" }
 retro-junk-catalog = { path = "retro-junk-catalog" }
 retro-junk-db = { path = "retro-junk-db" }
 retro-junk-import = { path = "retro-junk-import" }

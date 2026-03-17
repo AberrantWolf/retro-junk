@@ -1,5 +1,10 @@
 pub mod activity_bar;
 pub mod console_tree;
 pub mod detail_panel;
+pub mod error_dialog;
 pub mod game_table;
+pub mod keyboard_nav;
+pub mod log_viewer;
 pub mod status_badge;
+pub mod status_bar;
+pub mod tag_dialog;
