@@ -41,7 +41,8 @@
 - Total library size: ~400GB uncompressed
 
 ## ROM Format Reference
-See [PSX.md](../formats/PSX.md) for detailed header format, checksum algorithms, and detection method.
+- [PSX.md](../formats/PSX.md) — SYSTEM.CNF format, serial extraction, and detection method.
+- [CHD.md](../formats/CHD.md) — CHD compressed disc format used for PlayStation disc images.
 
 ## Digital Storage Considerations
 - **Space Requirements**: Moderate to high

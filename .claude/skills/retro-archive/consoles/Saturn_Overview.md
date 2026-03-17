@@ -41,7 +41,8 @@
 - Total library size: ~400GB uncompressed
 
 ## ROM Format Reference
-See [Saturn.md](../formats/Saturn.md) for detailed header format, checksum algorithms, and detection method.
+- [Saturn.md](../formats/Saturn.md) — IP.BIN header format, checksum algorithms, and detection method.
+- [CHD.md](../formats/CHD.md) — CHD compressed disc format used for Saturn disc images.
 
 ## Digital Storage Considerations
 - **Space Requirements**: Moderate to high
