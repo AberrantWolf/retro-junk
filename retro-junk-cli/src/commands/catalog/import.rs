@@ -6,6 +6,7 @@ use owo_colors::Stream::Stdout;
 use retro_junk_lib::AnalysisContext;
 
 use crate::CliError;
+use crate::commands::systems::{SystemCapability, resolve_systems};
 
 use super::{default_catalog_db_path, default_catalog_dir};
 
@@ -55,48 +56,7 @@ pub(crate) fn run_catalog_import(
     }
 
     // Determine which consoles to import
-    let to_import: Vec<_> = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
-        ctx.consoles()
-            .filter(|c| c.analyzer.has_dat_support())
-            .collect()
-    } else {
-        systems
-            .iter()
-            .filter_map(|name| {
-                let console = ctx.get_by_short_name(name);
-                if console.is_none() {
-                    log::warn!(
-                        "  {} Unknown system '{}'",
-                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                        name,
-                    );
-                }
-                console
-            })
-            .filter(|c| {
-                if !c.analyzer.has_dat_support() {
-                    log::warn!(
-                        "  {} No DAT support for '{}'",
-                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                        c.metadata.short_name,
-                    );
-                    return false;
-                }
-                true
-            })
-            .collect()
-    };
-
-    if to_import.is_empty() {
-        if systems.is_empty() {
-            log::warn!(
-                "No systems specified. Use 'catalog import all' or specify systems (e.g., 'catalog import saturn,ps1')."
-            );
-        } else {
-            log::warn!("No systems to import.");
-        }
-        return Ok(());
-    }
+    let to_import = resolve_systems(ctx, &systems, SystemCapability::DatSupport)?;
 
     log::info!(
         "{}",

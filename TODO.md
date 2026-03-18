@@ -38,7 +38,7 @@
 
 ## CLI
 
-- [ ] **Flesh out `list` command output** — `catalog lookup --type platforms` already shows ID, name, manufacturer, year, media type, release/media counts. Still missing: enrichment coverage percentage and a `--verbose` flag. The standalone `list` command (for analyzer metadata: extensions, folder names, DAT support) could also benefit from additional columns.
+- [x] **Flesh out `list` command output** — Resolved: the standalone `list` command was folded into `catalog lookup`. `catalog lookup --type platforms` shows ID, name, manufacturer, year, media type, release/media counts.
 
 ## Web Frontend
 
@@ -122,7 +122,7 @@ Audit findings from 2026-02-27.
 
 - [ ] **Decide on user-facing "Media" vs "Assets" terminology** — Rust types were renamed from `MediaType`/`MediaStatus`/etc. to `AssetType`/`AssetStatus`/etc. to disambiguate from physical media types. However, UI strings still say "Scrape Media", "Re-scrape Media", "No scraped media", "Media complete", etc. Decide whether to keep user-facing labels as "Media" (more intuitive to users) or align them with the code terminology ("Assets").
 
-- [ ] **Remove dead `CliError` variants** — `retro-junk-cli/src/error.rs:28,32` defines `DatError` and `Analysis` variants (and constructors at lines 56, 60) that are never constructed. Remove or use them.
+- [x] **Remove dead `CliError` variants** — Removed `DatError` and `Analysis` variants and their constructors.
 
 ## Code Health: Safety & Robustness
 
@@ -204,7 +204,7 @@ Audit findings from 2026-03-17.
 
 - [ ] **"Compute" vs "Calculate" hashes** — Hash backend says "Computing hashes" but buttons say "Calculate All Hashes". Pick one verb.
 
-- [ ] **`RomFilterArgs` filters consoles, not ROMs** — `retro-junk-cli/src/cli_types.rs:34`: Struct name is misleading. Consider renaming to `ConsoleFilterArgs`.
+- [x] **`RomFilterArgs` filters consoles, not ROMs** — Renamed to `ConsoleFilterArgs`.
 
 ### Missing User Feedback
 

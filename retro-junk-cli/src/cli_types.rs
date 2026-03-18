@@ -11,7 +11,7 @@ use retro_junk_lib::Platform;
 #[command(about = "Analyze retro game ROMs and disc images", long_about = None)]
 pub(crate) struct Cli {
     /// Library path containing console folders (falls back to saved config, then cwd)
-    #[arg(short = 'L', long, global = true, alias = "root")]
+    #[arg(short = 'L', long, global = true)]
     pub library_path: Option<PathBuf>,
 
     /// Only show warnings and errors (suppress normal output)
@@ -30,9 +30,9 @@ pub(crate) struct Cli {
     pub command: Commands,
 }
 
-/// Common arguments for commands that process ROM files.
+/// Common arguments for commands that filter by console.
 #[derive(Args, Clone)]
-pub(crate) struct RomFilterArgs {
+pub(crate) struct ConsoleFilterArgs {
     /// Console names or aliases (e.g., snes,n64,ps1,gc,gg)
     #[arg(short, long, value_delimiter = ',')]
     pub consoles: Option<Vec<Platform>>,
@@ -44,14 +44,14 @@ pub(crate) struct RomFilterArgs {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
-    /// Analyze ROMs in a directory structure
+    /// Analyze games in a library directory structure
     Analyze {
         /// Quick mode: read as little data as possible (useful for network shares)
         #[arg(short, long)]
         quick: bool,
 
         #[command(flatten)]
-        roms: RomFilterArgs,
+        roms: ConsoleFilterArgs,
     },
 
     /// Rename ROM files to NoIntro canonical names
@@ -65,7 +65,7 @@ pub(crate) enum Commands {
         hash: bool,
 
         #[command(flatten)]
-        roms: RomFilterArgs,
+        roms: ConsoleFilterArgs,
 
         /// Use DAT files from this directory instead of the cache
         #[arg(long)]
@@ -91,17 +91,17 @@ pub(crate) enum Commands {
         no_backup: bool,
 
         #[command(flatten)]
-        roms: RomFilterArgs,
+        roms: ConsoleFilterArgs,
 
         /// Use DAT files from this directory instead of the cache
         #[arg(long)]
         dat_dir: Option<PathBuf>,
     },
 
-    /// Scrape game metadata and media from ScreenScraper.fr
+    /// Scrape metadata and media into ES-DE gamelists via ScreenScraper.fr
     Scrape {
         #[command(flatten)]
-        roms: RomFilterArgs,
+        roms: ConsoleFilterArgs,
 
         /// Media types to download (e.g., covers,screenshots,videos,marquees)
         #[arg(long, value_delimiter = ',')]
@@ -162,14 +162,13 @@ pub(crate) enum Commands {
         threads: Option<usize>,
     },
 
-    /// Manage cached DAT files
+    /// Manage cached DAT and GDB files
     Cache {
         #[command(subcommand)]
         action: CacheAction,
     },
 
     /// Manage ScreenScraper credentials
-    #[command(alias = "config")]
     Credentials {
         #[command(subcommand)]
         action: CredentialsAction,
@@ -186,10 +185,32 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         action: CatalogAction,
     },
+
+    /// List all supported systems and their capabilities
+    Systems {
+        /// Filter by manufacturer (e.g., Nintendo, Sega, Sony)
+        #[arg(long)]
+        manufacturer: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
 pub(crate) enum CacheAction {
+    /// Manage cached DAT files (No-Intro, Redump)
+    Dat {
+        #[command(subcommand)]
+        action: DatCacheAction,
+    },
+
+    /// Manage cached GDB (GameDataBase) CSV files
+    Gdb {
+        #[command(subcommand)]
+        action: GdbCacheAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DatCacheAction {
     /// List cached DAT files
     List,
 
@@ -197,26 +218,38 @@ pub(crate) enum CacheAction {
     Clear,
 
     /// Download DAT files for specified systems
+    #[command(
+        after_help = "Examples:\n  retro-junk cache dat fetch all            Download all DATs\n  retro-junk cache dat fetch saturn --force  Re-download Saturn DAT"
+    )]
     Fetch {
-        /// Systems to fetch (e.g., snes,n64) or "all"
+        /// Systems to fetch (e.g., snes,n64) or "all". Run 'retro-junk systems' for a full list.
         #[arg(value_delimiter = ',')]
         systems: Vec<String>,
         /// Re-download even if cached
         #[arg(long)]
         force: bool,
     },
+}
 
-    /// List cached GDB (GameDataBase) CSV files
-    GdbList,
+#[derive(Subcommand)]
+pub(crate) enum GdbCacheAction {
+    /// List cached GDB CSV files
+    List,
 
     /// Remove all cached GDB CSV files
-    GdbClear,
+    Clear,
 
     /// Download GDB CSV files for specified systems
-    GdbFetch {
-        /// Systems to fetch (e.g., nes,snes) or "all"
+    #[command(
+        after_help = "Examples:\n  retro-junk cache gdb fetch all            Download all GDB CSVs\n  retro-junk cache gdb fetch nes --force    Re-download NES GDB CSV"
+    )]
+    Fetch {
+        /// Systems to fetch (e.g., nes,snes) or "all". Run 'retro-junk systems' for a full list.
         #[arg(value_delimiter = ',')]
         systems: Vec<String>,
+        /// Re-download even if cached
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -254,8 +287,11 @@ pub(crate) enum SettingsAction {
 #[derive(Subcommand)]
 pub(crate) enum CatalogAction {
     /// Import DAT files into the catalog database
+    #[command(
+        after_help = "Examples:\n  retro-junk catalog import            Import all systems\n  retro-junk catalog import nes,snes   Import specific systems"
+    )]
     Import {
-        /// Systems to import (e.g., snes,n64) or "all"
+        /// Systems to import (e.g., nes,snes) or "all". Defaults to all if omitted.
         #[arg(value_delimiter = ',')]
         systems: Vec<String>,
 
@@ -274,7 +310,7 @@ pub(crate) enum CatalogAction {
 
     /// Enrich catalog releases with GameDataBase metadata (Japanese titles, developer/publisher, genre)
     EnrichGdb {
-        /// Systems to enrich (e.g., nes,snes) or "all"
+        /// Systems to enrich (e.g., nes,snes) or "all". Defaults to all if omitted.
         #[arg(value_delimiter = ',')]
         systems: Vec<String>,
 
@@ -293,7 +329,7 @@ pub(crate) enum CatalogAction {
 
     /// Enrich catalog releases with ScreenScraper metadata
     Enrich {
-        /// Systems to enrich (e.g., nes,snes) or "all"
+        /// Systems to enrich (e.g., nes,snes) or "all". Defaults to all if omitted.
         #[arg(value_delimiter = ',')]
         systems: Vec<String>,
 
@@ -336,7 +372,7 @@ pub(crate) enum CatalogAction {
 
     /// Scan a ROM folder and add matched files to collection
     Scan {
-        /// System to scan (e.g., nes, snes, n64)
+        /// System to scan (e.g., saturn). Run 'retro-junk systems' for a full list.
         system: String,
 
         /// Path to ROM folder
@@ -353,7 +389,7 @@ pub(crate) enum CatalogAction {
 
     /// Re-verify collection entries against files on disk
     Verify {
-        /// System to verify (e.g., nes, snes, n64)
+        /// System to verify (e.g., saturn). Run 'retro-junk systems' for a full list.
         system: String,
 
         /// Path to the catalog database file
@@ -408,7 +444,7 @@ pub(crate) enum CatalogAction {
 
     /// Analyze media asset coverage gaps
     Gaps {
-        /// System to analyze (e.g., nes, snes)
+        /// System to analyze (e.g., saturn). Run 'retro-junk systems' for a full list.
         system: String,
 
         /// Path to the catalog database file
@@ -480,7 +516,7 @@ pub(crate) enum CatalogAction {
 
     /// Merge duplicate works that share a ScreenScraper ID
     Reconcile {
-        /// Systems to reconcile (e.g., nes,snes) or omit for all
+        /// Systems to reconcile (e.g., nes,snes) or "all". Defaults to all if omitted.
         #[arg(value_delimiter = ',')]
         systems: Vec<String>,
 
@@ -502,7 +538,7 @@ pub(crate) enum CatalogAction {
 
     /// Clear enrichment status for releases (screenscraper_id and scraper_not_found)
     Unenrich {
-        /// System to unenrich (e.g., nes, snes, n64)
+        /// System to unenrich (e.g., saturn). Run 'retro-junk systems' for a full list.
         system: String,
 
         /// Only affect releases with titles at or after this value (case-insensitive)

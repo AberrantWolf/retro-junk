@@ -2,10 +2,10 @@ use std::path::PathBuf;
 
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
-use retro_junk_lib::Platform;
 
 use crate::CliError;
 use crate::commands::scrape::connect_screenscraper;
+use crate::commands::systems::resolve_platform_ids;
 
 use super::default_catalog_db_path;
 
@@ -37,35 +37,7 @@ pub(crate) fn run_catalog_enrich(
     let conn = retro_junk_db::open_database(&db_path)
         .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
 
-    // Resolve "all" to all platforms with core_platform set,
-    // otherwise parse each system through the Platform enum so aliases
-    // (e.g., "megadrive", "MD", "psx") resolve to canonical DB IDs.
-    let platform_ids: Vec<String> = if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all")
-    {
-        retro_junk_db::list_platforms(&conn)
-            .map_err(|e| CliError::database(format!("Failed to list platforms: {}", e)))?
-            .into_iter()
-            .filter(|p| p.core_platform.is_some())
-            .map(|p| p.id)
-            .collect()
-    } else {
-        let mut ids = Vec::new();
-        for s in &systems {
-            let p: Platform = s.parse().map_err(|_| {
-                CliError::unknown_system(format!(
-                    "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
-                    s
-                ))
-            })?;
-            ids.push(p.short_name().to_string());
-        }
-        ids
-    };
-
-    if platform_ids.is_empty() {
-        log::warn!("No systems specified.");
-        return Ok(());
-    }
+    let platform_ids = resolve_platform_ids(&conn, &systems)?;
 
     let reconcile_platform_ids = platform_ids.clone();
 

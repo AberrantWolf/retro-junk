@@ -18,7 +18,7 @@ pub(crate) fn run_cache_list() -> Result<(), CliError> {
                     "{}",
                     "No cached DAT files.".if_supports_color(Stdout, |t| t.dimmed()),
                 );
-                log::info!("Run 'retro-junk cache fetch <system>' to download DAT files.");
+                log::info!("Run 'retro-junk cache dat fetch <system>' to download DAT files.");
                 return Ok(());
             }
 
@@ -93,7 +93,7 @@ pub(crate) fn run_gdb_cache_list() -> Result<(), CliError> {
                     "{}",
                     "No cached GDB files.".if_supports_color(Stdout, |t| t.dimmed()),
                 );
-                log::info!("Run 'retro-junk cache gdb-fetch <system>' to download GDB CSV files.");
+                log::info!("Run 'retro-junk cache gdb fetch <system>' to download GDB CSV files.");
                 return Ok(());
             }
 
@@ -158,20 +158,22 @@ pub(crate) fn run_gdb_cache_clear() -> Result<(), CliError> {
 pub(crate) fn run_gdb_cache_fetch(
     ctx: &AnalysisContext,
     systems: Vec<String>,
+    force: bool,
 ) -> Result<(), CliError> {
-    let to_fetch: Vec<(String, &'static [&'static str])> =
-        if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
-            ctx.consoles()
-                .filter(|c| c.analyzer.has_gdb_support())
-                .map(|c| {
-                    (
-                        c.metadata.short_name.to_string(),
-                        c.analyzer.gdb_csv_names(),
-                    )
-                })
-                .collect()
-        } else {
-            systems
+    let to_fetch: Vec<(String, &'static [&'static str])> = if systems.len() == 1
+        && systems[0].eq_ignore_ascii_case("all")
+    {
+        ctx.consoles()
+            .filter(|c| c.analyzer.has_gdb_support())
+            .map(|c| {
+                (
+                    c.metadata.short_name.to_string(),
+                    c.analyzer.gdb_csv_names(),
+                )
+            })
+            .collect()
+    } else {
+        systems
                 .into_iter()
                 .filter_map(|short_name| {
                     let console = ctx.get_by_short_name(&short_name);
@@ -180,7 +182,7 @@ pub(crate) fn run_gdb_cache_fetch(
                             let csv_names = c.analyzer.gdb_csv_names();
                             if csv_names.is_empty() {
                                 log::warn!(
-                                    "  {} No GDB support for '{}'",
+                                    "  {} No GDB support for '{}'. Run 'retro-junk systems' to see supported systems.",
                                     "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                                     short_name,
                                 );
@@ -191,7 +193,7 @@ pub(crate) fn run_gdb_cache_fetch(
                         }
                         None => {
                             log::warn!(
-                                "  {} Unknown system '{}'",
+                                "  {} Unknown system '{}'. Run 'retro-junk systems' to see all available systems.",
                                 "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                                 short_name,
                             );
@@ -200,11 +202,11 @@ pub(crate) fn run_gdb_cache_fetch(
                     }
                 })
                 .collect()
-        };
+    };
 
     for (short_name, csv_names) in &to_fetch {
         for csv_name in *csv_names {
-            match retro_junk_dat::gdb_cache::fetch_gdb(csv_name) {
+            match retro_junk_dat::gdb_cache::fetch_gdb(csv_name, force) {
                 Ok(path) => {
                     let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                     log::info!(
@@ -239,21 +241,23 @@ pub(crate) fn run_cache_fetch(
 ) -> Result<(), CliError> {
     use retro_junk_lib::DatSource;
 
-    let to_fetch: Vec<(String, Vec<&str>, &'static [&'static str], DatSource)> =
-        if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
-            ctx.consoles()
-                .filter(|c| c.analyzer.has_dat_support())
-                .map(|c| {
-                    (
-                        c.metadata.short_name.to_string(),
-                        c.analyzer.dat_names().to_vec(),
-                        c.analyzer.dat_download_ids(),
-                        c.analyzer.dat_source(),
-                    )
-                })
-                .collect()
-        } else {
-            systems
+    let to_fetch: Vec<(String, Vec<&str>, &'static [&'static str], DatSource)> = if systems.len()
+        == 1
+        && systems[0].eq_ignore_ascii_case("all")
+    {
+        ctx.consoles()
+            .filter(|c| c.analyzer.has_dat_support())
+            .map(|c| {
+                (
+                    c.metadata.short_name.to_string(),
+                    c.analyzer.dat_names().to_vec(),
+                    c.analyzer.dat_download_ids(),
+                    c.analyzer.dat_source(),
+                )
+            })
+            .collect()
+    } else {
+        systems
                 .into_iter()
                 .filter_map(|short_name| {
                     let console = ctx.get_by_short_name(&short_name);
@@ -262,7 +266,7 @@ pub(crate) fn run_cache_fetch(
                             let dat_names = c.analyzer.dat_names();
                             if dat_names.is_empty() {
                                 log::warn!(
-                                    "  {} No DAT support for '{}'",
+                                    "  {} No DAT support for '{}'. Run 'retro-junk systems' to see supported systems.",
                                     "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                                     short_name,
                                 );
@@ -278,7 +282,7 @@ pub(crate) fn run_cache_fetch(
                         }
                         None => {
                             log::warn!(
-                                "  {} Unknown system '{}'",
+                                "  {} Unknown system '{}'. Run 'retro-junk systems' to see all available systems.",
                                 "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                                 short_name,
                             );
@@ -287,7 +291,7 @@ pub(crate) fn run_cache_fetch(
                     }
                 })
                 .collect()
-        };
+    };
 
     for (short_name, dat_names, download_ids, dat_source) in &to_fetch {
         match retro_junk_dat::cache::fetch(short_name, dat_names, download_ids, *dat_source, force)

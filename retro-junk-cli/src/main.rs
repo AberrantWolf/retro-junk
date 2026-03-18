@@ -253,16 +253,20 @@ fn run(
             )?;
         }
         Commands::Cache { action } => match action {
-            CacheAction::List => commands::cache::run_cache_list()?,
-            CacheAction::Clear => commands::cache::run_cache_clear()?,
-            CacheAction::Fetch { systems, force } => {
-                commands::cache::run_cache_fetch(ctx, systems, force)?
-            }
-            CacheAction::GdbList => commands::cache::run_gdb_cache_list()?,
-            CacheAction::GdbClear => commands::cache::run_gdb_cache_clear()?,
-            CacheAction::GdbFetch { systems } => {
-                commands::cache::run_gdb_cache_fetch(ctx, systems)?
-            }
+            CacheAction::Dat { action } => match action {
+                DatCacheAction::List => commands::cache::run_cache_list()?,
+                DatCacheAction::Clear => commands::cache::run_cache_clear()?,
+                DatCacheAction::Fetch { systems, force } => {
+                    commands::cache::run_cache_fetch(ctx, systems, force)?
+                }
+            },
+            CacheAction::Gdb { action } => match action {
+                GdbCacheAction::List => commands::cache::run_gdb_cache_list()?,
+                GdbCacheAction::Clear => commands::cache::run_gdb_cache_clear()?,
+                GdbCacheAction::Fetch { systems, force } => {
+                    commands::cache::run_gdb_cache_fetch(ctx, systems, force)?
+                }
+            },
         },
         Commands::Credentials { action } => match action {
             CredentialsAction::Show => commands::credentials::run_credentials_show()?,
@@ -271,11 +275,14 @@ fn run(
             CredentialsAction::Path => commands::credentials::run_credentials_path()?,
         },
         Commands::Settings { action } => match action {
-            SettingsAction::Show => commands::config::run_config_show()?,
+            SettingsAction::Show => commands::settings::run_config_show()?,
             SettingsAction::LibraryPath { path, clear } => {
-                commands::config::run_config_library_path(path, clear)?
+                commands::settings::run_config_library_path(path, clear)?
             }
         },
+        Commands::Systems { manufacturer } => {
+            commands::systems::run_systems(ctx, manufacturer)?;
+        }
         Commands::Catalog { action } => match action {
             CatalogAction::Import {
                 systems,
@@ -371,6 +378,7 @@ fn run(
                 limit,
             } => {
                 commands::catalog::gaps::run_catalog_gaps(
+                    ctx,
                     system,
                     db,
                     collection_only,
@@ -423,7 +431,7 @@ fn run(
                 db,
                 confirm,
             } => {
-                commands::catalog::unenrich::run_catalog_unenrich(system, after, db, confirm)?;
+                commands::catalog::unenrich::run_catalog_unenrich(ctx, system, after, db, confirm)?;
             }
             CatalogAction::Reset { db, confirm } => {
                 commands::catalog::reset::run_catalog_reset(db, confirm)?;
@@ -470,7 +478,7 @@ pub(crate) fn scan_folders(
     }
 }
 
-/// Log a DAT loading error with a `cache fetch` hint.
+/// Log a DAT loading error with a `cache dat fetch` hint.
 pub(crate) fn log_dat_error(
     platform_name: &str,
     folder_name: &str,
@@ -485,7 +493,7 @@ pub(crate) fn log_dat_error(
         error,
     );
     log::warn!(
-        "  {} Try: retro-junk cache fetch {}",
+        "  {} Try: retro-junk cache dat fetch {}",
         "\u{2139}".if_supports_color(Stdout, |t| t.cyan()),
         short_name,
     );

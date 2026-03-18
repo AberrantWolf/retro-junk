@@ -2,9 +2,10 @@ use std::path::PathBuf;
 
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
-use retro_junk_lib::{AnalysisContext, Platform};
+use retro_junk_lib::AnalysisContext;
 
 use crate::CliError;
+use crate::commands::systems::{SystemCapability, resolve_systems};
 
 use super::default_catalog_db_path;
 
@@ -30,46 +31,16 @@ pub(crate) fn run_catalog_enrich_gdb(
         .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
 
     // Resolve systems
-    let consoles: Vec<(String, &'static [&'static str])> =
-        if systems.len() == 1 && systems[0].eq_ignore_ascii_case("all") {
-            ctx.consoles()
-                .filter(|c| c.analyzer.has_gdb_support())
-                .map(|c| {
-                    (
-                        c.metadata.short_name.to_string(),
-                        c.analyzer.gdb_csv_names(),
-                    )
-                })
-                .collect()
-        } else {
-            let mut result = Vec::new();
-            for s in &systems {
-                let p: Platform = s.parse().map_err(|_| {
-                    CliError::unknown_system(format!(
-                        "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
-                        s
-                    ))
-                })?;
-                if let Some(console) = ctx.get_by_short_name(p.short_name()) {
-                    let csv_names = console.analyzer.gdb_csv_names();
-                    if csv_names.is_empty() {
-                        log::warn!(
-                            "  {} No GDB support for '{}'",
-                            "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                            s,
-                        );
-                    } else {
-                        result.push((p.short_name().to_string(), csv_names));
-                    }
-                }
-            }
-            result
-        };
-
-    if consoles.is_empty() {
-        log::warn!("No systems with GDB support specified.");
-        return Ok(());
-    }
+    let resolved = resolve_systems(ctx, &systems, SystemCapability::GdbSupport)?;
+    let consoles: Vec<(String, &'static [&'static str])> = resolved
+        .into_iter()
+        .map(|c| {
+            (
+                c.metadata.short_name.to_string(),
+                c.analyzer.gdb_csv_names(),
+            )
+        })
+        .collect();
 
     let mut total_enriched = 0u32;
 

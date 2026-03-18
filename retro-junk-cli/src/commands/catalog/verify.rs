@@ -6,6 +6,7 @@ use owo_colors::Stream::Stdout;
 use retro_junk_lib::AnalysisContext;
 
 use crate::CliError;
+use crate::commands::systems::resolve_single_system;
 
 use super::default_catalog_db_path;
 
@@ -25,12 +26,7 @@ pub(crate) fn run_catalog_verify(
         return Ok(());
     }
 
-    let console = ctx.get_by_short_name(&system).ok_or_else(|| {
-        CliError::unknown_system(format!(
-            "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
-            system
-        ))
-    })?;
+    let console = resolve_single_system(ctx, &system)?;
 
     let conn = retro_junk_db::open_database(&db_path)
         .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;

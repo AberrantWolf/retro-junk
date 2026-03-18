@@ -2,27 +2,24 @@ use std::path::PathBuf;
 
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
-use retro_junk_lib::Platform;
+
+use retro_junk_lib::AnalysisContext;
 
 use crate::CliError;
+use crate::commands::systems::resolve_single_system;
 
 use super::default_catalog_db_path;
 
 /// Clear enrichment status for releases matching the given criteria.
 pub(crate) fn run_catalog_unenrich(
+    ctx: &AnalysisContext,
     system: String,
     after: Option<String>,
     db_path: Option<PathBuf>,
     confirm: bool,
 ) -> Result<(), CliError> {
-    // Parse system as a Platform enum (accepts aliases like "megadrive", "MD", etc.)
-    let core_platform: Platform = system.parse().map_err(|_| {
-        CliError::unknown_system(format!(
-            "Unknown system '{}'. Use a short name like 'nes', 'snes', 'n64'.",
-            system
-        ))
-    })?;
-    let short_name = core_platform.short_name();
+    let console = resolve_single_system(ctx, &system)?;
+    let short_name = console.metadata.short_name;
 
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
 

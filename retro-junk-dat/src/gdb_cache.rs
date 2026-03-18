@@ -108,9 +108,21 @@ fn download_url(csv_name: &str) -> String {
 }
 
 /// Download and cache a single GDB CSV file. Returns the local path.
-pub fn fetch_gdb(csv_name: &str) -> Result<PathBuf, DatError> {
-    let url = download_url(csv_name);
+///
+/// When `force` is false, returns the cached path if the file already exists
+/// and the cache version is current. When `force` is true, always re-downloads.
+pub fn fetch_gdb(csv_name: &str, force: bool) -> Result<PathBuf, DatError> {
     let csv_path = csv_file_path(csv_name)?;
+
+    // Skip download if cached and not forced
+    if !force {
+        let meta = load_meta()?;
+        if meta.version == GDB_CACHE_VERSION && csv_path.exists() {
+            return Ok(csv_path);
+        }
+    }
+
+    let url = download_url(csv_name);
 
     if let Some(parent) = csv_path.parent() {
         fs::create_dir_all(parent)?;
@@ -157,16 +169,8 @@ pub fn fetch_gdb(csv_name: &str) -> Result<PathBuf, DatError> {
 
 /// Load a GDB CSV file, downloading if not cached. Returns parsed GdbFile.
 pub fn load_gdb(csv_name: &str) -> Result<GdbFile, DatError> {
-    let csv_path = csv_file_path(csv_name)?;
-
-    // Use cached file if available and cache version is current
-    let meta = load_meta()?;
-    if meta.version == GDB_CACHE_VERSION && csv_path.exists() {
-        return gdb::parse_gdb_file(&csv_path);
-    }
-
-    // Download and cache
-    let path = fetch_gdb(csv_name)?;
+    // fetch_gdb with force=false skips download if already cached
+    let path = fetch_gdb(csv_name, false)?;
     gdb::parse_gdb_file(&path)
 }
 

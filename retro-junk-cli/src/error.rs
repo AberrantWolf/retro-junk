@@ -23,14 +23,6 @@ pub(crate) enum CliError {
     #[error("Runtime error: {0}")]
     Runtime(String),
 
-    /// DAT file error
-    #[error("DAT error: {0}")]
-    DatError(String),
-
-    /// Analysis error
-    #[error("Analysis error: {0}")]
-    Analysis(String),
-
     /// Catch-all for other errors
     #[error("{0}")]
     Other(String),
@@ -51,14 +43,6 @@ impl CliError {
 
     pub(crate) fn runtime(msg: impl Into<String>) -> Self {
         Self::Runtime(msg.into())
-    }
-
-    pub(crate) fn dat_error(msg: impl Into<String>) -> Self {
-        Self::DatError(msg.into())
-    }
-
-    pub(crate) fn analysis(msg: impl Into<String>) -> Self {
-        Self::Analysis(msg.into())
     }
 
     pub(crate) fn other(msg: impl Into<String>) -> Self {

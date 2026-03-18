@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added `retro-junk systems` command listing all 25 supported systems with DAT/GDB capability tags, grouped by manufacturer, with optional `--manufacturer` filter
+- Multi-system database commands (`catalog import`, `catalog enrich`, `catalog enrich-gdb`) now default to all systems when no arguments are given (was: "No systems specified")
+- Unified system name validation across all commands into shared helpers (`resolve_systems`, `resolve_single_system`, `resolve_platform_ids`), replacing ~120 lines of duplicated ad-hoc logic
+- All "unknown system" errors now consistently suggest `retro-junk systems` for discoverability
+- `catalog gaps` now validates the system name (was: passed raw string to DB with no check)
+- Updated help text on all system-accepting commands with examples and `retro-junk systems` hints
 - Added Sega Saturn disc identification (ISO, BIN/CUE, CHD) with serial, region, and game name extraction
 - Added CHD support for Saturn disc images (all compression codecs supported)
 - Added `Region::Asia` and `Region::LatinAmerica` to the region enum
@@ -16,6 +22,10 @@
 - Added right-click "Copy" context menu to all value labels in the GUI detail panel
 - Fixed CHD hashing using hardcoded 2448-byte sector stride instead of the CHD header's actual `unit_bytes`; CHDs without subchannel data (SUBTYPE:NONE) use 2352-byte sectors, causing wrong hashes for Saturn and other disc platforms
 - Replaced hardcoded sector size literals across disc, Sony, and Sega crates with shared constants (`ISO_SECTOR_SIZE`, `RAW_SECTOR_SIZE`)
+- Restructured `cache` subcommands: `cache list/clear/fetch` and `cache gdb-list/gdb-clear/gdb-fetch` are now `cache dat list/clear/fetch` and `cache gdb list/clear/fetch`
+- Added `--force` flag to `cache gdb fetch` (skips re-download when cached, matching `cache dat fetch` behavior)
+- Removed `config` alias from `credentials` command (conflicted with `settings`)
+- Removed `--root` alias from `--library-path`
 
 ## 0.1.2
 

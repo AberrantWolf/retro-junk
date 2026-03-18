@@ -3,12 +3,16 @@ use std::path::PathBuf;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use retro_junk_lib::AnalysisContext;
+
 use crate::CliError;
+use crate::commands::systems::resolve_single_system;
 
 use super::default_catalog_db_path;
 
 /// Analyze media asset coverage gaps.
 pub(crate) fn run_catalog_gaps(
+    ctx: &AnalysisContext,
     system: String,
     db_path: Option<PathBuf>,
     collection_only: bool,
@@ -22,6 +26,9 @@ pub(crate) fn run_catalog_gaps(
         log::info!("Run 'retro-junk catalog import all' first.");
         return Ok(());
     }
+
+    // Validate system name
+    let _console = resolve_single_system(ctx, &system)?;
 
     let conn = retro_junk_db::open_database(&db_path)
         .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
