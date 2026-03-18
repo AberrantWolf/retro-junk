@@ -272,10 +272,11 @@ fn test_dat_source() {
 }
 
 #[test]
-fn test_dat_download_ids_defaults_to_dat_names() {
+fn test_dat_download_ids_returns_redump_slug() {
     let analyzer = GameCubeAnalyzer;
-    // dat_download_ids() should delegate to dat_names() (the default impl)
-    assert_eq!(analyzer.dat_download_ids(), &["Nintendo - GameCube"]);
+    // Redump analyzers override dat_download_ids() to return the redump.org slug
+    assert_eq!(analyzer.dat_download_ids(), &["gc"]);
+    assert_eq!(analyzer.redump_slug(), Some("gc"));
 }
 
 #[test]
@@ -293,7 +294,12 @@ fn test_container_hashes_returns_none_for_raw_iso() {
     let disc = make_default_gc_disc();
     let analyzer = GameCubeAnalyzer;
     let result = analyzer
-        .compute_container_hashes(&mut Cursor::new(disc), HashAlgorithms::Crc32Sha1, None)
+        .compute_container_hashes(
+            &mut Cursor::new(disc),
+            HashAlgorithms::Crc32Sha1,
+            None,
+            None,
+        )
         .unwrap();
     assert!(
         result.is_none(),

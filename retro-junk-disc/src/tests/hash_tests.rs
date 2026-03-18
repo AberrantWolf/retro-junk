@@ -82,7 +82,7 @@ fn test_hash_raw_bin_track1() {
         .expect("Should detect multi-track boundary");
 
     let algorithms = retro_junk_core::HashAlgorithms::All;
-    let hashes = hash_raw_bin_track1(&mut cursor, algorithms, data_size).unwrap();
+    let hashes = hash_raw_bin_track1(&mut cursor, algorithms, data_size, None).unwrap();
 
     assert_eq!(hashes.crc32, expected_crc, "CRC32 mismatch");
     assert_eq!(

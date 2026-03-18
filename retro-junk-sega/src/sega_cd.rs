@@ -40,6 +40,14 @@ impl RomAnalyzer for SegaCdAnalyzer {
         retro_junk_core::DatSource::Redump
     }
 
+    fn redump_slug(&self) -> Option<&'static str> {
+        Some("mcd")
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["mcd"]
+    }
+
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sega - Mega-CD - Sega CD"]
     }

@@ -19,7 +19,20 @@
 
 - [ ] **Check nod v2.0 stability** — The `nod` crate v2.0 may bring API changes. Check for stability and migration when it releases.
 
+## DAT Source Coverage
+
+- [ ] **Wii U has no Redump DAT** — Redump.org has no Wii U disc entries or datfile download. The previous LibRetro "Nintendo - Wii U (Digital)" DAT was not real Redump data. DAT support for Wii U is currently disabled. Options: (1) find an alternative DAT source for Wii U, (2) re-enable using LibRetro's DAT with `DatSource::NoIntro` if the data is good enough, or (3) wait for Redump to add Wii U support.
+
+- [ ] **Verify all Redump slugs work** — After switching disc-based DAT downloads from LibRetro to redump.org direct, verify that all slug mappings actually return valid data: `psx`, `ps2`, `ps3`, `psp`, `ss`, `mcd`, `dc`, `gc`, `wii`, `xbox`, `xbox360`. Some systems may have restricted access or different slug conventions on redump.org.
+
 ## Data Model & Import Pipeline
+
+- [ ] **Migrate matching source-of-truth from raw DAT files to catalog DB** —
+  Currently, hash/serial matching runs against in-memory `DatIndex` built from
+  downloaded DAT files each session. Raw DAT files should only seed, update,
+  enrich, and fix the catalog DB. The DB should become the authoritative source
+  for matching, enabling persistent corrections (e.g., adding missing regional
+  entries, resolving cross-region matches) that survive DAT re-downloads.
 
 - [ ] **Re-import after migration v4** — Schema is now at version 4 (`screen_title`, `cover_title` columns added in v3). Run `catalog import all` followed by `catalog enrich` on existing databases to populate `revision`, `variant`, `screen_title`, and `cover_title` fields. This is a one-time user/ops action, not a code gap.
 

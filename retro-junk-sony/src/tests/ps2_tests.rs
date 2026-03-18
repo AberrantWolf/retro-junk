@@ -219,10 +219,11 @@ fn test_dat_names() {
 }
 
 #[test]
-fn test_dat_download_ids_defaults_to_dat_names() {
+fn test_dat_download_ids_returns_redump_slug() {
     let analyzer = Ps2Analyzer;
-    // dat_download_ids() should delegate to dat_names() (the default impl)
-    assert_eq!(analyzer.dat_download_ids(), &["Sony - PlayStation 2"]);
+    // Redump analyzers override dat_download_ids() to return the redump.org slug
+    assert_eq!(analyzer.dat_download_ids(), &["ps2"]);
+    assert_eq!(analyzer.redump_slug(), Some("ps2"));
 }
 
 #[test]

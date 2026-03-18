@@ -273,6 +273,7 @@ pub fn plan_repairs(
         download_ids,
         options.dat_dir.as_deref(),
         dat_source,
+        false,
     )?;
     let index = DatIndex::from_dats(dats);
 
@@ -374,7 +375,11 @@ pub fn plan_repairs(
 
             match hasher::compute_crc32_sha1_with_padding(&mut file, analyzer, &strategy.padding) {
                 Ok(hashes) => {
-                    if let Some(result) = index.match_by_hash(hashes.data_size, &hashes) {
+                    if let Some(result) = index
+                        .match_by_hash(hashes.data_size, &hashes)
+                        .into_iter()
+                        .next()
+                    {
                         let game = &index.games[result.game_index];
                         let method = (strategy.method_fn)(
                             strategy.padding.fill_byte,
@@ -432,7 +437,11 @@ fn hash_and_match(
     let mut file = fs::File::open(file_path)?;
     let hashes = hasher::compute_crc32_sha1(&mut file, analyzer, Some(file_path))?;
 
-    if let Some(result) = index.match_by_hash(hashes.data_size, &hashes) {
+    if let Some(result) = index
+        .match_by_hash(hashes.data_size, &hashes)
+        .into_iter()
+        .next()
+    {
         let game = &index.games[result.game_index];
         return Ok(Some(game.name.clone()));
     }

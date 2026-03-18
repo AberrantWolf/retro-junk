@@ -4,12 +4,12 @@
 //! These functions handle the various disc container formats (CHD, raw BIN,
 //! CUE) to produce hashes that match Redump entries.
 
-use retro_junk_core::{AnalysisError, FileHashes, HashAlgorithms};
+use retro_junk_core::{AnalysisError, FileHashes, HashAlgorithms, HashProgressFn, MultiHasher};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::format::{DiscFormat, detect_disc_format};
-use crate::sector::{CD_SYNC_PATTERN, CHD_CD_SECTOR_SIZE, RAW_SECTOR_SIZE};
+use crate::sector::{CD_SYNC_PATTERN, RAW_SECTOR_SIZE};
 
 /// Sector mode for raw disc images.
 ///
@@ -40,13 +40,14 @@ pub fn hash_disc_container(
     algorithms: HashAlgorithms,
     file_path: Option<&Path>,
     platform_name: &str,
+    on_progress: HashProgressFn<'_>,
 ) -> Result<Option<FileHashes>, AnalysisError> {
     let format = detect_disc_format(reader)?;
 
     match format {
         DiscFormat::Chd => {
             log::info!("{} compute_container_hashes: CHD detected", platform_name);
-            let hashes = hash_chd_raw_sectors(reader, algorithms)?;
+            let hashes = hash_chd_raw_sectors(reader, algorithms, on_progress)?;
             log::info!(
                 "{} compute_container_hashes: done, crc32={}, data_size={}",
                 platform_name,
@@ -64,7 +65,7 @@ pub fn hash_disc_container(
                     platform_name,
                     data_size
                 );
-                let hashes = hash_raw_bin_track1(reader, algorithms, data_size)?;
+                let hashes = hash_raw_bin_track1(reader, algorithms, data_size, on_progress)?;
                 Ok(Some(hashes))
             } else {
                 // Single-track BIN — let the standard hasher handle it
@@ -74,7 +75,7 @@ pub fn hash_disc_container(
         DiscFormat::Cue => {
             // CUE sheets: hash the referenced BIN, not the CUE text
             if let Some(path) = file_path {
-                let hashes = hash_cue_track1(reader, algorithms, path)?;
+                let hashes = hash_cue_track1(reader, algorithms, path, on_progress)?;
                 Ok(Some(hashes))
             } else {
                 log::warn!(
@@ -89,70 +90,82 @@ pub fn hash_disc_container(
     }
 }
 
-/// Hash Track 1 (data track) raw sectors from a CHD disc image, extracting
-/// the 2352-byte raw sector data and stripping the 96-byte subchannel from
-/// each 2448-byte CHD sector. Only Track 1 is hashed because Redump/LibRetro
-/// DAT entries contain per-track hashes, and the data track is Track 1.
+/// Hash the largest data track from a CHD disc image, extracting the
+/// 2352-byte raw sector data and stripping any subchannel bytes.
+///
+/// Parses all track metadata to find the largest data track (by frame count).
+/// For single-data-track discs (PS1/PS2), this is Track 1. For multi-data-track
+/// discs (Saturn with MODE1 boot + MODE2 main), this is typically Track 2.
+///
+/// Falls back to hashing from sector 0 if no track metadata is found.
 pub fn hash_chd_raw_sectors(
     reader: &mut dyn retro_junk_core::ReadSeek,
     algorithms: HashAlgorithms,
+    on_progress: HashProgressFn<'_>,
 ) -> Result<FileHashes, AnalysisError> {
-    use sha1::Digest;
-
     reader.seek(SeekFrom::Start(0))?;
 
     let mut chd = chd::Chd::open(reader, None)
         .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {}", e)))?;
 
-    // Parse track metadata to find Track 1's sector count.
-    let track1_frames = crate::chd::parse_chd_track1_frames(&mut chd)?;
+    // Parse all track metadata and select the largest data track.
+    let tracks = crate::chd::parse_chd_tracks(&mut chd)?;
+    let (start_sector, sectors_to_hash) =
+        if let Some(target) = crate::chd::select_largest_data_track(&tracks) {
+            log::info!(
+                "CHD hashing: selected Track {} ({}, {} frames, starts at sector {})",
+                target.track_number,
+                target.track_type,
+                target.frames,
+                target.start_sector
+            );
+            (target.start_sector, target.frames)
+        } else {
+            // No track metadata — fall back to all sectors from sector 0
+            let logical_bytes = chd.header().logical_bytes();
+            let unit_bytes = chd.header().unit_bytes() as u64;
+            let total = (logical_bytes / unit_bytes) as usize;
+            log::warn!(
+                "CHD: no track metadata found, hashing all {} sectors from sector 0",
+                total
+            );
+            (0, total)
+        };
 
     let hunk_size = chd.header().hunk_size() as usize;
-    let logical_bytes = chd.header().logical_bytes();
-    let total_disc_sectors = logical_bytes / CHD_CD_SECTOR_SIZE as u64;
-    let sectors_per_hunk = hunk_size / CHD_CD_SECTOR_SIZE as usize;
     let total_hunks = chd.header().hunk_count();
-
-    // Hash only Track 1 sectors. Fall back to all sectors if metadata unavailable.
-    let sectors_to_hash = track1_frames.unwrap_or_else(|| {
-        log::warn!(
-            "CHD: no track metadata found, hashing all {} sectors",
-            total_disc_sectors
-        );
-        total_disc_sectors as usize
-    });
+    let unit_bytes = chd.header().unit_bytes() as usize;
+    let sectors_per_hunk = hunk_size / unit_bytes;
     let data_size = sectors_to_hash as u64 * RAW_SECTOR_SIZE;
 
     log::info!(
-        "CHD hashing: track1={} sectors ({} bytes), total_disc={} sectors",
+        "CHD hashing: {} sectors ({} bytes) starting at sector {}, unit_bytes={}",
         sectors_to_hash,
         data_size,
-        total_disc_sectors
+        start_sector,
+        unit_bytes
     );
 
-    let mut crc = if algorithms.crc32() {
-        Some(crc32fast::Hasher::new())
-    } else {
-        None
-    };
-    let mut sha = if algorithms.sha1() {
-        Some(sha1::Sha1::new())
-    } else {
-        None
-    };
-    let mut md5_ctx = if algorithms.md5() {
-        Some(md5::Context::new())
-    } else {
-        None
-    };
+    let mut hasher = MultiHasher::new(algorithms, data_size, on_progress);
 
     let mut hunk_buf = chd.get_hunksized_buffer();
     let mut cmp_buf = Vec::new();
-    let mut sectors_remaining = sectors_to_hash;
+
+    // Track our position in the CHD's global sector space
+    let end_sector = start_sector + sectors_to_hash;
+    let mut global_sector = 0usize;
+    let mut sectors_hashed = 0usize;
 
     for hunk_num in 0..total_hunks {
-        if sectors_remaining == 0 {
+        if sectors_hashed >= sectors_to_hash {
             break;
+        }
+
+        // Skip hunks entirely before the start sector
+        let hunk_end_sector = global_sector + sectors_per_hunk;
+        if hunk_end_sector <= start_sector {
+            global_sector = hunk_end_sector;
+            continue;
         }
 
         let mut hunk = chd.hunk(hunk_num).map_err(|e| {
@@ -164,35 +177,30 @@ pub fn hash_chd_raw_sectors(
                 AnalysisError::other(format!("Failed to decompress CHD hunk {}: {}", hunk_num, e))
             })?;
 
-        let sectors_in_hunk = sectors_remaining.min(sectors_per_hunk);
-
-        for s in 0..sectors_in_hunk {
-            let offset = s * CHD_CD_SECTOR_SIZE as usize;
+        for s in 0..sectors_per_hunk {
+            let sector_idx = global_sector + s;
+            if sector_idx < start_sector {
+                continue;
+            }
+            if sector_idx >= end_sector {
+                break;
+            }
+            let offset = s * unit_bytes;
+            // Hash only the raw 2352-byte sector data, stripping any
+            // subchannel bytes that follow when unit_bytes > 2352.
             let raw_sector = &hunk_buf[offset..offset + RAW_SECTOR_SIZE as usize];
-
-            if let Some(ref mut h) = crc {
-                h.update(raw_sector);
-            }
-            if let Some(ref mut h) = sha {
-                h.update(raw_sector);
-            }
-            if let Some(ref mut h) = md5_ctx {
-                h.consume(raw_sector);
-            }
+            hasher.update(raw_sector);
+            sectors_hashed += 1;
         }
 
-        sectors_remaining -= sectors_in_hunk;
+        global_sector += sectors_per_hunk;
+
+        // Report progress per hunk (coarser than per-sector, but avoids
+        // excessive callback overhead for the many small sectors per hunk).
+        hasher.report_progress();
     }
 
-    Ok(FileHashes {
-        crc32: crc
-            .map(|h| format!("{:08x}", h.finalize()))
-            .unwrap_or_default(),
-        sha1: sha.map(|h| format!("{:x}", h.finalize())),
-        md5: md5_ctx.map(|h| format!("{:x}", h.compute())),
-        data_size,
-        warnings: vec![],
-    })
+    Ok(hasher.finalize())
 }
 
 /// Find the byte length of the data track (Track 1) in a raw 2352-byte sector BIN file.
@@ -309,6 +317,7 @@ pub fn hash_cue_track1(
     reader: &mut dyn retro_junk_core::ReadSeek,
     algorithms: HashAlgorithms,
     file_path: &Path,
+    on_progress: HashProgressFn<'_>,
 ) -> Result<FileHashes, AnalysisError> {
     // Read CUE text
     reader.seek(SeekFrom::Start(0))?;
@@ -353,7 +362,7 @@ pub fn hash_cue_track1(
             first_data_file.filename,
             bin_size
         );
-        let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, bin_size)?;
+        let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, bin_size, on_progress)?;
         hashes.warnings = warnings;
         return Ok(hashes);
     }
@@ -368,7 +377,7 @@ pub fn hash_cue_track1(
             track1_size,
             bin_size
         );
-        let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, track1_size)?;
+        let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, track1_size, on_progress)?;
         hashes.warnings = warnings;
         return Ok(hashes);
     }
@@ -380,7 +389,7 @@ pub fn hash_cue_track1(
             data_size,
             bin_size
         );
-        let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, data_size)?;
+        let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, data_size, on_progress)?;
         hashes.warnings = warnings;
         return Ok(hashes);
     }
@@ -393,7 +402,7 @@ pub fn hash_cue_track1(
         "CUE hash: no boundary detected, hashing entire BIN ({} bytes)",
         bin_size
     );
-    let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, bin_size)?;
+    let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, bin_size, on_progress)?;
     hashes.warnings = warnings;
     Ok(hashes)
 }
@@ -405,27 +414,11 @@ pub fn hash_raw_bin_track1(
     reader: &mut dyn retro_junk_core::ReadSeek,
     algorithms: HashAlgorithms,
     data_size: u64,
+    on_progress: HashProgressFn<'_>,
 ) -> Result<FileHashes, AnalysisError> {
-    use sha1::Digest;
-
     reader.seek(SeekFrom::Start(0))?;
 
-    let mut crc = if algorithms.crc32() {
-        Some(crc32fast::Hasher::new())
-    } else {
-        None
-    };
-    let mut sha = if algorithms.sha1() {
-        Some(sha1::Sha1::new())
-    } else {
-        None
-    };
-    let mut md5_ctx = if algorithms.md5() {
-        Some(md5::Context::new())
-    } else {
-        None
-    };
-
+    let mut hasher = MultiHasher::new(algorithms, data_size, on_progress);
     let mut buf = [0u8; 64 * 1024];
     let mut remaining = data_size;
 
@@ -435,27 +428,11 @@ pub fn hash_raw_bin_track1(
         if n == 0 {
             break;
         }
-        if let Some(ref mut h) = crc {
-            h.update(&buf[..n]);
-        }
-        if let Some(ref mut h) = sha {
-            h.update(&buf[..n]);
-        }
-        if let Some(ref mut h) = md5_ctx {
-            h.consume(&buf[..n]);
-        }
+        hasher.update_with_progress(&buf[..n]);
         remaining -= n as u64;
     }
 
-    Ok(FileHashes {
-        crc32: crc
-            .map(|h| format!("{:08x}", h.finalize()))
-            .unwrap_or_default(),
-        sha1: sha.map(|h| format!("{:x}", h.finalize())),
-        md5: md5_ctx.map(|h| format!("{:x}", h.compute())),
-        data_size,
-        warnings: vec![],
-    })
+    Ok(hasher.finalize())
 }
 
 #[cfg(test)]

@@ -117,7 +117,14 @@ fn show_stats_section(ui: &mut egui::Ui, state: &ToolsState) {
 
 fn stat_row(ui: &mut egui::Ui, label: &str, value: i64) {
     ui.label(label);
-    ui.label(format_number(value));
+    let text = format_number(value);
+    let resp = ui.label(&text);
+    resp.context_menu(|ui| {
+        if ui.button("Copy").clicked() {
+            ui.output_mut(|o| o.copied_text = text.clone());
+            ui.close_menu();
+        }
+    });
     ui.end_row();
 }
 

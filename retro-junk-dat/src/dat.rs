@@ -21,6 +21,12 @@ pub struct DatGame {
     /// Region string (e.g., "USA", "Japan"), if present (LibRetro enhanced DATs).
     pub region: Option<String>,
     pub roms: Vec<DatRom>,
+    /// Game-level serial number (e.g., "SCUS-94163"), from Redump DATs.
+    pub serial: Option<String>,
+    /// Disc version (e.g., "1.006"), from Redump DATs.
+    pub version: Option<String>,
+    /// Category (e.g., "Games", "Demos"), from Redump DATs.
+    pub category: Option<String>,
 }
 
 /// A single ROM entry within a game.
@@ -92,6 +98,8 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     let mut current_tag = String::new();
     let mut current_game: Option<DatGame> = None;
     let mut game_serial: Option<String> = None;
+    let mut game_version: Option<String> = None;
+    let mut game_category: Option<String> = None;
 
     loop {
         match xml.read_event_into(&mut buf)? {
@@ -111,8 +119,13 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                             name,
                             region: None,
                             roms: Vec::new(),
+                            serial: None,
+                            version: None,
+                            category: None,
                         });
                         game_serial = None;
+                        game_version = None;
+                        game_category = None;
                     }
                     _ => current_tag = tag_name,
                 }
@@ -135,8 +148,13 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                         "version" => dat.version = text,
                         _ => {}
                     }
-                } else if current_game.is_some() && current_tag.as_str() == "serial" {
-                    game_serial = Some(text)
+                } else if current_game.is_some() {
+                    match current_tag.as_str() {
+                        "serial" => game_serial = Some(text),
+                        "version" => game_version = Some(text),
+                        "category" => game_category = Some(text),
+                        _ => {}
+                    }
                 }
             }
             Event::End(ref e) => {
@@ -152,7 +170,10 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                                         rom.serial = Some(serial.clone());
                                     }
                                 }
+                                game.serial = Some(serial.clone());
                             }
+                            game.version = game_version.take();
+                            game.category = game_category.take();
                             game_serial = None;
                             dat.games.push(game);
                         }
@@ -235,6 +256,8 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     let mut in_block: Option<String> = None; // "clrmamepro" or "game"
     let mut current_game: Option<DatGame> = None;
     let mut game_serial: Option<String> = None;
+    let mut game_version: Option<String> = None;
+    let mut game_category: Option<String> = None;
 
     for line_result in reader.lines() {
         let line = line_result?;
@@ -252,7 +275,13 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                         name: String::new(),
                         region: None,
                         roms: Vec::new(),
+                        serial: None,
+                        version: None,
+                        category: None,
                     });
+                    game_serial = None;
+                    game_version = None;
+                    game_category = None;
                 }
                 in_block = Some(block_type);
                 continue;
@@ -273,7 +302,10 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                             rom.serial = Some(serial.clone());
                         }
                     }
+                    game.serial = Some(serial.clone());
                 }
+                game.version = game_version.take();
+                game.category = game_category.take();
                 game_serial = None;
                 dat.games.push(game);
             }
@@ -299,6 +331,8 @@ fn parse_clrmamepro<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                                 // Store game-level serial to propagate to ROMs later
                                 game_serial = Some(value);
                             }
+                            "version" => game_version = Some(value),
+                            "category" => game_category = Some(value),
                             "rom" => {
                                 if let Some(rom) = parse_clr_rom_inline(&value) {
                                     game.roms.push(rom);

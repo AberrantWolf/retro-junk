@@ -88,7 +88,13 @@ pub(crate) fn run_catalog_import(
     };
 
     if to_import.is_empty() {
-        log::warn!("No systems to import.");
+        if systems.is_empty() {
+            log::warn!(
+                "No systems specified. Use 'catalog import all' or specify systems (e.g., 'catalog import saturn,ps1')."
+            );
+        } else {
+            log::warn!("No systems to import.");
+        }
         return Ok(());
     }
 
@@ -118,6 +124,7 @@ pub(crate) fn run_catalog_import(
             download_ids,
             dat_dir.as_deref(),
             source,
+            false,
         ) {
             Ok(d) => d,
             Err(e) => {

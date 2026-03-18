@@ -232,3 +232,61 @@ fn test_xml_game_level_serial_propagation() {
     assert_eq!(ff7.roms[0].serial.as_deref(), Some("SCUS-94163"));
     assert_eq!(ff7.roms[1].serial.as_deref(), Some("SCUS-94163"));
 }
+
+#[test]
+fn test_xml_redump_full_dat_fields() {
+    // Full Redump DATs include <serial>, <version>, and <category> per game,
+    // and multiple <rom> entries per game (CUE + per-track BIN files).
+    let xml = r#"<?xml version="1.0"?>
+<datafile>
+    <header>
+        <name>Sega - Saturn</name>
+        <version>2026-03-15 01:23:45</version>
+    </header>
+    <game name="NiGHTS into Dreams... (Japan)">
+        <category>Games</category>
+        <serial>GS-9046</serial>
+        <version>1.003</version>
+        <rom name="NiGHTS into Dreams... (Japan).cue" size="340" crc="aabb0000" sha1="0000000000000000000000000000000000000000"/>
+        <rom name="NiGHTS into Dreams... (Japan) (Track 01).bin" size="60555600" crc="aabb0001" sha1="1111111111111111111111111111111111111111"/>
+        <rom name="NiGHTS into Dreams... (Japan) (Track 02).bin" size="492720000" crc="aabb0002" sha1="2222222222222222222222222222222222222222"/>
+        <rom name="NiGHTS into Dreams... (Japan) (Track 03).bin" size="24696000" crc="aabb0003" sha1="3333333333333333333333333333333333333333"/>
+    </game>
+    <game name="Ings (Japan) (Demo)">
+        <category>Demos</category>
+        <serial>610-7049</serial>
+        <rom name="Ings (Japan) (Demo).cue" size="70" crc="ccdd0000" sha1="4444444444444444444444444444444444444444"/>
+        <rom name="Ings (Japan) (Demo) (Track 1).bin" size="80000000" crc="ccdd0001" sha1="5555555555555555555555555555555555555555"/>
+    </game>
+</datafile>"#;
+    let dat = parse_dat(xml.as_bytes()).unwrap();
+    assert_eq!(dat.name, "Sega - Saturn");
+    assert_eq!(dat.games.len(), 2);
+
+    // NiGHTS: verify new fields
+    let nights = &dat.games[0];
+    assert_eq!(nights.name, "NiGHTS into Dreams... (Japan)");
+    assert_eq!(nights.serial.as_deref(), Some("GS-9046"));
+    assert_eq!(nights.version.as_deref(), Some("1.003"));
+    assert_eq!(nights.category.as_deref(), Some("Games"));
+    assert_eq!(nights.roms.len(), 4); // CUE + 3 tracks
+
+    // All ROMs should have the game-level serial propagated
+    for rom in &nights.roms {
+        assert_eq!(rom.serial.as_deref(), Some("GS-9046"));
+    }
+
+    // Track 2 (largest data track) should have correct hash
+    assert_eq!(
+        nights.roms[2].name,
+        "NiGHTS into Dreams... (Japan) (Track 02).bin"
+    );
+    assert_eq!(nights.roms[2].crc, "aabb0002");
+    assert_eq!(nights.roms[2].size, 492720000);
+
+    // Demo game: verify category
+    let demo = &dat.games[1];
+    assert_eq!(demo.category.as_deref(), Some("Demos"));
+    assert_eq!(demo.serial.as_deref(), Some("610-7049"));
+    assert_eq!(demo.version, None); // no <version> element
+}

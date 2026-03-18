@@ -13,6 +13,9 @@
 - Fixed background operations (scan, hash, scrape, rename) targeting the wrong entry when the list changed mid-operation
 - Fixed multi-disc `.m3u` folder scanning miscounting discs
 - Added in-app log viewer and error dialogs for failed operations
+- Added right-click "Copy" context menu to all value labels in the GUI detail panel
+- Fixed CHD hashing using hardcoded 2448-byte sector stride instead of the CHD header's actual `unit_bytes`; CHDs without subchannel data (SUBTYPE:NONE) use 2352-byte sectors, causing wrong hashes for Saturn and other disc platforms
+- Replaced hardcoded sector size literals across disc, Sony, and Sega crates with shared constants (`ISO_SECTOR_SIZE`, `RAW_SECTOR_SIZE`)
 
 ## 0.1.2
 

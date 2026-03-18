@@ -321,8 +321,8 @@ const HASH_CHUNK_SIZE: usize = 64 * 1024; // 64 KB
 pub(crate) fn hash_compressed_disc(
     path: &Path,
     algorithms: HashAlgorithms,
+    on_progress: retro_junk_core::HashProgressFn<'_>,
 ) -> Result<FileHashes, AnalysisError> {
-    use sha1::Digest;
     use std::io::Read;
 
     let mut disc = nod::Disc::new(path).map_err(|e| {
@@ -337,18 +337,7 @@ pub(crate) fn hash_compressed_disc(
         data_size
     );
 
-    let mut crc = crc32fast::Hasher::new();
-    let mut sha: Option<sha1::Sha1> = if algorithms.sha1() {
-        Some(sha1::Sha1::new())
-    } else {
-        None
-    };
-    let mut md5_ctx: Option<md5::Context> = if algorithms.md5() {
-        Some(md5::Context::new())
-    } else {
-        None
-    };
-
+    let mut hasher = retro_junk_core::MultiHasher::new(algorithms, data_size, on_progress);
     let mut buf = vec![0u8; HASH_CHUNK_SIZE];
     let mut remaining = data_size;
 
@@ -360,21 +349,9 @@ pub(crate) fn hash_compressed_disc(
         if n == 0 {
             break;
         }
-        crc.update(&buf[..n]);
-        if let Some(ref mut s) = sha {
-            s.update(&buf[..n]);
-        }
-        if let Some(ref mut m) = md5_ctx {
-            m.consume(&buf[..n]);
-        }
+        hasher.update_with_progress(&buf[..n]);
         remaining -= n as u64;
     }
 
-    Ok(FileHashes {
-        crc32: format!("{:08x}", crc.finalize()),
-        sha1: sha.map(|s| format!("{:x}", s.finalize())),
-        md5: md5_ctx.map(|m| format!("{:x}", m.compute())),
-        data_size,
-        warnings: vec![],
-    })
+    Ok(hasher.finalize())
 }

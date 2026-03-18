@@ -623,6 +623,7 @@ pub fn plan_renames(
         download_ids,
         options.dat_dir.as_deref(),
         dat_source,
+        false,
     )?;
     let index = DatIndex::from_dats(dats);
 
@@ -1007,7 +1008,10 @@ fn match_by_hash(
 
     let crc32 = hashes.crc32.clone();
     let data_size = hashes.data_size;
-    let result = index.match_by_hash(hashes.data_size, &hashes);
+    let result = index
+        .match_by_hash(hashes.data_size, &hashes)
+        .into_iter()
+        .next();
 
     Ok(HashMatchOutcome {
         result,

@@ -35,11 +35,6 @@ impl RomAnalyzer for WiiUAnalyzer {
         false // Not yet implemented
     }
 
-    fn dat_names(&self) -> &'static [&'static str] {
-        &["Nintendo - Wii U (Digital)"]
-    }
-
-    fn dat_source(&self) -> retro_junk_core::DatSource {
-        retro_junk_core::DatSource::Redump
-    }
+    // No DAT support — Redump has no Wii U entries, and the LibRetro
+    // "Nintendo - Wii U (Digital)" DAT was not a real Redump dataset.
 }

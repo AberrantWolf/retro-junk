@@ -41,6 +41,14 @@ impl RomAnalyzer for PspAnalyzer {
         retro_junk_core::DatSource::Redump
     }
 
+    fn redump_slug(&self) -> Option<&'static str> {
+        Some("psp")
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["psp"]
+    }
+
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sony - PlayStation Portable"]
     }

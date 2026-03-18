@@ -91,11 +91,21 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
 
             match std::fs::File::open(&item.path) {
                 Ok(mut file) => {
+                    let item_file_size = item.file_size;
                     match hasher::compute_crc32_sha1_with_progress(
                         &mut file,
                         registered.analyzer.as_ref(),
-                        &|file_bytes_done, _file_total| {
-                            let current = file_base + file_bytes_done;
+                        &|file_bytes_done, file_total| {
+                            // Scale progress proportionally: container formats
+                            // (CHD) may hash far fewer bytes than the file size.
+                            // Map hash progress to the file's share of total_bytes.
+                            let scaled = if file_total > 0 && file_total != item_file_size {
+                                (file_bytes_done as f64 / file_total as f64 * item_file_size as f64)
+                                    as u64
+                            } else {
+                                file_bytes_done
+                            };
+                            let current = file_base + scaled;
                             if current - last_reported.get() >= PROGRESS_THROTTLE {
                                 last_reported.set(current);
                                 let _ = tx.send(AppMessage::OperationProgress {

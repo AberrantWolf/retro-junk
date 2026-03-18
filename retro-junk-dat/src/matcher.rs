@@ -45,10 +45,10 @@ pub enum SerialLookupResult {
 pub struct DatIndex {
     /// File size → list of (game_index, rom_index)
     by_size: HashMap<u64, Vec<(usize, usize)>>,
-    /// CRC32 (lowercase hex) → (game_index, rom_index)
-    by_crc32: HashMap<String, (usize, usize)>,
-    /// SHA1 (lowercase hex) → (game_index, rom_index)
-    by_sha1: HashMap<String, (usize, usize)>,
+    /// CRC32 (lowercase hex) → list of (game_index, rom_index)
+    by_crc32: HashMap<String, Vec<(usize, usize)>>,
+    /// SHA1 (lowercase hex) → list of (game_index, rom_index)
+    by_sha1: HashMap<String, Vec<(usize, usize)>>,
     /// Serial (uppercase, stripped of spaces/hyphens) → list of (game_index, rom_index)
     by_serial: HashMap<String, Vec<(usize, usize)>>,
     /// Backing store of games
@@ -82,17 +82,17 @@ impl DatIndex {
     /// Build an index from a parsed DAT file.
     pub fn from_dat(dat: DatFile) -> Self {
         let mut by_size: HashMap<u64, Vec<(usize, usize)>> = HashMap::new();
-        let mut by_crc32 = HashMap::new();
-        let mut by_sha1 = HashMap::new();
+        let mut by_crc32: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
+        let mut by_sha1: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
         let mut by_serial: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
 
         for (gi, game) in dat.games.iter().enumerate() {
             for (ri, rom) in game.roms.iter().enumerate() {
                 by_size.entry(rom.size).or_default().push((gi, ri));
-                by_crc32.insert(rom.crc.clone(), (gi, ri));
+                by_crc32.entry(rom.crc.clone()).or_default().push((gi, ri));
 
                 if let Some(ref sha1) = rom.sha1 {
-                    by_sha1.insert(sha1.clone(), (gi, ri));
+                    by_sha1.entry(sha1.clone()).or_default().push((gi, ri));
                 }
 
                 if let Some(ref serial) = rom.serial {
@@ -140,31 +140,46 @@ impl DatIndex {
     }
 
     /// Match by hash (CRC32, optionally SHA1).
-    pub fn match_by_hash(&self, size: u64, hashes: &FileHashes) -> Option<MatchResult> {
+    ///
+    /// Returns all matching DAT entries. Multiple entries can share the same
+    /// hash when regional variants have identical data (e.g., USA and Japan
+    /// versions of a disc game with the same data track). Callers can use
+    /// detected region info to pick the best match.
+    pub fn match_by_hash(&self, size: u64, hashes: &FileHashes) -> Vec<MatchResult> {
         // Try CRC32 first
-        if let Some(&(gi, ri)) = self.by_crc32.get(&hashes.crc32) {
-            // Verify size matches
-            if self.games[gi].roms[ri].size == size {
-                return Some(MatchResult {
+        if let Some(entries) = self.by_crc32.get(&hashes.crc32) {
+            let matches: Vec<MatchResult> = entries
+                .iter()
+                .filter(|&&(gi, ri)| self.games[gi].roms[ri].size == size)
+                .map(|&(gi, ri)| MatchResult {
                     game_index: gi,
                     rom_index: ri,
                     method: MatchMethod::Crc32,
-                });
+                })
+                .collect();
+            if !matches.is_empty() {
+                return matches;
             }
         }
 
         // Try SHA1 if available
         if let Some(ref sha1) = hashes.sha1
-            && let Some(&(gi, ri)) = self.by_sha1.get(sha1)
+            && let Some(entries) = self.by_sha1.get(sha1)
         {
-            return Some(MatchResult {
-                game_index: gi,
-                rom_index: ri,
-                method: MatchMethod::Sha1,
-            });
+            let matches: Vec<MatchResult> = entries
+                .iter()
+                .map(|&(gi, ri)| MatchResult {
+                    game_index: gi,
+                    rom_index: ri,
+                    method: MatchMethod::Sha1,
+                })
+                .collect();
+            if !matches.is_empty() {
+                return matches;
+            }
         }
 
-        None
+        Vec::new()
     }
 
     /// Match by serial number extracted from the ROM header.

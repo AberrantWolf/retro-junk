@@ -24,11 +24,8 @@ use crate::sony_disc::{self, BootKey, DiscFormat};
 /// Files larger than this are likely DVD-9 (dual layer).
 const DVD5_SIZE_THRESHOLD: u64 = 4_700_000_000;
 
-/// Multi-disc PS2 games where the per-disc boot serial (from SYSTEM.CNF)
-/// differs from the catalog serial used in the DAT.
-///
-/// Populated as specific multi-disc PS2 games are encountered.
-const MULTI_DISC_SERIAL_FIXUPS: &[(&str, &str)] = &[];
+// Multi-disc PS2 games with shared serials resolve via hash fallback
+// after serial ambiguity. No fixup tables needed with full Redump DATs.
 
 /// Analyzer for PlayStation 2 disc images.
 #[derive(Debug, Default)]
@@ -66,8 +63,8 @@ impl Ps2Analyzer {
 
         // Calculate expected size from PVD
         let sector_size = match format {
-            DiscFormat::RawSector2352 => 2352u64,
-            _ => 2048u64,
+            DiscFormat::RawSector2352 => retro_junk_disc::RAW_SECTOR_SIZE,
+            _ => retro_junk_disc::ISO_SECTOR_SIZE,
         };
         id.expected_size = Some(pvd.volume_space_size as u64 * sector_size);
 
@@ -285,13 +282,22 @@ impl RomAnalyzer for Ps2Analyzer {
         retro_junk_core::DatSource::Redump
     }
 
+    fn redump_slug(&self) -> Option<&'static str> {
+        Some("ps2")
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["ps2"]
+    }
+
     fn compute_container_hashes(
         &self,
         reader: &mut dyn ReadSeek,
         algorithms: HashAlgorithms,
         file_path: Option<&std::path::Path>,
+        on_progress: retro_junk_core::HashProgressFn<'_>,
     ) -> Result<Option<FileHashes>, AnalysisError> {
-        sony_disc::hash_disc_container(reader, algorithms, file_path, "PS2")
+        sony_disc::hash_disc_container(reader, algorithms, file_path, "PS2", on_progress)
     }
 
     fn dat_names(&self) -> &'static [&'static str] {
@@ -303,14 +309,8 @@ impl RomAnalyzer for Ps2Analyzer {
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
-        // Check fixup table for multi-disc games
-        if let Some((_, suffixed)) = MULTI_DISC_SERIAL_FIXUPS
-            .iter()
-            .find(|(boot, _)| *boot == serial)
-        {
-            return Some(suffixed.to_string());
-        }
-        // Redump DATs use the full serial (e.g., "SLUS-01234")
+        // Full Redump DATs use real serials. Multi-disc games with shared
+        // serials resolve via hash fallback after serial ambiguity.
         Some(serial.to_string())
     }
 }

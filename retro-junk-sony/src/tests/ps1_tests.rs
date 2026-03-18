@@ -231,25 +231,26 @@ fn test_extract_dat_game_code() {
 }
 
 #[test]
-fn test_extract_dat_game_code_multi_disc_fixups() {
+fn test_extract_dat_game_code_returns_serial_as_is() {
     let analyzer = Ps1Analyzer;
 
+    // With full Redump DATs, multi-disc games share a serial and resolve
+    // via hash fallback. No fixup tables needed — serial is returned as-is.
     assert_eq!(
         analyzer.extract_dat_game_code("SCUS-94164"),
-        Some("SCUS-94163-1".to_string())
-    );
-    assert_eq!(
-        analyzer.extract_dat_game_code("SCUS-94165"),
-        Some("SCUS-94163-2".to_string())
-    );
-    assert_eq!(
-        analyzer.extract_dat_game_code("SCUS-94422"),
-        Some("SCUS-94421-1".to_string())
+        Some("SCUS-94164".to_string())
     );
     assert_eq!(
         analyzer.extract_dat_game_code("SCUS-94163"),
         Some("SCUS-94163".to_string())
     );
+}
+
+#[test]
+fn test_redump_slug() {
+    let analyzer = Ps1Analyzer;
+    assert_eq!(analyzer.redump_slug(), Some("psx"));
+    assert_eq!(analyzer.dat_download_ids(), &["psx"]);
 }
 
 // -- File extensions --

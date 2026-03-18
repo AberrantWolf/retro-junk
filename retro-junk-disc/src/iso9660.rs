@@ -115,19 +115,19 @@ pub fn find_file_in_root(
     let target_upper = filename.to_uppercase();
 
     // Read root directory sectors
-    let dir_sectors = (pvd.root_dir_data_length as u64).div_ceil(2048);
+    let dir_sectors = (pvd.root_dir_data_length as u64).div_ceil(crate::sector::ISO_SECTOR_SIZE);
 
     for sector_offset in 0..dir_sectors {
         let sector = pvd.root_dir_extent_lba as u64 + sector_offset;
         let sector_data = read_sector_data(reader, sector, format)?;
 
         let mut pos = 0;
-        while pos < 2048 {
+        while pos < crate::sector::ISO_SECTOR_SIZE as usize {
             let record_len = sector_data[pos] as usize;
             if record_len == 0 {
                 break; // No more records in this sector
             }
-            if pos + record_len > 2048 {
+            if pos + record_len > crate::sector::ISO_SECTOR_SIZE as usize {
                 break;
             }
 
@@ -200,13 +200,13 @@ pub fn read_file_content(
         ));
     }
     let mut result = Vec::with_capacity(record.data_length as usize);
-    let sectors_needed = (record.data_length as u64).div_ceil(2048);
+    let sectors_needed = (record.data_length as u64).div_ceil(crate::sector::ISO_SECTOR_SIZE);
     let mut remaining = record.data_length as usize;
 
     for i in 0..sectors_needed {
         let sector = record.extent_lba as u64 + i;
         let sector_data = read_sector_data(reader, sector, format)?;
-        let to_copy = remaining.min(2048);
+        let to_copy = remaining.min(crate::sector::ISO_SECTOR_SIZE as usize);
         result.extend_from_slice(&sector_data[..to_copy]);
         remaining -= to_copy;
     }

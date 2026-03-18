@@ -12,7 +12,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 6;
+pub const CURRENT_VERSION: i32 = 7;
 
 /// Create all tables and indexes if they don't exist.
 ///
@@ -20,6 +20,7 @@ pub const CURRENT_VERSION: i32 = 6;
 pub fn create_schema(conn: &Connection) -> Result<(), SchemaError> {
     conn.execute_batch(SCHEMA_SQL)?;
     conn.execute_batch(LIBRARY_TABLES_SQL)?;
+    conn.execute_batch(MEDIA_TRACKS_SQL)?;
     set_schema_version(conn, CURRENT_VERSION)?;
     Ok(())
 }
@@ -117,6 +118,9 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
             }
             5 => {
                 conn.execute_batch(LIBRARY_TABLES_SQL)?;
+            }
+            6 => {
+                conn.execute_batch(MEDIA_TRACKS_SQL)?;
             }
             _ => {}
         }
@@ -366,4 +370,21 @@ CREATE TABLE IF NOT EXISTS overrides (
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE(entity_type, entity_id, field)
 );
+"#;
+
+const MEDIA_TRACKS_SQL: &str = r#"
+-- Per-track breakdown for disc-based media (Redump DATs include every track)
+CREATE TABLE IF NOT EXISTS media_tracks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    track_number INTEGER NOT NULL,
+    track_name TEXT NOT NULL,
+    file_size INTEGER,
+    crc32 TEXT,
+    sha1 TEXT,
+    md5 TEXT,
+    UNIQUE(media_id, track_number)
+);
+CREATE INDEX IF NOT EXISTS idx_media_tracks_crc32 ON media_tracks(crc32);
+CREATE INDEX IF NOT EXISTS idx_media_tracks_sha1 ON media_tracks(sha1);
 "#;

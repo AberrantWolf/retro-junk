@@ -97,6 +97,7 @@ impl RomAnalyzer for WiiAnalyzer {
         reader: &mut dyn ReadSeek,
         algorithms: HashAlgorithms,
         file_path: Option<&Path>,
+        on_progress: retro_junk_core::HashProgressFn<'_>,
     ) -> Result<Option<FileHashes>, AnalysisError> {
         if !nintendo_disc::is_compressed_disc(reader) {
             return Ok(None);
@@ -107,12 +108,20 @@ impl RomAnalyzer for WiiAnalyzer {
             )
         })?;
         log::info!("Wii: hashing compressed disc via nod");
-        let hashes = nintendo_disc::hash_compressed_disc(path, algorithms)?;
+        let hashes = nintendo_disc::hash_compressed_disc(path, algorithms, on_progress)?;
         Ok(Some(hashes))
     }
 
     fn dat_source(&self) -> retro_junk_core::DatSource {
         retro_junk_core::DatSource::Redump
+    }
+
+    fn redump_slug(&self) -> Option<&'static str> {
+        Some("wii")
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["wii"]
     }
 
     fn dat_names(&self) -> &'static [&'static str] {

@@ -15,20 +15,10 @@ use retro_junk_core::{
 
 use crate::sony_disc::{self, DiscFormat};
 
-/// Multi-disc PS1 games where the per-disc boot serial (from SYSTEM.CNF)
-/// differs from the catalog serial used in the DAT. Maps boot serial to the
-/// suffixed catalog serial in the LibRetro Redump DAT.
-///
-/// Only needed for discs whose boot serial is NOT the catalog serial (i.e.,
-/// discs 2+ of sequential-serial games). Disc 1 is handled by the matcher's
-/// "-0" suffix preference when the boot serial matches the catalog serial.
-const MULTI_DISC_SERIAL_FIXUPS: &[(&str, &str)] = &[
-    // Final Fantasy VII (USA) - Disc 2, Disc 3
-    ("SCUS-94164", "SCUS-94163-1"),
-    ("SCUS-94165", "SCUS-94163-2"),
-    // Star Ocean - The Second Story (USA) - Disc 2
-    ("SCUS-94422", "SCUS-94421-1"),
-];
+// Multi-disc PS1 games with shared serials (e.g., all FF7 USA discs share
+// SCUS-94163) resolve via hash fallback after serial ambiguity. No fixup
+// tables needed with full Redump DATs — the LibRetro-invented suffixed
+// serials (SCUS-94163-0/1/2) don't exist in real Redump data.
 
 /// Analyzer for PlayStation disc images.
 #[derive(Debug, Default)]
@@ -66,8 +56,8 @@ impl Ps1Analyzer {
 
         // Calculate expected size from PVD
         let sector_size = match format {
-            DiscFormat::RawSector2352 => 2352u64,
-            _ => 2048u64,
+            DiscFormat::RawSector2352 => retro_junk_disc::RAW_SECTOR_SIZE,
+            _ => retro_junk_disc::ISO_SECTOR_SIZE,
         };
         id.expected_size = Some(pvd.volume_space_size as u64 * sector_size);
 
@@ -296,13 +286,22 @@ impl RomAnalyzer for Ps1Analyzer {
         retro_junk_core::DatSource::Redump
     }
 
+    fn redump_slug(&self) -> Option<&'static str> {
+        Some("psx")
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["psx"]
+    }
+
     fn compute_container_hashes(
         &self,
         reader: &mut dyn ReadSeek,
         algorithms: HashAlgorithms,
         file_path: Option<&std::path::Path>,
+        on_progress: retro_junk_core::HashProgressFn<'_>,
     ) -> Result<Option<FileHashes>, AnalysisError> {
-        sony_disc::hash_disc_container(reader, algorithms, file_path, "PS1")
+        sony_disc::hash_disc_container(reader, algorithms, file_path, "PS1", on_progress)
     }
 
     fn dat_names(&self) -> &'static [&'static str] {
@@ -314,15 +313,8 @@ impl RomAnalyzer for Ps1Analyzer {
     }
 
     fn extract_dat_game_code(&self, serial: &str) -> Option<String> {
-        // Check fixup table for multi-disc games where the per-disc boot
-        // serial differs from the catalog serial in the DAT
-        if let Some((_, suffixed)) = MULTI_DISC_SERIAL_FIXUPS
-            .iter()
-            .find(|(boot, _)| *boot == serial)
-        {
-            return Some(suffixed.to_string());
-        }
-        // Redump DATs use the full serial (e.g., "SLUS-01234")
+        // Full Redump DATs use real serials. Multi-disc games with shared
+        // serials resolve via hash fallback after serial ambiguity.
         Some(serial.to_string())
     }
 }

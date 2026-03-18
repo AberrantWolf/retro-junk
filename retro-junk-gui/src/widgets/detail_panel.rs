@@ -73,7 +73,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 EntryStatus::Tagged(CatalogTag::Homebrew) => ("Homebrew", effective.color()),
                 EntryStatus::Tagged(CatalogTag::Modded) => ("Modded", effective.color()),
             };
-            ui.colored_label(color, text);
+            let resp = ui.colored_label(color, text);
+            resp.context_menu(|ui| {
+                if ui.button("Copy").clicked() {
+                    ui.output_mut(|o| o.copied_text = text.to_string());
+                    ui.close_menu();
+                }
+            });
         });
 
         // Show ambiguous candidates if applicable
@@ -83,7 +89,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             for candidate in &entry.ambiguous_candidates {
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
-                    ui.label(format!("- {}", candidate));
+                    copyable_label(ui, &format!("- {}", candidate));
                 });
             }
             ui.add_space(2.0);
@@ -125,7 +131,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         // Platform
         ui.horizontal(|ui| {
             ui.label("Platform:");
-            ui.label(console.platform_name);
+            copyable_label(ui, console.platform_name);
         });
 
         // Region (ComboBox with override support)
@@ -261,7 +267,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         // Folder
         ui.horizontal(|ui| {
             ui.label("Folder:");
-            ui.label(&console.folder_name);
+            copyable_label(ui, &console.folder_name);
         });
 
         // File info
@@ -277,7 +283,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                         .to_string()
                 }
             };
-            ui.label(name);
+            copyable_label(ui, &name);
         });
 
         if let Some(ref id) = entry.identification
@@ -285,7 +291,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         {
             ui.horizontal(|ui| {
                 ui.label("Size:");
-                ui.label(retro_junk_lib::util::format_bytes(size));
+                copyable_label(ui, &retro_junk_lib::util::format_bytes(size));
             });
         }
 
@@ -343,33 +349,33 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     .unwrap_or("?");
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(format!("Disc {}:", i + 1)).weak());
-                    ui.label(filename);
+                    copyable_label(ui, filename);
                 });
                 if let Some(ref serial) = disc.identification.serial_number {
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
                         ui.label(egui::RichText::new("Serial:").weak());
-                        ui.label(serial);
+                        copyable_label(ui, serial);
                     });
                 }
                 if let Some(ref name) = disc.identification.internal_name {
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
                         ui.label(egui::RichText::new("Internal:").weak());
-                        ui.label(name);
+                        copyable_label(ui, name);
                     });
                 }
                 if let Some(ref hashes) = disc.hashes {
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
                         ui.label(egui::RichText::new("CRC32:").weak());
-                        ui.label(&hashes.crc32);
+                        copyable_label(ui, &hashes.crc32);
                     });
                     if let Some(ref sha1) = hashes.sha1 {
                         ui.horizontal(|ui| {
                             ui.add_space(16.0);
                             ui.label(egui::RichText::new("SHA1:").weak());
-                            ui.label(sha1);
+                            copyable_label(ui, sha1);
                         });
                     }
                 }
@@ -391,7 +397,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     ui.horizontal(|ui| {
                         ui.add_space(16.0);
                         ui.label(egui::RichText::new("DAT:").weak());
-                        ui.label(&dm.rom_name);
+                        copyable_label(ui, &dm.rom_name);
                     });
                 } else if entry.status == EntryStatus::Ambiguous {
                     ui.horizontal(|ui| {
@@ -480,6 +486,30 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.add_space(2.0);
             detail_row(ui, "Game", &dm.game_name);
             detail_row(ui, "Method", &format!("{:?}", dm.method));
+            if dm.cross_region {
+                let dat_region = dm.region.as_deref().unwrap_or("unknown");
+                let detected = entry
+                    .identification
+                    .as_ref()
+                    .map(|id| {
+                        id.regions
+                            .iter()
+                            .map(|r| r.name())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "\u{26a0} Hash matches {} release \u{2014} detected region is {}",
+                            dat_region, detected
+                        ))
+                        .small()
+                        .color(egui::Color32::from_rgb(220, 180, 30)),
+                    );
+                });
+            }
         }
 
         // Titles (from catalog DB enrichment)
@@ -528,9 +558,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     });
 }
 
+/// A label that offers "Copy" on right-click.
+fn copyable_label(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let resp = ui.label(text);
+    resp.context_menu(|ui| {
+        if ui.button("Copy").clicked() {
+            ui.output_mut(|o| o.copied_text = text.to_string());
+            ui.close_menu();
+        }
+    });
+    resp
+}
+
 fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(format!("{}:", label)).weak());
-        ui.label(value);
+        copyable_label(ui, value);
     });
 }

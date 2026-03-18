@@ -38,7 +38,7 @@ pub fn load_dat_for_console(
         let download_ids = analyzer.dat_download_ids();
         let dat_source = analyzer.dat_source();
 
-        match cache::load_dats(short_name, dat_names, download_ids, None, dat_source) {
+        match cache::load_dats(short_name, dat_names, download_ids, None, dat_source, false) {
             Ok(dats) => {
                 let index = DatIndex::from_dats(dats);
                 let _ = tx.send(AppMessage::DatLoaded {

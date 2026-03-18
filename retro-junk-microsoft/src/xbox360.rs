@@ -40,6 +40,14 @@ impl RomAnalyzer for Xbox360Analyzer {
         retro_junk_core::DatSource::Redump
     }
 
+    fn redump_slug(&self) -> Option<&'static str> {
+        Some("xbox360")
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["xbox360"]
+    }
+
     fn dat_names(&self) -> &'static [&'static str] {
         &["Microsoft - Xbox 360"]
     }

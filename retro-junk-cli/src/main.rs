@@ -255,7 +255,9 @@ fn run(
         Commands::Cache { action } => match action {
             CacheAction::List => commands::cache::run_cache_list()?,
             CacheAction::Clear => commands::cache::run_cache_clear()?,
-            CacheAction::Fetch { systems } => commands::cache::run_cache_fetch(ctx, systems)?,
+            CacheAction::Fetch { systems, force } => {
+                commands::cache::run_cache_fetch(ctx, systems, force)?
+            }
             CacheAction::GdbList => commands::cache::run_gdb_cache_list()?,
             CacheAction::GdbClear => commands::cache::run_gdb_cache_clear()?,
             CacheAction::GdbFetch { systems } => {

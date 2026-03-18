@@ -40,6 +40,14 @@ impl RomAnalyzer for Ps3Analyzer {
         retro_junk_core::DatSource::Redump
     }
 
+    fn redump_slug(&self) -> Option<&'static str> {
+        Some("ps3")
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["ps3"]
+    }
+
     fn dat_names(&self) -> &'static [&'static str] {
         &["Sony - PlayStation 3"]
     }

@@ -1,9 +1,7 @@
 use std::io::SeekFrom;
 use std::path::Path;
 
-use sha1::Digest;
-
-use retro_junk_core::{HashAlgorithms, ReadSeek, RomAnalyzer};
+use retro_junk_core::{HashAlgorithms, HashProgressFn, MultiHasher, ReadSeek, RomAnalyzer};
 use retro_junk_dat::error::DatError;
 pub use retro_junk_dat::matcher::FileHashes;
 
@@ -17,9 +15,10 @@ fn try_container_hashes(
     analyzer: &dyn RomAnalyzer,
     algorithms: HashAlgorithms,
     file_path: Option<&Path>,
+    on_progress: HashProgressFn<'_>,
 ) -> Result<Option<FileHashes>, DatError> {
     analyzer
-        .compute_container_hashes(reader, algorithms, file_path)
+        .compute_container_hashes(reader, algorithms, file_path, on_progress)
         .map_err(|e| DatError::cache(e.to_string()))
 }
 
@@ -69,45 +68,20 @@ fn compute_hashes_internal(
     on_progress: Option<&dyn Fn(u64, u64)>,
     file_path: Option<&Path>,
 ) -> Result<FileHashes, DatError> {
-    if let Some(hashes) = try_container_hashes(reader, analyzer, algorithms, file_path)? {
+    if let Some(hashes) =
+        try_container_hashes(reader, analyzer, algorithms, file_path, on_progress)?
+    {
         return Ok(hashes);
     }
 
     let (data_size, mut normalizer) = setup_stream(reader, analyzer)?;
-    let mut crc = crc32fast::Hasher::new();
-    let mut sha: Option<sha1::Sha1> = if algorithms.sha1() {
-        Some(sha1::Sha1::new())
-    } else {
-        None
-    };
-    let mut md5_ctx: Option<md5::Context> = if algorithms.md5() {
-        Some(md5::Context::new())
-    } else {
-        None
-    };
+    let mut hasher = MultiHasher::new(algorithms, data_size, on_progress);
 
-    let mut processed: u64 = 0;
     stream_chunks(reader, &mut normalizer, |chunk| {
-        crc.update(chunk);
-        if let Some(ref mut s) = sha {
-            s.update(chunk);
-        }
-        if let Some(ref mut m) = md5_ctx {
-            m.consume(chunk);
-        }
-        processed += chunk.len() as u64;
-        if let Some(cb) = on_progress {
-            cb(processed, data_size);
-        }
+        hasher.update_with_progress(chunk);
     })?;
 
-    Ok(FileHashes {
-        crc32: format!("{:08x}", crc.finalize()),
-        sha1: sha.map(|s| format!("{:x}", s.finalize())),
-        md5: md5_ctx.map(|m| format!("{:x}", m.compute())),
-        data_size,
-        warnings: vec![],
-    })
+    Ok(hasher.finalize())
 }
 
 /// Compute both CRC32 and SHA1 of a file, using the analyzer's DAT trait methods.
@@ -172,34 +146,24 @@ pub fn compute_crc32_sha1_with_padding(
     let (file_data_size, mut normalizer) = setup_stream(reader, analyzer)?;
     let total_data_size = padding.prepend_size + file_data_size + padding.append_size;
 
-    let mut crc = crc32fast::Hasher::new();
-    let mut sha = sha1::Sha1::new();
+    let mut hasher = MultiHasher::new(HashAlgorithms::Crc32Sha1, total_data_size, None);
 
     // Phase 1: prepend padding (not normalized)
     stream_padding(padding.prepend_size, padding.fill_byte, |chunk| {
-        crc.update(chunk);
-        sha.update(chunk);
+        hasher.update(chunk);
     });
 
     // Phase 2: file data (normalized if applicable)
     stream_chunks(reader, &mut normalizer, |chunk| {
-        crc.update(chunk);
-        sha.update(chunk);
+        hasher.update(chunk);
     })?;
 
     // Phase 3: append padding (not normalized)
     stream_padding(padding.append_size, padding.fill_byte, |chunk| {
-        crc.update(chunk);
-        sha.update(chunk);
+        hasher.update(chunk);
     });
 
-    Ok(FileHashes {
-        crc32: format!("{:08x}", crc.finalize()),
-        sha1: Some(format!("{:x}", sha.finalize())),
-        md5: None,
-        data_size: total_data_size,
-        warnings: vec![],
-    })
+    Ok(hasher.finalize())
 }
 
 /// Stream `size` bytes of `fill_byte` in CHUNK_SIZE blocks to the callback.

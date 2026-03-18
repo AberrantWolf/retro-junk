@@ -32,6 +32,9 @@ fn sample_dat() -> DatFile {
             DatGame {
                 name: "Super Mario Bros. (USA)".to_string(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Super Mario Bros. (USA).nes".to_string(),
                     size: 40976,
@@ -44,6 +47,9 @@ fn sample_dat() -> DatFile {
             DatGame {
                 name: "The Legend of Zelda (USA)".to_string(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Legend of Zelda, The (USA).nes".to_string(),
                     size: 131088,
@@ -56,6 +62,9 @@ fn sample_dat() -> DatFile {
             DatGame {
                 name: "The Legend of Zelda (USA) (Rev A)".to_string(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Legend of Zelda, The (USA) (Rev A).nes".to_string(),
                     size: 131088,
@@ -68,6 +77,9 @@ fn sample_dat() -> DatFile {
             DatGame {
                 name: "Bad Game (USA) [b]".to_string(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Bad Game (USA) [b].nes".to_string(),
                     size: 16384,
@@ -209,6 +221,9 @@ fn multi_region_game() {
         games: vec![DatGame {
             name: "Tetris (USA, Europe)".to_string(),
             region: None,
+            serial: None,
+            version: None,
+            category: None,
             roms: vec![DatRom {
                 name: "Tetris (USA, Europe).nes".to_string(),
                 size: 32768,
@@ -239,6 +254,9 @@ fn prototype_flag_sets_media_status() {
         games: vec![DatGame {
             name: "Unreleased Game (USA) (Proto)".to_string(),
             region: None,
+            serial: None,
+            version: None,
+            category: None,
             roms: vec![DatRom {
                 name: "Unreleased Game (USA) (Proto).nes".to_string(),
                 size: 16384,
@@ -282,6 +300,9 @@ fn disc_number_extracted() {
             DatGame {
                 name: "Final Fantasy VII (USA) (Disc 1)".to_string(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Final Fantasy VII (USA) (Disc 1).bin".to_string(),
                     size: 700000000,
@@ -294,6 +315,9 @@ fn disc_number_extracted() {
             DatGame {
                 name: "Final Fantasy VII (USA) (Disc 2)".to_string(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Final Fantasy VII (USA) (Disc 2).bin".to_string(),
                     size: 700000000,

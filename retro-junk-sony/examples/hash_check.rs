@@ -51,7 +51,7 @@ fn main() {
     let algorithms = retro_junk_core::HashAlgorithms::All;
     use retro_junk_core::RomAnalyzer;
     let file_path = std::path::Path::new(path);
-    match analyzer.compute_container_hashes(&mut file, algorithms, Some(file_path)) {
+    match analyzer.compute_container_hashes(&mut file, algorithms, Some(file_path), None) {
         Ok(Some(hashes)) => {
             println!("  CRC32:     {}", hashes.crc32);
             println!("  SHA1:      {}", hashes.sha1.as_deref().unwrap_or("n/a"));
@@ -90,7 +90,7 @@ fn main() {
 fn hash_range(file: &mut File, offset: u64, length: u64) {
     file.seek(SeekFrom::Start(offset)).unwrap();
     let algorithms = retro_junk_core::HashAlgorithms::All;
-    match retro_junk_disc::hash::hash_raw_bin_track1(file, algorithms, length) {
+    match retro_junk_disc::hash::hash_raw_bin_track1(file, algorithms, length, None) {
         Ok(hashes) => {
             println!("  CRC32:     {}", hashes.crc32);
             println!("  SHA1:      {}", hashes.sha1.as_deref().unwrap_or("n/a"));

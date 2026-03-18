@@ -199,45 +199,81 @@ fn import_game(
         release_id.clone()
     };
 
-    // Create Media entries — one per ROM in the DatGame
-    for rom in &game.roms {
-        let media_id = make_media_id(&effective_release_id, &rom.name);
+    // Separate track ROMs from the primary data track.
+    // Full Redump DATs include CUE files and per-track BIN entries.
+    // We create one Media entry per game (not per track) and store
+    // individual tracks in the media_tracks table.
+    let (track_roms, non_track_roms): (Vec<_>, Vec<_>) = game
+        .roms
+        .iter()
+        .partition(|rom| is_multi_track_game(&game.roms) && !rom.name.ends_with(".cue"));
 
-        // Check if this media already exists
-        let existing = operations::find_media_by_dat_name(conn, &game.name)?;
-        if let Some(ref existing_media) = existing {
-            // Check if anything changed
-            let same_hashes = existing_media.crc32.as_deref() == Some(&rom.crc)
-                && existing_media.sha1.as_deref() == rom.sha1.as_deref()
-                && existing_media.file_size == i64::try_from(rom.size).ok();
-            if same_hashes {
-                stats.media_unchanged += 1;
-                continue;
-            }
-            stats.media_updated += 1;
-        } else {
-            stats.media_created += 1;
+    // For multi-track games, find the largest data track for the media entry's hashes
+    let primary_rom = if !track_roms.is_empty() {
+        track_roms.iter().max_by_key(|r| r.size).unwrap()
+    } else if !non_track_roms.is_empty() {
+        // Single-ROM game or CUE-only — use first non-CUE ROM
+        non_track_roms
+            .iter()
+            .find(|r| !r.name.ends_with(".cue"))
+            .unwrap_or(&non_track_roms[0])
+    } else {
+        // Edge case: game with no ROMs
+        return Ok(());
+    };
+
+    let media_id = make_media_id(&effective_release_id, &game.name);
+
+    // Check if this media already exists
+    let existing = operations::find_media_by_dat_name(conn, &game.name)?;
+    if let Some(ref existing_media) = existing {
+        let same_hashes = existing_media.crc32.as_deref() == Some(&primary_rom.crc)
+            && existing_media.sha1.as_deref() == primary_rom.sha1.as_deref()
+            && existing_media.file_size == i64::try_from(primary_rom.size).ok();
+        if same_hashes {
+            stats.media_unchanged += 1;
+            return Ok(());
         }
+        stats.media_updated += 1;
+    } else {
+        stats.media_created += 1;
+    }
 
-        let media = Media {
-            id: media_id,
-            release_id: effective_release_id.clone(),
-            media_serial: rom.serial.clone(),
-            disc_number: parsed.disc_number.and_then(|n| i32::try_from(n).ok()),
-            disc_label: parsed.disc_label.clone(),
-            revision: parsed.revision.clone(),
-            status,
-            tag: None,
-            dat_name: Some(game.name.clone()),
-            dat_source: Some(dat_source.to_string()),
+    let media_serial = game.serial.clone().or_else(|| primary_rom.serial.clone());
+
+    let media = Media {
+        id: media_id.clone(),
+        release_id: effective_release_id.clone(),
+        media_serial,
+        disc_number: parsed.disc_number.and_then(|n| i32::try_from(n).ok()),
+        disc_label: parsed.disc_label.clone(),
+        revision: parsed.revision.clone(),
+        status,
+        tag: None,
+        dat_name: Some(game.name.clone()),
+        dat_source: Some(dat_source.to_string()),
+        file_size: i64::try_from(primary_rom.size).ok(),
+        crc32: Some(primary_rom.crc.clone()),
+        sha1: primary_rom.sha1.clone(),
+        md5: primary_rom.md5.clone(),
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    operations::upsert_media(conn, &media)?;
+
+    // Insert per-track entries for multi-track games
+    for rom in &track_roms {
+        let track_number = extract_track_number(&rom.name);
+        let track = operations::MediaTrack {
+            media_id: media_id.clone(),
+            track_number,
+            track_name: rom.name.clone(),
             file_size: i64::try_from(rom.size).ok(),
             crc32: Some(rom.crc.clone()),
             sha1: rom.sha1.clone(),
             md5: rom.md5.clone(),
-            created_at: String::new(),
-            updated_at: String::new(),
         };
-        operations::upsert_media(conn, &media)?;
+        operations::insert_media_track(conn, &track)?;
     }
 
     Ok(())
@@ -334,4 +370,27 @@ pub fn dat_source_str(source: &retro_junk_core::DatSource) -> &'static str {
         retro_junk_core::DatSource::NoIntro => "no-intro",
         retro_junk_core::DatSource::Redump => "redump",
     }
+}
+
+/// Check if a game has multiple non-CUE ROMs (typical of full Redump DATs
+/// which include CUE + per-track BIN entries).
+fn is_multi_track_game(roms: &[retro_junk_dat::DatRom]) -> bool {
+    let non_cue_count = roms.iter().filter(|r| !r.name.ends_with(".cue")).count();
+    non_cue_count > 1
+}
+
+/// Extract a track number from a Redump ROM name like "Game (Track 02).bin".
+/// Falls back to 0 if no track number is found.
+fn extract_track_number(name: &str) -> i32 {
+    // Look for "(Track NN)" pattern
+    if let Some(start) = name.find("(Track ") {
+        let after = &name[start + 7..];
+        if let Some(end) = after.find(')') {
+            if let Ok(n) = after[..end].trim().parse::<i32>() {
+                return n;
+            }
+        }
+    }
+    // Fallback: try to extract from ".bin" suffix pattern
+    0
 }

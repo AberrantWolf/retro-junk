@@ -300,6 +300,12 @@ pub struct DatMatchInfo {
     #[serde(default)]
     pub rom_name: String,
     pub method: MatchMethod,
+    /// Region string from the DAT entry (e.g., "USA", "Japan").
+    #[serde(default)]
+    pub region: Option<String>,
+    /// True when the DAT match's region differs from the file's detected region.
+    #[serde(default)]
+    pub cross_region: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -713,6 +719,80 @@ pub enum AppMessage {
     },
 }
 
+// -- Helpers --
+
+/// Check whether detected regions match the DAT entry's region string.
+/// Returns `true` if any detected region name appears in the DAT region string.
+fn regions_match_dat(detected: &[Region], dat_region: &str) -> bool {
+    if detected.is_empty() {
+        return true; // No detected regions — can't flag a mismatch
+    }
+    detected.iter().any(|r| {
+        let name = r.name();
+        dat_region.contains(name) || name.contains(dat_region)
+    })
+}
+
+/// Build a `DatMatchInfo` from a single DAT match result, including cross-region detection.
+fn build_dat_match_info(
+    dat_index: &DatIndex,
+    game_index: usize,
+    rom_index: usize,
+    method: MatchMethod,
+    detected_regions: &[Region],
+) -> DatMatchInfo {
+    let game = &dat_index.games[game_index];
+    let region = game.region.clone();
+    let cross_region = region
+        .as_deref()
+        .is_some_and(|r| !regions_match_dat(detected_regions, r));
+    DatMatchInfo {
+        game_name: game.name.clone(),
+        rom_name: game.roms[rom_index].name.clone(),
+        method,
+        region,
+        cross_region,
+    }
+}
+
+/// Pick the best match from multiple hash matches, preferring the one whose
+/// DAT region matches the file's detected regions.
+fn pick_best_hash_match(
+    dat_index: &DatIndex,
+    matches: Vec<retro_junk_dat::MatchResult>,
+    detected_regions: &[Region],
+) -> Option<DatMatchInfo> {
+    if matches.is_empty() {
+        return None;
+    }
+    // If we have detected regions and multiple matches, prefer region-matching entry
+    if !detected_regions.is_empty() && matches.len() > 1 {
+        for m in &matches {
+            let game = &dat_index.games[m.game_index];
+            if let Some(ref dat_region) = game.region {
+                if regions_match_dat(detected_regions, dat_region) {
+                    return Some(build_dat_match_info(
+                        dat_index,
+                        m.game_index,
+                        m.rom_index,
+                        m.method.clone(),
+                        detected_regions,
+                    ));
+                }
+            }
+        }
+    }
+    // Fall back to first match (with cross-region flag if applicable)
+    let m = &matches[0];
+    Some(build_dat_match_info(
+        dat_index,
+        m.game_index,
+        m.rom_index,
+        m.method.clone(),
+        detected_regions,
+    ))
+}
+
 // -- Message handler --
 
 pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Context) {
@@ -894,6 +974,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                     game_name,
                                     rom_name,
                                     method: m.method,
+                                    region: None,
+                                    cross_region: false,
                                 });
                                 entry.status = EntryStatus::Matched;
                                 entry.ambiguous_candidates.clear();
@@ -910,17 +992,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     // hashes cached from a prior scan.
                     if entry.status != EntryStatus::Matched
                         && let Some(ref hashes) = entry.hashes
-                        && let Some(m) = dat.match_by_hash(hashes.data_size, hashes)
                     {
-                        let game_name = dat.games[m.game_index].name.clone();
-                        let rom_name = dat.games[m.game_index].roms[m.rom_index].name.clone();
-                        entry.dat_match = Some(DatMatchInfo {
-                            game_name,
-                            rom_name,
-                            method: m.method,
-                        });
-                        entry.status = EntryStatus::Matched;
-                        entry.ambiguous_candidates.clear();
+                        let matches = dat.match_by_hash(hashes.data_size, hashes);
+                        let detected = entry
+                            .identification
+                            .as_ref()
+                            .map(|id| id.regions.as_slice())
+                            .unwrap_or_default();
+                        if let Some(dm) = pick_best_hash_match(dat, matches, detected) {
+                            entry.dat_match = Some(dm);
+                            entry.status = EntryStatus::Matched;
+                            entry.ambiguous_candidates.clear();
+                        }
                     }
                 }
 
@@ -1054,6 +1137,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                             game_name: name.clone(),
                                             rom_name,
                                             method: MatchMethod::Serial,
+                                            region: None,
+                                            cross_region: false,
                                         });
                                         matched_names.push(name);
                                     }
@@ -1090,6 +1175,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             game_name: combined,
                             rom_name: first_rom_name,
                             method: MatchMethod::Serial,
+                            region: None,
+                            cross_region: false,
                         });
                         if any_ambiguous {
                             entry.status = EntryStatus::Ambiguous;
@@ -1209,6 +1296,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                         game_name,
                                         rom_name,
                                         method: m.method,
+                                        region: None,
+                                        cross_region: false,
                                     });
                                     entry.status = EntryStatus::Matched;
                                     entry.ambiguous_candidates.clear();
@@ -1256,6 +1345,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                             game_name: name.clone(),
                                             rom_name,
                                             method: MatchMethod::Serial,
+                                            region: None,
+                                            cross_region: false,
                                         });
                                         matched_names.push(name);
                                         continue;
@@ -1273,21 +1364,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             }
 
                             // Serial didn't resolve — try hash matching with cached hashes
-                            if let Some(ref hashes) = disc.hashes
-                                && let Some(m) = index.match_by_hash(hashes.data_size, hashes)
-                            {
-                                let name = index.games[m.game_index].name.clone();
-                                let rom_name =
-                                    index.games[m.game_index].roms[m.rom_index].name.clone();
-                                if first_rom_name.is_empty() {
-                                    first_rom_name = rom_name.clone();
+                            if let Some(ref hashes) = disc.hashes {
+                                let matches = index.match_by_hash(hashes.data_size, hashes);
+                                let detected = disc.identification.regions.as_slice();
+                                if let Some(dm) = pick_best_hash_match(&index, matches, detected) {
+                                    if first_rom_name.is_empty() {
+                                        first_rom_name = dm.rom_name.clone();
+                                    }
+                                    matched_names.push(dm.game_name.clone());
+                                    disc.dat_match = Some(dm);
+                                } else {
+                                    any_ambiguous = true;
                                 }
-                                disc.dat_match = Some(DatMatchInfo {
-                                    game_name: name.clone(),
-                                    rom_name,
-                                    method: m.method,
-                                });
-                                matched_names.push(name);
                             } else {
                                 any_ambiguous = true;
                             }
@@ -1308,10 +1396,19 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                         matched_names.iter().map(|s| s.as_str()).collect();
                                     retro_junk_core::disc::derive_base_game_name(&name_refs)
                                 });
+                            // Cross-region if any disc has a cross-region hash match
+                            let cross_region =
+                                entry.disc_identifications.as_ref().is_some_and(|ds| {
+                                    ds.iter().any(|d| {
+                                        d.dat_match.as_ref().is_some_and(|dm| dm.cross_region)
+                                    })
+                                });
                             entry.dat_match = Some(DatMatchInfo {
                                 game_name: combined,
                                 rom_name: first_rom_name,
                                 method: MatchMethod::Serial,
+                                region: None,
+                                cross_region,
                             });
                             if any_ambiguous {
                                 entry.status = EntryStatus::Ambiguous;
@@ -1343,17 +1440,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     }
                     if entry.status != EntryStatus::Matched
                         && let Some(ref hashes) = entry.hashes
-                        && let Some(m) = index.match_by_hash(hashes.data_size, hashes)
                     {
-                        let game_name = index.games[m.game_index].name.clone();
-                        let rom_name = index.games[m.game_index].roms[m.rom_index].name.clone();
-                        entry.dat_match = Some(DatMatchInfo {
-                            game_name,
-                            rom_name,
-                            method: m.method,
-                        });
-                        entry.status = EntryStatus::Matched;
-                        entry.ambiguous_candidates.clear();
+                        let matches = index.match_by_hash(hashes.data_size, hashes);
+                        let detected = entry
+                            .identification
+                            .as_ref()
+                            .map(|id| id.regions.as_slice())
+                            .unwrap_or_default();
+                        if let Some(dm) = pick_best_hash_match(&index, matches, detected) {
+                            entry.dat_match = Some(dm);
+                            entry.status = EntryStatus::Matched;
+                            entry.ambiguous_candidates.clear();
+                        }
                     }
                 }
 
@@ -1400,17 +1498,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 // multi-disc serial matching; this hash only covers one disc.
                 if entry.disc_identifications.is_none()
                     && let Some(dat_index) = app.dat_indices.get(&folder_name)
-                    && let Some(m) = dat_index.match_by_hash(hashes.data_size, &hashes)
                 {
-                    let game_name = dat_index.games[m.game_index].name.clone();
-                    let rom_name = dat_index.games[m.game_index].roms[m.rom_index].name.clone();
-                    entry.dat_match = Some(DatMatchInfo {
-                        game_name,
-                        rom_name,
-                        method: m.method,
-                    });
-                    entry.status = EntryStatus::Matched;
-                    entry.ambiguous_candidates.clear();
+                    let matches = dat_index.match_by_hash(hashes.data_size, &hashes);
+                    let detected = entry
+                        .identification
+                        .as_ref()
+                        .map(|id| id.regions.as_slice())
+                        .unwrap_or_default();
+                    if let Some(dm) = pick_best_hash_match(dat_index, matches, detected) {
+                        entry.dat_match = Some(dm);
+                        entry.status = EntryStatus::Matched;
+                        entry.ambiguous_candidates.clear();
+                    }
                 }
                 entry.hashes = Some(hashes);
 
@@ -1438,22 +1537,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 // Find the matching disc and store its hashes
                 if let Some(disc) = discs.iter_mut().find(|d| d.path == disc_path) {
                     // Try per-disc DAT matching
-                    if let Some(dat_index) = app.dat_indices.get(&folder_name)
-                        && let Some(m) = dat_index.match_by_hash(hashes.data_size, &hashes)
-                    {
-                        let game_name = dat_index.games[m.game_index].name.clone();
-                        let rom_name = dat_index.games[m.game_index].roms[m.rom_index].name.clone();
-                        log::info!(
-                            "Disc hash match: {} -> {} ({})",
-                            disc_path.display(),
-                            game_name,
-                            rom_name
-                        );
-                        disc.dat_match = Some(DatMatchInfo {
-                            game_name,
-                            rom_name,
-                            method: m.method,
-                        });
+                    if let Some(dat_index) = app.dat_indices.get(&folder_name) {
+                        let matches = dat_index.match_by_hash(hashes.data_size, &hashes);
+                        let detected = disc.identification.regions.as_slice();
+                        if let Some(dm) = pick_best_hash_match(dat_index, matches, detected) {
+                            log::info!(
+                                "Disc hash match: {} -> {} ({})",
+                                disc_path.display(),
+                                dm.game_name,
+                                dm.rom_name
+                            );
+                            disc.dat_match = Some(dm);
+                        }
                     }
                     disc.hashes = Some(hashes);
                 }
@@ -1482,10 +1577,17 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     let method = first_match
                         .map(|dm| dm.method.clone())
                         .unwrap_or(MatchMethod::Crc32);
+                    let region = first_match.and_then(|dm| dm.region.clone());
+                    // Cross-region if any disc has a cross-region match
+                    let cross_region = discs
+                        .iter()
+                        .any(|d| d.dat_match.as_ref().is_some_and(|dm| dm.cross_region));
                     entry.dat_match = Some(DatMatchInfo {
                         game_name,
                         rom_name: first_rom_name,
                         method,
+                        region,
+                        cross_region,
                     });
                     entry.status = EntryStatus::Matched;
                     entry.ambiguous_candidates.clear();

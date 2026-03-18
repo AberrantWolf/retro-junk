@@ -10,7 +10,7 @@ use retro_junk_core::DatSource;
 
 /// Cache format version. Bump this when changing DAT sources or format to
 /// invalidate stale cached DATs automatically.
-const CACHE_VERSION: u32 = 7;
+const CACHE_VERSION: u32 = 8;
 
 /// Metadata about a cached DAT file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,13 +103,21 @@ fn dat_file_path(short_name: &str, index: usize) -> Result<PathBuf, DatError> {
 
 /// Construct the download URL for a DAT file.
 ///
-/// Both No-Intro and Redump DATs are hosted on the libretro-database GitHub
-/// repo as raw `.dat` files. The download ID is the DAT name used as the
-/// filename (e.g., "Sony - PlayStation" → "Sony%20-%20PlayStation.dat").
+/// - No-Intro: LibRetro GitHub raw `.dat` files.
+///   e.g., "Nintendo - Nintendo Entertainment System" → `{base}Nintendo%20-%20Nintendo%20Entertainment%20System.dat`
+/// - Redump: redump.org DAT download with serial+version metadata.
+///   e.g., slug "psx" → `http://redump.org/datfile/psx/serial,version`
 fn download_url(download_id: &str, dat_source: DatSource) -> String {
     let base = dat_source.base_url();
-    let encoded = download_id.replace(' ', "%20");
-    format!("{base}{encoded}.dat")
+    match dat_source {
+        DatSource::NoIntro => {
+            let encoded = download_id.replace(' ', "%20");
+            format!("{base}{encoded}.dat")
+        }
+        DatSource::Redump => {
+            format!("{base}{download_id}/serial,version")
+        }
+    }
 }
 
 /// Download and cache all DAT files for a system.
@@ -118,6 +126,7 @@ fn download_url(download_id: &str, dat_source: DatSource) -> String {
 /// for cache metadata. `download_ids` are the identifiers used to construct
 /// download URLs (same as `dat_names` for No-Intro; system slugs for Redump).
 /// `dat_source` determines the URL scheme and download format.
+/// `force` re-downloads even if cached files exist.
 ///
 /// Returns paths to all successfully downloaded DAT files. Partial failures
 /// are warned but don't fail the entire operation — partial coverage is better
@@ -127,13 +136,21 @@ pub fn fetch(
     dat_names: &[&str],
     download_ids: &[&str],
     dat_source: DatSource,
+    force: bool,
 ) -> Result<Vec<PathBuf>, DatError> {
     let mut paths = Vec::new();
     let mut cached_entries = Vec::new();
 
     for (i, (dat_name, download_id)) in dat_names.iter().zip(download_ids.iter()).enumerate() {
-        let url = download_url(download_id, dat_source);
         let dat_path = dat_file_path(short_name, i)?;
+
+        // Skip download if cached and not forced
+        if !force && dat_path.exists() {
+            paths.push(dat_path);
+            continue;
+        }
+
+        let url = download_url(download_id, dat_source);
 
         // Ensure cache directory exists
         if let Some(parent) = dat_path.parent() {
@@ -162,8 +179,21 @@ pub fn fetch(
             }
         };
 
-        fs::write(&dat_path, &bytes)?;
-        let dat_bytes = &bytes;
+        // Redump downloads are zip archives containing a single .dat file;
+        // extract the DAT content before writing to cache.
+        let dat_bytes = if dat_source == DatSource::Redump {
+            match extract_dat_from_zip(&bytes) {
+                Ok(extracted) => extracted,
+                Err(e) => {
+                    log::warn!("Failed to extract zip for {dat_name}: {e}");
+                    continue;
+                }
+            }
+        } else {
+            bytes.to_vec()
+        };
+
+        fs::write(&dat_path, &dat_bytes)?;
 
         // Parse to get version info
         let dat = dat::parse_dat_file(&dat_path)?;
@@ -194,18 +224,44 @@ pub fn fetch(
     Ok(paths)
 }
 
+/// Extract the first `.dat` file from a zip archive in memory.
+fn extract_dat_from_zip(zip_bytes: &[u8]) -> Result<Vec<u8>, DatError> {
+    use std::io::Read;
+
+    let cursor = std::io::Cursor::new(zip_bytes);
+    let mut archive = zip::ZipArchive::new(cursor)
+        .map_err(|e| DatError::download(format!("Invalid zip archive: {e}")))?;
+
+    for i in 0..archive.len() {
+        let mut file = archive
+            .by_index(i)
+            .map_err(|e| DatError::download(format!("Zip entry error: {e}")))?;
+        if file.name().ends_with(".dat") {
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)?;
+            return Ok(content);
+        }
+    }
+
+    Err(DatError::download(
+        "No .dat file found in zip archive".to_string(),
+    ))
+}
+
 /// Load all DAT files for a system, either from a custom directory or from the cache.
 /// If not cached and no custom dir is provided, downloads them automatically.
 ///
 /// `short_name` is used as the cache key. `dat_names` are the display names.
 /// `download_ids` are the identifiers used for URL construction.
 /// `dat_source` determines the URL scheme and download format.
+/// `force` re-downloads even if cached files exist.
 pub fn load_dats(
     short_name: &str,
     dat_names: &[&str],
     download_ids: &[&str],
     dat_dir: Option<&Path>,
     dat_source: DatSource,
+    force: bool,
 ) -> Result<Vec<DatFile>, DatError> {
     if let Some(dir) = dat_dir {
         // Try to find matching DATs in the custom directory
@@ -231,7 +287,7 @@ pub fn load_dats(
     let cache_valid = meta.version == CACHE_VERSION;
 
     // Try cache first — check if all indexed DATs exist and cache version is current
-    if cache_valid {
+    if !force && cache_valid {
         let mut cached_paths = Vec::new();
         for i in 0..dat_names.len() {
             let dat_path = dat_file_path(short_name, i)?;
@@ -250,7 +306,7 @@ pub fn load_dats(
     }
 
     // Download and cache
-    let paths = fetch(short_name, dat_names, download_ids, dat_source)?;
+    let paths = fetch(short_name, dat_names, download_ids, dat_source, force)?;
     let mut dats = Vec::new();
     for path in &paths {
         dats.push(dat::parse_dat_file(path)?);

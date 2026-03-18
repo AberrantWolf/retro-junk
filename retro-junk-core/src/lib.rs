@@ -6,6 +6,7 @@ use std::sync::mpsc::Sender;
 pub mod checksum;
 pub mod disc;
 pub mod error;
+pub mod hasher;
 pub mod platform;
 pub mod progress;
 pub mod region;
@@ -13,12 +14,20 @@ pub mod util;
 
 pub use checksum::{ChecksumAlgorithm, ExpectedChecksum};
 pub use error::AnalysisError;
+pub use hasher::MultiHasher;
 pub use platform::{Platform, PlatformParseError};
 pub use progress::AnalysisProgress;
 pub use region::Region;
 
 // Re-export hash types used across crate boundaries
 // (FileHashes is used in trait methods, HashAlgorithms is a parameter type)
+
+/// Progress callback for container hash computation.
+///
+/// Receives `(bytes_processed, total_bytes)`. Called periodically during
+/// decompression/hashing of container formats (CHD, RVZ, etc.) so callers
+/// can report incremental progress.
+pub type HashProgressFn<'a> = Option<&'a dyn Fn(u64, u64)>;
 
 /// Result type for chunk normalizers used during ROM hashing.
 pub type ChunkNormalizerResult = Result<Option<Box<dyn FnMut(&mut [u8])>>, AnalysisError>;
@@ -114,9 +123,8 @@ impl RomIdentification {
 
 /// The source database for DAT files.
 ///
-/// Both sources use the LibRetro enhanced DAT repository on GitHub:
-/// - No-Intro DATs for cartridge-based consoles (`metadat/no-intro/`)
-/// - Redump DATs for disc-based consoles (`metadat/redump/`)
+/// - No-Intro DATs for cartridge-based consoles (from LibRetro GitHub `metadat/no-intro/`)
+/// - Redump DATs for disc-based consoles (from redump.org direct downloads)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatSource {
     /// No-Intro DATs (cartridge-based consoles: NES, SNES, N64, GB, GBA, etc.)
@@ -132,9 +140,7 @@ impl DatSource {
             DatSource::NoIntro => {
                 "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/"
             }
-            DatSource::Redump => {
-                "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/redump/"
-            }
+            DatSource::Redump => "http://redump.org/datfile/",
         }
     }
 
@@ -294,10 +300,19 @@ pub trait RomAnalyzer: Send + Sync {
         &[]
     }
 
+    /// Returns the Redump slug for this platform (e.g., "psx", "ss", "gc").
+    ///
+    /// Used to construct the download URL for Redump DATs from redump.org.
+    /// Only relevant for disc-based consoles that use `DatSource::Redump`.
+    /// Returns `None` by default (cartridge-based consoles).
+    fn redump_slug(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Returns download identifiers for DAT files.
     ///
     /// For No-Intro, this is the same as `dat_names()` (the DAT name IS the download path).
-    /// For Redump, this returns system IDs (e.g., "psx") used in the redump.org URL path.
+    /// For Redump, this returns the redump_slug wrapped in a slice.
     fn dat_download_ids(&self) -> &'static [&'static str] {
         self.dat_names()
     }
@@ -333,6 +348,7 @@ pub trait RomAnalyzer: Send + Sync {
         _reader: &mut dyn ReadSeek,
         _algorithms: HashAlgorithms,
         _file_path: Option<&Path>,
+        _on_progress: HashProgressFn<'_>,
     ) -> Result<Option<FileHashes>, AnalysisError> {
         Ok(None)
     }

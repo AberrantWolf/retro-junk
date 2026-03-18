@@ -201,6 +201,9 @@ pub(crate) enum CacheAction {
         /// Systems to fetch (e.g., snes,n64) or "all"
         #[arg(value_delimiter = ',')]
         systems: Vec<String>,
+        /// Re-download even if cached
+        #[arg(long)]
+        force: bool,
     },
 
     /// List cached GDB (GameDataBase) CSV files

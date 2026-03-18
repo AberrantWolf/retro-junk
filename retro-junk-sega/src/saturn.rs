@@ -135,7 +135,8 @@ impl SaturnAnalyzer {
             if !pvd.volume_identifier.is_empty() && id.internal_name.is_none() {
                 id.internal_name = Some(pvd.volume_identifier);
             }
-            id.expected_size = Some(pvd.volume_space_size as u64 * 2048);
+            id.expected_size =
+                Some(pvd.volume_space_size as u64 * retro_junk_disc::ISO_SECTOR_SIZE);
         }
 
         Ok(id)
@@ -345,13 +346,22 @@ impl RomAnalyzer for SaturnAnalyzer {
         retro_junk_core::DatSource::Redump
     }
 
+    fn redump_slug(&self) -> Option<&'static str> {
+        Some("ss")
+    }
+
+    fn dat_download_ids(&self) -> &'static [&'static str] {
+        &["ss"]
+    }
+
     fn compute_container_hashes(
         &self,
         reader: &mut dyn ReadSeek,
         algorithms: HashAlgorithms,
         file_path: Option<&std::path::Path>,
+        on_progress: retro_junk_core::HashProgressFn<'_>,
     ) -> Result<Option<FileHashes>, AnalysisError> {
-        hash_disc_container(reader, algorithms, file_path, "Saturn")
+        hash_disc_container(reader, algorithms, file_path, "Saturn", on_progress)
     }
 
     fn dat_names(&self) -> &'static [&'static str] {

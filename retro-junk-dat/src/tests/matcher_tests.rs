@@ -21,6 +21,9 @@ fn make_test_dat() -> DatFile {
             DatGame {
                 name: "Super Mario World (USA)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Super Mario World (USA).sfc".into(),
                     size: 524288,
@@ -33,6 +36,9 @@ fn make_test_dat() -> DatFile {
             DatGame {
                 name: "Super Mario 64 (USA)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Super Mario 64 (USA).z64".into(),
                     size: 8388608,
@@ -46,6 +52,9 @@ fn make_test_dat() -> DatFile {
             DatGame {
                 name: "Super Mario 64 (Japan)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Super Mario 64 (Japan).z64".into(),
                     size: 8388608,
@@ -58,6 +67,9 @@ fn make_test_dat() -> DatFile {
             DatGame {
                 name: "The Legend of Zelda - A Link to the Past (USA)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "The Legend of Zelda - A Link to the Past (USA).sfc".into(),
                     size: 1048576,
@@ -81,7 +93,11 @@ fn test_match_by_crc32() {
         data_size: 524288,
         warnings: vec![],
     };
-    let result = index.match_by_hash(524288, &hashes).unwrap();
+    let result = index
+        .match_by_hash(524288, &hashes)
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(result.game_index, 0);
     assert_eq!(result.method, MatchMethod::Crc32);
 }
@@ -140,7 +156,11 @@ fn test_hash_distinguishes_regions() {
         data_size: 8388608,
         warnings: vec![],
     };
-    let usa = index.match_by_hash(8388608, &usa_hashes).unwrap();
+    let usa = index
+        .match_by_hash(8388608, &usa_hashes)
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(index.games[usa.game_index].name, "Super Mario 64 (USA)");
 
     let jpn_hashes = FileHashes {
@@ -150,7 +170,11 @@ fn test_hash_distinguishes_regions() {
         data_size: 8388608,
         warnings: vec![],
     };
-    let jpn = index.match_by_hash(8388608, &jpn_hashes).unwrap();
+    let jpn = index
+        .match_by_hash(8388608, &jpn_hashes)
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(index.games[jpn.game_index].name, "Super Mario 64 (Japan)");
 }
 
@@ -164,7 +188,7 @@ fn test_no_match() {
         data_size: 999,
         warnings: vec![],
     };
-    assert!(index.match_by_hash(999, &hashes).is_none());
+    assert!(index.match_by_hash(999, &hashes).is_empty());
     assert!(matches!(
         index.match_by_serial("UNKNOWN", None),
         SerialLookupResult::NotFound
@@ -180,6 +204,9 @@ fn test_from_dats_merge() {
         games: vec![DatGame {
             name: "Game A (USA)".into(),
             region: None,
+            serial: None,
+            version: None,
+            category: None,
             roms: vec![DatRom {
                 name: "Game A (USA).bin".into(),
                 size: 1024,
@@ -197,6 +224,9 @@ fn test_from_dats_merge() {
         games: vec![DatGame {
             name: "Game B (USA)".into(),
             region: None,
+            serial: None,
+            version: None,
+            category: None,
             roms: vec![DatRom {
                 name: "Game B (USA).bin".into(),
                 size: 2048,
@@ -227,7 +257,11 @@ fn test_from_dats_merge() {
         data_size: 2048,
         warnings: vec![],
     };
-    let hash_result = index.match_by_hash(2048, &hashes).unwrap();
+    let hash_result = index
+        .match_by_hash(2048, &hashes)
+        .into_iter()
+        .next()
+        .unwrap();
     assert_eq!(index.games[hash_result.game_index].name, "Game B (USA)");
 }
 
@@ -242,7 +276,7 @@ fn test_crc32_requires_matching_size() {
         data_size: 524288,
         warnings: vec![],
     };
-    assert!(index.match_by_hash(999, &hashes).is_none());
+    assert!(index.match_by_hash(999, &hashes).is_empty());
 }
 
 #[test]
@@ -255,6 +289,9 @@ fn test_comma_separated_serials() {
         games: vec![DatGame {
             name: "Chrono Cross (USA) (Disc 1)".into(),
             region: None,
+            serial: None,
+            version: None,
+            category: None,
             roms: vec![DatRom {
                 name: "Chrono Cross (USA) (Disc 1).bin".into(),
                 size: 736651104,
@@ -293,6 +330,9 @@ fn test_serial_space_dash_normalization() {
         games: vec![DatGame {
             name: "Some Game (Japan)".into(),
             region: None,
+            serial: None,
+            version: None,
+            category: None,
             roms: vec![DatRom {
                 name: "Some Game (Japan).bin".into(),
                 size: 1024,
@@ -324,6 +364,9 @@ fn test_multi_disc_suffix_prefers_suffixed_over_bare() {
             DatGame {
                 name: "FF7 (USA) (Disc 1)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "FF7 (USA) (Disc 1).bin".into(),
                     size: 747435024,
@@ -336,6 +379,9 @@ fn test_multi_disc_suffix_prefers_suffixed_over_bare() {
             DatGame {
                 name: "FF7 (USA) (Disc 1) [suffixed]".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "FF7 (USA) (Disc 1).bin".into(),
                     size: 747435024,
@@ -348,6 +394,9 @@ fn test_multi_disc_suffix_prefers_suffixed_over_bare() {
             DatGame {
                 name: "FF7 (USA) (Disc 2)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "FF7 (USA) (Disc 2).bin".into(),
                     size: 732657408,
@@ -360,6 +409,9 @@ fn test_multi_disc_suffix_prefers_suffixed_over_bare() {
             DatGame {
                 name: "FF7 (USA) (Disc 2) [suffixed]".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "FF7 (USA) (Disc 2).bin".into(),
                     size: 732657408,
@@ -372,6 +424,9 @@ fn test_multi_disc_suffix_prefers_suffixed_over_bare() {
             DatGame {
                 name: "FF7 (USA) (Disc 3)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "FF7 (USA) (Disc 3).bin".into(),
                     size: 659561952,
@@ -384,6 +439,9 @@ fn test_multi_disc_suffix_prefers_suffixed_over_bare() {
             DatGame {
                 name: "FF7 (USA) (Disc 3) [suffixed]".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "FF7 (USA) (Disc 3).bin".into(),
                     size: 659561952,
@@ -422,6 +480,9 @@ fn test_suffix_fallback_when_no_exact_match() {
         games: vec![DatGame {
             name: "Some Game (USA) (Disc 1)".into(),
             region: None,
+            serial: None,
+            version: None,
+            category: None,
             roms: vec![DatRom {
                 name: "Some Game (USA) (Disc 1).bin".into(),
                 size: 700000000,
@@ -453,6 +514,9 @@ fn test_normal_game_unaffected_by_suffix_logic() {
         games: vec![DatGame {
             name: "Crash Bandicoot (USA)".into(),
             region: None,
+            serial: None,
+            version: None,
+            category: None,
             roms: vec![DatRom {
                 name: "Crash Bandicoot (USA).bin".into(),
                 size: 500000000,
@@ -482,6 +546,9 @@ fn test_ambiguous_serial_returns_ambiguous() {
             DatGame {
                 name: "Pokemon FireRed (USA)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Pokemon FireRed (USA).gba".into(),
                     size: 16777216,
@@ -494,6 +561,9 @@ fn test_ambiguous_serial_returns_ambiguous() {
             DatGame {
                 name: "Pokemon FireRed (USA) (Rev 1)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Pokemon FireRed (USA) (Rev 1).gba".into(),
                     size: 16777216,
@@ -528,6 +598,9 @@ fn test_ambiguous_via_game_code() {
             DatGame {
                 name: "Game Original (USA)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Game Original (USA).z64".into(),
                     size: 8388608,
@@ -540,6 +613,9 @@ fn test_ambiguous_via_game_code() {
             DatGame {
                 name: "Game Original (USA) (Rev 1)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Game Original (USA) (Rev 1).z64".into(),
                     size: 8388608,
@@ -576,6 +652,9 @@ fn test_multi_disc_shared_bare_serial_resolves_via_suffix() {
             DatGame {
                 name: "Multi Disc Game (USA) (Disc 1)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Multi Disc Game (USA) (Disc 1).bin".into(),
                     size: 700000000,
@@ -588,6 +667,9 @@ fn test_multi_disc_shared_bare_serial_resolves_via_suffix() {
             DatGame {
                 name: "Multi Disc Game (USA) (Disc 2)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Multi Disc Game (USA) (Disc 2).bin".into(),
                     size: 700000000,
@@ -600,6 +682,9 @@ fn test_multi_disc_shared_bare_serial_resolves_via_suffix() {
             DatGame {
                 name: "Multi Disc Game (USA) (Disc 1) [suffixed]".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Multi Disc Game (USA) (Disc 1).bin".into(),
                     size: 700000000,
@@ -636,6 +721,9 @@ fn test_same_name_entries_resolve_as_match() {
             DatGame {
                 name: "Metroid Fusion (USA)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Metroid Fusion (USA).gba".into(),
                     size: 8388608,
@@ -648,6 +736,9 @@ fn test_same_name_entries_resolve_as_match() {
             DatGame {
                 name: "Metroid Fusion (USA)".into(),
                 region: None,
+                serial: None,
+                version: None,
+                category: None,
                 roms: vec![DatRom {
                     name: "Metroid Fusion (USA).gba".into(),
                     size: 8388608,
@@ -677,6 +768,9 @@ fn test_match_short_game_code_to_long_dat_serial() {
         games: vec![DatGame {
             name: "The Legend of Zelda - The Wind Waker (USA)".into(),
             region: None,
+            serial: None,
+            version: None,
+            category: None,
             roms: vec![DatRom {
                 name: "The Legend of Zelda - The Wind Waker (USA).iso".into(),
                 size: 1459978240,
@@ -695,4 +789,65 @@ fn test_match_short_game_code_to_long_dat_serial() {
         index.games[result.game_index].name,
         "The Legend of Zelda - The Wind Waker (USA)"
     );
+}
+
+#[test]
+fn test_hash_returns_all_regional_variants() {
+    // When USA and Japan versions share the same data track hash,
+    // match_by_hash should return both entries.
+    let dat = DatFile {
+        name: "Test".into(),
+        description: "".into(),
+        version: "1".into(),
+        games: vec![
+            DatGame {
+                name: "NiGHTS into Dreams... (USA)".into(),
+                region: Some("USA".into()),
+                serial: None,
+                version: None,
+                category: None,
+                roms: vec![DatRom {
+                    name: "NiGHTS into Dreams... (USA).chd".into(),
+                    size: 500000000,
+                    crc: "aabb1122".into(),
+                    sha1: None,
+                    md5: None,
+                    serial: None,
+                }],
+            },
+            DatGame {
+                name: "NiGHTS into Dreams... (Japan)".into(),
+                region: Some("Japan".into()),
+                serial: None,
+                version: None,
+                category: None,
+                roms: vec![DatRom {
+                    name: "NiGHTS into Dreams... (Japan).chd".into(),
+                    size: 500000000,
+                    crc: "aabb1122".into(), // Same hash as USA
+                    sha1: None,
+                    md5: None,
+                    serial: None,
+                }],
+            },
+        ],
+    };
+    let index = DatIndex::from_dat(dat);
+
+    let hashes = FileHashes {
+        crc32: "aabb1122".into(),
+        sha1: None,
+        md5: None,
+        data_size: 500000000,
+        warnings: vec![],
+    };
+    let matches = index.match_by_hash(500000000, &hashes);
+    assert_eq!(matches.len(), 2, "Should return both USA and Japan entries");
+
+    let names: Vec<&str> = matches
+        .iter()
+        .map(|m| index.games[m.game_index].name.as_str())
+        .collect();
+    assert!(names.contains(&"NiGHTS into Dreams... (USA)"));
+    assert!(names.contains(&"NiGHTS into Dreams... (Japan)"));
 }

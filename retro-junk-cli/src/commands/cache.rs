@@ -232,7 +232,11 @@ pub(crate) fn run_gdb_cache_fetch(
 }
 
 /// Fetch DAT files for specified systems.
-pub(crate) fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) -> Result<(), CliError> {
+pub(crate) fn run_cache_fetch(
+    ctx: &AnalysisContext,
+    systems: Vec<String>,
+    force: bool,
+) -> Result<(), CliError> {
     use retro_junk_lib::DatSource;
 
     let to_fetch: Vec<(String, Vec<&str>, &'static [&'static str], DatSource)> =
@@ -286,7 +290,8 @@ pub(crate) fn run_cache_fetch(ctx: &AnalysisContext, systems: Vec<String>) -> Re
         };
 
     for (short_name, dat_names, download_ids, dat_source) in &to_fetch {
-        match retro_junk_dat::cache::fetch(short_name, dat_names, download_ids, *dat_source) {
+        match retro_junk_dat::cache::fetch(short_name, dat_names, download_ids, *dat_source, force)
+        {
             Ok(paths) => {
                 let total_size: u64 = paths
                     .iter()

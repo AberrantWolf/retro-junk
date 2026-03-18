@@ -457,6 +457,68 @@ fn row_to_media(
     }
 }
 
+// ── Media Track Operations ─────────────────────────────────────────────────
+
+/// A single track within a disc-based media entry.
+pub struct MediaTrack {
+    pub media_id: String,
+    pub track_number: i32,
+    pub track_name: String,
+    pub file_size: Option<i64>,
+    pub crc32: Option<String>,
+    pub sha1: Option<String>,
+    pub md5: Option<String>,
+}
+
+/// Insert a media track entry.
+pub fn insert_media_track(conn: &Connection, track: &MediaTrack) -> Result<(), OperationError> {
+    conn.execute(
+        "INSERT INTO media_tracks (media_id, track_number, track_name, file_size, crc32, sha1, md5)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(media_id, track_number) DO UPDATE SET
+             track_name = excluded.track_name,
+             file_size = excluded.file_size,
+             crc32 = excluded.crc32,
+             sha1 = excluded.sha1,
+             md5 = excluded.md5",
+        params![
+            track.media_id,
+            track.track_number,
+            track.track_name,
+            track.file_size,
+            track.crc32,
+            track.sha1,
+            track.md5,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Find all tracks for a given media entry, ordered by track number.
+pub fn find_media_tracks(
+    conn: &Connection,
+    media_id: &str,
+) -> Result<Vec<MediaTrack>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT media_id, track_number, track_name, file_size, crc32, sha1, md5
+         FROM media_tracks WHERE media_id = ?1 ORDER BY track_number",
+    )?;
+    let tracks = stmt
+        .query_map(params![media_id], |row| {
+            Ok(MediaTrack {
+                media_id: row.get(0)?,
+                track_number: row.get(1)?,
+                track_name: row.get(2)?,
+                file_size: row.get(3)?,
+                crc32: row.get(4)?,
+                sha1: row.get(5)?,
+                md5: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(tracks)
+}
+
 // ── Tag Operations ─────────────────────────────────────────────────────────
 
 /// Set or clear a tag on a Work.
@@ -512,16 +574,19 @@ pub fn create_homebrew_work(
     let media_id = format!("{release_id}:media");
 
     conn.execute(
-        "INSERT INTO works (id, canonical_name, tag) VALUES (?1, ?2, 'homebrew')",
+        "INSERT INTO works (id, canonical_name, tag) VALUES (?1, ?2, 'homebrew')
+         ON CONFLICT(id) DO UPDATE SET canonical_name = excluded.canonical_name, updated_at = datetime('now')",
         params![work_id, name],
     )?;
     conn.execute(
         "INSERT INTO releases (id, work_id, platform_id, region, title)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = datetime('now')",
         params![release_id, work_id, platform_id, region, name],
     )?;
     conn.execute(
-        "INSERT INTO media (id, release_id, tag) VALUES (?1, ?2, 'homebrew')",
+        "INSERT INTO media (id, release_id, tag) VALUES (?1, ?2, 'homebrew')
+         ON CONFLICT(id) DO UPDATE SET tag = 'homebrew', updated_at = datetime('now')",
         params![media_id, release_id],
     )?;
 
@@ -594,7 +659,10 @@ pub fn create_modded_media(
 
     conn.execute(
         "INSERT INTO media (id, release_id, tag, crc32, sha1, md5, file_size)
-         VALUES (?1, ?2, 'modded', ?3, ?4, ?5, ?6)",
+         VALUES (?1, ?2, 'modded', ?3, ?4, ?5, ?6)
+         ON CONFLICT(id) DO UPDATE SET
+           tag = 'modded', crc32 = excluded.crc32, sha1 = excluded.sha1,
+           md5 = excluded.md5, file_size = excluded.file_size, updated_at = datetime('now')",
         params![media_id, release_id, crc32, sha1, md5, file_size],
     )?;
 

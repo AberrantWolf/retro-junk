@@ -384,7 +384,10 @@ fn resolve_disc_file(
         Some(file_path.as_path()),
     )
     .ok()?;
-    let m = dat_index.match_by_hash(hashes.data_size, &hashes)?;
+    let m = dat_index
+        .match_by_hash(hashes.data_size, &hashes)
+        .into_iter()
+        .next()?;
     let game = &dat_index.games[m.game_index];
     let rom = &game.roms[m.rom_index];
 
@@ -411,9 +414,9 @@ fn get_target_rom_name(
     folder_name: &str,
     entry: &crate::state::LibraryEntry,
 ) -> Option<String> {
-    // 1. Use cached rom_name from dat_match if available
+    // 1. Use cached rom_name from dat_match if available (skip cross-region matches)
     if let Some(ref dm) = entry.dat_match {
-        if !dm.rom_name.is_empty() {
+        if !dm.rom_name.is_empty() && !dm.cross_region {
             return Some(dm.rom_name.clone());
         }
     }
@@ -421,7 +424,11 @@ fn get_target_rom_name(
     // 2. Try hash lookup
     let dat_index = app.dat_indices.get(folder_name)?;
     if let Some(ref hashes) = entry.hashes {
-        if let Some(m) = dat_index.match_by_hash(hashes.data_size, hashes) {
+        if let Some(m) = dat_index
+            .match_by_hash(hashes.data_size, hashes)
+            .into_iter()
+            .next()
+        {
             return Some(dat_index.games[m.game_index].roms[m.rom_index].name.clone());
         }
     }

@@ -640,6 +640,8 @@ fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
             .as_deref()
             .map(str_to_match_method)
             .unwrap_or(MatchMethod::Crc32),
+        region: None,
+        cross_region: false,
     });
 
     let region_override = row
