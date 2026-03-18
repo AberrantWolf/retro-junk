@@ -13,6 +13,8 @@
 
 - [ ] **Custom multi-select view** in the game details panel, rather than showing details for the most-recent selection in the list
 
+- [ ] **Show hash match status in detail panel** — After hashing, the detail panel shows CRC32/SHA1/MD5 values but doesn't visually indicate whether they match known DAT entries. Add a match/mismatch indicator next to hash values.
+
 ## Analyzer: Compressed Disc Formats
 
 - [ ] **GameCube NKit support** — NKit is a lossy-compressed format (`.nkit.iso`, `.nkit.gcz`) that removes junk/padding data. Hashes will not match Redump unless converted back to full ISO. May need special handling or a warning that NKit images can't be verified against Redump.

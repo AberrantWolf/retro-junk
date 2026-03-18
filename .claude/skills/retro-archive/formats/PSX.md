@@ -119,13 +119,15 @@ The serial extractor must split on `\`, `/`, and `:` to handle all variants.
 
 ## CUE Sheet Analysis
 
+Both standard CUE and CDRWin/cdrdao TOC format are supported. See `CUE.md` for full format details.
+
 CUE sheets are parsed as text, extracting:
-- `FILE` entries (filename + type like BINARY)
-- `TRACK` entries (number + mode like MODE2/2352 or AUDIO)
+- `FILE` and `DATAFILE` entries (filename + type)
+- `TRACK` entries (number + mode like MODE2/2352, MODE2_RAW, or AUDIO)
 
 Track counts (total, data, audio) are reported. Data tracks have modes containing "MODE"; audio tracks have mode "AUDIO".
 
-When `AnalysisOptions.file_path` is set, the analyzer resolves the first data track's BIN file relative to the CUE file's parent directory, opens it, and extracts the serial/region from its SYSTEM.CNF.
+When `AnalysisOptions.file_path` is set, the analyzer resolves the first data track's BIN file relative to the CUE file's parent directory, opens it, and extracts the serial/region from its SYSTEM.CNF. If the referenced BIN doesn't exist (CDRWin DATAFILE with virtual name), it falls back to any existing BIN referenced by other FILE entries in the same CUE.
 
 ## CHD CD Sector Layout
 

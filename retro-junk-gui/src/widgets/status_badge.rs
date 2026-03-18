@@ -11,17 +11,18 @@ pub fn show(ui: &mut egui::Ui, status: EntryStatus) -> egui::Response {
     response
 }
 
-/// Draw a status circle with an optional orange warning triangle for broken references
-/// and a small colored square indicating media status.
+/// Draw a status circle with optional orange warning triangles for broken references
+/// and/or hash warnings, and a small colored square indicating media status.
 pub fn show_with_warning(
     ui: &mut egui::Ui,
     status: EntryStatus,
     has_broken_refs: bool,
+    has_hash_warnings: bool,
     media_status: AssetStatus,
 ) -> egui::Response {
     let show_media = !matches!(media_status, AssetStatus::Unknown);
-    let width =
-        10.0 + if has_broken_refs { 10.0 } else { 0.0 } + if show_media { 10.0 } else { 0.0 };
+    let show_warning = has_broken_refs || has_hash_warnings;
+    let width = 10.0 + if show_warning { 10.0 } else { 0.0 } + if show_media { 10.0 } else { 0.0 };
     let color = status.color();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 10.0), egui::Sense::hover());
     if ui.is_rect_visible(rect) {
@@ -32,8 +33,8 @@ pub fn show_with_warning(
             .circle_filled(egui::pos2(x, rect.center().y), 4.0, color);
         x += 10.0;
 
-        // Warning triangle for broken references
-        if has_broken_refs {
+        // Warning triangle for broken references or hash warnings
+        if show_warning {
             paint_warning_triangle(ui.painter(), egui::pos2(x, rect.center().y), 4.5);
             x += 10.0;
         }

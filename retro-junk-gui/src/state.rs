@@ -1049,6 +1049,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         .unwrap_or_default();
 
                 // Collect successful disc identifications, carrying forward cached data.
+                for (path, result) in &disc_results {
+                    match result {
+                        Ok(_) => log::debug!("MultiDiscAnalyzed: disc {} => Ok", path.display()),
+                        Err(e) => {
+                            log::warn!("MultiDiscAnalyzed: disc {} => Err({})", path.display(), e)
+                        }
+                    }
+                }
                 let disc_ids: Vec<DiscIdentification> = disc_results
                     .iter()
                     .filter_map(|(path, result)| {
@@ -1173,21 +1181,43 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             });
                         entry.dat_match = Some(DatMatchInfo {
                             game_name: combined,
-                            rom_name: first_rom_name,
+                            rom_name: first_rom_name.clone(),
                             method: MatchMethod::Serial,
                             region: None,
                             cross_region: false,
                         });
                         if any_ambiguous {
-                            entry.status = EntryStatus::Ambiguous;
-                            entry.ambiguous_candidates = all_candidates;
+                            // Check if "ambiguous" candidates are just different discs of the same game
+                            if retro_junk_core::disc::candidates_are_same_game(&all_candidates)
+                                .is_some()
+                            {
+                                entry.status = EntryStatus::Matched;
+                                entry.ambiguous_candidates.clear();
+                            } else {
+                                entry.status = EntryStatus::Ambiguous;
+                                entry.ambiguous_candidates = all_candidates;
+                            }
                         } else {
                             entry.status = EntryStatus::Matched;
                             entry.ambiguous_candidates.clear();
                         }
                     } else if any_ambiguous {
-                        entry.status = EntryStatus::Ambiguous;
-                        entry.ambiguous_candidates = all_candidates;
+                        if let Some(base_name) =
+                            retro_junk_core::disc::candidates_are_same_game(&all_candidates)
+                        {
+                            entry.status = EntryStatus::Matched;
+                            entry.ambiguous_candidates.clear();
+                            entry.dat_match = Some(DatMatchInfo {
+                                game_name: base_name,
+                                rom_name: first_rom_name,
+                                method: MatchMethod::Serial,
+                                region: None,
+                                cross_region: false,
+                            });
+                        } else {
+                            entry.status = EntryStatus::Ambiguous;
+                            entry.ambiguous_candidates = all_candidates;
+                        }
                     }
                 }
 
@@ -1405,21 +1435,43 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 });
                             entry.dat_match = Some(DatMatchInfo {
                                 game_name: combined,
-                                rom_name: first_rom_name,
+                                rom_name: first_rom_name.clone(),
                                 method: MatchMethod::Serial,
                                 region: None,
                                 cross_region,
                             });
                             if any_ambiguous {
-                                entry.status = EntryStatus::Ambiguous;
-                                entry.ambiguous_candidates = all_candidates;
+                                // Check if "ambiguous" candidates are just different discs of the same game
+                                if retro_junk_core::disc::candidates_are_same_game(&all_candidates)
+                                    .is_some()
+                                {
+                                    entry.status = EntryStatus::Matched;
+                                    entry.ambiguous_candidates.clear();
+                                } else {
+                                    entry.status = EntryStatus::Ambiguous;
+                                    entry.ambiguous_candidates = all_candidates;
+                                }
                             } else {
                                 entry.status = EntryStatus::Matched;
                                 entry.ambiguous_candidates.clear();
                             }
                         } else if any_ambiguous {
-                            entry.status = EntryStatus::Ambiguous;
-                            entry.ambiguous_candidates = all_candidates;
+                            if let Some(base_name) =
+                                retro_junk_core::disc::candidates_are_same_game(&all_candidates)
+                            {
+                                entry.status = EntryStatus::Matched;
+                                entry.ambiguous_candidates.clear();
+                                entry.dat_match = Some(DatMatchInfo {
+                                    game_name: base_name,
+                                    rom_name: first_rom_name,
+                                    method: MatchMethod::Serial,
+                                    region: None,
+                                    cross_region: false,
+                                });
+                            } else {
+                                entry.status = EntryStatus::Ambiguous;
+                                entry.ambiguous_candidates = all_candidates;
+                            }
                         }
 
                         // If re-matching couldn't fully resolve but the entry

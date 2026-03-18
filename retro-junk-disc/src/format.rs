@@ -106,7 +106,8 @@ fn looks_like_cue(reader: &mut dyn retro_junk_core::ReadSeek) -> Result<bool, An
     }
 
     let text = String::from_utf8_lossy(slice).to_uppercase();
-    let has_file = text.contains("FILE ");
+    // Check for FILE, DATAFILE, or AUDIOFILE (covers standard CUE and CDRWin format)
+    let has_file = text.contains("FILE "); // also matches DATAFILE and AUDIOFILE
     let has_track = text.contains("TRACK ");
     Ok(has_file && has_track)
 }

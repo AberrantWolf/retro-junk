@@ -140,6 +140,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     .broken_references
                     .as_ref()
                     .is_some_and(|refs| !refs.is_empty()),
+                has_hash_warnings: entry
+                    .hashes
+                    .as_ref()
+                    .is_some_and(|h| !h.warnings.is_empty())
+                    || entry.disc_identifications.as_ref().is_some_and(|discs| {
+                        discs
+                            .iter()
+                            .any(|d| d.hashes.as_ref().is_some_and(|h| !h.warnings.is_empty()))
+                    }),
                 asset_status: entry.asset_status(),
                 name: entry.game_entry.display_name().to_string(),
                 file_path: entry.game_entry.analysis_path().to_path_buf(),
@@ -259,11 +268,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                                 ui,
                                 data.status,
                                 data.has_broken_refs,
+                                data.has_hash_warnings,
                                 data.asset_status,
                             );
                             let mut tip = data.status.tooltip().to_string();
                             if data.has_broken_refs {
                                 tip.push_str("\n\u{26a0} Broken file references");
+                            }
+                            if data.has_hash_warnings {
+                                tip.push_str("\n\u{26a0} Hash warnings (see detail panel)");
                             }
                             match data.asset_status {
                                 AssetStatus::Unknown => {}
@@ -607,6 +620,7 @@ struct RowData {
     entry_idx: usize,
     status: EntryStatus,
     has_broken_refs: bool,
+    has_hash_warnings: bool,
     asset_status: AssetStatus,
     name: String,
     file_path: PathBuf,

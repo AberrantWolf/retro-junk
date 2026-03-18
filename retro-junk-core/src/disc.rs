@@ -154,6 +154,20 @@ fn trim_to_paren_boundary(s: &str) -> String {
     }
 }
 
+/// Check if all candidate names are disc variants of the same base game.
+/// Returns the base name if so, None otherwise.
+pub fn candidates_are_same_game(candidates: &[String]) -> Option<String> {
+    if candidates.is_empty() {
+        return None;
+    }
+    let base = strip_disc_tag(&candidates[0]);
+    if candidates.iter().all(|c| strip_disc_tag(c) == base) {
+        Some(base)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/disc_tests.rs"]
 mod tests;

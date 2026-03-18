@@ -16,6 +16,9 @@ use chrono::{DateTime, Local};
 /// Maximum number of log entries retained in the ring buffer.
 const MAX_ENTRIES: usize = 10_000;
 
+/// Minimum level always captured to the ring buffer, regardless of RUST_LOG.
+const RING_BUFFER_LEVEL: log::LevelFilter = log::LevelFilter::Info;
+
 /// A single captured log entry.
 #[derive(Clone, Debug)]
 pub struct LogEntry {
@@ -39,7 +42,7 @@ static INSTANCE: OnceLock<LogCapture> = OnceLock::new();
 /// logging occurs. Replaces the usual `env_logger::init()` call.
 pub fn init() {
     let stderr = env_logger::Builder::from_default_env().build();
-    let max_level = stderr.filter();
+    let env_level = stderr.filter();
 
     let capture = INSTANCE.get_or_init(|| LogCapture {
         entries: Mutex::new(VecDeque::with_capacity(MAX_ENTRIES)),
@@ -48,7 +51,8 @@ pub fn init() {
 
     // Safety: OnceLock guarantees this is a stable reference.
     log::set_logger(capture).expect("logger already set");
-    log::set_max_level(max_level);
+    // Accept records needed by either the ring buffer or env_logger.
+    log::set_max_level(std::cmp::max(RING_BUFFER_LEVEL, env_level));
 }
 
 /// Return a snapshot of all captured log entries.
@@ -68,12 +72,12 @@ pub fn latest() -> Option<LogEntry> {
 
 impl log::Log for LogCapture {
     fn enabled(&self, metadata: &log::Metadata) -> bool {
-        self.stderr.enabled(metadata)
+        metadata.level() <= RING_BUFFER_LEVEL || self.stderr.enabled(metadata)
     }
 
     fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            // Capture into ring buffer
+        // Always capture to ring buffer for levels at or above RING_BUFFER_LEVEL
+        if record.level() <= RING_BUFFER_LEVEL {
             let entry = LogEntry {
                 timestamp: Local::now(),
                 level: record.level(),
@@ -86,8 +90,10 @@ impl log::Log for LogCapture {
                 }
                 entries.push_back(entry);
             }
+        }
 
-            // Delegate to stderr
+        // Delegate to stderr based on env_logger filter
+        if self.stderr.enabled(record.metadata()) {
             self.stderr.log(record);
         }
     }

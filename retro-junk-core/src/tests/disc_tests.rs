@@ -193,3 +193,55 @@ fn derive_base_game_name_divergent_last_group() {
         "Game (USA)"
     );
 }
+
+// -- candidates_are_same_game tests --
+
+#[test]
+fn candidates_are_same_game_all_discs_of_same_game() {
+    let candidates = vec![
+        "Final Fantasy VII (USA) (Disc 1)".to_string(),
+        "Final Fantasy VII (USA) (Disc 2)".to_string(),
+        "Final Fantasy VII (USA) (Disc 3)".to_string(),
+    ];
+    assert_eq!(
+        candidates_are_same_game(&candidates),
+        Some("Final Fantasy VII (USA)".to_string())
+    );
+}
+
+#[test]
+fn candidates_are_same_game_different_games() {
+    let candidates = vec![
+        "Final Fantasy VII (USA) (Disc 1)".to_string(),
+        "Final Fantasy VIII (USA) (Disc 1)".to_string(),
+    ];
+    assert_eq!(candidates_are_same_game(&candidates), None);
+}
+
+#[test]
+fn candidates_are_same_game_empty() {
+    let candidates: Vec<String> = vec![];
+    assert_eq!(candidates_are_same_game(&candidates), None);
+}
+
+#[test]
+fn candidates_are_same_game_single_entry() {
+    let candidates = vec!["Final Fantasy VII (USA) (Disc 1)".to_string()];
+    assert_eq!(
+        candidates_are_same_game(&candidates),
+        Some("Final Fantasy VII (USA)".to_string())
+    );
+}
+
+#[test]
+fn candidates_are_same_game_no_disc_tags() {
+    // All the same name without disc tags — they are trivially the same game
+    let candidates = vec![
+        "Crash Bandicoot (USA)".to_string(),
+        "Crash Bandicoot (USA)".to_string(),
+    ];
+    assert_eq!(
+        candidates_are_same_game(&candidates),
+        Some("Crash Bandicoot (USA)".to_string())
+    );
+}

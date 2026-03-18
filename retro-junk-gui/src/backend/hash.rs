@@ -26,6 +26,13 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
     let platform = console.platform;
     let folder_name = console.folder_name.clone();
 
+    log::debug!(
+        "compute_hashes_for_selection: console_idx={}, selected_entries={:?}, total_entries={}",
+        console_idx,
+        app.selected_entries,
+        console.entries.len()
+    );
+
     // Collect work items — single-file entries get one item,
     // multi-disc entries get one item per disc.
     let work: Vec<HashWork> = app
@@ -35,11 +42,22 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
         .filter_map(|i| console.entries.get(i))
         .flat_map(|entry| {
             let name = entry.game_entry.display_name().to_string();
+            log::debug!(
+                "compute_hashes: entry '{}', disc_identifications={}, status={:?}",
+                name,
+                entry.disc_identifications.as_ref().map_or(0, |d| d.len()),
+                entry.status
+            );
             if let Some(ref discs) = entry.disc_identifications {
                 discs
                     .iter()
                     .map(|d| {
                         let file_size = std::fs::metadata(&d.path).map(|m| m.len()).unwrap_or(0);
+                        log::info!(
+                            "compute_hashes: disc path={}, file_size={}",
+                            d.path.display(),
+                            file_size
+                        );
                         HashWork {
                             entry_name: name.clone(),
                             path: d.path.clone(),
@@ -51,6 +69,11 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
             } else {
                 let path = entry.game_entry.analysis_path().to_path_buf();
                 let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                log::info!(
+                    "compute_hashes: single file path={}, file_size={}",
+                    path.display(),
+                    file_size
+                );
                 vec![HashWork {
                     entry_name: name,
                     path,
@@ -62,6 +85,7 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
         .collect();
 
     if work.is_empty() {
+        log::warn!("compute_hashes_for_selection: work list is empty, returning early");
         return;
     }
 
@@ -89,9 +113,11 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
 
             let file_base = bytes_completed;
 
+            log::debug!("compute_hashes: opening file {}", item.path.display());
             match std::fs::File::open(&item.path) {
                 Ok(mut file) => {
                     let item_file_size = item.file_size;
+                    log::debug!("compute_hashes: calling hasher for {}", item.path.display());
                     match hasher::compute_crc32_sha1_with_progress(
                         &mut file,
                         registered.analyzer.as_ref(),
@@ -118,6 +144,12 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
                         Some(&item.path),
                     ) {
                         Ok(hashes) => {
+                            log::debug!(
+                                "compute_hashes: success for {}, crc32={}, data_size={}",
+                                item.path.display(),
+                                hashes.crc32,
+                                hashes.data_size
+                            );
                             let msg = if item.is_disc {
                                 AppMessage::DiscHashComplete {
                                     folder_name: folder_name.clone(),

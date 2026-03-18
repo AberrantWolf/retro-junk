@@ -330,36 +330,62 @@ pub fn hash_cue_track1(
         .parent()
         .ok_or_else(|| AnalysisError::other("CUE file has no parent directory"))?;
 
-    // Find first data track file
-    let first_data_file = sheet
-        .files
-        .iter()
-        .find(|f| {
-            f.tracks
-                .iter()
-                .any(|t| t.mode.to_uppercase().contains("MODE"))
-        })
-        .ok_or_else(|| AnalysisError::invalid_format("CUE has no data tracks"))?;
-
-    let bin_path = parent.join(&first_data_file.filename);
-    if !bin_path.exists() {
-        return Err(AnalysisError::other(format!(
-            "BIN file not found: {}",
-            bin_path.display()
-        )));
-    }
-
-    let mut bin_file = std::fs::File::open(&bin_path)?;
-    let bin_size = bin_file.seek(SeekFrom::End(0))?;
-    bin_file.seek(SeekFrom::Start(0))?;
+    // Find first data track file (may be None for minimal CUEs without TRACK entries)
+    let first_data_file = sheet.files.iter().find(|f| {
+        f.tracks
+            .iter()
+            .any(|t| t.mode.to_uppercase().contains("MODE"))
+    });
 
     let mut warnings = Vec::new();
+
+    let data_file = match first_data_file {
+        Some(f) => f,
+        None => {
+            let f = sheet
+                .files
+                .first()
+                .ok_or_else(|| AnalysisError::invalid_format("CUE has no files"))?;
+            warnings.push(
+                "CUE has no track metadata — hashing entire BIN. Dump may be incomplete."
+                    .to_string(),
+            );
+            log::warn!(
+                "CUE has no track metadata, falling back to first file: {}",
+                f.filename
+            );
+            f
+        }
+    };
+
+    let bin_path = parent.join(&data_file.filename);
+    let mut bin_file = if bin_path.exists() {
+        std::fs::File::open(&bin_path)?
+    } else {
+        // CDRWin CUE: DATAFILE references a virtual name; the actual data
+        // lives at the start of the combined BIN referenced by other FILE entries.
+        if let Some(real_file) = find_existing_bin_in_cue(&sheet, parent) {
+            log::info!(
+                "CUE hash: DATAFILE '{}' not found, using '{}'",
+                data_file.filename,
+                real_file.display()
+            );
+            std::fs::File::open(&real_file)?
+        } else {
+            return Err(AnalysisError::other(format!(
+                "BIN file not found: {}",
+                bin_path.display()
+            )));
+        }
+    };
+    let bin_size = bin_file.seek(SeekFrom::End(0))?;
+    bin_file.seek(SeekFrom::Start(0))?;
 
     // Multi-BIN CUE: hash first data track file entirely
     if sheet.files.len() > 1 {
         log::info!(
             "CUE hash: multi-file CUE, hashing first data file '{}' ({} bytes)",
-            first_data_file.filename,
+            data_file.filename,
             bin_size
         );
         let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, bin_size, on_progress)?;
@@ -405,6 +431,20 @@ pub fn hash_cue_track1(
     let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, bin_size, on_progress)?;
     hashes.warnings = warnings;
     Ok(hashes)
+}
+
+/// Find the first existing BIN file referenced by any FILE entry in the CUE sheet.
+///
+/// Used as a fallback when a CDRWin DATAFILE references a virtual filename
+/// that doesn't exist on disk — the actual data is in the combined BIN.
+fn find_existing_bin_in_cue(
+    sheet: &crate::cue::CueSheet,
+    parent: &Path,
+) -> Option<std::path::PathBuf> {
+    sheet.files.iter().find_map(|f| {
+        let p = parent.join(&f.filename);
+        if p.exists() { Some(p) } else { None }
+    })
 }
 
 /// Hash the first `data_size` bytes of a raw BIN file.

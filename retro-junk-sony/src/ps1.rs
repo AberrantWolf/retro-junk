@@ -133,8 +133,19 @@ impl Ps1Analyzer {
                     .iter()
                     .any(|t| t.mode.to_uppercase().contains("MODE"))
             }) {
+                // Try the referenced filename first; if it doesn't exist
+                // (CDRWin DATAFILE with virtual name), find any existing BIN.
                 let bin_path = parent.join(&first_data_file.filename);
-                if bin_path.exists()
+                let resolved = if bin_path.exists() {
+                    Some(bin_path)
+                } else {
+                    sheet
+                        .files
+                        .iter()
+                        .map(|f| parent.join(&f.filename))
+                        .find(|p| p.exists())
+                };
+                if let Some(bin_path) = resolved
                     && let Ok(mut bin_file) = std::fs::File::open(&bin_path)
                 {
                     // Detect format and analyze the BIN
