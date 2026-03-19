@@ -161,6 +161,7 @@ fn run(
         command,
         Commands::Analyze { .. }
             | Commands::Rename { .. }
+            | Commands::FixCue { .. }
             | Commands::Repair { .. }
             | Commands::Scrape { .. }
     );
@@ -194,6 +195,20 @@ fn run(
                 quiet,
                 media_dir,
                 no_media,
+            )?;
+        }
+        Commands::FixCue {
+            dry_run,
+            no_backup,
+            roms,
+        } => {
+            commands::fix_cue::run_fix_cue(
+                ctx,
+                dry_run,
+                no_backup,
+                roms.consoles,
+                library_path,
+                quiet,
             )?;
         }
         Commands::Repair {

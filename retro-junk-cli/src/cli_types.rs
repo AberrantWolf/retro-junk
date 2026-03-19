@@ -80,6 +80,20 @@ pub(crate) enum Commands {
         no_media: bool,
     },
 
+    /// Fix CDRWin-format CUE sheets for wider emulator compatibility
+    FixCue {
+        /// Show planned fixes without executing
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        /// Don't create .cue.bak backup files
+        #[arg(long)]
+        no_backup: bool,
+
+        #[command(flatten)]
+        roms: ConsoleFilterArgs,
+    },
+
     /// [Experimental] Repair trimmed/truncated ROMs by padding to match DAT checksums
     Repair {
         /// Show planned repairs without executing

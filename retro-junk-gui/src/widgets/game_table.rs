@@ -149,6 +149,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             .iter()
                             .any(|d| d.hashes.as_ref().is_some_and(|h| !h.warnings.is_empty()))
                     }),
+                has_cue_compat_issues: entry
+                    .cue_compat_issues
+                    .as_ref()
+                    .is_some_and(|issues| !issues.is_empty()),
                 asset_status: entry.asset_status(),
                 name: entry.game_entry.display_name().to_string(),
                 file_path: entry.game_entry.analysis_path().to_path_buf(),
@@ -269,6 +273,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                                 data.status,
                                 data.has_broken_refs,
                                 data.has_hash_warnings,
+                                data.has_cue_compat_issues,
                                 data.asset_status,
                             );
                             let mut tip = data.status.tooltip().to_string();
@@ -277,6 +282,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             }
                             if data.has_hash_warnings {
                                 tip.push_str("\n\u{26a0} Hash warnings (see detail panel)");
+                            }
+                            if data.has_cue_compat_issues {
+                                tip.push_str("\n\u{26a0} Non-standard CUE sheet format");
                             }
                             match data.asset_status {
                                 AssetStatus::Unknown => {}
@@ -437,6 +445,30 @@ fn show_row_context_menu(
     if ui.button("Auto Rename").clicked() {
         backend::rename::rename_selected_entries(app, console_idx, ctx);
         ui.close_menu();
+    }
+
+    // Fix CUE Sheet — only show when at least one selected entry is a CUE file
+    {
+        let console = &app.library.consoles[console_idx];
+        let has_cue = app.selected_entries.iter().any(|&i| {
+            console.entries.get(i).is_some_and(|entry| {
+                let is_cue = |p: &std::path::Path| {
+                    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cue"))
+                };
+                match &entry.game_entry {
+                    retro_junk_lib::scanner::GameEntry::SingleFile(p) => is_cue(p),
+                    retro_junk_lib::scanner::GameEntry::MultiDisc { files, .. } => {
+                        files.iter().any(|f| is_cue(f))
+                    }
+                }
+            })
+        });
+        if has_cue {
+            if ui.button("Fix CUE Sheet").clicked() {
+                backend::fix_cue::fix_cue_for_selection(app, console_idx, ctx);
+                ui.close_menu();
+            }
+        }
     }
 
     // Set Region submenu
@@ -621,6 +653,7 @@ struct RowData {
     status: EntryStatus,
     has_broken_refs: bool,
     has_hash_warnings: bool,
+    has_cue_compat_issues: bool,
     asset_status: AssetStatus,
     name: String,
     file_path: PathBuf,

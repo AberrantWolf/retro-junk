@@ -240,8 +240,18 @@ pub struct LibraryEntry {
     pub disc_identifications: Option<Vec<DiscIdentification>>,
     /// Broken CUE/M3U references. `None` = not yet checked, `Some(empty)` = checked and clean.
     pub broken_references: Option<Vec<BrokenReference>>,
+    /// CUE sheet compatibility issues. `None` = not yet checked, `Some(empty)` = checked and clean.
+    pub cue_compat_issues: Option<Vec<CueCompatIssue>>,
     /// User-applied tag (homebrew or modded).
     pub tag: Option<CatalogTag>,
+}
+
+/// A CUE sheet compatibility issue detected during scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CueCompatIssue {
+    pub file_name: String,
+    pub summary: String,
+    pub can_auto_fix: bool,
 }
 
 impl LibraryEntry {
@@ -407,6 +417,20 @@ pub enum RenameOutcome {
         folder_renamed: bool,
         errors: Vec<String>,
     },
+}
+
+// -- CUE fix results --
+
+pub struct CueFixResult {
+    pub file_name: String,
+    pub outcome: CueFixOutcome,
+}
+
+pub enum CueFixOutcome {
+    Fixed { summary: String },
+    AlreadyStandard,
+    Unfixable { reason: String },
+    Error { message: String },
 }
 
 // -- Background operations --
@@ -637,6 +661,11 @@ pub enum AppMessage {
         entry_name: String,
         broken_refs: Vec<BrokenReference>,
     },
+    CueCompatChecked {
+        folder_name: String,
+        entry_name: String,
+        issues: Vec<CueCompatIssue>,
+    },
     ConsoleScanDone {
         folder_name: String,
     },
@@ -706,6 +735,12 @@ pub enum AppMessage {
     RenameComplete {
         folder_name: String,
         results: Vec<RenameResult>,
+    },
+
+    // -- CUE fix --
+    CueFixComplete {
+        folder_name: String,
+        results: Vec<CueFixResult>,
     },
 
     // -- Operations --
@@ -892,6 +927,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 screen_title: cached.screen_title.clone(),
                                 disc_identifications: cached.disc_identifications.clone(),
                                 broken_references: cached.broken_references.clone(),
+                                cue_compat_issues: cached.cue_compat_issues.clone(),
                                 tag: cached.tag,
                             }
                         } else {
@@ -909,6 +945,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 screen_title: None,
                                 disc_identifications: None,
                                 broken_references: None,
+                                cue_compat_issues: None,
                                 tag: None,
                             }
                         }
@@ -1240,6 +1277,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
             {
                 entry.broken_references = Some(broken_refs);
+            }
+        }
+
+        AppMessage::CueCompatChecked {
+            folder_name,
+            entry_name,
+            issues,
+        } => {
+            if let Some(ci) = app.library.find_by_folder(&folder_name)
+                && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
+            {
+                entry.cue_compat_issues = Some(issues);
             }
         }
 
@@ -1972,6 +2021,53 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 app.save_console_cache(ci);
             }
+        }
+
+        AppMessage::CueFixComplete {
+            folder_name,
+            results,
+        } => {
+            let fixed = results
+                .iter()
+                .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
+                .count();
+            let already = results
+                .iter()
+                .filter(|r| matches!(r.outcome, CueFixOutcome::AlreadyStandard))
+                .count();
+            let failed = results
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r.outcome,
+                        CueFixOutcome::Unfixable { .. } | CueFixOutcome::Error { .. }
+                    )
+                })
+                .count();
+            log::info!(
+                "CUE fix {}: {} fixed, {} already standard, {} failed",
+                folder_name,
+                fixed,
+                already,
+                failed
+            );
+            // Clear cue_compat_issues for entries whose CUE files were fixed
+            if fixed > 0 {
+                if let Some(ci) = app.library.find_by_folder(&folder_name) {
+                    let fixed_files: std::collections::HashSet<&str> = results
+                        .iter()
+                        .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
+                        .map(|r| r.file_name.as_str())
+                        .collect();
+                    for entry in &mut app.library.consoles[ci].entries {
+                        if let Some(ref mut issues) = entry.cue_compat_issues {
+                            issues.retain(|i| !fixed_files.contains(i.file_name.as_str()));
+                        }
+                    }
+                    app.save_console_cache(ci);
+                }
+            }
+            app.cue_fix_results = Some(results);
         }
 
         AppMessage::OperationProgress {

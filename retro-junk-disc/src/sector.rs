@@ -27,6 +27,18 @@ pub const MODE2_FORM1_DATA_OFFSET: u64 = 24;
 /// ISO 9660 Primary Volume Descriptor is always at sector 16.
 pub const PVD_SECTOR: u64 = 16;
 
+/// Offset to the mode byte within a raw sector header.
+/// 12 (sync) + 3 (MSF) = 15.
+pub const SECTOR_MODE_OFFSET: usize = 15;
+
+/// Offset to the submode byte within a Mode 2 sector subheader.
+/// 12 (sync) + 4 (header) + 2 (file/channel) = 18.
+pub const SECTOR_SUBMODE_OFFSET: usize = 18;
+
+/// Start of user data within a Mode 2 Form 1/Form 2 sector.
+/// 12 (sync) + 4 (header) + 8 (subheader) = 24.
+pub const SECTOR_USER_DATA_START: usize = 24;
+
 /// CHD file magic bytes.
 pub const CHD_MAGIC: &[u8; 8] = b"MComprHD";
 

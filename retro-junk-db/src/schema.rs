@@ -12,7 +12,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 7;
+pub const CURRENT_VERSION: i32 = 8;
 
 /// Create all tables and indexes if they don't exist.
 ///
@@ -122,6 +122,17 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
             6 => {
                 conn.execute_batch(MEDIA_TRACKS_SQL)?;
             }
+            7 => {
+                // Column may already exist if tables were created fresh by migration 5 (LIBRARY_TABLES_SQL)
+                let has_column: bool = conn
+                    .prepare("SELECT cue_compat_issues_json FROM library_entries LIMIT 0")
+                    .is_ok();
+                if !has_column {
+                    conn.execute_batch(
+                        "ALTER TABLE library_entries ADD COLUMN cue_compat_issues_json TEXT;",
+                    )?;
+                }
+            }
             _ => {}
         }
         version += 1;
@@ -173,6 +184,7 @@ CREATE TABLE IF NOT EXISTS library_entries (
     disc_identifications_json TEXT,
     broken_references_json TEXT,
     ambiguous_candidates_json TEXT,
+    cue_compat_issues_json TEXT,
     UNIQUE(console_id, display_name)
 );
 CREATE INDEX IF NOT EXISTS idx_library_entries_console ON library_entries(console_id);

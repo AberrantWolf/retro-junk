@@ -447,6 +447,47 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             }
         }
 
+        // CUE sheet compatibility issues
+        if let Some(ref issues) = entry.cue_compat_issues
+            && !issues.is_empty()
+        {
+            let warn_color = egui::Color32::from_rgb(230, 160, 30);
+            let err_color = egui::Color32::from_rgb(220, 50, 50);
+            let has_unfixable = issues.iter().any(|i| !i.can_auto_fix);
+
+            ui.add_space(4.0);
+            ui.separator();
+            let header = if has_unfixable {
+                "\u{26a0} CUE Sheet Compatibility (requires re-dump)"
+            } else {
+                "\u{26a0} CUE Sheet Compatibility"
+            };
+            ui.label(egui::RichText::new(header).strong().color(warn_color));
+            ui.add_space(2.0);
+
+            for issue in issues {
+                ui.horizontal(|ui| {
+                    if issue.can_auto_fix {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}: {} (fixable)",
+                                issue.file_name, issue.summary
+                            ))
+                            .color(warn_color),
+                        );
+                    } else {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{}: {} (re-dump required)",
+                                issue.file_name, issue.summary
+                            ))
+                            .color(err_color),
+                        );
+                    }
+                });
+            }
+        }
+
         // Hashes (single-file entries only; multi-disc hashes shown per-disc above)
         if entry.disc_identifications.is_none()
             && let Some(ref hashes) = entry.hashes

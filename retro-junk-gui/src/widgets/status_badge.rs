@@ -18,10 +18,11 @@ pub fn show_with_warning(
     status: EntryStatus,
     has_broken_refs: bool,
     has_hash_warnings: bool,
+    has_cue_compat_issues: bool,
     media_status: AssetStatus,
 ) -> egui::Response {
     let show_media = !matches!(media_status, AssetStatus::Unknown);
-    let show_warning = has_broken_refs || has_hash_warnings;
+    let show_warning = has_broken_refs || has_hash_warnings || has_cue_compat_issues;
     let width = 10.0 + if show_warning { 10.0 } else { 0.0 } + if show_media { 10.0 } else { 0.0 };
     let color = status.color();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 10.0), egui::Sense::hover());

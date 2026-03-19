@@ -560,6 +560,9 @@ pub struct RenamePlan {
     pub broken_cue_files: Vec<PathBuf>,
     /// M3U playlist files with broken entries in non-M3U dirs (pre-existing)
     pub broken_m3u_files: Vec<PathBuf>,
+    /// Hash warnings (e.g., incomplete dumps with zero-padded audio tracks).
+    /// Each entry is (file_path, list_of_warnings).
+    pub hash_warnings: Vec<(PathBuf, Vec<String>)>,
 }
 
 impl RenamePlan {
@@ -651,6 +654,7 @@ pub fn plan_renames(
     let mut unmatched = Vec::new();
     let mut discrepancies = Vec::new();
     let mut serial_warnings = Vec::new();
+    let mut hash_warnings: Vec<(PathBuf, Vec<String>)> = Vec::new();
     // Track file → (game_name, target_filename) for M3U post-processing
     let mut file_game_names: HashMap<PathBuf, (String, String)> = HashMap::new();
     for (i, file_path) in files.iter().enumerate() {
@@ -673,6 +677,9 @@ pub fn plan_renames(
             // Hash mode: hash is authoritative, but also check serial for discrepancies
             let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
             last_hash = Some((hash_outcome.crc32, hash_outcome.data_size));
+            if !hash_outcome.warnings.is_empty() {
+                hash_warnings.push((file_path.clone(), hash_outcome.warnings));
+            }
             let serial_outcome = match_by_serial(file_path, analyzer, &index);
 
             // Report discrepancy if both matched but to different games
@@ -698,6 +705,9 @@ pub fn plan_renames(
                 // Serial failed — try hash, then create serial warning with hash info
                 let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
                 last_hash = Some((hash_outcome.crc32.clone(), hash_outcome.data_size));
+                if !hash_outcome.warnings.is_empty() {
+                    hash_warnings.push((file_path.clone(), hash_outcome.warnings.clone()));
+                }
 
                 if let Some(ref candidates) = serial_outcome.ambiguous_candidates {
                     // Serial matched multiple games — report ambiguity
@@ -900,6 +910,7 @@ pub fn plan_renames(
         m3u_jobs,
         broken_cue_files,
         broken_m3u_files,
+        hash_warnings,
     })
 }
 
@@ -977,6 +988,8 @@ struct HashMatchOutcome {
     crc32: String,
     /// Size of data that was hashed (after header stripping)
     data_size: u64,
+    /// Warnings from the hashing process (e.g., zero-padded audio track detected)
+    warnings: Vec<String>,
 }
 
 /// Match a file by computing its CRC32 hash (with SHA1 fallback).
@@ -1008,6 +1021,7 @@ fn match_by_hash(
 
     let crc32 = hashes.crc32.clone();
     let data_size = hashes.data_size;
+    let warnings = hashes.warnings.clone();
     let result = index
         .match_by_hash(hashes.data_size, &hashes)
         .into_iter()
@@ -1017,6 +1031,7 @@ fn match_by_hash(
         result,
         crc32,
         data_size,
+        warnings,
     })
 }
 

@@ -421,6 +421,7 @@ fn load_library_from_legacy(
                 screen_title: ce.screen_title.clone(),
                 disc_identifications: ce.disc_identifications.clone(),
                 broken_references: ce.broken_references.clone(),
+                cue_compat_issues: None,
                 tag: ce.tag,
             })
             .collect();
@@ -590,6 +591,12 @@ fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Err
         .map(serde_json::to_string)
         .transpose()?;
 
+    let cue_compat_issues_json = entry
+        .cue_compat_issues
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()?;
+
     let ambiguous_candidates_json = if entry.ambiguous_candidates.is_empty() {
         None
     } else {
@@ -615,6 +622,7 @@ fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Err
         disc_identifications_json,
         broken_references_json,
         ambiguous_candidates_json,
+        cue_compat_issues_json,
     })
 }
 
@@ -664,6 +672,11 @@ fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
 
+    let cue_compat_issues = row
+        .cue_compat_issues_json
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
+
     let ambiguous_candidates: Vec<String> = row
         .ambiguous_candidates_json
         .as_deref()
@@ -683,6 +696,7 @@ fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
         screen_title: row.screen_title,
         disc_identifications,
         broken_references,
+        cue_compat_issues,
         tag,
     })
 }

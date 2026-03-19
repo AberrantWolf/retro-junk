@@ -2,6 +2,7 @@ pub(crate) mod analyze;
 pub(crate) mod cache;
 pub(crate) mod catalog;
 pub(crate) mod credentials;
+pub(crate) mod fix_cue;
 pub(crate) mod rename;
 pub(crate) mod repair;
 pub(crate) mod scrape;

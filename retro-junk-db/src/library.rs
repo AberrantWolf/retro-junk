@@ -43,6 +43,7 @@ pub struct LibraryEntryRow {
     pub disc_identifications_json: Option<String>,
     pub broken_references_json: Option<String>,
     pub ambiguous_candidates_json: Option<String>,
+    pub cue_compat_issues_json: Option<String>,
 }
 
 // ── Root Operations ─────────────────────────────────────────────────────────
@@ -186,7 +187,8 @@ pub fn load_entries_for_console(
                 dat_game_name, dat_rom_name, dat_match_method,
                 region_override, cover_title, screen_title,
                 identification_json, disc_identifications_json,
-                broken_references_json, ambiguous_candidates_json
+                broken_references_json, ambiguous_candidates_json,
+                cue_compat_issues_json
          FROM library_entries WHERE console_id = ?1",
     )?;
     let rows = stmt.query_map(params![console_id], |row| {
@@ -209,6 +211,7 @@ pub fn load_entries_for_console(
             disc_identifications_json: row.get(15)?,
             broken_references_json: row.get(16)?,
             ambiguous_candidates_json: row.get(17)?,
+            cue_compat_issues_json: row.get(18)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -228,8 +231,9 @@ fn execute_upsert_entry(
              dat_game_name, dat_rom_name, dat_match_method,
              region_override, cover_title, screen_title,
              identification_json, disc_identifications_json,
-             broken_references_json, ambiguous_candidates_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+             broken_references_json, ambiguous_candidates_json,
+             cue_compat_issues_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
          ON CONFLICT(console_id, display_name) DO UPDATE SET
              game_entry_json = excluded.game_entry_json,
              status = excluded.status,
@@ -247,7 +251,8 @@ fn execute_upsert_entry(
              identification_json = excluded.identification_json,
              disc_identifications_json = excluded.disc_identifications_json,
              broken_references_json = excluded.broken_references_json,
-             ambiguous_candidates_json = excluded.ambiguous_candidates_json",
+             ambiguous_candidates_json = excluded.ambiguous_candidates_json,
+             cue_compat_issues_json = excluded.cue_compat_issues_json",
         params![
             console_id, e.display_name, e.game_entry_json, e.status, e.tag,
             e.crc32, e.sha1, e.md5, e.data_size,
@@ -255,6 +260,7 @@ fn execute_upsert_entry(
             e.region_override, e.cover_title, e.screen_title,
             e.identification_json, e.disc_identifications_json,
             e.broken_references_json, e.ambiguous_candidates_json,
+            e.cue_compat_issues_json,
         ],
     )?;
     Ok(())
@@ -272,8 +278,9 @@ fn insert_entries_batch(
              dat_game_name, dat_rom_name, dat_match_method,
              region_override, cover_title, screen_title,
              identification_json, disc_identifications_json,
-             broken_references_json, ambiguous_candidates_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+             broken_references_json, ambiguous_candidates_json,
+             cue_compat_issues_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
     )?;
     for e in entries {
         stmt.execute(params![
@@ -296,6 +303,7 @@ fn insert_entries_batch(
             e.disc_identifications_json,
             e.broken_references_json,
             e.ambiguous_candidates_json,
+            e.cue_compat_issues_json,
         ])?;
     }
     Ok(())

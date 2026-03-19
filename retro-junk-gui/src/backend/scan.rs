@@ -3,13 +3,14 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
 use retro_junk_core::RomAnalyzer;
+use retro_junk_disc::cue::check_cue_compat;
 use retro_junk_lib::AnalysisOptions;
 use retro_junk_lib::rename;
 use retro_junk_lib::scanner;
 
 use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
-use crate::state::AppMessage;
+use crate::state::{AppMessage, CueCompatIssue};
 
 /// Scan a root folder for console subfolders on a background thread.
 pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Context) {
@@ -185,6 +186,15 @@ pub fn check_broken_refs_background(
                 entry_name: entry_name.clone(),
                 broken_refs: broken,
             });
+
+            let cue_issues = check_cue_compat_for_entry(entry);
+            if !cue_issues.is_empty() {
+                let _ = tx.send(AppMessage::CueCompatChecked {
+                    folder_name: folder_name.clone(),
+                    entry_name: entry_name.clone(),
+                    issues: cue_issues,
+                });
+            }
         }
         ctx.request_repaint();
     });
@@ -265,9 +275,19 @@ fn analyze_entries(
         let broken_refs = rename::check_broken_references(entry);
         let _ = tx.send(AppMessage::BrokenRefsChecked {
             folder_name: folder_name.to_string(),
-            entry_name,
+            entry_name: entry_name.clone(),
             broken_refs,
         });
+
+        // Check CUE sheet compatibility
+        let cue_issues = check_cue_compat_for_entry(entry);
+        if !cue_issues.is_empty() {
+            let _ = tx.send(AppMessage::CueCompatChecked {
+                folder_name: folder_name.to_string(),
+                entry_name,
+                issues: cue_issues,
+            });
+        }
 
         let _ = tx.send(AppMessage::OperationProgress {
             op_id,
@@ -279,4 +299,47 @@ fn analyze_entries(
             ctx.request_repaint();
         }
     }
+}
+
+/// Check CUE sheet compatibility for an entry's CUE files.
+fn check_cue_compat_for_entry(entry: &scanner::GameEntry) -> Vec<CueCompatIssue> {
+    let cue_paths: Vec<&std::path::Path> = match entry {
+        scanner::GameEntry::SingleFile(path) => {
+            if path
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
+            {
+                vec![path.as_path()]
+            } else {
+                vec![]
+            }
+        }
+        scanner::GameEntry::MultiDisc { files, .. } => files
+            .iter()
+            .filter(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("cue")))
+            .map(|f| f.as_path())
+            .collect(),
+    };
+
+    let mut issues = Vec::new();
+    for path in cue_paths {
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let report = check_cue_compat(&content);
+        if !report.is_standard() {
+            let file_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string();
+            issues.push(CueCompatIssue {
+                file_name,
+                summary: report.summary(),
+                can_auto_fix: report.can_auto_fix(),
+            });
+        }
+    }
+    issues
 }

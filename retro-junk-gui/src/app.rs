@@ -8,8 +8,8 @@ use retro_junk_lib::AnalysisContext;
 
 use crate::settings::AppSettings;
 use crate::state::{
-    AppMessage, BackgroundOperation, FocusedPanel, Library, RenameOutcome, RenameResult,
-    ToolsState, View,
+    AppMessage, BackgroundOperation, CueFixOutcome, CueFixResult, FocusedPanel, Library,
+    RenameOutcome, RenameResult, ToolsState, View,
 };
 use crate::views;
 use crate::widgets;
@@ -70,6 +70,9 @@ pub struct RetroJunkApp {
     /// Results from the last rename operation. When `Some`, the rename results dialog is shown.
     pub rename_results: Option<Vec<crate::state::RenameResult>>,
 
+    /// Results from the last CUE fix operation. When `Some`, the CUE fix results dialog is shown.
+    pub cue_fix_results: Option<Vec<crate::state::CueFixResult>>,
+
     /// True while the initial cache load is in flight on startup.
     /// Cleared when `StartFolderScan` is processed (the signal that the cache
     /// thread has finished, whether or not a cache existed).
@@ -128,6 +131,7 @@ impl RetroJunkApp {
             catalog_db,
             db_path,
             rename_results: None,
+            cue_fix_results: None,
             loading_library: false,
             tools_state: ToolsState::default(),
             focused_panel: FocusedPanel::default(),
@@ -314,6 +318,11 @@ impl eframe::App for RetroJunkApp {
             show_rename_results_dialog(ctx, &mut self.rename_results);
         }
 
+        // CUE fix results modal dialog
+        if self.cue_fix_results.is_some() {
+            show_cue_fix_results_dialog(ctx, &mut self.cue_fix_results);
+        }
+
         // Tag dialog
         widgets::tag_dialog::show(ctx, self);
 
@@ -430,6 +439,81 @@ fn show_rename_results_dialog(ctx: &egui::Context, results: &mut Option<Vec<Rena
                                     parts.push(format!("{} errors", errors.len()));
                                 }
                                 ui.label(parts.join(", "));
+                            }
+                        });
+                    }
+                });
+
+            ui.separator();
+            if ui.button("OK").clicked() {
+                dismiss = true;
+            }
+        });
+
+    if dismiss || !open {
+        *results = None;
+    }
+}
+
+/// Modal dialog showing the results of a CUE fix operation.
+fn show_cue_fix_results_dialog(ctx: &egui::Context, results: &mut Option<Vec<CueFixResult>>) {
+    let Some(ref items) = *results else { return };
+
+    let fixed = items
+        .iter()
+        .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
+        .count();
+    let already = items
+        .iter()
+        .filter(|r| matches!(r.outcome, CueFixOutcome::AlreadyStandard))
+        .count();
+    let failed = items
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.outcome,
+                CueFixOutcome::Unfixable { .. } | CueFixOutcome::Error { .. }
+            )
+        })
+        .count();
+
+    let mut dismiss = false;
+    let mut open = true;
+    egui::Window::new("Fix CUE Results")
+        .collapsible(false)
+        .resizable(true)
+        .open(&mut open)
+        .default_width(500.0)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "{} fixed, {} already standard, {} failed",
+                fixed, already, failed
+            ));
+            ui.separator();
+
+            egui::ScrollArea::vertical()
+                .max_height(400.0)
+                .show(ui, |ui| {
+                    for item in items {
+                        ui.horizontal(|ui| match &item.outcome {
+                            CueFixOutcome::Fixed { summary } => {
+                                ui.colored_label(egui::Color32::from_rgb(50, 180, 50), "Fixed");
+                                ui.label(format!("{} ({})", item.file_name, summary));
+                            }
+                            CueFixOutcome::AlreadyStandard => {
+                                ui.colored_label(egui::Color32::GRAY, "OK");
+                                ui.label(format!("{} already standard", item.file_name));
+                            }
+                            CueFixOutcome::Unfixable { reason } => {
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(220, 180, 30),
+                                    "Unfixable",
+                                );
+                                ui.label(format!("{}: {}", item.file_name, reason));
+                            }
+                            CueFixOutcome::Error { message } => {
+                                ui.colored_label(egui::Color32::from_rgb(220, 50, 50), "Error");
+                                ui.label(format!("{}: {}", item.file_name, message));
                             }
                         });
                     }

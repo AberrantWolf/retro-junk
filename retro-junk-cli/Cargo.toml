@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 retro-junk-lib.workspace = true
+retro-junk-disc.workspace = true
 retro-junk-dat.workspace = true
 retro-junk-nintendo.workspace = true
 retro-junk-sony.workspace = true

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- CUE sheet compatibility issues are now detected during scan and displayed as warning triangles in the game table and detailed messages in the detail panel, with clear "fixable" vs "re-dump required" messaging
+- Added `retro-junk fix-cue` command to detect and convert CDRWin-format CUE sheets to standard CUE format for wider emulator compatibility (e.g., DuckStation rejecting `CD_ROM_XA` headers)
 - Added `retro-junk systems` command listing all 25 supported systems with DAT/GDB capability tags, grouped by manufacturer, with optional `--manufacturer` filter
 - Multi-system database commands (`catalog import`, `catalog enrich`, `catalog enrich-gdb`) now default to all systems when no arguments are given (was: "No systems specified")
 - Unified system name validation across all commands into shared helpers (`resolve_systems`, `resolve_single_system`, `resolve_platform_ids`), replacing ~120 lines of duplicated ad-hoc logic
@@ -26,6 +28,7 @@
 - Added `--force` flag to `cache gdb fetch` (skips re-download when cached, matching `cache dat fetch` behavior)
 - Removed `config` alias from `credentials` command (conflicted with `settings`)
 - Removed `--root` alias from `--library-path`
+- Fixed hash matching for BIN dumps where audio tracks were written as zero-filled Mode 2 sectors instead of raw PCM. A secondary boundary detection now finds the data/filler boundary and warns about the incomplete dump.
 
 ## 0.1.2
 

@@ -159,7 +159,8 @@ pub(crate) fn run_rename(
                 let has_issues = !plan.unmatched.is_empty()
                     || !plan.conflicts.is_empty()
                     || !plan.discrepancies.is_empty()
-                    || !plan.serial_warnings.is_empty();
+                    || !plan.serial_warnings.is_empty()
+                    || !plan.hash_warnings.is_empty();
 
                 let header_level = if has_issues { Level::Warn } else { Level::Info };
                 log::log!(
@@ -545,6 +546,19 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
             "\u{1F527}".if_supports_color(Stdout, |t| t.yellow()),
             name.if_supports_color(Stdout, |t| t.bold()),
         );
+    }
+
+    // Hash warnings (e.g., incomplete dumps with zero-padded audio tracks)
+    for (path, warnings) in &plan.hash_warnings {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        for warning in warnings {
+            log::warn!(
+                "  {} {} ({})",
+                "\u{1F527}".if_supports_color(Stdout, |t| t.yellow()),
+                name.if_supports_color(Stdout, |t| t.bold()),
+                warning,
+            );
+        }
     }
 }
 

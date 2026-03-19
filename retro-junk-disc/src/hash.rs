@@ -9,7 +9,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
 use crate::format::{DiscFormat, detect_disc_format};
-use crate::sector::{CD_SYNC_PATTERN, RAW_SECTOR_SIZE};
+use crate::sector::{CD_SYNC_PATTERN, RAW_SECTOR_SIZE, SECTOR_USER_DATA_START};
 
 /// Sector mode for raw disc images.
 ///
@@ -59,13 +59,21 @@ pub fn hash_disc_container(
         DiscFormat::RawSector2352 => {
             // Multi-track BIN files contain data + audio tracks concatenated.
             // Redump DATs hash only Track 1 (data), so detect the boundary.
-            if let Some(data_size) = find_raw_bin_data_track_size(reader)? {
+            if let Some((data_size, was_zero_padded)) = detect_data_track_size(reader)? {
                 log::info!(
-                    "{} compute_container_hashes: raw BIN, hashing Track 1 ({} bytes)",
+                    "{} compute_container_hashes: raw BIN, hashing Track 1 ({} bytes{})",
                     platform_name,
-                    data_size
+                    data_size,
+                    if was_zero_padded {
+                        ", zero-padded audio detected"
+                    } else {
+                        ""
+                    }
                 );
-                let hashes = hash_raw_bin_track1(reader, algorithms, data_size, on_progress)?;
+                let mut hashes = hash_raw_bin_track1(reader, algorithms, data_size, on_progress)?;
+                if was_zero_padded {
+                    hashes.warnings.push(ZERO_PADDED_WARNING.to_string());
+                }
                 Ok(Some(hashes))
             } else {
                 // Single-track BIN — let the standard hasher handle it
@@ -266,6 +274,119 @@ fn is_data_sector(
     Ok(n == 12 && sync == CD_SYNC_PATTERN)
 }
 
+/// Warning message for zero-padded audio track detection.
+const ZERO_PADDED_WARNING: &str = "Incomplete dump: audio track missing (zero-filled Mode 2 padding detected). Data track intact \u{2014} hash valid.";
+
+/// Check if a sector has the CD sync pattern AND non-zero user data.
+///
+/// Returns `true` for real data sectors with actual content.
+/// Returns `false` for zero-padded filler sectors (sync pattern present but
+/// user data is all zeros — a sign of a bad dump where the audio track was
+/// written as empty Mode 2 sectors).
+fn is_real_data_sector(
+    reader: &mut dyn retro_junk_core::ReadSeek,
+    sector_index: u64,
+) -> Result<bool, AnalysisError> {
+    let offset = sector_index * RAW_SECTOR_SIZE;
+    reader.seek(SeekFrom::Start(offset))?;
+
+    // Read sync pattern + header + subheader + start of user data
+    // We check 64 bytes of user data to distinguish real content from zeros.
+    const CHECK_SIZE: usize = SECTOR_USER_DATA_START + 64;
+    let mut buf = [0u8; CHECK_SIZE];
+    let n = reader.read(&mut buf)?;
+    if n < CHECK_SIZE {
+        return Ok(false);
+    }
+
+    // Must have sync pattern
+    if buf[..12] != CD_SYNC_PATTERN {
+        return Ok(false);
+    }
+
+    // Check if user data region is all zeros (filler sector)
+    let user_data = &buf[SECTOR_USER_DATA_START..];
+    Ok(user_data.iter().any(|&b| b != 0))
+}
+
+/// Find the boundary between real data sectors and zero-padded filler sectors.
+///
+/// Some bad dumps write audio tracks as Mode 2 sectors with CD sync patterns
+/// but all-zero user data. The standard `find_raw_bin_data_track_size()` can't
+/// detect this boundary because both sides have sync patterns.
+///
+/// Uses binary search on `is_real_data_sector()` to find the last sector with
+/// non-zero user data.
+///
+/// Returns `Some(data_size)` if a boundary is found, `None` if the entire file
+/// has real data or doesn't start with real data.
+pub fn find_zero_padded_track_boundary(
+    reader: &mut dyn retro_junk_core::ReadSeek,
+) -> Result<Option<u64>, AnalysisError> {
+    let file_size = reader.seek(SeekFrom::End(0))?;
+    if file_size < RAW_SECTOR_SIZE {
+        return Ok(None);
+    }
+
+    let total_sectors = file_size / RAW_SECTOR_SIZE;
+
+    // Sector 0 must be real data
+    if !is_real_data_sector(reader, 0)? {
+        return Ok(None);
+    }
+
+    // If the last sector also has real data, no boundary to find
+    if is_real_data_sector(reader, total_sectors - 1)? {
+        return Ok(None);
+    }
+
+    // Binary search: find last sector with real (non-zero) data
+    let mut lo: u64 = 0;
+    let mut hi = total_sectors - 1;
+
+    while lo < hi {
+        let mid = lo + (hi - lo + 1) / 2;
+        if is_real_data_sector(reader, mid)? {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+
+    let data_track_size = (lo + 1) * RAW_SECTOR_SIZE;
+    log::info!(
+        "Raw BIN: zero-padded boundary at sector {} ({} bytes data, {} bytes total)",
+        lo + 1,
+        data_track_size,
+        file_size
+    );
+
+    Ok(Some(data_track_size))
+}
+
+/// Detect the data track size in a raw BIN file, chaining two detection methods.
+///
+/// 1. Try sync-pattern boundary detection (fast, handles normal multi-track BINs)
+/// 2. Try zero-padded filler detection (handles bad dumps with Mode 2 filler)
+///
+/// Returns `(data_size, was_zero_padded)` if a boundary is found, or `None`
+/// if the entire file appears to be a single data track.
+pub fn detect_data_track_size(
+    reader: &mut dyn retro_junk_core::ReadSeek,
+) -> Result<Option<(u64, bool)>, AnalysisError> {
+    // Primary: sync-pattern boundary (audio sectors lack sync pattern)
+    if let Some(size) = find_raw_bin_data_track_size(reader)? {
+        return Ok(Some((size, false)));
+    }
+
+    // Secondary: zero-padded filler detection
+    if let Some(size) = find_zero_padded_track_boundary(reader)? {
+        return Ok(Some((size, true)));
+    }
+
+    Ok(None)
+}
+
 /// Determine Track 1 byte size from CUE INDEX entries.
 ///
 /// If the CUE has 2+ tracks for the same file and Track 2 has an INDEX 01
@@ -408,14 +529,22 @@ pub fn hash_cue_track1(
         return Ok(hashes);
     }
 
-    // Fall back to sync-pattern detection
-    if let Some(data_size) = find_raw_bin_data_track_size(&mut bin_file)? {
+    // Fall back to chained detection (sync-pattern, then zero-padded filler)
+    if let Some((data_size, was_zero_padded)) = detect_data_track_size(&mut bin_file)? {
         log::info!(
-            "CUE hash: Track 1 size from sync detection = {} bytes (BIN = {} bytes)",
+            "CUE hash: Track 1 size from {} detection = {} bytes (BIN = {} bytes)",
+            if was_zero_padded {
+                "zero-padded"
+            } else {
+                "sync"
+            },
             data_size,
             bin_size
         );
         let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, data_size, on_progress)?;
+        if was_zero_padded {
+            warnings.push(ZERO_PADDED_WARNING.to_string());
+        }
         hashes.warnings = warnings;
         return Ok(hashes);
     }
