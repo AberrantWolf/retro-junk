@@ -1462,18 +1462,20 @@ impl RefFileFormat for CueFormat {
 
     fn extract_reference<'a>(&self, line: &'a str) -> Option<RefLine<'a>> {
         let trimmed = line.trim();
-        if !trimmed.to_uppercase().starts_with("FILE ") {
-            return None;
+        let upper = trimmed.to_uppercase();
+        // Standard FILE and CDRWin DATAFILE/AUDIOFILE all reference data files
+        if upper.starts_with("FILE ")
+            || upper.starts_with("DATAFILE ")
+            || upper.starts_with("AUDIOFILE ")
+        {
+            let (filename, _file_type) = parse_cue_file_directive(trimmed)?;
+            Some(RefLine {
+                filename,
+                extra: trimmed, // pass trimmed line so rebuild_line can re-parse
+            })
+        } else {
+            None
         }
-        // We need to parse the FILE directive. Since RefLine borrows from the
-        // original line for `extra`, we store nothing there and reconstruct.
-        // Actually, we need the file_type portion. We'll use a small trick:
-        // store the trimmed suffix offset so rebuild_line can grab it.
-        let (filename, _file_type) = parse_cue_file_directive(trimmed)?;
-        Some(RefLine {
-            filename,
-            extra: trimmed, // pass trimmed line so rebuild_line can re-parse
-        })
     }
 
     fn rebuild_line(&self, original_line: &str, new_filename: &str, ref_line: &RefLine) -> String {
@@ -1752,10 +1754,16 @@ fn fix_m3u_references_in_dir(
 ///   File filename.bin BINARY
 fn parse_cue_file_directive(line: &str) -> Option<(String, String)> {
     let upper = line.to_uppercase();
-    if !upper.starts_with("FILE ") {
+    let skip_len = if upper.starts_with("FILE ") {
+        5
+    } else if upper.starts_with("DATAFILE ") {
+        9
+    } else if upper.starts_with("AUDIOFILE ") {
+        10
+    } else {
         return None;
-    }
-    let rest = &line[5..]; // skip "FILE "
+    };
+    let rest = &line[skip_len..];
 
     if let Some(after_quote) = rest.strip_prefix('"') {
         let end_quote = after_quote.find('"')?;

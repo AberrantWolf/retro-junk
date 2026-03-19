@@ -295,6 +295,20 @@ impl LibraryEntry {
         }
     }
 
+    /// Whether this entry has detected CUE sheet compatibility issues.
+    pub fn has_cue_compat_issues(&self) -> bool {
+        self.cue_compat_issues
+            .as_ref()
+            .is_some_and(|issues| !issues.is_empty())
+    }
+
+    /// Whether this entry has broken CUE/M3U file references.
+    pub fn has_broken_refs(&self) -> bool {
+        self.broken_references
+            .as_ref()
+            .is_some_and(|refs| !refs.is_empty())
+    }
+
     /// Whether this entry has a generated miximage on disk.
     pub fn has_miximage(&self) -> bool {
         self.asset_paths
@@ -755,6 +769,37 @@ pub enum AppMessage {
 }
 
 // -- Helpers --
+
+/// Re-check broken references and CUE compat for invalidated entries in a console.
+///
+/// Collects entries whose `broken_references` is `None` (i.e., were just
+/// invalidated) and spawns `check_broken_refs_background` to re-scan them.
+fn recheck_invalidated_entries(
+    app: &crate::app::RetroJunkApp,
+    console_idx: usize,
+    folder_name: &str,
+    ctx: &egui::Context,
+) {
+    let unchecked: Vec<_> = app.library.consoles[console_idx]
+        .entries
+        .iter()
+        .filter(|e| e.broken_references.is_none())
+        .map(|e| {
+            (
+                folder_name.to_string(),
+                e.game_entry.display_name().to_string(),
+                e.game_entry.clone(),
+            )
+        })
+        .collect();
+    if !unchecked.is_empty() {
+        crate::backend::scan::check_broken_refs_background(
+            app.message_tx.clone(),
+            unchecked,
+            ctx.clone(),
+        );
+    }
+}
 
 /// Check whether detected regions match the DAT entry's region string.
 /// Returns `true` if any detected region name appears in the DAT region string.
@@ -1918,9 +1963,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             {
                                 entry.game_entry =
                                     retro_junk_lib::scanner::GameEntry::SingleFile(target.clone());
-                                // Clear stale broken-reference warnings; the rename may have
-                                // fixed them and the next background pass will re-check.
+                                // Invalidate cached checks so background re-check picks them up
                                 entry.broken_references = None;
+                                entry.cue_compat_issues = None;
                             }
                         }
                         RenameOutcome::M3uRenamed {
@@ -1990,9 +2035,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                         *files = new_files;
                                     }
                                 }
-                                // Clear stale broken-reference warnings; the rename may
-                                // have fixed them and the next background pass will re-check.
+                                // Invalidate cached checks so background re-check picks them up
                                 entry.broken_references = None;
+                                entry.cue_compat_issues = None;
                             }
                         }
                         RenameOutcome::AlreadyCorrect => already += 1,
@@ -2020,6 +2065,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 app.save_console_cache(ci);
+                if renamed > 0 {
+                    recheck_invalidated_entries(app, ci, &folder_name, ctx);
+                }
             }
         }
 
@@ -2051,7 +2099,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 already,
                 failed
             );
-            // Clear cue_compat_issues for entries whose CUE files were fixed
+            // Invalidate cached checks on affected entries and re-check
             if fixed > 0 {
                 if let Some(ci) = app.library.find_by_folder(&folder_name) {
                     let fixed_files: std::collections::HashSet<&str> = results
@@ -2060,11 +2108,26 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         .map(|r| r.file_name.as_str())
                         .collect();
                     for entry in &mut app.library.consoles[ci].entries {
-                        if let Some(ref mut issues) = entry.cue_compat_issues {
-                            issues.retain(|i| !fixed_files.contains(i.file_name.as_str()));
+                        let dominated =
+                            entry.cue_compat_issues.as_ref().is_some_and(|issues| {
+                                issues
+                                    .iter()
+                                    .any(|i| fixed_files.contains(i.file_name.as_str()))
+                            }) || entry.broken_references.as_ref().is_some_and(|refs| {
+                                refs.iter().any(|r| {
+                                    r.ref_file
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .is_some_and(|n| fixed_files.contains(n))
+                                })
+                            });
+                        if dominated {
+                            entry.broken_references = None;
+                            entry.cue_compat_issues = None;
                         }
                     }
                     app.save_console_cache(ci);
+                    recheck_invalidated_entries(app, ci, &folder_name, ctx);
                 }
             }
             app.cue_fix_results = Some(results);

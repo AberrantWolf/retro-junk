@@ -518,9 +518,9 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
             }
             // Simple AUDIOFILE without offset: convert to FILE ... WAVE
             let (filename, _remainder) = parse_cue_file_line_at(trimmed, 10)?;
-            // Flush pending tracks
-            flush_pending_tracks(&mut output_lines, &mut pending_tracks);
+            // FILE line must come before its tracks in standard CUE
             output_lines.push(format!("FILE \"{filename}\" WAVE"));
+            flush_pending_tracks(&mut output_lines, &mut pending_tracks);
             last_datafile = None;
             cumulative_byte_offset = 0;
         } else if upper.starts_with("DATAFILE ") {

@@ -136,10 +136,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             RowData {
                 entry_idx: i,
                 status: entry.effective_status(),
-                has_broken_refs: entry
-                    .broken_references
-                    .as_ref()
-                    .is_some_and(|refs| !refs.is_empty()),
+                has_broken_refs: entry.has_broken_refs(),
                 has_hash_warnings: entry
                     .hashes
                     .as_ref()
@@ -149,10 +146,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             .iter()
                             .any(|d| d.hashes.as_ref().is_some_and(|h| !h.warnings.is_empty()))
                     }),
-                has_cue_compat_issues: entry
-                    .cue_compat_issues
-                    .as_ref()
-                    .is_some_and(|issues| !issues.is_empty()),
+                has_cue_compat_issues: entry.has_cue_compat_issues(),
                 asset_status: entry.asset_status(),
                 name: entry.game_entry.display_name().to_string(),
                 file_path: entry.game_entry.analysis_path().to_path_buf(),
@@ -447,23 +441,16 @@ fn show_row_context_menu(
         ui.close_menu();
     }
 
-    // Fix CUE Sheet — only show when at least one selected entry is a CUE file
+    // Fix CUE Sheet — only show when at least one selected entry has CUE compat issues
     {
         let console = &app.library.consoles[console_idx];
-        let has_cue = app.selected_entries.iter().any(|&i| {
-            console.entries.get(i).is_some_and(|entry| {
-                let is_cue = |p: &std::path::Path| {
-                    p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cue"))
-                };
-                match &entry.game_entry {
-                    retro_junk_lib::scanner::GameEntry::SingleFile(p) => is_cue(p),
-                    retro_junk_lib::scanner::GameEntry::MultiDisc { files, .. } => {
-                        files.iter().any(|f| is_cue(f))
-                    }
-                }
-            })
+        let has_cue_issues = app.selected_entries.iter().any(|&i| {
+            console
+                .entries
+                .get(i)
+                .is_some_and(|entry| entry.has_cue_compat_issues())
         });
-        if has_cue {
+        if has_cue_issues {
             if ui.button("Fix CUE Sheet").clicked() {
                 backend::fix_cue::fix_cue_for_selection(app, console_idx, ctx);
                 ui.close_menu();

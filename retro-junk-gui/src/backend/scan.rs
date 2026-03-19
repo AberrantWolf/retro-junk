@@ -303,26 +303,8 @@ fn analyze_entries(
 
 /// Check CUE sheet compatibility for an entry's CUE files.
 fn check_cue_compat_for_entry(entry: &scanner::GameEntry) -> Vec<CueCompatIssue> {
-    let cue_paths: Vec<&std::path::Path> = match entry {
-        scanner::GameEntry::SingleFile(path) => {
-            if path
-                .extension()
-                .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
-            {
-                vec![path.as_path()]
-            } else {
-                vec![]
-            }
-        }
-        scanner::GameEntry::MultiDisc { files, .. } => files
-            .iter()
-            .filter(|f| f.extension().is_some_and(|e| e.eq_ignore_ascii_case("cue")))
-            .map(|f| f.as_path())
-            .collect(),
-    };
-
     let mut issues = Vec::new();
-    for path in cue_paths {
+    for path in entry.cue_files() {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue,

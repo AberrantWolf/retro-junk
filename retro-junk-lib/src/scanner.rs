@@ -78,6 +78,15 @@ impl GameEntry {
             GameEntry::MultiDisc { files, .. } => files,
         }
     }
+
+    /// All `.cue` file paths in this entry.
+    pub fn cue_files(&self) -> Vec<&Path> {
+        self.all_files()
+            .iter()
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cue")))
+            .map(|p| p.as_path())
+            .collect()
+    }
 }
 
 /// Scan a console folder and return logical game entries.

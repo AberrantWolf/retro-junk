@@ -387,3 +387,27 @@ fn test_compat_summary() {
     assert!(summary.contains("CDRWin track mode"));
     assert!(summary.contains("DATAFILE"));
 }
+
+#[test]
+fn test_convert_audiofile_tracks_under_correct_file() {
+    // CDRWin format: TRACK before DATAFILE/AUDIOFILE
+    // Each track's data must end up under its own FILE in standard CUE
+    let cdwin_cue = r#"CD_ROM_XA
+TRACK MODE2_RAW
+DATAFILE "data.bin" 54:04:52
+TRACK AUDIO
+AUDIOFILE "audio.bin"
+"#;
+    let standard = convert_cue_to_standard(cdwin_cue, Path::new("/tmp")).unwrap();
+    let parsed = parse_cue(&standard).unwrap();
+
+    assert_eq!(parsed.files.len(), 2);
+    // Data track under data.bin
+    assert_eq!(parsed.files[0].filename, "data.bin");
+    assert_eq!(parsed.files[0].tracks.len(), 1);
+    assert_eq!(parsed.files[0].tracks[0].mode, "MODE2/2352");
+    // Audio track under audio.bin, not data.bin
+    assert_eq!(parsed.files[1].filename, "audio.bin");
+    assert_eq!(parsed.files[1].tracks.len(), 1);
+    assert_eq!(parsed.files[1].tracks[0].mode, "AUDIO");
+}

@@ -21,29 +21,9 @@ pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &e
             Some(e) => e,
             None => continue,
         };
-
         let entry_name = entry.game_entry.display_name().to_string();
-
-        // Collect all CUE files for this entry
-        match &entry.game_entry {
-            retro_junk_lib::scanner::GameEntry::SingleFile(path) => {
-                if path
-                    .extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
-                {
-                    cue_files.push((entry_name, path.clone()));
-                }
-            }
-            retro_junk_lib::scanner::GameEntry::MultiDisc { files, .. } => {
-                for file in files {
-                    if file
-                        .extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
-                    {
-                        cue_files.push((entry_name.clone(), file.clone()));
-                    }
-                }
-            }
+        for path in entry.game_entry.cue_files() {
+            cue_files.push((entry_name.clone(), path.to_path_buf()));
         }
     }
 
