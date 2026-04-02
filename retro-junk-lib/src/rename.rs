@@ -234,16 +234,16 @@ pub fn target_filename_for_rename(
 }
 
 /// Internal result from serial matching, carrying diagnostic info.
-struct SerialMatchOutcome {
-    result: Option<MatchResult>,
+pub struct SerialMatchOutcome {
+    pub result: Option<MatchResult>,
     /// Full serial from ROM header (e.g., "NUS-NSME-USA")
-    full_serial: Option<String>,
+    pub full_serial: Option<String>,
     /// Extracted game code used for DAT lookup (e.g., "NSME")
-    game_code: Option<String>,
+    pub game_code: Option<String>,
     /// When serial matched multiple games, the candidate names
-    ambiguous_candidates: Option<Vec<String>>,
+    pub ambiguous_candidates: Option<Vec<String>>,
     /// Detected file format extension from analyzer (e.g., "iso", "chd", "rvz")
-    detected_extension: Option<String>,
+    pub detected_extension: Option<String>,
 }
 
 /// A planned M3U folder rename + playlist write for a multi-disc set.
@@ -368,6 +368,34 @@ struct M3uExecutionResult {
     folder_renamed: bool,
 }
 
+/// Write an M3U playlist file inside a directory.
+///
+/// Removes any existing `.m3u` files in the folder first, then writes a new one
+/// named `{game_name}.m3u` containing the given entries (one per line).
+pub fn write_m3u_playlist(
+    folder: &Path,
+    game_name: &str,
+    entries: &[String],
+) -> std::io::Result<()> {
+    // Delete any existing .m3u files inside the folder
+    if let Ok(dir_entries) = fs::read_dir(folder) {
+        for entry in dir_entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && let Some(ext) = path.extension().and_then(|e| e.to_str())
+                && ext.eq_ignore_ascii_case("m3u")
+            {
+                let _ = fs::remove_file(&path);
+            }
+        }
+    }
+
+    let playlist_name = format!("{}.m3u", game_name);
+    let playlist_path = folder.join(&playlist_name);
+    let contents = entries.join("\n") + "\n";
+    fs::write(&playlist_path, contents)
+}
+
 /// Execute a single M3U action: write playlist file, rename folder.
 ///
 /// This does NOT rename individual disc files — the caller is responsible for that.
@@ -377,28 +405,16 @@ fn execute_m3u_action(action: &M3uAction, errors: &mut Vec<String>) -> M3uExecut
 
     // Write .m3u playlist file (using source folder path, before folder rename)
     if !action.playlist_entries.is_empty() {
-        // Delete any existing .m3u files inside the folder
-        if let Ok(entries) = fs::read_dir(&action.source_folder) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file()
-                    && let Some(ext) = path.extension().and_then(|e| e.to_str())
-                    && ext.eq_ignore_ascii_case("m3u")
-                {
-                    let _ = fs::remove_file(&path);
-                }
-            }
-        }
-
-        let playlist_name = format!("{}.m3u", action.game_name);
-        let playlist_path = action.source_folder.join(&playlist_name);
-        let contents = action.playlist_entries.join("\n") + "\n";
-        match fs::write(&playlist_path, contents) {
+        match write_m3u_playlist(
+            &action.source_folder,
+            &action.game_name,
+            &action.playlist_entries,
+        ) {
             Ok(()) => result.playlist_written = true,
             Err(e) => {
                 errors.push(format!(
-                    "Failed to write playlist {}: {}",
-                    playlist_path.display(),
+                    "Failed to write playlist in {}: {}",
+                    action.source_folder.display(),
                     e,
                 ));
             }
@@ -680,7 +696,7 @@ pub fn plan_renames(
             if !hash_outcome.warnings.is_empty() {
                 hash_warnings.push((file_path.clone(), hash_outcome.warnings));
             }
-            let serial_outcome = match_by_serial(file_path, analyzer, &index);
+            let serial_outcome = serial_lookup(file_path, analyzer, &index);
 
             // Report discrepancy if both matched but to different games
             if let (Some(hr), Some(sr)) = (&hash_outcome.result, &serial_outcome.result)
@@ -696,7 +712,7 @@ pub fn plan_renames(
             (hash_outcome.result, serial_outcome.detected_extension)
         } else {
             // Default mode: try serial first, then always fall back to hash
-            let serial_outcome = match_by_serial(file_path, analyzer, &index);
+            let serial_outcome = serial_lookup(file_path, analyzer, &index);
             let det_ext = serial_outcome.detected_extension.clone();
 
             if serial_outcome.result.is_some() {
@@ -914,11 +930,12 @@ pub fn plan_renames(
     })
 }
 
-/// Try to match a file by serial number only (no hashing).
+/// Quick-analyze a disc/ROM file to extract its serial, then look it up in the DAT.
 ///
 /// Returns a `SerialMatchOutcome` with diagnostic info regardless of success,
-/// so the caller can generate appropriate warnings.
-fn match_by_serial(
+/// so the caller can generate appropriate warnings. Uses quick analysis mode
+/// to minimize I/O (reads only enough data to extract the serial).
+pub fn serial_lookup(
     file_path: &Path,
     analyzer: &dyn RomAnalyzer,
     index: &DatIndex,
@@ -1752,7 +1769,7 @@ fn fix_m3u_references_in_dir(
 /// Handles both quoted and unquoted filenames, case-insensitive keyword:
 ///   FILE "filename.bin" BINARY
 ///   File filename.bin BINARY
-fn parse_cue_file_directive(line: &str) -> Option<(String, String)> {
+pub(crate) fn parse_cue_file_directive(line: &str) -> Option<(String, String)> {
     let upper = line.to_uppercase();
     let skip_len = if upper.starts_with("FILE ") {
         5

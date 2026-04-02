@@ -81,6 +81,10 @@ pub struct ConsoleState {
     pub dat_status: DatStatus,
     /// Cached folder fingerprint (avoids recomputing on every save).
     pub fingerprint: Option<crate::cache::FolderFingerprint>,
+    /// Loose disc entry-point files at the top level (not inside .m3u folders).
+    /// Populated during scan for disc-based consoles. Non-empty means the user
+    /// may want to run the Organize command.
+    pub loose_disc_files: Vec<PathBuf>,
 }
 
 impl ConsoleState {
@@ -659,6 +663,7 @@ pub enum AppMessage {
     ConsoleScanComplete {
         folder_name: String,
         entries: Vec<GameEntry>,
+        loose_disc_files: Vec<PathBuf>,
     },
     EntryAnalyzed {
         folder_name: String,
@@ -749,6 +754,19 @@ pub enum AppMessage {
     RenameComplete {
         folder_name: String,
         results: Vec<RenameResult>,
+    },
+
+    // -- Organize --
+    OrganizePlanReady {
+        folder_name: String,
+        plan: retro_junk_lib::organize::OrganizePlan,
+    },
+    OrganizeComplete {
+        folder_name: String,
+        jobs_executed: usize,
+        files_moved: usize,
+        unmatched: usize,
+        errors: Vec<String>,
     },
 
     // -- CUE fix --
@@ -903,6 +921,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 entries: Vec::new(),
                 dat_status: DatStatus::NotLoaded,
                 fingerprint: None,
+                loose_disc_files: Vec::new(),
             });
             // Sort by manufacturer then platform name then folder name
             app.library.consoles.sort_by(|a, b| {
@@ -941,9 +960,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         AppMessage::ConsoleScanComplete {
             folder_name,
             entries,
+            loose_disc_files,
         } => {
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 let console = &mut app.library.consoles[ci];
+                console.loose_disc_files = loose_disc_files;
 
                 // Build a lookup from display_name to existing entry so we can
                 // preserve cached data (hashes, status, dat_match, etc.) across
@@ -2068,6 +2089,50 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 if renamed > 0 {
                     recheck_invalidated_entries(app, ci, &folder_name, ctx);
                 }
+            }
+        }
+
+        AppMessage::OrganizePlanReady { folder_name, plan } => {
+            log::info!(
+                "Organize plan ready for {}: {} folders to create, {} unmatched",
+                folder_name,
+                plan.jobs.len(),
+                plan.unmatched.len(),
+            );
+            app.pending_organize_plan = Some((folder_name, plan));
+        }
+
+        AppMessage::OrganizeComplete {
+            folder_name,
+            jobs_executed,
+            files_moved,
+            unmatched,
+            errors,
+        } => {
+            if jobs_executed > 0 {
+                log::info!(
+                    "Organized {}: created {} folders, moved {} files",
+                    folder_name,
+                    jobs_executed,
+                    files_moved,
+                );
+                // Trigger rescan since folder structure changed
+                if let Some(ci) = app.library.find_by_folder(&folder_name) {
+                    let console = &mut app.library.consoles[ci];
+                    console.scan_status = ScanStatus::NotScanned;
+                    console.loose_disc_files.clear();
+                    crate::backend::scan::quick_scan_console(app, ci, ctx);
+                }
+            }
+            if unmatched > 0 {
+                log::warn!(
+                    "{} files could not be matched in {}",
+                    unmatched,
+                    folder_name
+                );
+            }
+            for err in &errors {
+                log::error!("Organize error: {}", err);
             }
         }
 

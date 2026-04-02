@@ -185,6 +185,7 @@ pub fn load_library(
                 entries,
                 dat_status,
                 fingerprint: None,
+                loose_disc_files: Vec::new(),
             });
         } else {
             consoles.push(ConsoleState {
@@ -197,6 +198,7 @@ pub fn load_library(
                 entries,
                 dat_status,
                 fingerprint: Some(current_fp),
+                loose_disc_files: Vec::new(),
             });
         }
     }
@@ -449,6 +451,7 @@ fn load_library_from_legacy(
             entries,
             dat_status,
             fingerprint: if is_stale { None } else { Some(current_fp) },
+            loose_disc_files: Vec::new(),
         });
     }
 

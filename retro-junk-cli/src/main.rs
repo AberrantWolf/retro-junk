@@ -161,6 +161,7 @@ fn run(
         command,
         Commands::Analyze { .. }
             | Commands::Rename { .. }
+            | Commands::Organize { .. }
             | Commands::FixCue { .. }
             | Commands::Repair { .. }
             | Commands::Scrape { .. }
@@ -195,6 +196,25 @@ fn run(
                 quiet,
                 media_dir,
                 no_media,
+            )?;
+        }
+        Commands::Organize {
+            dry_run,
+            roms,
+            dat_dir,
+            include_single_disc,
+            hash_fallback,
+        } => {
+            commands::organize::run_organize(
+                ctx,
+                dry_run,
+                roms.consoles,
+                roms.limit,
+                library_path,
+                dat_dir,
+                include_single_disc,
+                hash_fallback,
+                quiet,
             )?;
         }
         Commands::FixCue {

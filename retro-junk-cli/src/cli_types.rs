@@ -80,6 +80,28 @@ pub(crate) enum Commands {
         no_media: bool,
     },
 
+    /// Organize loose disc images into ES-DE .m3u folders using Redump DAT names
+    Organize {
+        /// Show planned organization without executing
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        #[command(flatten)]
+        roms: ConsoleFilterArgs,
+
+        /// Use DAT files from this directory instead of the cache
+        #[arg(long)]
+        dat_dir: Option<PathBuf>,
+
+        /// Also organize single-disc games into .m3u folders (default: multi-disc only)
+        #[arg(long)]
+        include_single_disc: bool,
+
+        /// Fall back to hashing when serial lookup fails (slower but catches more files)
+        #[arg(long)]
+        hash_fallback: bool,
+    },
+
     /// Fix CDRWin-format CUE sheets for wider emulator compatibility
     FixCue {
         /// Show planned fixes without executing

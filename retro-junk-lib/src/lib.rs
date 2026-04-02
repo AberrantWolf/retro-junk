@@ -8,6 +8,7 @@ pub mod context;
 pub mod cue_fix;
 pub mod display;
 pub mod hasher;
+pub mod organize;
 pub mod rename;
 pub mod repair;
 pub mod scanner;

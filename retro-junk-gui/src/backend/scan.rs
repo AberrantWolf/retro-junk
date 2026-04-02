@@ -90,10 +90,25 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
             }
         };
 
+        // Detect loose disc entry-point files (for organize feature)
+        let loose_disc_files: Vec<PathBuf> = entries
+            .iter()
+            .filter_map(|e| {
+                if let scanner::GameEntry::SingleFile(path) = e {
+                    let filename = path.file_name()?.to_string_lossy();
+                    if retro_junk_lib::rename::is_m3u_entry_point(&filename) {
+                        return Some(path.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+
         // Send the full entry list so the UI can show file names immediately
         let _ = tx.send(AppMessage::ConsoleScanComplete {
             folder_name: folder_name.clone(),
             entries: entries.clone(),
+            loose_disc_files,
         });
         ctx.request_repaint();
 

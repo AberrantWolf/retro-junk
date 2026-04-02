@@ -4269,6 +4269,7 @@ dependencies = [
  "retro-junk-sony",
  "serde",
  "sha1",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "toml",

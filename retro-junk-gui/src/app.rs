@@ -95,6 +95,10 @@ pub struct RetroJunkApp {
 
     /// Accumulated errors to show in the error dialog. Non-empty triggers the dialog.
     pub error_list: Vec<crate::state::UserError>,
+
+    /// Pending organize plan awaiting user confirmation.
+    /// When `Some`, the organize preview dialog should be shown.
+    pub pending_organize_plan: Option<(String, retro_junk_lib::organize::OrganizePlan)>,
 }
 
 impl RetroJunkApp {
@@ -139,6 +143,7 @@ impl RetroJunkApp {
             tag_dialog: crate::state::TagDialog::None,
             log_viewer: crate::widgets::log_viewer::LogViewerState::default(),
             error_list: Vec::new(),
+            pending_organize_plan: None,
         };
 
         // Restore last open root from settings
@@ -323,6 +328,11 @@ impl eframe::App for RetroJunkApp {
             show_cue_fix_results_dialog(ctx, &mut self.cue_fix_results);
         }
 
+        // Organize preview dialog
+        if self.pending_organize_plan.is_some() {
+            show_organize_preview_dialog(ctx, self);
+        }
+
         // Tag dialog
         widgets::tag_dialog::show(ctx, self);
 
@@ -456,6 +466,104 @@ fn show_rename_results_dialog(ctx: &egui::Context, results: &mut Option<Vec<Rena
 }
 
 /// Modal dialog showing the results of a CUE fix operation.
+/// Modal dialog previewing an organize plan and letting the user confirm or cancel.
+fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
+    let Some((ref _folder_name, ref plan)) = app.pending_organize_plan else {
+        return;
+    };
+
+    let job_count = plan.jobs.len();
+    let unmatched_count = plan.unmatched.len();
+    let total_files: usize = plan
+        .jobs
+        .iter()
+        .map(|j| j.entry_points.len() + j.companion_files.len())
+        .sum();
+
+    let mut execute = false;
+    let mut dismiss = false;
+    let mut open = true;
+
+    egui::Window::new("Organize Disc Files")
+        .collapsible(false)
+        .resizable(true)
+        .open(&mut open)
+        .default_width(550.0)
+        .show(ctx, |ui| {
+            ui.label(format!(
+                "{} folders to create ({} files to move)",
+                job_count, total_files
+            ));
+            if unmatched_count > 0 {
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 180, 30),
+                    format!("{} files could not be matched", unmatched_count),
+                );
+            }
+            if plan.skipped_single_disc > 0 {
+                ui.colored_label(
+                    egui::Color32::GRAY,
+                    format!("{} single-disc games skipped", plan.skipped_single_disc),
+                );
+            }
+
+            ui.separator();
+
+            egui::ScrollArea::vertical()
+                .max_height(350.0)
+                .show(ui, |ui| {
+                    for job in &plan.jobs {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(egui::Color32::from_rgb(50, 180, 50), "\u{2192}");
+                            ui.label(format!(
+                                "{}.m3u ({} discs)",
+                                job.game_name,
+                                job.entry_points.len()
+                            ));
+                        });
+                        for entry in &job.entry_points {
+                            ui.horizontal(|ui| {
+                                ui.add_space(20.0);
+                                ui.colored_label(egui::Color32::GRAY, &entry.target_filename);
+                            });
+                        }
+                    }
+
+                    if !plan.unmatched.is_empty() {
+                        ui.separator();
+                        ui.label("Unmatched:");
+                        for uf in &plan.unmatched {
+                            let name = uf.path.file_name().unwrap_or_default().to_string_lossy();
+                            ui.horizontal(|ui| {
+                                ui.colored_label(egui::Color32::from_rgb(220, 180, 30), "\u{26A0}");
+                                ui.label(format!("{} \u{2014} {}", name, uf.reason));
+                            });
+                        }
+                    }
+                });
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(job_count > 0, egui::Button::new("Execute"))
+                    .clicked()
+                {
+                    execute = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    dismiss = true;
+                }
+            });
+        });
+
+    if execute {
+        let (folder_name, plan) = app.pending_organize_plan.take().unwrap();
+        crate::backend::organize::execute_organize_plan(app, folder_name, plan, ctx);
+    } else if dismiss || !open {
+        app.pending_organize_plan = None;
+    }
+}
+
 fn show_cue_fix_results_dialog(ctx: &egui::Context, results: &mut Option<Vec<CueFixResult>>) {
     let Some(ref items) = *results else { return };
 

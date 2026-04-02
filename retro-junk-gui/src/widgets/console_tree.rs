@@ -79,7 +79,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         ScanStatus::NotScanned => console.folder_name.clone(),
                         ScanStatus::Scanning => format!("{} (...)", console.folder_name),
                         ScanStatus::Scanned => {
-                            format!("{} ({})", console.folder_name, console.entries.len())
+                            if console.loose_disc_files.is_empty() {
+                                format!("{} ({})", console.folder_name, console.entries.len())
+                            } else {
+                                format!("{}  ({}*)", console.folder_name, console.entries.len())
+                            }
                         }
                     };
 
@@ -184,6 +188,30 @@ fn show_console_context_menu(
         app.selected_entries = (0..entry_count).collect();
         backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
         ui.close_menu();
+    }
+
+    // Organize: only for disc-based consoles with loose disc files
+    {
+        let console = &app.library.consoles[console_idx];
+        let has_loose = !console.loose_disc_files.is_empty();
+        let is_disc_based = app
+            .context
+            .get_by_platform(console.platform)
+            .is_some_and(|r| r.analyzer.dat_source() == retro_junk_lib::DatSource::Redump);
+        if is_disc_based {
+            let label = if has_loose {
+                format!("Organize ({} loose files)", console.loose_disc_files.len())
+            } else {
+                "Organize".to_string()
+            };
+            if ui
+                .add_enabled(is_scanned && has_loose, egui::Button::new(label))
+                .clicked()
+            {
+                backend::organize::organize_console(app, console_idx, ctx);
+                ui.close_menu();
+            }
+        }
     }
 
     ui.separator();
