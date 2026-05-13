@@ -99,6 +99,23 @@ pub struct RetroJunkApp {
     /// Pending organize plan awaiting user confirmation.
     /// When `Some`, the organize preview dialog should be shown.
     pub pending_organize_plan: Option<(String, retro_junk_lib::organize::OrganizePlan)>,
+
+    /// Folder names queued for auto-scan, processed one at a time.
+    ///
+    /// Auto-scan after folder discovery used to spawn one worker per console,
+    /// which stampedes slow network shares. The queue serializes scans so only
+    /// one console is being read at a time.
+    pub pending_auto_scans: std::collections::VecDeque<String>,
+
+    /// The folder_name of the auto-scan currently in flight, if any.
+    /// Used to advance the queue only when the queued scan finishes (not when
+    /// the user kicks off a manual scan in parallel).
+    pub auto_scan_in_flight: Option<String>,
+
+    /// Activity-bar operation id for the auto-scan batch (when active).
+    /// The op shows overall progress (N of M consoles scanned) and lives until
+    /// the queue drains.
+    pub auto_scan_op_id: Option<u64>,
 }
 
 impl RetroJunkApp {
@@ -144,6 +161,9 @@ impl RetroJunkApp {
             log_viewer: crate::widgets::log_viewer::LogViewerState::default(),
             error_list: Vec::new(),
             pending_organize_plan: None,
+            pending_auto_scans: std::collections::VecDeque::new(),
+            auto_scan_in_flight: None,
+            auto_scan_op_id: None,
         };
 
         // Restore last open root from settings

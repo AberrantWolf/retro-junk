@@ -73,7 +73,11 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
         let registered = match context.get_by_platform(platform) {
             Some(r) => r,
             None => {
-                let _ = tx.send(AppMessage::ConsoleScanDone { folder_name });
+                let fingerprint = crate::cache::compute_fingerprint(&folder_path);
+                let _ = tx.send(AppMessage::ConsoleScanDone {
+                    folder_name,
+                    fingerprint,
+                });
                 ctx.request_repaint();
                 return;
             }
@@ -84,7 +88,11 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
             Ok(e) => e,
             Err(e) => {
                 log::warn!("Failed to scan {}: {}", folder_path.display(), e);
-                let _ = tx.send(AppMessage::ConsoleScanDone { folder_name });
+                let fingerprint = crate::cache::compute_fingerprint(&folder_path);
+                let _ = tx.send(AppMessage::ConsoleScanDone {
+                    folder_name,
+                    fingerprint,
+                });
                 ctx.request_repaint();
                 return;
             }
@@ -124,8 +132,10 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
             &ctx,
         );
 
+        let fingerprint = crate::cache::compute_fingerprint(&folder_path);
         let _ = tx.send(AppMessage::ConsoleScanDone {
             folder_name: folder_name.clone(),
+            fingerprint,
         });
         let _ = tx.send(AppMessage::OperationComplete { op_id });
         ctx.request_repaint();

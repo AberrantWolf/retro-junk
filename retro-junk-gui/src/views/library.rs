@@ -148,6 +148,11 @@ pub fn switch_to_root(app: &mut RetroJunkApp, new_root: std::path::PathBuf, ctx:
     app.focused_entry = None;
     app.selected_entries.clear();
     app.dat_indices.clear();
+    app.pending_auto_scans.clear();
+    app.auto_scan_in_flight = None;
+    if let Some(op_id) = app.auto_scan_op_id.take() {
+        app.operations.retain(|o| o.id != op_id);
+    }
 
     // Set new root
     app.root_path = Some(new_root.clone());

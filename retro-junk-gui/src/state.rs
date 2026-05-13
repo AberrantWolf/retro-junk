@@ -687,6 +687,7 @@ pub enum AppMessage {
     },
     ConsoleScanDone {
         folder_name: String,
+        fingerprint: crate::cache::FolderFingerprint,
     },
 
     // -- DAT --
@@ -787,6 +788,52 @@ pub enum AppMessage {
 }
 
 // -- Helpers --
+
+/// Create the activity-bar batch operation that tracks overall auto-scan
+/// progress, then kick off the first queued scan.
+pub fn start_auto_scan_batch(app: &mut crate::app::RetroJunkApp, ctx: &egui::Context) {
+    if app.pending_auto_scans.is_empty() {
+        return;
+    }
+    let total = app.pending_auto_scans.len() as u64;
+    let op_id = next_operation_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut op = BackgroundOperation::new(op_id, "Auto-scanning library".to_string(), cancel);
+    op.progress_total = total;
+    app.operations.push(op);
+    app.auto_scan_op_id = Some(op_id);
+    start_next_auto_scan(app, ctx);
+}
+
+/// Start the next queued auto-scan, if any. Does nothing if a queued scan is
+/// already in flight (so manual user-initiated scans don't accidentally
+/// double-advance the queue). If the batch operation was cancelled or the
+/// queue is empty, removes the batch op from the activity bar.
+fn start_next_auto_scan(app: &mut crate::app::RetroJunkApp, ctx: &egui::Context) {
+    if app.auto_scan_in_flight.is_some() {
+        return;
+    }
+    // If the user clicked Cancel on the batch op, drop the rest of the queue.
+    if let Some(op_id) = app.auto_scan_op_id
+        && let Some(op) = app.operations.iter().find(|o| o.id == op_id)
+        && op.cancel_token.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        app.pending_auto_scans.clear();
+    }
+    while let Some(folder_name) = app.pending_auto_scans.pop_front() {
+        if let Some(ci) = app.library.find_by_folder(&folder_name)
+            && app.library.consoles[ci].scan_status == ScanStatus::NotScanned
+        {
+            app.auto_scan_in_flight = Some(folder_name);
+            crate::backend::scan::quick_scan_console(app, ci, ctx);
+            return;
+        }
+    }
+    // Queue drained — remove the batch op from the activity bar.
+    if let Some(op_id) = app.auto_scan_op_id.take() {
+        app.operations.retain(|o| o.id != op_id);
+    }
+}
 
 /// Re-check broken references and CUE compat for invalidated entries in a console.
 ///
@@ -941,19 +988,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 app.library.consoles.len()
             );
 
-            // Auto-scan all unscanned consoles if setting is enabled
+            // Auto-scan all unscanned consoles if setting is enabled.
+            // Scans run sequentially via the pending_auto_scans queue to avoid
+            // stampeding slow filesystems (e.g., network shares).
             if app.settings.general.auto_scan_on_open {
-                let unscanned: Vec<usize> = app
-                    .library
-                    .consoles
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, c)| c.scan_status == ScanStatus::NotScanned)
-                    .map(|(i, _)| i)
-                    .collect();
-                for i in unscanned {
-                    crate::backend::scan::quick_scan_console(app, i, ctx);
+                for c in &app.library.consoles {
+                    if c.scan_status == ScanStatus::NotScanned {
+                        app.pending_auto_scans.push_back(c.folder_name.clone());
+                    }
                 }
+                start_auto_scan_batch(app, ctx);
             }
         }
 
@@ -1358,12 +1402,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
         }
 
-        AppMessage::ConsoleScanDone { folder_name } => {
+        AppMessage::ConsoleScanDone {
+            folder_name,
+            fingerprint,
+        } => {
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 let console = &mut app.library.consoles[ci];
                 console.scan_status = ScanStatus::Scanned;
-                // Cache fingerprint so save_library doesn't need to recompute
-                console.fingerprint = Some(crate::cache::compute_fingerprint(&console.folder_path));
+                // Cache fingerprint so save_library doesn't need to recompute.
+                // Fingerprint is computed in the scan worker to keep network I/O off the UI thread.
+                console.fingerprint = Some(fingerprint);
             }
             let desc_match = "Scanning ".to_string();
             app.operations.retain(|op| {
@@ -1407,6 +1455,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         );
                     }
                 }
+            }
+
+            // Advance the auto-scan queue only when the in-flight queued scan
+            // finishes — manual scans run by the user don't pop the queue.
+            if app.auto_scan_in_flight.as_deref() == Some(folder_name.as_str()) {
+                app.auto_scan_in_flight = None;
+                if let Some(op_id) = app.auto_scan_op_id
+                    && let Some(op) = app.operations.iter_mut().find(|o| o.id == op_id)
+                {
+                    op.progress_current = (op.progress_current + 1).min(op.progress_total);
+                }
+                start_next_auto_scan(app, ctx);
             }
         }
 
