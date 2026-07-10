@@ -202,7 +202,7 @@ fn test_auto_detect_clrmamepro() {
 
 #[test]
 fn test_xml_game_level_serial_propagation() {
-    // Redump DATs from redump.org have <serial> as a child of <game>, not on <rom>.
+    // Redump DATs from redump.info have <serial> as a child of <game>, not on <rom>.
     // The parser should propagate game-level serial to ROMs that lack one.
     let xml = r#"<?xml version="1.0"?>
 <datafile>

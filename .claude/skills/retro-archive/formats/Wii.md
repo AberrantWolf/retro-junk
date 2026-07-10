@@ -72,7 +72,7 @@ The detection is simpler than GameCube because the Wii magic at 0x0018 is defini
 
 Wii uses **Redump** for DAT matching (disc-based console):
 - **DAT name:** `Nintendo - Wii`
-- **Redump system slug:** `wii` (download URL: `http://redump.org/datfile/wii/serial,version`)
+- **Redump system slug:** `wii` (download URL: `https://redump.info/datfile/wii/serial,version`)
 - **Hash method:** Hash the full ISO file directly (CRC32, MD5, SHA1). No header stripping needed.
 - **Serial in DAT:** Redump DATs use full product codes (e.g., `RVL-RSBE-0-USA`). The 4-byte game code from the disc header (e.g., `RSBE`) is matched against DAT serials via sub-segment indexing in the matcher — works with both short codes and full product codes like `RVL-RSBE-0-USA`.
 

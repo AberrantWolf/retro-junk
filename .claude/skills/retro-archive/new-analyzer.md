@@ -41,6 +41,6 @@ These methods control how an analyzer integrates with DAT file matching:
 ## DAT Source Selection
 
 - **No-Intro** (cartridge consoles): LibRetro enhanced DATs from `libretro/libretro-database` (`metadat/no-intro/`). `dat_download_ids()` defaults to `dat_names()`.
-- **Redump** (disc consoles): Downloaded from redump.org (`http://redump.org/datfile/{id}/serial,version`). `dat_download_ids()` returns system slugs (e.g., `"psx"`, `"ps2"`, `"gc"`, `"wii"`, `"dc"`).
+- **Redump** (disc consoles): Downloaded from redump.info (`https://redump.info/datfile/{id}/serial,version`). `dat_download_ids()` returns system slugs (e.g., `"psx"`, `"ps2"`, `"gc"`, `"wii"`, `"dc"`).
 
 See the [game-scraping skill](/Users/scott/Programming/rust/retro-junk/.claude/skills/game-scraping/SKILL.md) for full details on DAT sources, formats, and known issues.

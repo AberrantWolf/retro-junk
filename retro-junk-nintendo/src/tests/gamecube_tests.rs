@@ -274,7 +274,7 @@ fn test_dat_source() {
 #[test]
 fn test_dat_download_ids_returns_redump_slug() {
     let analyzer = GameCubeAnalyzer;
-    // Redump analyzers override dat_download_ids() to return the redump.org slug
+    // Redump analyzers override dat_download_ids() to return the redump.info slug
     assert_eq!(analyzer.dat_download_ids(), &["gc"]);
     assert_eq!(analyzer.redump_slug(), Some("gc"));
 }

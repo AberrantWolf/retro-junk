@@ -124,7 +124,7 @@ impl RomIdentification {
 /// The source database for DAT files.
 ///
 /// - No-Intro DATs for cartridge-based consoles (from LibRetro GitHub `metadat/no-intro/`)
-/// - Redump DATs for disc-based consoles (from redump.org direct downloads)
+/// - Redump DATs for disc-based consoles (from redump.info direct downloads)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatSource {
     /// No-Intro DATs (cartridge-based consoles: NES, SNES, N64, GB, GBA, etc.)
@@ -140,7 +140,7 @@ impl DatSource {
             DatSource::NoIntro => {
                 "https://raw.githubusercontent.com/libretro/libretro-database/master/metadat/no-intro/"
             }
-            DatSource::Redump => "http://redump.org/datfile/",
+            DatSource::Redump => "https://redump.info/datfile/",
         }
     }
 
@@ -302,7 +302,7 @@ pub trait RomAnalyzer: Send + Sync {
 
     /// Returns the Redump slug for this platform (e.g., "psx", "ss", "gc").
     ///
-    /// Used to construct the download URL for Redump DATs from redump.org.
+    /// Used to construct the download URL for Redump DATs from redump.info.
     /// Only relevant for disc-based consoles that use `DatSource::Redump`.
     /// Returns `None` by default (cartridge-based consoles).
     fn redump_slug(&self) -> Option<&'static str> {

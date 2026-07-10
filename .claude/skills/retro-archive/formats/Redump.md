@@ -2,7 +2,7 @@
 
 ## Overview
 
-Redump (redump.org) is a disc preservation database and internet community dedicated to collecting
+Redump (redump.info) is a disc preservation database and internet community dedicated to collecting
 precise and accurate information about every video game ever released on optical media of any system.
 The goal is to create "blueprints" of the data on console and computer game discs, producing verified
 1:1 copies of the original media with all data intact.
@@ -11,6 +11,13 @@ Redump was founded as a response to the widespread practice of distributing disc
 loss, such as stripping audio tracks, removing pregap data, or using lossy compression. Redump
 specifically aims to preserve every bit of data on the original disc, including subchannel data,
 pregaps, and mixed-mode audio/data structures.
+
+> **Domain migration:** Redump previously lived at `redump.org`; that domain is now defunct and the
+> project operates at **redump.info** (wiki at `wiki.redump.info`). URL paths are unchanged — only the
+> domain differs — and HTTP requests are permanently redirected to HTTPS. The wiki's main page was
+> retitled from `Redump.org` to `Redump.info`. Verified 2026-07-10 by downloading
+> `https://redump.info/datfile/psx/serial,version`; current DAT headers embed
+> `<author>redump.info</author>` and `<url>https://redump.info/</url>`.
 
 ## How Redump Differs from No-Intro
 
@@ -30,7 +37,7 @@ best verified dumps without modifications, but they serve different media types.
 ## Systems Covered
 
 Redump covers virtually every platform that used optical media. The complete system list is
-documented at http://wiki.redump.org/index.php?title=System_list. Key systems include:
+documented at https://wiki.redump.info/index.php?title=System_list. Key systems include:
 
 ### Sony
 - Sony PlayStation (PSX) — `datfile/psx`
@@ -97,11 +104,11 @@ industry-standard format supported by all major ROM management tools.
   <header>
     <name>Sony - PlayStation</name>
     <description>Sony - PlayStation</description>
-    <version>20240101-000000</version>
-    <date>2024-01-01</date>
-    <author>no-intro</author>
-    <homepage>Redump</homepage>
-    <url>http://redump.org</url>
+    <version>2026-07-10 06-11-30</version>
+    <date>2026-07-10 06-11-30</date>
+    <author>redump.info</author>
+    <homepage>redump.info</homepage>
+    <url>https://redump.info/</url>
   </header>
   <game name="Crash Bandicoot (USA)">
     <category>Games</category>
@@ -124,7 +131,7 @@ industry-standard format supported by all major ROM management tools.
 The Redump DAT download URL accepts comma-separated parameters to include additional fields:
 
 ```
-http://redump.org/datfile/<system>/serial,version
+https://redump.info/datfile/<system>/serial,version
 ```
 
 | Parameter | Effect |
@@ -139,7 +146,7 @@ tool that needs to match by serial must fall back to hash-based identification.
 
 **LibRetro Redump DAT filenames on GitHub:** The LibRetro database hosts Redump DATs using the
 display name as the filename (e.g., `Nintendo - GameCube.dat`, `Sony - PlayStation 2.dat`), NOT
-the Redump system slug. This is distinct from direct redump.org downloads which use slugs like
+the Redump system slug. This is distinct from direct redump.info downloads which use slugs like
 `gc`, `ps2`, etc. The `dat_download_ids()` for these systems must return the display name (matching
 `dat_names()`) when downloading from the LibRetro GitHub source.
 
@@ -154,21 +161,21 @@ See [libretro-database issue #1432](https://github.com/libretro/libretro-databas
 
 ## Obtaining DAT Files
 
-DAT files can be downloaded directly from redump.org without requiring registration:
+DAT files can be downloaded directly from redump.info without requiring registration:
 
 ```
-http://redump.org/datfile/<system-id>/
+https://redump.info/datfile/<system-id>/
 ```
 
 For example:
-- `http://redump.org/datfile/psx/` — PlayStation 1
-- `http://redump.org/datfile/ps2/` — PlayStation 2
-- `http://redump.org/datfile/dc/` — Dreamcast
-- `http://redump.org/datfile/ss/` — Sega Saturn
-- `http://redump.org/datfile/gc/` — Nintendo GameCube
+- `https://redump.info/datfile/psx/` — PlayStation 1
+- `https://redump.info/datfile/ps2/` — PlayStation 2
+- `https://redump.info/datfile/dc/` — Dreamcast
+- `https://redump.info/datfile/ss/` — Sega Saturn
+- `https://redump.info/datfile/gc/` — Nintendo GameCube
 
 The full list of download links is at:
-http://wiki.redump.org/index.php?title=List_of_DB_Download_Links
+https://wiki.redump.info/index.php?title=List_of_DB_Download_Links
 
 DAT files can be imported into ROM managers such as:
 - **CLRMAMEPro** — the classic standard
@@ -235,7 +242,7 @@ Redump tracks **three checksums per file** (per track):
   bytes, header, ECC, and EDC — not just the 2048-byte user data. This means Redump
   checksums are NOT compatible with ISO files.
 - **Verification**: You can verify a dump by entering its MD5 or SHA1 into the quick search
-  on redump.org.
+  on redump.info.
 
 ## Naming Convention
 
@@ -299,11 +306,11 @@ capture subchannel data and write offset information for verification.
 
 ## Sources
 
-- Redump main site: http://redump.org/
-- Redump Wiki: http://wiki.redump.org/index.php?title=Redump.org
-- System List: http://wiki.redump.org/index.php?title=System_list
-- Download Links: http://wiki.redump.org/index.php?title=List_of_DB_Download_Links
-- Redump Search Parameters: http://wiki.redump.org/index.php?title=Redump_Search_Parameters
+- Redump main site: https://redump.info/
+- Redump Wiki: https://wiki.redump.info/index.php?title=Redump.info
+- System List: https://wiki.redump.info/index.php?title=System_list
+- Download Links: https://wiki.redump.info/index.php?title=List_of_DB_Download_Links
+- Redump Search Parameters: https://wiki.redump.info/index.php?title=Redump_Search_Parameters
 - "What is Redump in ROMs?" (ROMsFun): https://romsfun.com/what-is-redump-in-roms/
 - "Redump and No-Intro Sets Explained" (PulseGeek): https://pulsegeek.com/articles/redump-and-no-intro-sets-explained-for-accuracy/
 - Retool (DAT filter utility): https://github.com/unexpectedpanda/retool

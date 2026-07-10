@@ -208,11 +208,11 @@ matching to fail for discs 2+ of affected games. The hash-based fallback handles
 
 See: [libretro-database issue #1432](https://github.com/libretro/libretro-database/issues/1432)
 
-**Redump.org direct DATs**: The standard Redump DAT download (`http://redump.org/datfile/psx/`)
+**Redump.org direct DATs**: The standard Redump DAT download (`https://redump.info/datfile/psx/`)
 does NOT include serial data at all. To get per-disc serials, use the `/serial` URL parameter:
 
 ```
-http://redump.org/datfile/psx/serial,version
+https://redump.info/datfile/psx/serial,version
 ```
 
 This produces a DAT with `<serial>` elements per game entry, with correct per-disc values.
@@ -223,7 +223,7 @@ which is why serial data is missing or incorrect in all derived databases.
 
 | Source | URL | Per-disc serials? | Programmatic access? |
 |--------|-----|-------------------|---------------------|
-| Redump (with `/serial`) | `http://redump.org/datfile/psx/serial,version` | Yes | Direct DAT download (ZIP) |
+| Redump (with `/serial`) | `https://redump.info/datfile/psx/serial,version` | Yes | Direct DAT download (ZIP) |
 | PSX Datacenter | `https://psxdatacenter.com/` | Yes | No API, reference only |
 | GameDB-PSX | `https://github.com/niemasd/GameDB-PSX` | Yes | JSON/TSV files on GitHub |
 | SerialStation | `https://serialstation.com/` | Yes | API planned but not public yet |

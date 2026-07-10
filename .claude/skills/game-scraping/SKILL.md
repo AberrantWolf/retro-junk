@@ -56,7 +56,8 @@ metadata/media using multiple sources:
 - ScreenScraper API is **free for free/open-source software only**. Commercial use requires
   explicit permission from the ScreenScraper team.
 - No-Intro DAT files are downloadable from https://datomatic.no-intro.org/ (account required).
-- Redump DAT files are downloadable from http://redump.org/downloads/ (no account required).
+- Redump DAT files are downloadable from https://redump.info/downloads/ (no account required).
+  Redump's former domain `redump.org` is defunct — always use `redump.info` (same URL paths).
 - ScreenScraper API v2 is in **beta** — endpoints may change without notice.
 - Anonymous (unauthenticated) users have severely limited thread/request quotas.
 - Implement exponential backoff and respect `maxrequestspermin` and `maxrequestsperday`.

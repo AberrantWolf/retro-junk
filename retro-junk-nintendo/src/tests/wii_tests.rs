@@ -205,7 +205,7 @@ fn test_dat_source() {
 #[test]
 fn test_dat_download_ids_returns_redump_slug() {
     let analyzer = WiiAnalyzer;
-    // Redump analyzers override dat_download_ids() to return the redump.org slug
+    // Redump analyzers override dat_download_ids() to return the redump.info slug
     assert_eq!(analyzer.dat_download_ids(), &["wii"]);
     assert_eq!(analyzer.redump_slug(), Some("wii"));
 }

@@ -86,7 +86,7 @@ This two-magic-word check is important because Wii discs may also have the GameC
 
 GameCube uses **Redump** for DAT matching (disc-based console):
 - **DAT name:** `Nintendo - GameCube`
-- **Redump system slug:** `gc` (download URL: `http://redump.org/datfile/gc/serial,version`)
+- **Redump system slug:** `gc` (download URL: `https://redump.info/datfile/gc/serial,version`)
 - **Hash method:** Hash the full ISO/GCM file directly (CRC32, MD5, SHA1). No header stripping or sector conversion needed — the disc image is already in the correct format (2048-byte DVD sectors).
 - **Serial in DAT:** Redump DATs use full product codes (e.g., `DL-DOL-GALE-0-USA`). The 4-byte game code from the disc header (e.g., `GALE`) is matched against DAT serials via sub-segment indexing in the matcher — works with both short codes and full product codes like `DL-DOL-GALE-0-USA`.
 

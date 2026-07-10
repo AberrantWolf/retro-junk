@@ -105,8 +105,8 @@ fn dat_file_path(short_name: &str, index: usize) -> Result<PathBuf, DatError> {
 ///
 /// - No-Intro: LibRetro GitHub raw `.dat` files.
 ///   e.g., "Nintendo - Nintendo Entertainment System" → `{base}Nintendo%20-%20Nintendo%20Entertainment%20System.dat`
-/// - Redump: redump.org DAT download with serial+version metadata.
-///   e.g., slug "psx" → `http://redump.org/datfile/psx/serial,version`
+/// - Redump: redump.info DAT download with serial+version metadata.
+///   e.g., slug "psx" → `https://redump.info/datfile/psx/serial,version`
 fn download_url(download_id: &str, dat_source: DatSource) -> String {
     let base = dat_source.base_url();
     match dat_source {

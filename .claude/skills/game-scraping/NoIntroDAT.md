@@ -21,10 +21,10 @@ Logiqx format.
 4. Download in **Logiqx XML** format (recommended for programmatic parsing).
 
 ### Redump
-1. Go to http://redump.org/downloads/ (no account required).
+1. Go to https://redump.info/downloads/ (no account required).
 2. Download DATs by system. Direct links follow the pattern:
-   `http://redump.org/datfile/<system>/`
-3. Full list of system identifiers at http://wiki.redump.org/
+   `https://redump.info/datfile/<system>/`
+3. Full list of system identifiers at https://wiki.redump.info/
 
 DAT files should be stored locally (e.g., a `dat/` directory) and updated periodically.
 

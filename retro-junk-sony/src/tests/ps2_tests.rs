@@ -221,7 +221,7 @@ fn test_dat_names() {
 #[test]
 fn test_dat_download_ids_returns_redump_slug() {
     let analyzer = Ps2Analyzer;
-    // Redump analyzers override dat_download_ids() to return the redump.org slug
+    // Redump analyzers override dat_download_ids() to return the redump.info slug
     assert_eq!(analyzer.dat_download_ids(), &["ps2"]);
     assert_eq!(analyzer.redump_slug(), Some("ps2"));
 }

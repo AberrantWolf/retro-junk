@@ -90,7 +90,7 @@ Platform crates own ALL console-specific knowledge. No console-specific code exi
 
 - **One implementation per algorithm.** Hashing, checksum, and byte-order normalization have exactly one canonical implementation. The hasher in `retro-junk-lib` delegates platform-specific logic via analyzer trait methods.
 - **Serial format normalization** lives in `retro-junk-dat/src/matcher.rs` — the single place bridging analyzer serial output to DAT serial lookup.
-- **DAT sources:** No-Intro (cartridge, via LibRetro enhanced DATs) and Redump (disc, from redump.org). See `.claude/skills/game-scraping/` for full details.
+- **DAT sources:** No-Intro (cartridge, via LibRetro enhanced DATs) and Redump (disc, from redump.info). See `.claude/skills/game-scraping/` for full details.
 - **Catalog is the long-lived store.** Raw DAT files seed and update the catalog DB; the DB is intended to become the matching source of truth over time. Ephemeral `DatIndex` lookup from raw DATs is the current runtime path but is being migrated out (see TODO.md) — don't deepen coupling to it.
 
 **IMPORTANT**: Prioritize code change suggestions that avoid repeated code! Actively look for ways to keep the codebase "DRY". With every plan, include a section about how the plan keeps the code base DRY, and how the plan improves the codebase.
