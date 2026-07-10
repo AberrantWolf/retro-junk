@@ -77,7 +77,7 @@ Use `--help` on any command for the full list of options.
 - **Disc images** — Full ISO/BIN+CUE/CHD parsing is only implemented for PS1. Other disc consoles use hash matching.
 - **Frontend output** — Only ES-DE (`gamelist.xml`) is supported. Pegasus, LaunchBox, etc. are not yet implemented.
 - **Compressed ROMs** — No support for reading ROMs inside ZIP or 7z archives.
-- **GUI** — Not yet implemented.
+- **GUI** — A desktop GUI (`retro-junk-gui`, egui-based) now exists for browsing and managing the library — scanning, hash matching, renaming, and media/metadata management — but it's newer and less battle-tested than the CLI.
 
 ## 📄 License
 
