@@ -6,12 +6,14 @@ use log::Level;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use std::collections::HashMap;
+
 use retro_junk_lib::rename::{
-    M3uRenameJob, MediaRenamePlan, RenameOptions, RenamePlan, RenameProgress, SerialWarningKind,
-    execute_media_renames, execute_renames, format_match_method, plan_m3u_action,
+    ExecutionContext, M3uRenameJob, MediaRenamePlan, RenameOptions, RenamePlan, RenameProgress,
+    SerialWarningKind, SetProblemKind, execute_renames, format_match_method, plan_m3u_action,
     plan_media_renames, plan_renames,
 };
-use retro_junk_lib::util::default_media_dir;
+use retro_junk_lib::util::{default_media_dir, default_metadata_dir};
 use retro_junk_lib::{AnalysisContext, Platform};
 
 use crate::CliError;
@@ -196,18 +198,8 @@ pub(crate) fn run_rename(
                     let m3u_count = plan.m3u_jobs.len();
                     let cue_count = plan.broken_cue_files.len();
                     let m3u_fix_count = plan.broken_m3u_files.len();
-                    let disc_rename_count: usize = plan
-                        .m3u_jobs
-                        .iter()
-                        .map(|j| {
-                            j.discs
-                                .iter()
-                                .filter(|d| d.file_path != j.source_folder.join(&d.target_filename))
-                                .count()
-                        })
-                        .sum();
                     let mut parts = Vec::new();
-                    let total_renames = plan.renames.len() + disc_rename_count;
+                    let total_renames = plan.total_renames();
                     if total_renames > 0 {
                         parts.push(format!("{} renames", total_renames));
                     }
@@ -229,10 +221,33 @@ pub(crate) fn run_rename(
                     std::io::stdin().read_line(&mut input)?;
 
                     if input.trim().eq_ignore_ascii_case("y") {
-                        // Execute ROM renames
-                        let summary = execute_renames(&plan);
+                        // Execute ROM renames. Companion media files and
+                        // gamelist.xml entries move inside each game's
+                        // transaction.
+                        let console_media_dir = effective_media_dir
+                            .as_ref()
+                            .map(|d| d.join(&cf.folder_name))
+                            .filter(|d| d.is_dir());
+                        let gamelist_path = default_metadata_dir(&root_path)
+                            .join(&cf.folder_name)
+                            .join("gamelist.xml");
+                        let gamelist_rewriter = move |stem_map: &HashMap<String, String>| {
+                            retro_junk_frontend::esde::plan_gamelist_rewrite(
+                                &gamelist_path,
+                                stem_map,
+                            )
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                        };
+                        let exec_ctx = ExecutionContext {
+                            media_dir: console_media_dir,
+                            gamelist_rewriter: Some(&gamelist_rewriter),
+                        };
+
+                        let summary = execute_renames(&plan, &exec_ctx);
                         total_renamed += summary.renamed;
                         total_already_correct += summary.already_correct;
+                        total_media_renamed += summary.media_renamed;
                         total_errors.extend(summary.errors);
                         total_conflicts.extend(summary.conflicts);
 
@@ -271,20 +286,20 @@ pub(crate) fn run_rename(
                             );
                         }
 
-                        // Execute media renames
-                        if let Some(ref mp) = media_plan {
-                            if mp.has_actions() {
-                                let media_summary = execute_media_renames(mp);
-                                total_media_renamed += media_summary.renamed;
-                                if media_summary.renamed > 0 {
-                                    log::info!(
-                                        "  {} {} media files renamed",
-                                        "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                                        media_summary.renamed,
-                                    );
-                                }
-                                total_errors.extend(media_summary.errors);
-                            }
+                        // Media moved inside each game's transaction
+                        if summary.media_renamed > 0 {
+                            log::info!(
+                                "  {} {} media files renamed",
+                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                summary.media_renamed,
+                            );
+                        }
+                        if summary.gamelists_updated > 0 {
+                            log::info!(
+                                "  {} {} gamelist.xml updates",
+                                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                                summary.gamelists_updated,
+                            );
                         }
                     } else {
                         log::info!("  {}", "Skipped".if_supports_color(Stdout, |t| t.dimmed()));
@@ -405,6 +420,88 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
             target_name.if_supports_color(Stdout, |t| t.bold()),
             format!("[{method_str}]").if_supports_color(Stdout, |t| t.dimmed()),
         );
+    }
+
+    // Disc sets (cue + all tracks renamed as one verified transaction)
+    for set in &plan.disc_sets {
+        let method_str = format_match_method(&set.matched_by);
+        log::info!(
+            "  {} {} {}",
+            "\u{1F4BF}".if_supports_color(Stdout, |t| t.green()),
+            set.game_name.if_supports_color(Stdout, |t| t.bold()),
+            format!("[{method_str}, {} tracks verified]", set.tracks.len())
+                .if_supports_color(Stdout, |t| t.dimmed()),
+        );
+        for (source, target) in set.file_renames() {
+            let source_name = source.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            let target_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+            log::info!(
+                "    {} {} {} {}",
+                "\u{2192}".if_supports_color(Stdout, |t| t.green()),
+                source_name.if_supports_color(Stdout, |t| t.dimmed()),
+                "\u{2192}".if_supports_color(Stdout, |t| t.green()),
+                target_name.if_supports_color(Stdout, |t| t.bold()),
+            );
+        }
+        if set.new_cue_content.is_some() {
+            log::info!(
+                "    {} cue FILE references will be rewritten",
+                "\u{1F527}".if_supports_color(Stdout, |t| t.green()),
+            );
+        }
+        if set.cue_verified == Some(false) {
+            log::warn!(
+                "    {} cue sheet content differs from Redump's (renaming anyway)",
+                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+            );
+        }
+    }
+
+    // Disc sets that will NOT be renamed
+    for problem in &plan.set_problems {
+        let cue_name = problem
+            .cue
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        match &problem.kind {
+            SetProblemKind::Broken { missing } => {
+                log::warn!(
+                    "  {} {}: cue references missing files: {}",
+                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                    cue_name.if_supports_color(Stdout, |t| t.dimmed()),
+                    missing.join(", "),
+                );
+            }
+            SetProblemKind::NotVerified { game_name, issues } => {
+                let game = game_name.as_deref().unwrap_or("unknown game");
+                log::warn!(
+                    "  {} {}: identified as \"{}\" but NOT verified — set left untouched",
+                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                    cue_name.if_supports_color(Stdout, |t| t.dimmed()),
+                    game,
+                );
+                for issue in issues {
+                    log::warn!(
+                        "      - {}",
+                        issue.if_supports_color(Stdout, |t| t.dimmed())
+                    );
+                }
+            }
+            SetProblemKind::Unmatched { issues } => {
+                log::warn!(
+                    "  {} {} (disc set, no match)",
+                    "?".if_supports_color(Stdout, |t| t.yellow()),
+                    cue_name.if_supports_color(Stdout, |t| t.dimmed()),
+                );
+                for issue in issues {
+                    log::warn!(
+                        "      - {}",
+                        issue.if_supports_color(Stdout, |t| t.dimmed())
+                    );
+                }
+            }
+        }
     }
 
     // Already correct
@@ -590,8 +687,29 @@ fn print_media_rename_plan(plan: &MediaRenamePlan) {
 /// Print M3U jobs: disc renames, folder rename, and playlist actions.
 pub(crate) fn print_m3u_jobs(jobs: &[M3uRenameJob]) {
     for job in jobs {
-        // Show disc renames
+        // Show disc-set renames (cue + tracks, verified)
+        for set in &job.disc_sets {
+            for (source, target) in set.file_renames() {
+                let source_name = source.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                let target_name = target.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                log::info!(
+                    "  {} {} {} {} {}",
+                    "\u{2192}".if_supports_color(Stdout, |t| t.green()),
+                    source_name.if_supports_color(Stdout, |t| t.dimmed()),
+                    "\u{2192}".if_supports_color(Stdout, |t| t.green()),
+                    target_name.if_supports_color(Stdout, |t| t.bold()),
+                    "(disc set)".if_supports_color(Stdout, |t| t.dimmed()),
+                );
+            }
+        }
+
+        // Show plain disc renames (set cues are covered above)
+        let set_cues: std::collections::HashSet<&std::path::PathBuf> =
+            job.disc_sets.iter().map(|s| &s.cue).collect();
         for disc in &job.discs {
+            if set_cues.contains(&disc.file_path) {
+                continue;
+            }
             let target = job.source_folder.join(&disc.target_filename);
             if disc.file_path == target {
                 continue;

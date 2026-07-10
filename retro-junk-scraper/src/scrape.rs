@@ -60,10 +60,7 @@ pub struct ScrapeOptions {
 impl ScrapeOptions {
     /// Create default options for a root path.
     pub fn new(root: PathBuf) -> Self {
-        let metadata_dir = root.parent().unwrap_or(&root).join(format!(
-            "{}-metadata",
-            root.file_name().unwrap_or_default().to_string_lossy()
-        ));
+        let metadata_dir = retro_junk_lib::util::default_metadata_dir(&root);
         let media_dir = retro_junk_lib::util::default_media_dir(&root);
 
         Self {

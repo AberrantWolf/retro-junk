@@ -7,6 +7,8 @@ use retro_junk_dat::cache;
 use retro_junk_dat::error::DatError;
 use retro_junk_dat::matcher::{DatIndex, MatchMethod, MatchResult, SerialLookupResult};
 
+use crate::disc_set::{DiscSetOutcome, DiscSetPlan};
+use crate::fs_txn::FsTransaction;
 use crate::hasher;
 use crate::scanner::GameEntry;
 
@@ -158,6 +160,47 @@ pub struct RenameSummary {
     pub cue_files_updated: usize,
     pub m3u_references_updated: usize,
     pub m3u_playlists_renamed: usize,
+    /// Media files moved alongside their games (inside the same transaction).
+    pub media_renamed: usize,
+    /// gamelist.xml files updated alongside renames.
+    pub gamelists_updated: usize,
+}
+
+/// A disc set that was identified as a problem during planning and will not
+/// be renamed.
+#[derive(Debug, Clone)]
+pub struct SetProblem {
+    pub cue: PathBuf,
+    pub kind: SetProblemKind,
+}
+
+/// Why a disc set could not be safely planned.
+#[derive(Debug, Clone)]
+pub enum SetProblemKind {
+    /// The cue references files that do not exist.
+    Broken { missing: Vec<String> },
+    /// A game was identified but the set failed full-track verification.
+    NotVerified {
+        game_name: Option<String>,
+        issues: Vec<String>,
+    },
+    /// No DAT game matched.
+    Unmatched { issues: Vec<String> },
+}
+
+/// Context for executing renames: where companion data lives so it moves
+/// inside the same transaction as the game files.
+#[derive(Default)]
+pub struct ExecutionContext<'a> {
+    /// Console-specific media directory (e.g., `roms-media/psx`), containing
+    /// per-asset-type subdirectories. When set, matching media files are
+    /// renamed in the same transaction as the game.
+    pub media_dir: Option<PathBuf>,
+    /// Given a game's old-stem → new-stem map, returns full-file rewrites
+    /// (path, new content) to include in the transaction — used by callers
+    /// to keep gamelist.xml in sync without this crate knowing the format.
+    #[allow(clippy::type_complexity)]
+    pub gamelist_rewriter: Option<&'a dyn Fn(&HashMap<String, String>) -> Vec<(PathBuf, String)>>,
 }
 
 /// A file that couldn't be matched by serial or hash.
@@ -450,12 +493,17 @@ fn execute_m3u_action(action: &M3uAction, errors: &mut Vec<String>) -> M3uExecut
 ///
 /// Encapsulates all data needed to rename disc files, fix CUE/M3U references,
 /// write playlists, and rename the M3U folder. Used by both CLI and GUI.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct M3uRenameJob {
     /// The .m3u folder containing disc files
     pub source_folder: PathBuf,
-    /// Per-disc rename data (file_path → game_name + target_filename)
+    /// Per-disc rename data (file_path → game_name + target_filename).
+    /// Includes an entry for each disc set's cue (for playlist/folder
+    /// naming); the actual file renames for those run via `disc_sets`.
     pub discs: Vec<DiscMatchData>,
+    /// Verified cue/bin sets inside this folder, renamed transactionally
+    /// (cue + tracks + FILE-line rewrite) before the plain disc renames.
+    pub disc_sets: Vec<DiscSetPlan>,
     /// Pre-resolved game name (from catalog DB); skips derive_base_game_name
     pub game_name_override: Option<String>,
 }
@@ -470,6 +518,10 @@ pub struct M3uRenameResult {
     pub playlist_renamed: bool,
     pub folder_renamed: bool,
     pub final_folder: PathBuf,
+    /// Media files moved for the folder rename.
+    pub media_renamed: usize,
+    /// gamelist.xml files updated for the folder rename.
+    pub gamelists_updated: usize,
     pub errors: Vec<String>,
 }
 
@@ -482,17 +534,52 @@ pub struct M3uRenameResult {
 /// 4. Plan M3U action (folder rename + playlist write)
 /// 5. Rename misnamed inner `.m3u` file (if playlist won't be rewritten)
 /// 6. Execute M3U action (write playlist, rename folder)
-pub fn execute_m3u_rename(job: &M3uRenameJob) -> M3uRenameResult {
+pub fn execute_m3u_rename(job: &M3uRenameJob, exec: &ExecutionContext<'_>) -> M3uRenameResult {
     let mut result = M3uRenameResult {
         final_folder: job.source_folder.clone(),
         ..Default::default()
     };
 
-    // Step 1: Rename disc files
+    // Step 0: Execute disc-set transactions (cue + tracks + FILE rewrite).
+    // Media/gamelist companions are keyed on the .m3u folder name, not the
+    // inner disc names, so sets inside a folder carry no companion ops.
     let mut rename_map: HashMap<String, String> = HashMap::new();
+    let set_cues: std::collections::HashSet<&PathBuf> =
+        job.disc_sets.iter().map(|s| &s.cue).collect();
+    for set in &job.disc_sets {
+        let renames = set.file_renames();
+        let set_exec = execute_disc_set(set, &ExecutionContext::default());
+        if set_exec.errors.is_empty() {
+            result.discs_renamed += set_exec.files_renamed;
+            if set_exec.cue_rewritten {
+                result.cue_files_updated += 1;
+            }
+            for (source, target) in renames {
+                if let (Some(old), Some(new)) = (
+                    source.file_name().and_then(|n| n.to_str()),
+                    target.file_name().and_then(|n| n.to_str()),
+                ) {
+                    rename_map.insert(old.to_string(), new.to_string());
+                }
+            }
+        } else {
+            result.errors.extend(set_exec.errors);
+        }
+    }
+
+    // Step 1: Rename plain disc files (set cues were handled above)
     for disc in &job.discs {
+        if set_cues.contains(&disc.file_path) {
+            continue;
+        }
         let target = job.source_folder.join(&disc.target_filename);
         if disc.file_path == target {
+            continue;
+        }
+        if target.exists() {
+            result
+                .errors
+                .push(format!("Target already exists: {}", target.display()));
             continue;
         }
         let old_name = disc
@@ -551,18 +638,167 @@ pub fn execute_m3u_rename(job: &M3uRenameJob) -> M3uRenameResult {
         result.playlist_written = m3u_exec.playlist_written;
         result.folder_renamed = m3u_exec.folder_renamed;
         if m3u_exec.folder_renamed {
-            result.final_folder = action.target_folder;
+            result.final_folder = action.target_folder.clone();
+        }
+
+        // Step 7: Move companion media/gamelist entries for the folder rename
+        // (ES-DE keys media on the .m3u folder name).
+        if m3u_exec.folder_renamed {
+            let mut stem_map: HashMap<String, String> = HashMap::new();
+            if let (Some(old), Some(new)) = (
+                action.source_folder.file_stem().and_then(|s| s.to_str()),
+                action.target_folder.file_stem().and_then(|s| s.to_str()),
+            ) && old != new
+            {
+                stem_map.insert(old.to_string(), new.to_string());
+            }
+            let mut txn = FsTransaction::new();
+            let (media_ops, gamelist_ops) =
+                append_companion_ops(&mut txn, &stem_map, exec, &mut result.errors);
+            if !txn.is_empty() {
+                match txn.commit() {
+                    Ok(_) => {
+                        result.media_renamed += media_ops;
+                        result.gamelists_updated += gamelist_ops;
+                    }
+                    Err(e) => result.errors.push(format!("Companion move failed: {e}")),
+                }
+            }
         }
     }
 
     result
 }
 
+/// Result of executing one disc-set transaction.
+#[derive(Debug, Default)]
+pub struct DiscSetExecution {
+    /// Files renamed (tracks + cue).
+    pub files_renamed: usize,
+    /// Whether the cue's FILE lines were rewritten.
+    pub cue_rewritten: bool,
+    /// Media files moved in the same transaction.
+    pub media_renamed: usize,
+    /// gamelist.xml files updated in the same transaction.
+    pub gamelists_updated: usize,
+    /// Errors; non-empty means nothing was changed (or everything was
+    /// rolled back — the message says which).
+    pub errors: Vec<String>,
+}
+
+/// Execute one verified disc set as a single transaction: track renames,
+/// cue rename, cue FILE-line rewrite, plus companion media/gamelist moves.
+/// On any failure, all completed steps are rolled back.
+pub fn execute_disc_set(set: &DiscSetPlan, exec: &ExecutionContext<'_>) -> DiscSetExecution {
+    let mut result = DiscSetExecution::default();
+    let mut txn = set.build_transaction();
+    let files_renamed = set.file_renames().len();
+    let (media_ops, gamelist_ops) =
+        append_companion_ops(&mut txn, &set.stem_map(), exec, &mut result.errors);
+
+    match txn.commit() {
+        Ok(_) => {
+            result.files_renamed = files_renamed;
+            result.cue_rewritten = set.new_cue_content.is_some();
+            result.media_renamed = media_ops;
+            result.gamelists_updated = gamelist_ops;
+        }
+        Err(e) => {
+            result
+                .errors
+                .push(format!("Set \"{}\": {}", set.game_name, e));
+        }
+    }
+    result
+}
+
+/// Result of executing a single-file rename transaction.
+#[derive(Debug, Default)]
+pub struct SingleRenameResult {
+    /// Media files moved in the same transaction.
+    pub media_renamed: usize,
+    /// gamelist.xml files updated in the same transaction.
+    pub gamelists_updated: usize,
+    /// Non-fatal issues (e.g., media files skipped due to conflicts).
+    pub warnings: Vec<String>,
+}
+
+/// Execute a single-file rename plus its companion media/gamelist moves as
+/// one transaction. On failure, everything is rolled back and `Err` returned.
+pub fn execute_single_rename(
+    source: &Path,
+    target: &Path,
+    exec: &ExecutionContext<'_>,
+) -> Result<SingleRenameResult, String> {
+    let mut result = SingleRenameResult::default();
+    let mut txn = FsTransaction::new();
+    txn.rename(source, target);
+
+    let mut stem_map: HashMap<String, String> = HashMap::new();
+    if let (Some(old), Some(new)) = (
+        source.file_stem().and_then(|s| s.to_str()),
+        target.file_stem().and_then(|s| s.to_str()),
+    ) && old != new
+    {
+        stem_map.insert(old.to_string(), new.to_string());
+    }
+    let (media_ops, gamelist_ops) =
+        append_companion_ops(&mut txn, &stem_map, exec, &mut result.warnings);
+
+    match txn.commit() {
+        Ok(_) => {
+            result.media_renamed = media_ops;
+            result.gamelists_updated = gamelist_ops;
+            Ok(result)
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// Append companion operations (media file renames, gamelist rewrites) for a
+/// game's stem map to its transaction. Returns (media ops, gamelist ops).
+fn append_companion_ops(
+    txn: &mut FsTransaction,
+    stem_map: &HashMap<String, String>,
+    exec: &ExecutionContext<'_>,
+    errors: &mut Vec<String>,
+) -> (usize, usize) {
+    if stem_map.is_empty() {
+        return (0, 0);
+    }
+    let mut media_ops = 0;
+    let mut gamelist_ops = 0;
+    if let Some(ref media_dir) = exec.media_dir {
+        let media_plan = plan_media_renames_from_stems(stem_map, media_dir, "");
+        for (_, msg) in &media_plan.conflicts {
+            errors.push(msg.clone());
+        }
+        for action in media_plan.renames {
+            txn.rename(action.source, action.target);
+            media_ops += 1;
+        }
+    }
+    if let Some(rewriter) = exec.gamelist_rewriter {
+        for (path, content) in rewriter(stem_map) {
+            txn.write_file(path, content);
+            gamelist_ops += 1;
+        }
+    }
+    (media_ops, gamelist_ops)
+}
+
 /// Result of planning renames for a single console folder.
 #[derive(Debug)]
 pub struct RenamePlan {
-    /// Single-file renames (non-M3U). Disc renames live inside `m3u_jobs`.
+    /// Single-file renames (non-M3U, non-set). Disc renames live inside
+    /// `m3u_jobs`; cue/bin sets live in `disc_sets`.
     pub renames: Vec<RenameAction>,
+    /// Verified cue/bin disc sets renamed as a unit (cue + all tracks +
+    /// cue FILE-line rewrite), at the top level of the console folder.
+    pub disc_sets: Vec<DiscSetPlan>,
+    /// Cue/bin sets that will NOT be renamed (broken refs, failed
+    /// verification, or no match).
+    pub set_problems: Vec<SetProblem>,
     pub already_correct: Vec<PathBuf>,
     pub unmatched: Vec<UnmatchedFile>,
     pub conflicts: Vec<(PathBuf, String)>,
@@ -582,20 +818,46 @@ pub struct RenamePlan {
 }
 
 impl RenamePlan {
-    /// Total number of file rename operations (single files + M3U disc renames).
+    /// Total number of actual file rename operations (single files + disc
+    /// sets + M3U disc renames; already-correct files excluded).
     pub fn total_renames(&self) -> usize {
-        self.renames.len() + self.m3u_jobs.iter().map(|j| j.discs.len()).sum::<usize>()
+        self.renames.len()
+            + self
+                .disc_sets
+                .iter()
+                .map(|s| s.file_renames().len())
+                .sum::<usize>()
+            + self
+                .m3u_jobs
+                .iter()
+                .map(|j| {
+                    let set_cues: std::collections::HashSet<&PathBuf> =
+                        j.disc_sets.iter().map(|s| &s.cue).collect();
+                    j.disc_sets
+                        .iter()
+                        .map(|s| s.file_renames().len())
+                        .sum::<usize>()
+                        + j.discs
+                            .iter()
+                            .filter(|d| {
+                                !set_cues.contains(&d.file_path)
+                                    && d.file_path != j.source_folder.join(&d.target_filename)
+                            })
+                            .count()
+                })
+                .sum::<usize>()
     }
 
     /// Whether this plan has any work to do.
     pub fn has_actions(&self) -> bool {
-        !self.renames.is_empty() || !self.m3u_jobs.is_empty()
+        !self.renames.is_empty() || !self.disc_sets.is_empty() || !self.m3u_jobs.is_empty()
     }
 
     /// Whether this plan has any problems (conflicts, unmatched, broken refs).
     pub fn has_problems(&self) -> bool {
         !self.conflicts.is_empty()
             || !self.unmatched.is_empty()
+            || !self.set_problems.is_empty()
             || !self.broken_cue_files.is_empty()
             || !self.broken_m3u_files.is_empty()
     }
@@ -651,9 +913,48 @@ pub fn plan_renames(
     let game_entries = crate::scanner::scan_game_entries(folder, &extensions)
         .map_err(|e| DatError::cache(format!("Error scanning {}: {}", folder.display(), e)))?;
 
+    // Plan cue/bin disc sets first. Every .cue — top-level or inside an
+    // .m3u folder — forms a set with the track files its FILE lines
+    // reference. Set members are renamed as a unit (or not at all) and
+    // never go through per-file matching below.
+    let mut top_level_cues: Vec<PathBuf> = Vec::new();
+    let mut m3u_cue_map: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
+    for entry in &game_entries {
+        match entry {
+            GameEntry::SingleFile(p) if is_cue_path(p) => top_level_cues.push(p.clone()),
+            GameEntry::MultiDisc { files, .. } => {
+                let cues: Vec<PathBuf> = files.iter().filter(|p| is_cue_path(p)).cloned().collect();
+                if let (Some(folder), false) =
+                    (files.first().and_then(|f| f.parent()), cues.is_empty())
+                {
+                    m3u_cue_map.push((folder.to_path_buf(), cues));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let top_sets = plan_sets_for_cues(&top_level_cues, analyzer, &index, progress);
+    let mut disc_sets = top_sets.planned;
+    let mut set_problems = top_sets.problems;
+    let mut set_already_correct = top_sets.already_correct;
+    let mut set_covered = top_sets.covered;
+    let mut set_broken_cues = top_sets.broken_cues;
+    let mut m3u_folder_sets: HashMap<PathBuf, (Vec<DiscSetPlan>, Vec<DiscMatchData>)> =
+        HashMap::new();
+    for (folder, cues) in m3u_cue_map {
+        let r = plan_sets_for_cues(&cues, analyzer, &index, progress);
+        set_problems.extend(r.problems);
+        set_broken_cues.extend(r.broken_cues);
+        set_covered.extend(r.covered);
+        set_already_correct.extend(r.already_correct);
+        m3u_folder_sets.insert(folder, (r.planned, r.playlist_discs));
+    }
+
     let mut files: Vec<PathBuf> = game_entries
         .iter()
         .flat_map(|entry| entry.all_files())
+        .filter(|p| !set_covered.contains(*p))
         .cloned()
         .collect();
     if let Some(max) = options.limit {
@@ -802,26 +1103,57 @@ pub fn plan_renames(
         }
     }
 
-    // Detect conflicts: multiple files mapping to the same target
-    let mut target_map: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+    // Detect conflicts: multiple files (single renames or set members)
+    // mapping to the same target. Conflicting singles are dropped; a
+    // conflicting set is dropped whole (sets never partially rename).
+    #[derive(Clone, PartialEq, Eq, Hash)]
+    enum Claimant {
+        Single(usize),
+        TopSet(usize),
+        M3uSet(PathBuf, usize),
+    }
+    type Claims = HashMap<PathBuf, Vec<(PathBuf, Claimant)>>;
+    let mut claims: Claims = HashMap::new();
     for (i, rename) in renames.iter().enumerate() {
-        target_map.entry(rename.target.clone()).or_default().push(i);
+        claims
+            .entry(rename.target.clone())
+            .or_default()
+            .push((rename.source.clone(), Claimant::Single(i)));
+    }
+    for (si, set) in disc_sets.iter().enumerate() {
+        for (source, target) in set.file_renames() {
+            claims
+                .entry(target)
+                .or_default()
+                .push((source, Claimant::TopSet(si)));
+        }
+    }
+    for (folder, (sets, _)) in &m3u_folder_sets {
+        for (si, set) in sets.iter().enumerate() {
+            for (source, target) in set.file_renames() {
+                claims
+                    .entry(target)
+                    .or_default()
+                    .push((source, Claimant::M3uSet(folder.clone(), si)));
+            }
+        }
     }
 
     let mut conflicts = Vec::new();
-    let conflict_indices: std::collections::HashSet<usize> = target_map
-        .iter()
-        .filter(|(_, indices)| indices.len() > 1)
-        .flat_map(|(target, indices)| {
+    let mut drop_singles: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut drop_top_sets: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut drop_m3u_sets: std::collections::HashSet<(PathBuf, usize)> =
+        std::collections::HashSet::new();
+    for (target, claimants) in &claims {
+        if claimants.len() > 1 {
             conflicts.push((
                 target.clone(),
                 format!(
                     "Multiple files map to {:?}: {}",
                     target.file_name().unwrap_or_default(),
-                    indices
+                    claimants
                         .iter()
-                        .map(|&i| renames[i]
-                            .source
+                        .map(|(source, _)| source
                             .file_name()
                             .unwrap_or_default()
                             .to_string_lossy()
@@ -830,24 +1162,61 @@ pub fn plan_renames(
                         .join(", ")
                 ),
             ));
-            indices.clone()
-        })
-        .collect();
+            for (_, claimant) in claimants {
+                match claimant {
+                    Claimant::Single(i) => {
+                        drop_singles.insert(*i);
+                    }
+                    Claimant::TopSet(si) => {
+                        drop_top_sets.insert(*si);
+                    }
+                    Claimant::M3uSet(folder, si) => {
+                        drop_m3u_sets.insert((folder.clone(), *si));
+                    }
+                }
+            }
+        }
+    }
 
-    // Remove conflicting renames
     let clean_renames: Vec<RenameAction> = renames
         .into_iter()
         .enumerate()
-        .filter(|(i, _)| !conflict_indices.contains(i))
+        .filter(|(i, _)| !drop_singles.contains(i))
         .map(|(_, r)| r)
         .collect();
+    let mut set_index = 0usize;
+    disc_sets.retain(|_| {
+        let keep = !drop_top_sets.contains(&set_index);
+        set_index += 1;
+        keep
+    });
+    for (folder, (sets, playlist_discs)) in m3u_folder_sets.iter_mut() {
+        let mut si = 0usize;
+        sets.retain(|set| {
+            let keep = !drop_m3u_sets.contains(&(folder.clone(), si));
+            if !keep {
+                // Also drop the playlist-naming entry derived from this set.
+                playlist_discs.retain(|d| d.file_path != set.cue);
+            }
+            si += 1;
+            keep
+        });
+    }
 
     // M3U post-processing: build M3uRenameJobs for multi-disc sets.
     // Each job owns its disc renames, CUE/M3U fixing, playlist, and folder rename.
     let mut m3u_jobs = Vec::new();
     for entry in &game_entries {
         if let crate::scanner::GameEntry::MultiDisc { name: _, files } = entry {
-            let discs: Vec<DiscMatchData> = files
+            let source_folder = match files[0].parent() {
+                Some(p) => p.to_path_buf(),
+                None => continue,
+            };
+
+            let (folder_sets, set_playlist_discs) =
+                m3u_folder_sets.remove(&source_folder).unwrap_or_default();
+
+            let mut discs: Vec<DiscMatchData> = files
                 .iter()
                 .filter_map(|f| {
                     file_game_names
@@ -859,26 +1228,27 @@ pub fn plan_renames(
                         })
                 })
                 .collect();
+            discs.extend(set_playlist_discs);
 
-            if discs.is_empty() {
+            if discs.is_empty() && folder_sets.is_empty() {
                 continue;
             }
 
-            let source_folder = match files[0].parent() {
-                Some(p) => p.to_path_buf(),
-                None => continue,
-            };
-
-            // Only create a job if there's actual work: disc renames or M3U action needed
-            let any_disc_rename = discs
-                .iter()
-                .any(|d| d.file_path != source_folder.join(&d.target_filename));
+            // Only create a job if there's actual work: set renames, plain
+            // disc renames, or an M3U action (folder rename / playlist).
+            let set_cues: std::collections::HashSet<&PathBuf> =
+                folder_sets.iter().map(|s| &s.cue).collect();
+            let any_plain_rename = discs.iter().any(|d| {
+                !set_cues.contains(&d.file_path)
+                    && d.file_path != source_folder.join(&d.target_filename)
+            });
             let needs_m3u_action = plan_m3u_action(&source_folder, &discs, None, None).is_some();
 
-            if any_disc_rename || needs_m3u_action {
+            if any_plain_rename || !folder_sets.is_empty() || needs_m3u_action {
                 m3u_jobs.push(M3uRenameJob {
                     source_folder,
                     discs,
+                    disc_sets: folder_sets,
                     game_name_override: None,
                 });
             }
@@ -892,6 +1262,7 @@ pub fn plan_renames(
         .flat_map(|j| j.discs.iter().map(|d| d.file_path.clone()))
         .collect();
 
+    already_correct.extend(set_already_correct);
     let single_renames: Vec<RenameAction> = clean_renames
         .into_iter()
         .filter(|r| !m3u_job_files.contains(&r.source))
@@ -913,11 +1284,19 @@ pub fn plan_renames(
         })
         .cloned()
         .collect();
-    let broken_cue_files = detect_broken_cue_files(&non_m3u_files);
+    let mut broken_cue_files = detect_broken_cue_files(&non_m3u_files);
+    // Broken sets are also eligible for heuristic reference repair.
+    for cue in set_broken_cues {
+        if !broken_cue_files.contains(&cue) {
+            broken_cue_files.push(cue);
+        }
+    }
     let broken_m3u_files = detect_broken_m3u_playlists(&non_m3u_files);
 
     Ok(RenamePlan {
         renames: single_renames,
+        disc_sets,
+        set_problems,
         already_correct: single_already_correct,
         unmatched,
         conflicts,
@@ -928,6 +1307,106 @@ pub fn plan_renames(
         broken_m3u_files,
         hash_warnings,
     })
+}
+
+/// Returns true if the path has a `.cue` extension.
+fn is_cue_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
+}
+
+/// Result of planning disc sets for a group of cue files.
+#[derive(Debug, Default)]
+struct SetPlanningResult {
+    planned: Vec<DiscSetPlan>,
+    problems: Vec<SetProblem>,
+    /// Cues whose set is fully verified and already correctly named.
+    already_correct: Vec<PathBuf>,
+    /// Broken-set cues, eligible for heuristic reference repair.
+    broken_cues: Vec<PathBuf>,
+    /// All files owned by a set (cue + tracks), regardless of outcome.
+    covered: std::collections::HashSet<PathBuf>,
+    /// Playlist/folder naming data for planned and already-correct cues.
+    playlist_discs: Vec<DiscMatchData>,
+}
+
+/// Plan a disc set for each cue path, classifying the outcomes.
+fn plan_sets_for_cues(
+    cues: &[PathBuf],
+    analyzer: &dyn RomAnalyzer,
+    index: &DatIndex,
+    progress: &dyn Fn(RenameProgress),
+) -> SetPlanningResult {
+    let mut result = SetPlanningResult::default();
+    let hash_progress = |file: &Path, done: u64, total: u64| {
+        progress(RenameProgress::Hashing {
+            file_name: file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("?")
+                .to_string(),
+            bytes_done: done,
+            bytes_total: total,
+        });
+    };
+
+    for cue in cues {
+        result.covered.insert(cue.clone());
+        let files = match crate::disc_set::expand_disc_set(cue) {
+            Ok(f) => f,
+            Err(e) => {
+                result.problems.push(SetProblem {
+                    cue: cue.clone(),
+                    kind: SetProblemKind::Unmatched {
+                        issues: vec![format!("Failed to read cue: {e}")],
+                    },
+                });
+                continue;
+            }
+        };
+        result.covered.extend(files.tracks.iter().cloned());
+
+        match crate::disc_set::plan_disc_set_from_files(&files, analyzer, index, &hash_progress) {
+            DiscSetOutcome::Planned(plan) => {
+                result.playlist_discs.push(DiscMatchData {
+                    file_path: cue.clone(),
+                    game_name: plan.game_name.clone(),
+                    target_filename: plan.cue_target_filename.clone(),
+                });
+                result.planned.push(plan);
+            }
+            DiscSetOutcome::AlreadyCorrect { game_name, .. } => {
+                if let Some(name) = cue.file_name().and_then(|n| n.to_str()) {
+                    result.playlist_discs.push(DiscMatchData {
+                        file_path: cue.clone(),
+                        game_name,
+                        target_filename: name.to_string(),
+                    });
+                }
+                result.already_correct.push(cue.clone());
+            }
+            DiscSetOutcome::Broken { missing } => {
+                result.broken_cues.push(cue.clone());
+                result.problems.push(SetProblem {
+                    cue: cue.clone(),
+                    kind: SetProblemKind::Broken { missing },
+                });
+            }
+            DiscSetOutcome::NotVerified { game_name, issues } => {
+                result.problems.push(SetProblem {
+                    cue: cue.clone(),
+                    kind: SetProblemKind::NotVerified { game_name, issues },
+                });
+            }
+            DiscSetOutcome::Unmatched { issues } => {
+                result.problems.push(SetProblem {
+                    cue: cue.clone(),
+                    kind: SetProblemKind::Unmatched { issues },
+                });
+            }
+        }
+    }
+    result
 }
 
 /// Quick-analyze a disc/ROM file to extract its serial, then look it up in the DAT.
@@ -1052,13 +1531,16 @@ fn match_by_hash(
     })
 }
 
-/// Execute a rename plan, performing the actual file renames and M3U operations.
+/// Execute a rename plan.
 ///
-/// Execution order:
-/// 1. Rename single files (non-M3U)
-/// 2. Fix CUE/M3U references in non-M3U directories
-/// 3. Execute each M3U job (disc renames + CUE/M3U fix + playlist + folder rename)
-pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
+/// Every game moves as its own transaction (files + companion media +
+/// gamelist entries), so a failure rolls back that game completely and
+/// never leaves a half-renamed set. Execution order:
+/// 1. Single-file renames (one transaction each)
+/// 2. Disc-set renames (cue + tracks + FILE rewrite, one transaction each)
+/// 3. Fix CUE/M3U references in non-M3U directories
+/// 4. M3U jobs (set/disc renames + CUE/M3U fix + playlist + folder rename)
+pub fn execute_renames(plan: &RenamePlan, exec: &ExecutionContext<'_>) -> RenameSummary {
     let mut summary = RenameSummary {
         already_correct: plan.already_correct.len(),
         ..Default::default()
@@ -1070,48 +1552,57 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
 
     // Step 1: Rename single files (disc renames are handled by M3U jobs)
     for rename in &plan.renames {
-        if rename.target.exists() && rename.source != rename.target {
-            summary.errors.push(format!(
-                "Target already exists: {}",
-                rename.target.display()
-            ));
-            continue;
-        }
-
-        match fs::rename(&rename.source, &rename.target) {
-            Ok(()) => summary.renamed += 1,
+        match execute_single_rename(&rename.source, &rename.target, exec) {
+            Ok(result) => {
+                summary.renamed += 1;
+                summary.media_renamed += result.media_renamed;
+                summary.gamelists_updated += result.gamelists_updated;
+                summary.errors.extend(result.warnings);
+            }
             Err(e) => {
                 summary.errors.push(format!(
-                    "Failed to rename {:?} -> {:?}: {}",
+                    "Failed to rename {:?}: {}",
                     rename.source.file_name().unwrap_or_default(),
-                    rename.target.file_name().unwrap_or_default(),
                     e,
                 ));
             }
         }
     }
 
-    // Step 2: Fix CUE/M3U references in non-M3U directories
+    // Step 2: Execute disc-set transactions
+    for set in &plan.disc_sets {
+        let result = execute_disc_set(set, exec);
+        summary.renamed += result.files_renamed;
+        summary.media_renamed += result.media_renamed;
+        summary.gamelists_updated += result.gamelists_updated;
+        if result.cue_rewritten {
+            summary.cue_files_updated += 1;
+        }
+        summary.errors.extend(result.errors);
+    }
+
+    // Step 3: Fix CUE/M3U references in non-M3U directories.
+    // Includes disc-set renames so top-level .m3u playlists that point at
+    // renamed cues get fixed too.
     let mut dir_rename_maps: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
     let mut fix_dirs: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
-    for rename in &plan.renames {
-        if rename.source == rename.target {
+    let single_renames = plan
+        .renames
+        .iter()
+        .map(|r| (r.source.clone(), r.target.clone()));
+    let set_renames = plan.disc_sets.iter().flat_map(|s| s.file_renames());
+    for (source, target) in single_renames.chain(set_renames) {
+        if source == target {
             continue;
         }
-        let dir = rename
-            .source
-            .parent()
-            .unwrap_or(Path::new("."))
-            .to_path_buf();
-        let old_name = rename
-            .source
+        let dir = source.parent().unwrap_or(Path::new(".")).to_path_buf();
+        let old_name = source
             .file_name()
             .unwrap_or(std::ffi::OsStr::new("?"))
             .to_string_lossy()
             .to_string();
-        let new_name = rename
-            .target
+        let new_name = target
             .file_name()
             .unwrap_or(std::ffi::OsStr::new("?"))
             .to_string_lossy()
@@ -1143,12 +1634,14 @@ pub fn execute_renames(plan: &RenamePlan) -> RenameSummary {
             fix_m3u_references_in_dir(dir, rename_map, &mut summary.errors);
     }
 
-    // Step 3: Execute M3U jobs (each handles disc renames + CUE/M3U fix + playlist + folder)
+    // Step 4: Execute M3U jobs (each handles disc renames + CUE/M3U fix + playlist + folder)
     for job in &plan.m3u_jobs {
-        let result = execute_m3u_rename(job);
+        let result = execute_m3u_rename(job, exec);
         summary.renamed += result.discs_renamed;
         summary.cue_files_updated += result.cue_files_updated;
         summary.m3u_references_updated += result.m3u_references_updated;
+        summary.media_renamed += result.media_renamed;
+        summary.gamelists_updated += result.gamelists_updated;
         if result.playlist_written {
             summary.m3u_playlists_written += 1;
         }
@@ -1193,13 +1686,6 @@ impl MediaRenamePlan {
     }
 }
 
-/// Result of executing media renames.
-#[derive(Debug, Default)]
-pub struct MediaRenameSummary {
-    pub renamed: usize,
-    pub errors: Vec<String>,
-}
-
 /// Plan media file renames based on an existing ROM rename plan.
 ///
 /// Scans all subdirectories under `media_dir/console_folder` for files whose
@@ -1228,6 +1714,13 @@ pub fn plan_media_renames(
             .to_string();
         if old_stem != new_stem {
             stem_map.insert(old_stem, new_stem);
+        }
+    }
+
+    // Disc sets: every file rename in the set contributes its stem
+    for set in &plan.disc_sets {
+        for (old, new) in set.stem_map() {
+            stem_map.insert(old, new);
         }
     }
 
@@ -1376,35 +1869,6 @@ pub fn plan_media_renames_from_stems(
     }
 
     result
-}
-
-/// Execute a media rename plan.
-pub fn execute_media_renames(plan: &MediaRenamePlan) -> MediaRenameSummary {
-    let mut summary = MediaRenameSummary::default();
-
-    for action in &plan.renames {
-        if action.target.exists() && action.source != action.target {
-            summary.errors.push(format!(
-                "Media target already exists: {}",
-                action.target.display()
-            ));
-            continue;
-        }
-
-        match fs::rename(&action.source, &action.target) {
-            Ok(()) => summary.renamed += 1,
-            Err(e) => {
-                summary.errors.push(format!(
-                    "Failed to rename media {:?} -> {:?}: {}",
-                    action.source.file_name().unwrap_or_default(),
-                    action.target.file_name().unwrap_or_default(),
-                    e,
-                ));
-            }
-        }
-    }
-
-    summary
 }
 
 /// Format a MatchMethod for display.
@@ -2086,3 +2550,7 @@ fn detect_misnamed_m3u(dir: &Path, expected_name: &str) -> Option<(PathBuf, Path
         None
     }
 }
+
+#[cfg(test)]
+#[path = "tests/rename_tests.rs"]
+mod tests;

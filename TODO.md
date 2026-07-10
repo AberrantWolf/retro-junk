@@ -7,13 +7,42 @@
 
 - [ ] **Database management GUI** screen for all sorts of database tasks, including viewing and merging conflicts, importing and previewing enrichment, and maybe even direct database editing
 
-- [ ] **Move media and data on rename** — If we've already scraped media and rename a game, we need to move the data associated with it (images, gamelist.xml entries, etc. under `roms-media/`).
+- [x] **Move media and data on rename** — Done (2026-07-10): renames execute as per-game filesystem transactions (`retro-junk-lib/src/fs_txn.rs`) that carry scraped media files and gamelist.xml path/asset rewrites (`retro_junk_frontend::esde::plan_gamelist_rewrite`) along with the game files, with preflight collision checks and rollback on failure.
 
 - [ ] **Figure out multi-file WBFS setups** - I don't know what we're meant to do with them or how to treat them
 
 - [ ] **Custom multi-select view** in the game details panel, rather than showing details for the most-recent selection in the list
 
 - [ ] **Show hash match status in detail panel** — After hashing, the detail panel shows CRC32/SHA1/MD5 values but doesn't visually indicate whether they match known DAT entries. Add a match/mismatch indicator next to hash values.
+
+## Disc Sets & Verification (deferred from 2026-07-10 rename work)
+
+- [ ] **Surface per-track verification in analyze output** — Rename now
+  verifies every track of a cue/bin set against Redump per-track hashes
+  (`retro-junk-lib/src/disc_set.rs`), but `analyze` still hashes only the
+  data track (`retro-junk-disc/src/hash.rs` hashes Track 1 / largest data
+  track only). Reuse the disc-set verification to report per-track
+  match/mismatch during analyze and in the GUI detail panel.
+
+- [ ] **Scraper vs. import hash divergence** — Under `--force-hash`, the
+  scraper hashes the *first* data track of a multi-BIN cue while DAT import
+  stores the *largest* data track's hashes. Divergent for Saturn (MODE1 boot
+  track + larger main track). The default serial path is unaffected. Pick one
+  convention and share the implementation.
+
+- [ ] **Saturn `.mds`/`.mdf` advertised but unimplemented** —
+  `saturn.rs` lists `mdf`/`mds` in `file_extensions()` but
+  `retro-junk-disc/src/format.rs` has no MDS/MDF detection. Either implement
+  or stop advertising.
+
+- [ ] **Saturn analyzer test coverage** — `saturn_tests.rs` covers IP.BIN
+  parsing and ISO analysis but has no CUE, raw-BIN, CHD, or hashing tests —
+  the paths redumper dumps actually exercise.
+
+- [ ] **Make M3U folder rename fully transactional** — Disc sets inside
+  `.m3u` folders and companion media/gamelist moves now run as transactions,
+  but the folder rename + playlist write in `execute_m3u_rename` are still
+  individual operations without rollback.
 
 ## Analyzer: Compressed Disc Formats
 
@@ -25,7 +54,7 @@
 
 - [ ] **Wii U has no Redump DAT** — Redump.org has no Wii U disc entries or datfile download. The previous LibRetro "Nintendo - Wii U (Digital)" DAT was not real Redump data. DAT support for Wii U is currently disabled. Options: (1) find an alternative DAT source for Wii U, (2) re-enable using LibRetro's DAT with `DatSource::NoIntro` if the data is good enough, or (3) wait for Redump to add Wii U support.
 
-- [ ] **Verify all Redump slugs work** — After switching disc-based DAT downloads from LibRetro to redump.org direct, verify that all slug mappings actually return valid data: `psx`, `ps2`, `ps3`, `psp`, `ss`, `mcd`, `dc`, `gc`, `wii`, `xbox`, `xbox360`. Some systems may have restricted access or different slug conventions on redump.org.
+- [ ] **Verify all Redump slugs work** — After switching disc-based DAT downloads from LibRetro to redump.info direct, verify that all slug mappings actually return valid data. Verified 2026-07-10: `psx` and `ss` both return fresh datfile zips. Still to verify: `ps2`, `ps3`, `psp`, `mcd`, `dc`, `gc`, `wii`, `xbox`, `xbox360`. Some systems may have restricted access or different slug conventions on redump.info.
 
 ## Data Model & Import Pipeline
 

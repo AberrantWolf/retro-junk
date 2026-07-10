@@ -84,6 +84,24 @@ fn compute_hashes_internal(
     Ok(hasher.finalize())
 }
 
+/// Compute CRC32 and SHA1 of raw file bytes, with no analyzer involvement.
+///
+/// Used for per-track verification of disc sets: Redump stores each track
+/// (`.bin`) as a plain file whose hashes cover the entire file, so no header
+/// stripping, normalization, or container extraction applies.
+pub fn compute_plain_crc32_sha1(
+    reader: &mut dyn ReadSeek,
+    on_progress: Option<&dyn Fn(u64, u64)>,
+) -> Result<FileHashes, DatError> {
+    let data_size = reader.seek(SeekFrom::End(0))?;
+    reader.seek(SeekFrom::Start(0))?;
+    let mut hasher = MultiHasher::new(HashAlgorithms::Crc32Sha1, data_size, on_progress);
+    stream_chunks(reader, &mut None, |chunk| {
+        hasher.update_with_progress(chunk);
+    })?;
+    Ok(hasher.finalize())
+}
+
 /// Compute both CRC32 and SHA1 of a file, using the analyzer's DAT trait methods.
 pub fn compute_crc32_sha1(
     reader: &mut dyn ReadSeek,

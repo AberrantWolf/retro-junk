@@ -196,6 +196,112 @@ fn escape_xml(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+fn unescape_xml(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
+/// Tags whose values are file paths that must track ROM/media renames.
+const PATH_TAGS: &[&str] = &[
+    "path",
+    "image",
+    "cover",
+    "marquee",
+    "screenshot",
+    "titlescreen",
+    "video",
+    "fanart",
+];
+
+/// Read a gamelist.xml and compute its content after applying a stem rename
+/// map. Returns `(path, new_content)` for a transactional write, or `None`
+/// when the file doesn't exist or nothing changes.
+pub fn plan_gamelist_rewrite(
+    gamelist_path: &Path,
+    stem_map: &std::collections::HashMap<String, String>,
+) -> Option<(std::path::PathBuf, String)> {
+    let content = fs::read_to_string(gamelist_path).ok()?;
+    rewrite_gamelist_stems(&content, stem_map).map(|c| (gamelist_path.to_path_buf(), c))
+}
+
+/// Rewrite path-valued tags in ES-DE gamelist.xml content when ROM files are
+/// renamed: any path whose final component's stem matches an entry in
+/// `stem_map` gets the new stem (same rule the media renamer uses). Returns
+/// `None` when nothing changes.
+///
+/// Operates line-by-line on the simple one-tag-per-line XML this crate
+/// generates; `<name>` and other metadata tags are left untouched.
+pub fn rewrite_gamelist_stems(
+    content: &str,
+    stem_map: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    if stem_map.is_empty() {
+        return None;
+    }
+
+    let mut changed = false;
+    let lines: Vec<String> = content
+        .lines()
+        .map(|line| match rewrite_gamelist_line(line, stem_map) {
+            Some(rewritten) => {
+                changed = true;
+                rewritten
+            }
+            None => line.to_string(),
+        })
+        .collect();
+
+    if !changed {
+        return None;
+    }
+    let mut out = lines.join("\n");
+    if content.ends_with('\n') {
+        out.push('\n');
+    }
+    Some(out)
+}
+
+/// Rewrite a single gamelist line if it is a path tag whose value's final
+/// component matches the stem map. Returns `None` when the line is unchanged.
+fn rewrite_gamelist_line(
+    line: &str,
+    stem_map: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let trimmed = line.trim_start();
+    let tag = PATH_TAGS
+        .iter()
+        .find(|t| trimmed.starts_with(&format!("<{t}>")))?;
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = line.find(&open)? + open.len();
+    let end = line.rfind(&close)?;
+    if end < start {
+        return None;
+    }
+
+    let value = unescape_xml(&line[start..end]);
+    let (dir, name) = match value.rfind('/') {
+        Some(i) => (&value[..=i], &value[i + 1..]),
+        None => ("", &value[..]),
+    };
+    for (old_stem, new_stem) in stem_map {
+        if name.starts_with(old_stem.as_str()) && name.as_bytes().get(old_stem.len()) == Some(&b'.')
+        {
+            let new_value = format!("{dir}{new_stem}{}", &name[old_stem.len()..]);
+            return Some(format!(
+                "{}{}{}",
+                &line[..start],
+                escape_xml(&new_value),
+                &line[end..]
+            ));
+        }
+    }
+    None
+}
+
 /// Convert various date formats to ES-DE's YYYYMMDDTHHMMSS format.
 fn format_esde_date(date: &str) -> String {
     // Handle YYYY-MM-DD
