@@ -37,6 +37,11 @@ pub struct GeneralSettings {
     /// Relative paths resolve from the ROM root.
     #[serde(default, alias = "media_dir")]
     pub assets_dir: String,
+    /// Catalog YAML seed-data directory (platforms/companies/overrides), used
+    /// when importing DATs into the catalog DB. If empty, falls back to
+    /// `./catalog` relative to the working directory (matching the CLI default).
+    #[serde(default)]
+    pub catalog_data_dir: String,
 }
 
 fn default_true() -> bool {
@@ -54,6 +59,7 @@ impl Default for GeneralSettings {
             warn_on_region_override: true,
             metadata_dir: default_metadata_dir(),
             assets_dir: String::new(),
+            catalog_data_dir: String::new(),
         }
     }
 }

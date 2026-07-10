@@ -6,6 +6,7 @@
 ## Features
 
 - [ ] **Database management GUI** screen for all sorts of database tasks, including viewing and merging conflicts, importing and previewing enrichment, and maybe even direct database editing
+  - Partially done (2026-07-10): Tools → Data tab (`views/tools_data.rs`, `backend/catalog_ops.rs`) adds catalog import and GDB/ScreenScraper enrichment (plus DAT/GDB cache fetch/clear); Dashboard/Browse tabs already view stats, disagreements, and tables. Still open: enrichment *preview* and direct database editing.
 
 - [x] **Move media and data on rename** — Done (2026-07-10): renames execute as per-game filesystem transactions (`retro-junk-lib/src/fs_txn.rs`) that carry scraped media files and gamelist.xml path/asset rewrites (`retro_junk_frontend::esde::plan_gamelist_rewrite`) along with the game files, with preflight collision checks and rollback on failure.
 
@@ -156,6 +157,33 @@ Audit findings from 2026-02-27.
 - [ ] **`check_broken_refs_background` lacks cancellation and progress** — The background thread spawned by `scan.rs:check_broken_refs_background` uses `std::thread::spawn` directly (not `spawn_background_op`) and has no cancel token, no progress messages, and only calls `ctx.request_repaint()` once at the end. On a large library this means multi-second blocking with no feedback. Consider batching repaints every N entries or wrapping in `spawn_background_op` with a cancel token.
 
 - [ ] **`console_tree` and `game_table` duplicate the selectable-list pattern** — Both `widgets/console_tree.rs` and `widgets/game_table.rs` are the same kind of view: a focusable (`FocusedPanel`), keyboard-navigable (shared `keyboard_nav`), status-badge-annotated selectable list with one-shot scroll-into-view. They were implemented independently, and the console tree reintroduced two bugs the table had already solved: (1) it scrolled `scroll_to_me` every frame instead of using a one-shot scroll target — now fixed by mirroring `game_table`'s `scroll_to_row` as `scroll_to_console: Option<usize>`; (2) its hand-rolled `ui.horizontal` + conditional badge + `selectable_label` rows suffered auto-ID churn ("changed id between passes" + scroll resets) — now fixed with `push_id(i)`, whereas `game_table` sidesteps it structurally via `egui_extras::TableBuilder` rows + `paint_cell_text` (which allocates no `WidgetRect`). Consider extracting the shared row/selection/scroll-target lifecycle into a common helper so the two views can't drift again. Note: the console tree also needs manufacturer `CollapsingHeader` grouping that `TableBuilder` doesn't model, so this is a shared-helper refactor, not a switch to `TableBuilder`.
+
+## Code Health: GUI Data Tab (2026-07-10)
+
+Follow-ups from adding the Tools → Data tab (`views/tools_data.rs`,
+`backend/catalog_ops.rs`), which surfaced the CLI's catalog data-gathering
+pipeline (cache fetch, import, GDB/ScreenScraper enrich) in the GUI.
+
+- [ ] **Promote capability-based console resolution to `retro-junk-lib`** — Both
+  the CLI (`retro-junk-cli/src/commands/systems.rs`: `resolve_systems` /
+  `SystemCapability`) and the GUI (`backend/catalog_ops.rs`: `targets` / `Cap`)
+  independently filter `AnalysisContext` by DAT/GDB capability plus a system
+  selection. Extract one shared resolver so the two presentation crates can't
+  drift on which systems an operation targets.
+
+- [ ] **Embed catalog seed YAML for self-contained import** — Catalog import
+  seeds platforms/companies/overrides from a cwd-relative `./catalog` dir (both
+  CLI and GUI; GUI adds a `catalog_data_dir` setting as an escape hatch). An
+  installed GUI run from an arbitrary cwd will silently skip seeding and produce
+  a catalog with no platforms. Embed the ~156K `catalog/` YAML into the binary
+  (e.g. `include_dir` + a `seed_bundled(conn)` in `retro-junk-catalog`/`-db`) so
+  import is fully self-contained, then drop the cwd fallback.
+
+- [ ] **Coarse cancellation for ScreenScraper enrich in GUI** —
+  `catalog_ops::run_ss_enrich` is only cancel-aware at the connect stage; once
+  `enrich_releases` starts it runs to completion (bounded by the per-system
+  limit). Thread the cancel token into the enrich loop for mid-run stop, as the
+  media scraper in `backend/assets.rs` already does per item.
 
 ## Code Health: Cleanup
 

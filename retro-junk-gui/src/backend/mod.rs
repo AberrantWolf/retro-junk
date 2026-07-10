@@ -1,4 +1,5 @@
 pub mod assets;
+pub mod catalog_ops;
 pub mod dat;
 pub mod export;
 pub mod fix_cue;

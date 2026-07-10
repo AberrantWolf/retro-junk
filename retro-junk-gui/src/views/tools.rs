@@ -9,12 +9,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.separator();
 
     let has_db = app.catalog_db.is_some();
-    if !has_db {
-        show_no_database(ui);
-        return;
-    }
 
-    // Tab bar
+    // Tab bar (always shown — the Data tab is how an empty catalog gets populated)
     ui.horizontal(|ui| {
         ui.selectable_value(
             &mut app.tools_state.active_tab,
@@ -22,12 +18,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             "Dashboard",
         );
         ui.selectable_value(&mut app.tools_state.active_tab, ToolsTab::Browse, "Browse");
+        ui.selectable_value(&mut app.tools_state.active_tab, ToolsTab::Data, "Data");
     });
     ui.separator();
     ui.add_space(4.0);
 
     match app.tools_state.active_tab {
         ToolsTab::Dashboard => {
+            if !has_db {
+                show_no_database(ui, app);
+                return;
+            }
             // Refresh data from DB when flagged
             if app.tools_state.needs_refresh {
                 let conn = app.catalog_db.as_ref().unwrap();
@@ -41,16 +42,27 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             });
         }
         ToolsTab::Browse => {
+            if !has_db {
+                show_no_database(ui, app);
+                return;
+            }
             super::tools_browse::show(ui, app);
+        }
+        ToolsTab::Data => {
+            super::tools_data::show(ui, app);
         }
     }
 }
 
-fn show_no_database(ui: &mut egui::Ui) {
+fn show_no_database(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.add_space(16.0);
     ui.label("No catalog database found.");
     ui.add_space(4.0);
-    ui.weak("Run 'retro-junk catalog import all' to create one.");
+    ui.weak("Use the Data tab to import DATs and build the catalog.");
+    ui.add_space(8.0);
+    if ui.button("Go to Data tab").clicked() {
+        app.tools_state.active_tab = ToolsTab::Data;
+    }
 }
 
 /// Reload stats, platforms, and disagreements from the database.

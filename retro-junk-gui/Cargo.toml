@@ -29,6 +29,7 @@ retro-junk-microsoft.workspace = true
 retro-junk-frontend.workspace = true
 retro-junk-db.workspace = true
 retro-junk-catalog.workspace = true
+retro-junk-import.workspace = true
 eframe = "0.35"
 egui = "0.35"
 egui_extras = { version = "0.35", features = ["image"] }

@@ -796,6 +796,17 @@ pub enum AppMessage {
     OperationComplete {
         op_id: u64,
     },
+
+    // -- Catalog data operations --
+    /// A catalog data-gathering operation (import/enrich) mutated the DB.
+    /// Triggers a refresh of the Dashboard stats and Browse tables and clears
+    /// the Data-tab in-flight guard.
+    CatalogDataChanged,
+    /// Refreshed DAT/GDB cache listings loaded on a background thread.
+    CacheListsLoaded {
+        dat: Vec<retro_junk_dat::cache::CacheEntry>,
+        gdb: Vec<retro_junk_dat::gdb_cache::GdbCacheEntry>,
+    },
 }
 
 // -- Helpers --
@@ -2283,6 +2294,20 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         AppMessage::OperationComplete { op_id } => {
             app.operations.retain(|op| op.id != op_id);
         }
+
+        AppMessage::CatalogDataChanged => {
+            // A background catalog op finished writing to the DB. Reload the
+            // dashboard/browse data and re-enable the Data-tab buttons.
+            app.tools_state.data.op_in_flight = false;
+            app.tools_state.needs_refresh = true;
+            app.tools_state.browse.table_state.needs_query = true;
+            app.tools_state.data.needs_cache_refresh = true;
+        }
+
+        AppMessage::CacheListsLoaded { dat, gdb } => {
+            app.tools_state.data.dat_cache_entries = dat;
+            app.tools_state.data.gdb_cache_entries = gdb;
+        }
     }
 }
 
@@ -2314,6 +2339,7 @@ pub enum ToolsTab {
     #[default]
     Dashboard,
     Browse,
+    Data,
 }
 
 /// Which table is being viewed in the Browse tab.
@@ -2446,6 +2472,7 @@ pub struct ToolsState {
     pub needs_refresh: bool,
     pub active_tab: ToolsTab,
     pub browse: BrowseState,
+    pub data: DataToolsState,
 }
 
 impl Default for ToolsState {
@@ -2461,6 +2488,54 @@ impl Default for ToolsState {
             needs_refresh: true,
             active_tab: ToolsTab::default(),
             browse: BrowseState::default(),
+            data: DataToolsState::default(),
+        }
+    }
+}
+
+/// Transient UI state for the Data tab (catalog data-gathering operations).
+///
+/// The system selection is a set of `Platform`s; an empty set means "all
+/// capable systems" (mirroring the CLI's `all` keyword). Per-operation option
+/// fields hold text/bool inputs bound to the UI widgets.
+pub struct DataToolsState {
+    /// Selected systems to operate on. Empty = all capable systems.
+    pub selected_systems: std::collections::HashSet<Platform>,
+    /// True while a catalog-mutating operation (import/enrich) is running.
+    /// Guards against launching concurrent DB writers.
+    pub op_in_flight: bool,
+    /// GDB enrichment: max releases per system (text input; empty = no limit).
+    pub gdb_limit: String,
+    /// ScreenScraper enrichment options.
+    pub ss_force: bool,
+    pub ss_download_assets: bool,
+    pub ss_region: String,
+    pub ss_language: String,
+    pub ss_limit: String,
+    pub ss_reconcile: bool,
+    /// Cached DAT cache listing (for display).
+    pub dat_cache_entries: Vec<retro_junk_dat::cache::CacheEntry>,
+    /// Cached GDB cache listing (for display).
+    pub gdb_cache_entries: Vec<retro_junk_dat::gdb_cache::GdbCacheEntry>,
+    /// Set true to reload the cache listings on next frame.
+    pub needs_cache_refresh: bool,
+}
+
+impl Default for DataToolsState {
+    fn default() -> Self {
+        Self {
+            selected_systems: std::collections::HashSet::new(),
+            op_in_flight: false,
+            gdb_limit: String::new(),
+            ss_force: false,
+            ss_download_assets: false,
+            ss_region: "us".to_string(),
+            ss_language: "en".to_string(),
+            ss_limit: String::new(),
+            ss_reconcile: true,
+            dat_cache_entries: Vec::new(),
+            gdb_cache_entries: Vec::new(),
+            needs_cache_refresh: true,
         }
     }
 }

@@ -45,3 +45,25 @@ fn sidebar_click_switches_to_settings_view() {
     assert_eq!(harness.state().current_view, View::Settings);
     harness.get_by_label("Current root:");
 }
+
+#[test]
+fn tools_data_tab_renders_operation_cards() {
+    use crate::state::ToolsTab;
+
+    let mut harness = harness();
+    harness.run();
+
+    // Navigate to Tools, then the Data tab.
+    harness.get_by_label("Tools").click();
+    harness.run();
+    harness.get_by_label("Data").click();
+    harness.run();
+
+    assert_eq!(harness.state().tools_state.active_tab, ToolsTab::Data);
+
+    // Each data-gathering operation card should be present.
+    harness.get_by_label("Import catalog from DATs");
+    harness.get_by_label("Enrich from GameDataBase");
+    harness.get_by_label("Enrich from ScreenScraper");
+    harness.get_by_label("Reference-data cache");
+}
