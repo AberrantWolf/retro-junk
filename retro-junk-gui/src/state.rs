@@ -384,6 +384,17 @@ impl EntryStatus {
     }
 }
 
+// -- Fragile mount prompt --
+
+/// A pending library-root switch awaiting user confirmation because the path
+/// lives on a fragile userspace network mount (GVFS/KIO-FUSE).
+pub struct FragileMountPrompt {
+    /// The root the user asked to open.
+    pub root: std::path::PathBuf,
+    /// Short label for the mount kind ("GVFS", "KIO-FUSE").
+    pub kind: &'static str,
+}
+
 // -- Tag dialog --
 
 /// State for the homebrew/modded tagging dialogs.

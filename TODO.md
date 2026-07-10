@@ -53,6 +53,10 @@
   - Asset coverage dashboard (which releases are missing art)
   - Stack: Axum for HTTP, askama or maud for templates, htmx for interactivity, SQLite read access via shared connection pool. Keep it server-rendered; no SPA framework needed.
 
+## Testing
+
+- [ ] **Adopt `egui_kittest` for headless GUI testing** — egui's official testing harness (AccessKit-based queries, simulated clicks/keys, snapshot rendering) can drive the GUI headlessly, without a display server or external drivers (Xvfb/xdotool/nested compositors). Use it to test flows like root switching, view state, and dialogs. Caveat: native `rfd` dialogs (file picker, message boxes) live outside the egui scene graph, so kittest can't reach them — flows under test should route confirmations through egui-native modals or an injectable confirm hook (e.g. the fragile-mount warning in `switch_to_root`).
+
 ## Ideas
 
 - [ ] **Handle modded games and homebrew in library** — Games that are modded or homebrew will never match a DAT and show as red (Unrecognized) permanently, cluttering the console list with false-negative indicators. Think about ways to mark or categorize these (e.g., user-applied "homebrew"/"mod" tag, a separate status like `Excluded`, or a filter to hide them from status rollups) so the console list isn't stuck showing red dots.

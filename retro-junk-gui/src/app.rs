@@ -90,6 +90,10 @@ pub struct RetroJunkApp {
     /// State for the homebrew/modded tagging dialog.
     pub tag_dialog: crate::state::TagDialog,
 
+    /// Pending root switch awaiting fragile-mount confirmation.
+    /// When `Some`, the network-share warning dialog is shown.
+    pub fragile_mount_prompt: Option<crate::state::FragileMountPrompt>,
+
     /// State for the log viewer panel.
     pub log_viewer: crate::widgets::log_viewer::LogViewerState,
 
@@ -158,6 +162,7 @@ impl RetroJunkApp {
             focused_panel: FocusedPanel::default(),
             scroll_to_row: None,
             tag_dialog: crate::state::TagDialog::None,
+            fragile_mount_prompt: None,
             log_viewer: crate::widgets::log_viewer::LogViewerState::default(),
             error_list: Vec::new(),
             pending_organize_plan: None,
@@ -176,6 +181,16 @@ impl RetroJunkApp {
         if let Some(ref root) = app.settings.library.current_root.clone()
             && root.is_dir()
         {
+            if let Some(kind) = crate::util::fragile_mount_kind(root) {
+                // Don't auto-load a fragile network mount at startup; show the
+                // warning dialog instead. Confirming resumes the load via
+                // switch_to_root_unchecked.
+                app.fragile_mount_prompt = Some(crate::state::FragileMountPrompt {
+                    root: root.clone(),
+                    kind,
+                });
+                return app;
+            }
             app.root_path = Some(root.clone());
             app.loading_library = true;
 
@@ -352,6 +367,9 @@ impl eframe::App for RetroJunkApp {
         if self.pending_organize_plan.is_some() {
             show_organize_preview_dialog(ctx, self);
         }
+
+        // Fragile network mount confirmation
+        widgets::fragile_mount_dialog::show(ctx, self);
 
         // Tag dialog
         widgets::tag_dialog::show(ctx, self);

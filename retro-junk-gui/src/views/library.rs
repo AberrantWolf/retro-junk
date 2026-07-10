@@ -139,7 +139,29 @@ fn open_folder(app: &mut RetroJunkApp, ctx: &egui::Context) {
 }
 
 /// Switch to a new root path, saving the current library and loading the new one.
+///
+/// If the path lives on a fragile userspace network mount (GVFS/KIO-FUSE),
+/// the switch is deferred to a confirmation modal instead; on confirmation the
+/// dialog resumes via [`switch_to_root_unchecked`].
 pub fn switch_to_root(app: &mut RetroJunkApp, new_root: std::path::PathBuf, ctx: &egui::Context) {
+    if let Some(kind) = crate::util::fragile_mount_kind(&new_root) {
+        app.fragile_mount_prompt = Some(crate::state::FragileMountPrompt {
+            root: new_root,
+            kind,
+        });
+        return;
+    }
+    switch_to_root_unchecked(app, new_root, ctx);
+}
+
+/// Switch roots without the fragile-mount check. Called by the confirmation
+/// dialog after the user accepts; everything else goes through
+/// [`switch_to_root`].
+pub fn switch_to_root_unchecked(
+    app: &mut RetroJunkApp,
+    new_root: std::path::PathBuf,
+    ctx: &egui::Context,
+) {
     // Save current library cache before switching
     app.save_library_cache();
 
