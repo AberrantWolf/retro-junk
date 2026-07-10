@@ -363,12 +363,12 @@ fn show_row_context_menu(
 ) {
     if ui.button("Rescan").clicked() {
         backend::scan::rescan_selected_entries(app, console_idx, ctx);
-        ui.close_menu();
+        ui.close();
     }
 
     if ui.button("Calculate Hashes").clicked() {
         backend::hash::compute_hashes_for_selection(app, console_idx);
-        ui.close_menu();
+        ui.close();
     }
 
     // Adaptive scrape menu items based on aggregate media state
@@ -402,23 +402,23 @@ fn show_row_context_menu(
             // All entries have complete media
             if ui.button("Re-scrape Media").clicked() {
                 backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
-                ui.close_menu();
+                ui.close();
             }
         } else if any_has_media {
             // Some entries have partial media
             if ui.button("Scrape All Media").clicked() {
                 backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Scrape Missing Media").clicked() {
                 backend::assets::scrape_missing_media_for_selection(app, console_idx, ctx);
-                ui.close_menu();
+                ui.close();
             }
         } else {
             // No entry has any media
             if ui.button("Scrape Media").clicked() {
                 backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
-                ui.close_menu();
+                ui.close();
             }
         }
 
@@ -431,14 +431,14 @@ fn show_row_context_menu(
             };
             if ui.button(label).clicked() {
                 backend::assets::regenerate_miximages_for_selection(app, console_idx, ctx);
-                ui.close_menu();
+                ui.close();
             }
         }
     }
 
     if ui.button("Auto Rename").clicked() {
         backend::rename::rename_selected_entries(app, console_idx, ctx);
-        ui.close_menu();
+        ui.close();
     }
 
     // Fix CUE Sheet — only show when at least one selected entry has CUE compat issues
@@ -453,7 +453,7 @@ fn show_row_context_menu(
         if has_cue_issues {
             if ui.button("Fix CUE Sheet").clicked() {
                 backend::fix_cue::fix_cue_for_selection(app, console_idx, ctx);
-                ui.close_menu();
+                ui.close();
             }
         }
     }
@@ -471,7 +471,7 @@ fn show_row_context_menu(
 
     if ui.button(util::REVEAL_LABEL).clicked() {
         util::reveal_in_file_manager(&data.file_path);
-        ui.close_menu();
+        ui.close();
     }
 
     ui.separator();
@@ -480,8 +480,7 @@ fn show_row_context_menu(
         let paths = collect_selected_field(app, console_idx, |entry| {
             Some(entry.game_entry.analysis_path().display().to_string())
         });
-        ui.output_mut(|o| o.copied_text = paths);
-        ui.close_menu();
+        crate::util::copy_and_close(ui, paths);
     }
 
     let has_serial = data.serial.is_some()
@@ -503,8 +502,7 @@ fn show_row_context_menu(
                 .as_ref()
                 .and_then(|id| id.serial_number.clone())
         });
-        ui.output_mut(|o| o.copied_text = serials);
-        ui.close_menu();
+        crate::util::copy_and_close(ui, serials);
     }
 
     let has_crc32 = data.crc32.is_some()
@@ -522,8 +520,7 @@ fn show_row_context_menu(
         let crcs = collect_selected_field(app, console_idx, |entry| {
             entry.hashes.as_ref().map(|h| h.crc32.clone())
         });
-        ui.output_mut(|o| o.copied_text = crcs);
-        ui.close_menu();
+        crate::util::copy_and_close(ui, crcs);
     }
 
     let has_dat = data.dat_match.is_some()
@@ -541,8 +538,7 @@ fn show_row_context_menu(
         let dats = collect_selected_field(app, console_idx, |entry| {
             entry.dat_match.as_ref().map(|dm| dm.game_name.clone())
         });
-        ui.output_mut(|o| o.copied_text = dats);
-        ui.close_menu();
+        crate::util::copy_and_close(ui, dats);
     }
 }
 
@@ -577,7 +573,7 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
                 }
             }
             app.save_entry_cache(console_idx, &indices);
-            ui.close_menu();
+            ui.close();
         }
 
         if !recommended.is_empty() {
@@ -592,7 +588,7 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
                         }
                     }
                     app.save_entry_cache(console_idx, &indices);
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         }
@@ -608,7 +604,7 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
                     }
                 }
                 app.save_entry_cache(console_idx, &indices);
-                ui.close_menu();
+                ui.close();
             }
         }
     });
@@ -720,7 +716,7 @@ fn show_tag_menu_items(
                     console_idx,
                     entry_idx,
                 };
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("Mark as Modded Version of\u{2026}").clicked() {
                 app.tag_dialog = TagDialog::ModSearch {
@@ -730,7 +726,7 @@ fn show_tag_menu_items(
                     console_idx,
                     entry_idx,
                 };
-                ui.close_menu();
+                ui.close();
             }
         }
         EntryStatus::Tagged(_) => {
@@ -738,7 +734,7 @@ fn show_tag_menu_items(
             if ui.button("Remove Tag").clicked() {
                 app.library.consoles[console_idx].entries[entry_idx].tag = None;
                 app.save_entry_cache(console_idx, &[entry_idx]);
-                ui.close_menu();
+                ui.close();
             }
         }
         _ => {}

@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "app_tests.rs"]
+mod tests;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -124,10 +128,6 @@ pub struct RetroJunkApp {
 
 impl RetroJunkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        egui_extras::install_image_loaders(&cc.egui_ctx);
-        crate::fonts::configure_cjk_fonts(&cc.egui_ctx);
-        let (tx, rx) = mpsc::channel();
-        let context = Arc::new(retro_junk_lib::create_default_context());
         let settings = crate::settings::load_settings();
 
         // Always open (or create) the catalog DB — used for enrichment + library cache
@@ -138,38 +138,7 @@ impl RetroJunkApp {
             .as_ref()
             .and_then(|p| retro_junk_db::open_database(p).ok());
 
-        let mut app = Self {
-            context,
-            current_view: View::Library,
-            root_path: None,
-            library: Library::default(),
-            dat_indices: HashMap::new(),
-            operations: Vec::new(),
-            message_rx: rx,
-            message_tx: tx,
-            selected_console: None,
-            focused_entry: None,
-            selected_entries: std::collections::HashSet::new(),
-            filter_text: String::new(),
-            detail_panel_open: true,
-            settings,
-            catalog_db,
-            db_path,
-            rename_results: None,
-            cue_fix_results: None,
-            loading_library: false,
-            tools_state: ToolsState::default(),
-            focused_panel: FocusedPanel::default(),
-            scroll_to_row: None,
-            tag_dialog: crate::state::TagDialog::None,
-            fragile_mount_prompt: None,
-            log_viewer: crate::widgets::log_viewer::LogViewerState::default(),
-            error_list: Vec::new(),
-            pending_organize_plan: None,
-            pending_auto_scans: std::collections::VecDeque::new(),
-            auto_scan_in_flight: None,
-            auto_scan_op_id: None,
-        };
+        let mut app = Self::with_parts(&cc.egui_ctx, settings, catalog_db, db_path);
 
         // Restore last open root from settings
         if let Some(ref root) = app.settings.library.current_root.clone() {
@@ -236,6 +205,54 @@ impl RetroJunkApp {
         app
     }
 
+    /// Build the app from explicit parts, touching neither settings on disk
+    /// nor the catalog database. `new` layers the disk I/O and library
+    /// restore on top; GUI tests call this directly for a hermetic instance.
+    pub(crate) fn with_parts(
+        egui_ctx: &egui::Context,
+        settings: AppSettings,
+        catalog_db: Option<retro_junk_db::Connection>,
+        db_path: Option<std::path::PathBuf>,
+    ) -> Self {
+        egui_extras::install_image_loaders(egui_ctx);
+        crate::fonts::configure_cjk_fonts(egui_ctx);
+        let (tx, rx) = mpsc::channel();
+        let context = Arc::new(retro_junk_lib::create_default_context());
+
+        Self {
+            context,
+            current_view: View::Library,
+            root_path: None,
+            library: Library::default(),
+            dat_indices: HashMap::new(),
+            operations: Vec::new(),
+            message_rx: rx,
+            message_tx: tx,
+            selected_console: None,
+            focused_entry: None,
+            selected_entries: std::collections::HashSet::new(),
+            filter_text: String::new(),
+            detail_panel_open: true,
+            settings,
+            catalog_db,
+            db_path,
+            rename_results: None,
+            cue_fix_results: None,
+            loading_library: false,
+            tools_state: ToolsState::default(),
+            focused_panel: FocusedPanel::default(),
+            scroll_to_row: None,
+            tag_dialog: crate::state::TagDialog::None,
+            fragile_mount_prompt: None,
+            log_viewer: crate::widgets::log_viewer::LogViewerState::default(),
+            error_list: Vec::new(),
+            pending_organize_plan: None,
+            pending_auto_scans: std::collections::VecDeque::new(),
+            auto_scan_in_flight: None,
+            auto_scan_op_id: None,
+        }
+    }
+
     /// Drain all pending messages from background threads.
     fn process_messages(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.message_rx.try_recv() {
@@ -290,7 +307,9 @@ impl RetroJunkApp {
 }
 
 impl eframe::App for RetroJunkApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = &ui.ctx().clone();
+
         // Drain background messages
         self.process_messages(ctx);
 
@@ -312,10 +331,10 @@ impl eframe::App for RetroJunkApp {
 
         // Sidebar
         let prev_view = self.current_view;
-        egui::SidePanel::left("sidebar")
+        egui::Panel::left("sidebar")
             .resizable(false)
-            .exact_width(120.0)
-            .show(ctx, |ui| {
+            .exact_size(120.0)
+            .show(ui, |ui| {
                 ui.add_space(8.0);
                 ui.heading("retro-junk");
                 ui.separator();
@@ -334,20 +353,20 @@ impl eframe::App for RetroJunkApp {
 
         // Bottom panels render in order: status bar (bottommost), log viewer, activity bar.
         // egui stacks bottom panels upward, so the first one rendered sits at the very bottom.
-        if widgets::status_bar::show(ctx) {
+        if widgets::status_bar::show(ui) {
             self.log_viewer.open = !self.log_viewer.open;
         }
-        widgets::log_viewer::show(ctx, &mut self.log_viewer);
+        widgets::log_viewer::show(ui, &mut self.log_viewer);
 
         // Activity bar (bottom, only when operations active)
         if self.has_active_operations() {
-            egui::TopBottomPanel::bottom("activity_bar").show(ctx, |ui| {
+            egui::Panel::bottom("activity_bar").show(ui, |ui| {
                 widgets::activity_bar::show(ui, &mut self.operations);
             });
         }
 
         // Main content
-        egui::CentralPanel::default().show(ctx, |ui| match self.current_view {
+        egui::CentralPanel::default().show(ui, |ui| match self.current_view {
             View::Library => views::library::show(ui, self, ctx),
             View::Settings => views::settings::show(ui, self),
             View::Tools => views::tools::show(ui, self),
@@ -378,7 +397,7 @@ impl eframe::App for RetroJunkApp {
         widgets::error_dialog::show(ctx, &mut self.error_list);
     }
 
-    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+    fn on_exit(&mut self) {
         log::info!(
             "on_exit: saving state ({} consoles)",
             self.library.consoles.len()

@@ -55,7 +55,9 @@
 
 ## Testing
 
-- [ ] **Adopt `egui_kittest` for headless GUI testing** — egui's official testing harness (AccessKit-based queries, simulated clicks/keys, snapshot rendering) can drive the GUI headlessly, without a display server or external drivers (Xvfb/xdotool/nested compositors). Use it to test flows like root switching, view state, and dialogs. Caveat: native `rfd` dialogs (file picker, message boxes) live outside the egui scene graph, so kittest can't reach them — flows under test should route confirmations through egui-native modals or an injectable confirm hook (e.g. the fragile-mount warning in `switch_to_root`).
+- [x] **Adopt `egui_kittest` for headless GUI testing** — Done with the egui 0.35 upgrade (2026-07-10): `egui_kittest` dev-dependency with `Harness::new_eframe` smoke tests in `retro-junk-gui/src/app_tests.rs`, built on the hermetic `RetroJunkApp::with_parts` constructor (no settings/DB disk access). Caveat still applies: native `rfd` dialogs live outside the egui scene graph, so kittest can't reach them — flows under test should route confirmations through egui-native modals or an injectable confirm hook.
+
+- [ ] **Expand kittest coverage** — Current tests are startup smoke tests (sidebar present, welcome screen, view switching). Add coverage for root switching, the fragile-mount dialog, game-table selection/filtering, and dialogs; consider snapshot tests (`egui_kittest` `snapshot`+`wgpu` features) for visual regressions.
 
 ## Ideas
 

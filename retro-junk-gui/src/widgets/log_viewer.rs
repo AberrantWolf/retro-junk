@@ -32,17 +32,17 @@ impl Default for LogViewerState {
 }
 
 /// Render the log viewer panel. Only shown when `state.open` is true.
-pub fn show(ctx: &egui::Context, state: &mut LogViewerState) {
+pub fn show(ui: &mut egui::Ui, state: &mut LogViewerState) {
     if !state.open {
         return;
     }
 
-    egui::TopBottomPanel::bottom("log_viewer")
+    egui::Panel::bottom("log_viewer")
         .resizable(true)
-        .default_height(200.0)
-        .min_height(80.0)
-        .max_height(500.0)
-        .show(ctx, |ui| {
+        .default_size(200.0)
+        .min_size(80.0)
+        .max_size(500.0)
+        .show(ui, |ui| {
             // Toolbar
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("Log").strong());

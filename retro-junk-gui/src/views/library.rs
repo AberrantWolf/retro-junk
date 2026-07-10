@@ -13,11 +13,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     // Three-pane layout: Console Tree | Game Table | Detail Panel
 
     // Console tree (left)
-    egui::SidePanel::left("console_tree")
+    egui::Panel::left("console_tree")
         .resizable(true)
-        .default_width(200.0)
-        .width_range(150.0..=300.0)
-        .show_inside(ui, |ui| {
+        .default_size(200.0)
+        .size_range(150.0..=300.0)
+        .show(ui, |ui| {
             ui.add_space(4.0);
 
             // Open folder button at top of tree
@@ -33,17 +33,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     // Detail panel (right, collapsible)
     if app.detail_panel_open {
-        egui::SidePanel::right("detail_panel")
+        egui::Panel::right("detail_panel")
             .resizable(true)
-            .default_width(280.0)
-            .width_range(200.0..=500.0)
-            .show_inside(ui, |ui| {
+            .default_size(280.0)
+            .size_range(200.0..=500.0)
+            .show(ui, |ui| {
                 widgets::detail_panel::show(ui, app);
             });
     }
 
     // Game table (center, fills remaining space)
-    egui::CentralPanel::default().show_inside(ui, |ui| {
+    egui::CentralPanel::default().show(ui, |ui| {
         // Toolbar
         ui.horizontal(|ui| {
             ui.add(

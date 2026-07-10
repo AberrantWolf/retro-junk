@@ -121,8 +121,7 @@ fn stat_row(ui: &mut egui::Ui, label: &str, value: i64) {
     let resp = ui.label(&text);
     resp.context_menu(|ui| {
         if ui.button("Copy").clicked() {
-            ui.output_mut(|o| o.copied_text = text.clone());
-            ui.close_menu();
+            crate::util::copy_and_close(ui, text.clone());
         }
     });
     ui.end_row();

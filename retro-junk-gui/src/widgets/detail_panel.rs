@@ -76,8 +76,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             let resp = ui.colored_label(color, text);
             resp.context_menu(|ui| {
                 if ui.button("Copy").clicked() {
-                    ui.output_mut(|o| o.copied_text = text.to_string());
-                    ui.close_menu();
+                    crate::util::copy_and_close(ui, text.to_string());
                 }
             });
         });
@@ -587,7 +586,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     let image = egui::Image::new(uri)
                         .fit_to_exact_size(egui::vec2(panel_width, panel_width))
                         .maintain_aspect_ratio(true)
-                        .rounding(4.0);
+                        .corner_radius(4.0);
 
                     let response = ui.add(image);
                     if let Some(path_str) = path.to_str() {
@@ -604,8 +603,7 @@ fn copyable_label(ui: &mut egui::Ui, text: &str) -> egui::Response {
     let resp = ui.label(text);
     resp.context_menu(|ui| {
         if ui.button("Copy").clicked() {
-            ui.output_mut(|o| o.copied_text = text.to_string());
-            ui.close_menu();
+            crate::util::copy_and_close(ui, text.to_string());
         }
     });
     resp

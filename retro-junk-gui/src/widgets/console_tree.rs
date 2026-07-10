@@ -162,7 +162,7 @@ fn show_console_context_menu(
         // Reset scan status to allow re-scanning
         app.library.consoles[console_idx].scan_status = ScanStatus::NotScanned;
         backend::scan::quick_scan_console(app, console_idx, ctx);
-        ui.close_menu();
+        ui.close();
     }
 
     if ui
@@ -175,7 +175,7 @@ fn show_console_context_menu(
         // Select all entries, then compute hashes
         app.selected_entries = (0..entry_count).collect();
         backend::hash::compute_hashes_for_selection(app, console_idx);
-        ui.close_menu();
+        ui.close();
     }
 
     if ui
@@ -187,7 +187,7 @@ fn show_console_context_menu(
     {
         app.selected_entries = (0..entry_count).collect();
         backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
-        ui.close_menu();
+        ui.close();
     }
 
     // Organize: only for disc-based consoles with loose disc files
@@ -209,7 +209,7 @@ fn show_console_context_menu(
                 .clicked()
             {
                 backend::organize::organize_console(app, console_idx, ctx);
-                ui.close_menu();
+                ui.close();
             }
         }
     }
@@ -225,7 +225,7 @@ fn show_console_context_menu(
             .clicked()
         {
             backend::export::generate_gamelist(app, console_idx, ctx);
-            ui.close_menu();
+            ui.close();
         }
     });
 
@@ -233,6 +233,6 @@ fn show_console_context_menu(
 
     if ui.button(util::REVEAL_LABEL).clicked() {
         util::reveal_in_file_manager(folder_path);
-        ui.close_menu();
+        ui.close();
     }
 }

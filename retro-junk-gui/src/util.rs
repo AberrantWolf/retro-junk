@@ -15,6 +15,14 @@ pub fn fragile_mount_kind(path: &Path) -> Option<&'static str> {
     }
 }
 
+/// Copy `text` to the clipboard and close the enclosing menu.
+///
+/// The standard action for a "Copy" context-menu item.
+pub fn copy_and_close(ui: &mut egui::Ui, text: String) {
+    ui.ctx().copy_text(text);
+    ui.close();
+}
+
 /// Platform-appropriate label for the "reveal in file manager" menu item.
 pub const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
     "Reveal in Finder"

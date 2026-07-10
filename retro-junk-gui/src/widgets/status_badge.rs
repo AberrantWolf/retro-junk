@@ -49,8 +49,12 @@ pub fn show_with_warning(
                 AssetStatus::None => {
                     // Hollow dim square
                     let stroke_color = ui.visuals().text_color().linear_multiply(0.25);
-                    ui.painter()
-                        .rect_stroke(sq_rect, 0.0, egui::Stroke::new(1.0, stroke_color));
+                    ui.painter().rect_stroke(
+                        sq_rect,
+                        0.0,
+                        egui::Stroke::new(1.0, stroke_color),
+                        egui::StrokeKind::Middle,
+                    );
                 }
                 AssetStatus::Partial { .. } => {
                     // Orange/yellow filled square

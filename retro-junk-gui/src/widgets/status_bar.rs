@@ -12,12 +12,12 @@ fn level_color(level: log::Level) -> egui::Color32 {
 }
 
 /// Render the status bar. Returns `true` if the user clicked it (toggle log viewer).
-pub fn show(ctx: &egui::Context) -> bool {
+pub fn show(ui: &mut egui::Ui) -> bool {
     let mut clicked = false;
 
-    egui::TopBottomPanel::bottom("status_bar")
-        .exact_height(22.0)
-        .show(ctx, |ui| {
+    egui::Panel::bottom("status_bar")
+        .exact_size(22.0)
+        .show(ui, |ui| {
             // Make the entire panel area clickable, not just the labels.
             ui.set_min_width(ui.available_width());
             let rect = ui.max_rect();
