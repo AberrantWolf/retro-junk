@@ -20,6 +20,12 @@ irm https://github.com/AberrantWolf/retro-junk/releases/latest/download/retro-ju
 cargo install --path retro-junk-cli
 ```
 
+> **Note:** This repo uses [Git LFS](https://git-lfs.com/) for the CJK font files embedded in the GUI. Without it, `cargo test --workspace` and the `cjk-full`/`cjk-jp` GUI builds fail with a font-parsing panic (the checkout contains LFS pointer text instead of fonts). After cloning, run:
+>
+> ```bash
+> git lfs install --local && git lfs pull
+> ```
+
 ## 🚀 Quick Start
 
 retro-junk expects ROMs organized in console-named folders (e.g., `snes/`, `n64/`, `ps1/`). Set your library path once with `retro-junk settings library-path /path/to/roms`, or pass `-L /path/to/roms` to any command.
