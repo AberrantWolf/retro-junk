@@ -51,6 +51,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             let new_console_idx = ordered_console_indices[action.new_index];
             if app.selected_console != Some(new_console_idx) {
                 app.selected_console = Some(new_console_idx);
+                app.scroll_to_console = Some(new_console_idx);
                 app.focused_entry = None;
                 app.selected_entries.clear();
                 app.filter_text.clear();
@@ -104,14 +105,23 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     let entry_count = console.entries.len();
                     let is_scanned = console.scan_status == ScanStatus::Scanned;
 
-                    let resp = ui.horizontal(|ui| {
-                        if let Some(status) = worst_status {
-                            status_badge::show(ui, status);
-                        }
-                        ui.selectable_label(is_selected, &label)
-                    });
-
-                    let label_resp = resp.inner;
+                    // Pin the row id to the stable console index so the
+                    // selectable_label's id does not shift when the optional
+                    // status badge is (or isn't) allocated alongside it. Without
+                    // this, a NotScanned -> Scanned transition toggles the badge
+                    // allocation, shifting positional auto-ids and producing
+                    // "changed id between passes" warnings + scroll resets.
+                    let label_resp = ui
+                        .push_id(i, |ui| {
+                            ui.horizontal(|ui| {
+                                if let Some(status) = worst_status {
+                                    status_badge::show(ui, status);
+                                }
+                                ui.selectable_label(is_selected, &label)
+                            })
+                            .inner
+                        })
+                        .inner;
 
                     if label_resp.clicked() && !is_selected {
                         app.selected_console = Some(i);
@@ -126,8 +136,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         }
                     }
 
-                    // Scroll to selected console when navigated via keyboard
-                    if is_selected {
+                    // Scroll to this console only on the frame keyboard
+                    // navigation targeted it — not every frame, which would pin
+                    // the view and block manual scrolling. Mirrors the game
+                    // table's `scroll_to_row` handling.
+                    if app.scroll_to_console == Some(i) {
                         label_resp.scroll_to_me(Some(egui::Align::Center));
                     }
 
@@ -146,6 +159,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 }
             });
     }
+
+    // Consume the one-shot scroll request; the targeted row (if visible) has
+    // now scrolled itself into view.
+    app.scroll_to_console = None;
 }
 
 /// Render the context menu for a console tree entry.

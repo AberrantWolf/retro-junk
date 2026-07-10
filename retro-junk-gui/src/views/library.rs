@@ -26,9 +26,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             }
             ui.separator();
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                widgets::console_tree::show(ui, app, ctx);
-            });
+            egui::ScrollArea::vertical()
+                .id_salt("console_tree_scroll")
+                .show(ui, |ui| {
+                    widgets::console_tree::show(ui, app, ctx);
+                });
         });
 
     // Detail panel (right, collapsible)

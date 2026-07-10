@@ -49,6 +49,12 @@ pub struct RetroJunkApp {
     /// Index of the currently selected console in `library.consoles`.
     pub selected_console: Option<usize>,
 
+    /// When set, the console tree will scroll to this console index. One-shot:
+    /// set on keyboard navigation, consumed and cleared by the tree next frame.
+    /// Mirrors `scroll_to_row` for the game table; scrolling every frame while a
+    /// console is merely selected would pin the view and block manual scrolling.
+    pub scroll_to_console: Option<usize>,
+
     /// Index of the focused entry in the selected console's entries list.
     pub focused_entry: Option<usize>,
 
@@ -229,6 +235,7 @@ impl RetroJunkApp {
             message_rx: rx,
             message_tx: tx,
             selected_console: None,
+            scroll_to_console: None,
             focused_entry: None,
             selected_entries: std::collections::HashSet::new(),
             filter_text: String::new(),
