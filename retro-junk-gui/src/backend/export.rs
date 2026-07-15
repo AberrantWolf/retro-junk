@@ -3,7 +3,7 @@ use retro_junk_frontend::{Frontend, ScrapedGame};
 
 use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
-use crate::state::{self, AppMessage};
+use crate::state::{self, AppMessage, OperationKind, ProgressDisplay};
 
 /// Generate a gamelist.xml (ES-DE format) for a console on a background thread.
 pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
@@ -40,22 +40,29 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
     let ctx = ctx.clone();
     let description = format!("Exporting gamelist.xml for {}", folder_name);
 
-    spawn_background_op(app, description, move |op_id, _cancel, tx| {
-        let result = do_generate(
-            &root_path,
-            &folder_name,
-            &entry_data,
-            &metadata_dir_setting,
-            &media_dir_setting,
-        );
+    spawn_background_op(
+        app,
+        description,
+        OperationKind::Other,
+        None,
+        ProgressDisplay::Count,
+        move |op_id, _cancel, tx| {
+            let result = do_generate(
+                &root_path,
+                &folder_name,
+                &entry_data,
+                &metadata_dir_setting,
+                &media_dir_setting,
+            );
 
-        let _ = tx.send(AppMessage::ExportComplete {
-            folder_name,
-            result,
-        });
-        let _ = tx.send(AppMessage::OperationComplete { op_id });
-        ctx.request_repaint();
-    });
+            let _ = tx.send(AppMessage::ExportComplete {
+                folder_name,
+                result,
+            });
+            let _ = tx.send(AppMessage::OperationComplete { op_id });
+            ctx.request_repaint();
+        },
+    );
 }
 
 /// Snapshot of the entry data needed for export (avoids sending non-Send types).

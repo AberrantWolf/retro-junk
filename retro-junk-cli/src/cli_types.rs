@@ -102,6 +102,33 @@ pub(crate) enum Commands {
         hash_fallback: bool,
     },
 
+    /// Compress disc images (cue/bin, GDI, ISO) to CHD using chdman
+    ///
+    /// Every CHD is round-trip verified (re-extracted and compared
+    /// track-by-track against the originals) before being reported as
+    /// compressed. Originals are kept unless --delete-sources is given,
+    /// and are never deleted when verification fails.
+    Compress {
+        /// Show planned compressions without executing
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        /// Delete original files after each verified compression
+        #[arg(long)]
+        delete_sources: bool,
+
+        /// Skip the per-console confirmation prompt
+        #[arg(short = 'y', long)]
+        yes: bool,
+
+        /// Path to the chdman executable (default: chdman from PATH)
+        #[arg(long)]
+        chdman: Option<PathBuf>,
+
+        #[command(flatten)]
+        roms: ConsoleFilterArgs,
+    },
+
     /// Fix CDRWin-format CUE sheets for wider emulator compatibility
     FixCue {
         /// Show planned fixes without executing

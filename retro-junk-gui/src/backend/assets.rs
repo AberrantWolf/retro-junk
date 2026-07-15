@@ -10,7 +10,7 @@ use retro_junk_scraper::ScrapeError;
 
 use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
-use crate::state::{self, AppMessage};
+use crate::state::{self, AppMessage, OperationKind, ProgressDisplay};
 
 /// Load media files for an entry on a background thread.
 ///
@@ -196,49 +196,19 @@ fn scrape_media_for_selection(
     };
     let description = format!("{} ({} entries)", verb, work.len());
 
-    spawn_background_op(app, description, move |op_id, cancel, tx| {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(rt) => rt,
-            Err(e) => {
-                log::error!("Failed to create tokio runtime: {}", e);
-                let _ = tx.send(AppMessage::ScrapeFatalError {
-                    message: format!("Failed to create async runtime: {}", e),
-                    op_id,
-                });
-                let _ = tx.send(AppMessage::OperationComplete { op_id });
-                return;
-            }
-        };
-
-        rt.block_on(async {
-            // Connect to ScreenScraper (cancel-aware — initial handshake can take ~90s if slow)
-            let (client, _max_workers) =
-                match cancellable(retro_junk_scraper::create_client(None), &cancel).await {
-                    None => {
-                        let _ = tx.send(AppMessage::OperationComplete { op_id });
-                        return;
-                    }
-                    Some(Ok(r)) => r,
-                    Some(Err(e)) => {
-                        log::error!("Failed to connect to ScreenScraper: {}", e);
-                        let _ = tx.send(AppMessage::ScrapeFatalError {
-                            message: format!("ScreenScraper connection failed: {}", e),
-                            op_id,
-                        });
-                        let _ = tx.send(AppMessage::OperationComplete { op_id });
-                        return;
-                    }
-                };
-
-            let system_id = match retro_junk_scraper::screenscraper_system_id(platform) {
-                Some(id) => id,
-                None => {
-                    log::error!("No ScreenScraper system ID for {:?}", platform);
+    spawn_background_op(
+        app,
+        description,
+        OperationKind::Other,
+        Some(folder_name.clone()),
+        ProgressDisplay::Count,
+        move |op_id, cancel, tx| {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("Failed to create tokio runtime: {}", e);
                     let _ = tx.send(AppMessage::ScrapeFatalError {
-                        message: format!(
-                            "Platform {:?} is not supported by ScreenScraper",
-                            platform
-                        ),
+                        message: format!("Failed to create async runtime: {}", e),
                         op_id,
                     });
                     let _ = tx.send(AppMessage::OperationComplete { op_id });
@@ -246,8 +216,47 @@ fn scrape_media_for_selection(
                 }
             };
 
-            let media_dir =
-                match state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
+            rt.block_on(async {
+                // Connect to ScreenScraper (cancel-aware — initial handshake can take ~90s if slow)
+                let (client, _max_workers) =
+                    match cancellable(retro_junk_scraper::create_client(None), &cancel).await {
+                        None => {
+                            let _ = tx.send(AppMessage::OperationComplete { op_id });
+                            return;
+                        }
+                        Some(Ok(r)) => r,
+                        Some(Err(e)) => {
+                            log::error!("Failed to connect to ScreenScraper: {}", e);
+                            let _ = tx.send(AppMessage::ScrapeFatalError {
+                                message: format!("ScreenScraper connection failed: {}", e),
+                                op_id,
+                            });
+                            let _ = tx.send(AppMessage::OperationComplete { op_id });
+                            return;
+                        }
+                    };
+
+                let system_id = match retro_junk_scraper::screenscraper_system_id(platform) {
+                    Some(id) => id,
+                    None => {
+                        log::error!("No ScreenScraper system ID for {:?}", platform);
+                        let _ = tx.send(AppMessage::ScrapeFatalError {
+                            message: format!(
+                                "Platform {:?} is not supported by ScreenScraper",
+                                platform
+                            ),
+                            op_id,
+                        });
+                        let _ = tx.send(AppMessage::OperationComplete { op_id });
+                        return;
+                    }
+                };
+
+                let media_dir = match state::asset_dir_for_console(
+                    &root_path,
+                    &folder_name,
+                    &media_dir_setting,
+                ) {
                     Some(d) => d,
                     None => {
                         log::error!("Cannot determine media directory for {}", folder_name);
@@ -260,138 +269,139 @@ fn scrape_media_for_selection(
                     }
                 };
 
-            let selection = retro_junk_scraper::AssetSelection::default();
-            // Event channel for download_game_media (we don't consume events, just log)
-            let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+                let selection = retro_junk_scraper::AssetSelection::default();
+                // Event channel for download_game_media (we don't consume events, just log)
+                let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
 
-            // Load miximage layout once for auto-generation after each entry
-            let layout =
-                retro_junk_frontend::miximage_layout::MiximageLayout::load_or_create().ok();
+                // Load miximage layout once for auto-generation after each entry
+                let layout =
+                    retro_junk_frontend::miximage_layout::MiximageLayout::load_or_create().ok();
 
-            for (file_num, item) in work.iter().enumerate() {
-                if cancel.load(Ordering::Relaxed) {
-                    break;
+                for (file_num, item) in work.iter().enumerate() {
+                    if cancel.load(Ordering::Relaxed) {
+                        break;
+                    }
+
+                    let _ = tx.send(AppMessage::OperationProgress {
+                        op_id,
+                        current: file_num as u64,
+                        total: work.len() as u64,
+                    });
+                    ctx.request_repaint();
+
+                    // Build RomInfo from pre-collected data
+                    let rom_info = retro_junk_scraper::lookup::RomInfo {
+                        serial: item.serial.clone(),
+                        scraper_serial: item.scraper_serial.clone(),
+                        filename: item.filename.clone(),
+                        file_size: item.file_size,
+                        crc32: item.crc32.clone(),
+                        md5: item.md5.clone(),
+                        sha1: item.sha1.clone(),
+                        platform: item.platform,
+                        expects_serial: retro_junk_scraper::expects_serial(item.platform),
+                    };
+
+                    // Look up the game on ScreenScraper
+                    let lookup_result = match cancellable(
+                        retro_junk_scraper::lookup::lookup_game(&client, system_id, &rom_info),
+                        &cancel,
+                    )
+                    .await
+                    {
+                        None => break,
+                        Some(Ok(result)) => result,
+                        Some(Err(e)) => {
+                            if is_fatal_scrape_error(&e) {
+                                log::error!("Fatal scrape error: {}", e);
+                                let _ = tx.send(AppMessage::ScrapeFatalError {
+                                    message: e.to_string(),
+                                    op_id,
+                                });
+                                let _ = tx.send(AppMessage::OperationComplete { op_id });
+                                return;
+                            }
+                            log::warn!("Lookup failed for {}: {}", item.filename, e);
+                            let _ = tx.send(AppMessage::ScrapeEntryFailed {
+                                folder_name: folder_name.clone(),
+                                entry_name: item.entry_name.clone(),
+                                error: e.to_string(),
+                            });
+                            ctx.request_repaint();
+                            continue;
+                        }
+                    };
+
+                    // Download media
+                    let downloaded = match cancellable(
+                        retro_junk_scraper::assets::download_game_assets(
+                            &client,
+                            &lookup_result.game,
+                            &selection,
+                            &media_dir,
+                            &item.rom_stem,
+                            &item.preferred_region,
+                            force_redownload,
+                            file_num,
+                            &item.filename,
+                            &event_tx,
+                        ),
+                        &cancel,
+                    )
+                    .await
+                    {
+                        None => break,
+                        Some(Ok(media)) => media,
+                        Some(Err(e)) => {
+                            if is_fatal_scrape_error(&e) {
+                                log::error!("Fatal scrape error during download: {}", e);
+                                let _ = tx.send(AppMessage::ScrapeFatalError {
+                                    message: e.to_string(),
+                                    op_id,
+                                });
+                                let _ = tx.send(AppMessage::OperationComplete { op_id });
+                                return;
+                            }
+                            log::warn!("Media download failed for {}: {}", item.filename, e);
+                            let _ = tx.send(AppMessage::ScrapeEntryFailed {
+                                folder_name: folder_name.clone(),
+                                entry_name: item.entry_name.clone(),
+                                error: e.to_string(),
+                            });
+                            ctx.request_repaint();
+                            continue;
+                        }
+                    };
+
+                    // Register downloaded images with egui and invalidate old ones
+                    for path in downloaded.values() {
+                        let uri = format!("bytes://media/{}", path.display());
+                        ctx.forget_image(&uri);
+                        if let Ok(bytes) = std::fs::read(path) {
+                            ctx.include_bytes(uri, bytes);
+                        }
+                    }
+
+                    // Auto-generate miximage from the freshly downloaded media
+                    let final_media = if let Some(ref layout) = layout {
+                        generate_miximage_for_entry(&media_dir, &item.rom_stem, layout, &ctx)
+                    } else {
+                        downloaded
+                    };
+
+                    let _ = tx.send(AppMessage::AssetsLoaded {
+                        folder_name: folder_name.clone(),
+                        entry_name: item.entry_name.clone(),
+                        assets: final_media,
+                    });
+                    ctx.request_repaint();
                 }
 
-                let _ = tx.send(AppMessage::OperationProgress {
-                    op_id,
-                    current: file_num as u64,
-                    total: work.len() as u64,
-                });
+                let _ = tx.send(AppMessage::OperationComplete { op_id });
                 ctx.request_repaint();
-
-                // Build RomInfo from pre-collected data
-                let rom_info = retro_junk_scraper::lookup::RomInfo {
-                    serial: item.serial.clone(),
-                    scraper_serial: item.scraper_serial.clone(),
-                    filename: item.filename.clone(),
-                    file_size: item.file_size,
-                    crc32: item.crc32.clone(),
-                    md5: item.md5.clone(),
-                    sha1: item.sha1.clone(),
-                    platform: item.platform,
-                    expects_serial: retro_junk_scraper::expects_serial(item.platform),
-                };
-
-                // Look up the game on ScreenScraper
-                let lookup_result = match cancellable(
-                    retro_junk_scraper::lookup::lookup_game(&client, system_id, &rom_info),
-                    &cancel,
-                )
-                .await
-                {
-                    None => break,
-                    Some(Ok(result)) => result,
-                    Some(Err(e)) => {
-                        if is_fatal_scrape_error(&e) {
-                            log::error!("Fatal scrape error: {}", e);
-                            let _ = tx.send(AppMessage::ScrapeFatalError {
-                                message: e.to_string(),
-                                op_id,
-                            });
-                            let _ = tx.send(AppMessage::OperationComplete { op_id });
-                            return;
-                        }
-                        log::warn!("Lookup failed for {}: {}", item.filename, e);
-                        let _ = tx.send(AppMessage::ScrapeEntryFailed {
-                            folder_name: folder_name.clone(),
-                            entry_name: item.entry_name.clone(),
-                            error: e.to_string(),
-                        });
-                        ctx.request_repaint();
-                        continue;
-                    }
-                };
-
-                // Download media
-                let downloaded = match cancellable(
-                    retro_junk_scraper::assets::download_game_assets(
-                        &client,
-                        &lookup_result.game,
-                        &selection,
-                        &media_dir,
-                        &item.rom_stem,
-                        &item.preferred_region,
-                        force_redownload,
-                        file_num,
-                        &item.filename,
-                        &event_tx,
-                    ),
-                    &cancel,
-                )
-                .await
-                {
-                    None => break,
-                    Some(Ok(media)) => media,
-                    Some(Err(e)) => {
-                        if is_fatal_scrape_error(&e) {
-                            log::error!("Fatal scrape error during download: {}", e);
-                            let _ = tx.send(AppMessage::ScrapeFatalError {
-                                message: e.to_string(),
-                                op_id,
-                            });
-                            let _ = tx.send(AppMessage::OperationComplete { op_id });
-                            return;
-                        }
-                        log::warn!("Media download failed for {}: {}", item.filename, e);
-                        let _ = tx.send(AppMessage::ScrapeEntryFailed {
-                            folder_name: folder_name.clone(),
-                            entry_name: item.entry_name.clone(),
-                            error: e.to_string(),
-                        });
-                        ctx.request_repaint();
-                        continue;
-                    }
-                };
-
-                // Register downloaded images with egui and invalidate old ones
-                for path in downloaded.values() {
-                    let uri = format!("bytes://media/{}", path.display());
-                    ctx.forget_image(&uri);
-                    if let Ok(bytes) = std::fs::read(path) {
-                        ctx.include_bytes(uri, bytes);
-                    }
-                }
-
-                // Auto-generate miximage from the freshly downloaded media
-                let final_media = if let Some(ref layout) = layout {
-                    generate_miximage_for_entry(&media_dir, &item.rom_stem, layout, &ctx)
-                } else {
-                    downloaded
-                };
-
-                let _ = tx.send(AppMessage::AssetsLoaded {
-                    folder_name: folder_name.clone(),
-                    entry_name: item.entry_name.clone(),
-                    assets: final_media,
-                });
-                ctx.request_repaint();
-            }
-
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
-            ctx.request_repaint();
-        });
-    });
+            });
+        },
+    );
 }
 
 /// Re-generate miximages from existing on-disk media for selected entries.
@@ -433,61 +443,70 @@ pub fn regenerate_miximages_for_selection(
     let ctx = ctx.clone();
     let description = format!("Re-generating miximages ({} entries)", work.len());
 
-    spawn_background_op(app, description, move |op_id, cancel, tx| {
-        let media_dir =
-            match state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
-                Some(d) => d,
-                None => {
-                    log::error!("Cannot determine media directory for {}", folder_name);
-                    let _ = tx.send(AppMessage::OperationComplete { op_id });
-                    return;
+    spawn_background_op(
+        app,
+        description,
+        OperationKind::Other,
+        Some(folder_name.clone()),
+        ProgressDisplay::Count,
+        move |op_id, cancel, tx| {
+            let media_dir =
+                match state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
+                    Some(d) => d,
+                    None => {
+                        log::error!("Cannot determine media directory for {}", folder_name);
+                        let _ = tx.send(AppMessage::OperationComplete { op_id });
+                        return;
+                    }
+                };
+
+            let layout =
+                match retro_junk_frontend::miximage_layout::MiximageLayout::load_or_create() {
+                    Ok(l) => l,
+                    Err(e) => {
+                        log::error!("Failed to load miximage layout: {}", e);
+                        let _ = tx.send(AppMessage::OperationComplete { op_id });
+                        return;
+                    }
+                };
+
+            for (file_num, (entry_name, rom_stem)) in work.iter().enumerate() {
+                if cancel.load(Ordering::Relaxed) {
+                    break;
                 }
-            };
 
-        let layout = match retro_junk_frontend::miximage_layout::MiximageLayout::load_or_create() {
-            Ok(l) => l,
-            Err(e) => {
-                log::error!("Failed to load miximage layout: {}", e);
-                let _ = tx.send(AppMessage::OperationComplete { op_id });
-                return;
-            }
-        };
+                let _ = tx.send(AppMessage::OperationProgress {
+                    op_id,
+                    current: file_num as u64,
+                    total: work.len() as u64,
+                });
+                ctx.request_repaint();
 
-        for (file_num, (entry_name, rom_stem)) in work.iter().enumerate() {
-            if cancel.load(Ordering::Relaxed) {
-                break;
-            }
+                let updated_media =
+                    generate_miximage_for_entry(&media_dir, rom_stem, &layout, &ctx);
 
-            let _ = tx.send(AppMessage::OperationProgress {
-                op_id,
-                current: file_num as u64,
-                total: work.len() as u64,
-            });
-            ctx.request_repaint();
-
-            let updated_media = generate_miximage_for_entry(&media_dir, rom_stem, &layout, &ctx);
-
-            // Register all non-miximage images with egui (miximage already registered by helper)
-            for (mt, path) in &updated_media {
-                if *mt != AssetType::Miximage {
-                    let uri = format!("bytes://media/{}", path.display());
-                    if let Ok(bytes) = std::fs::read(path) {
-                        ctx.include_bytes(uri, bytes);
+                // Register all non-miximage images with egui (miximage already registered by helper)
+                for (mt, path) in &updated_media {
+                    if *mt != AssetType::Miximage {
+                        let uri = format!("bytes://media/{}", path.display());
+                        if let Ok(bytes) = std::fs::read(path) {
+                            ctx.include_bytes(uri, bytes);
+                        }
                     }
                 }
+
+                let _ = tx.send(AppMessage::AssetsLoaded {
+                    folder_name: folder_name.clone(),
+                    entry_name: entry_name.clone(),
+                    assets: updated_media,
+                });
+                ctx.request_repaint();
             }
 
-            let _ = tx.send(AppMessage::AssetsLoaded {
-                folder_name: folder_name.clone(),
-                entry_name: entry_name.clone(),
-                assets: updated_media,
-            });
+            let _ = tx.send(AppMessage::OperationComplete { op_id });
             ctx.request_repaint();
-        }
-
-        let _ = tx.send(AppMessage::OperationComplete { op_id });
-        ctx.request_repaint();
-    });
+        },
+    );
 }
 
 /// Discover media files for every entry in a console (cheap `path.exists()` calls).

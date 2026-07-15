@@ -231,3 +231,32 @@ fn test_expects_serial() {
     let analyzer = Ps2Analyzer;
     assert!(analyzer.expects_serial());
 }
+
+// -- CHD extension table --
+
+#[test]
+fn test_chd_media_for_extension_cue_and_iso() {
+    let analyzer = Ps2Analyzer;
+    assert_eq!(
+        analyzer.chd_media_for_extension("cue"),
+        Some(retro_junk_core::ChdMedia::Cd)
+    );
+    assert_eq!(
+        analyzer.chd_media_for_extension("iso"),
+        Some(retro_junk_core::ChdMedia::Dvd)
+    );
+    assert_eq!(analyzer.chd_media_for_extension("bin"), None);
+}
+
+#[test]
+fn test_chd_extensions_declares_a_source_role() {
+    // console_supports_chd-equivalent logic: PS2 is disc-based, so at least
+    // one declared extension must be a CHD Source.
+    let analyzer = Ps2Analyzer;
+    assert!(
+        analyzer
+            .chd_extensions()
+            .iter()
+            .any(|(_, role)| matches!(role, retro_junk_core::ChdExtensionRole::Source(_)))
+    );
+}

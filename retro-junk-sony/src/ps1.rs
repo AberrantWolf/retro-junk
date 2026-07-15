@@ -9,8 +9,8 @@
 use retro_junk_core::ReadSeek;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, FileHashes, HashAlgorithms, Platform, RomAnalyzer,
-    RomIdentification,
+    AnalysisError, AnalysisOptions, ChdExtensionRole, ChdMedia, FileHashes, HashAlgorithms,
+    Platform, RomAnalyzer, RomIdentification,
 };
 
 use crate::sony_disc::{self, DiscFormat};
@@ -299,6 +299,12 @@ impl RomAnalyzer for Ps1Analyzer {
 
     fn redump_slug(&self) -> Option<&'static str> {
         Some("psx")
+    }
+
+    fn chd_extensions(&self) -> &'static [(&'static str, ChdExtensionRole)] {
+        // PS1 discs are CD-ROM; only cue/bin sets carry the full track layout
+        // chdman needs. Loose bin/img/iso rips lack a table of contents.
+        &[("cue", ChdExtensionRole::Source(ChdMedia::Cd))]
     }
 
     fn dat_download_ids(&self) -> &'static [&'static str] {

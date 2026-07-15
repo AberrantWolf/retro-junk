@@ -10,7 +10,7 @@ use retro_junk_lib::scanner;
 
 use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
-use crate::state::{AppMessage, CueCompatIssue};
+use crate::state::{AppMessage, CueCompatIssue, OperationKind, ProgressDisplay};
 
 /// Scan a root folder for console subfolders on a background thread.
 pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Context) {
@@ -20,6 +20,9 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
     spawn_background_op(
         app,
         "Scanning folders...".to_string(),
+        OperationKind::Scan,
+        None,
+        ProgressDisplay::Count,
         move |_op_id, cancel, tx| {
             let result = context.scan_console_folders(&root, None);
             match result {
@@ -68,81 +71,89 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
 
     let platform_name = console.platform_name.to_string();
     let description = format!("Scanning {} ({})", platform_name, folder_name);
+    let scope = Some(folder_name.clone());
 
-    spawn_background_op(app, description, move |op_id, cancel, tx| {
-        let registered = match context.get_by_platform(platform) {
-            Some(r) => r,
-            None => {
-                let fingerprint = crate::cache::compute_fingerprint(&folder_path);
-                let _ = tx.send(AppMessage::ConsoleScanDone {
-                    folder_name,
-                    fingerprint,
-                });
-                ctx.request_repaint();
-                return;
-            }
-        };
-
-        let extensions = scanner::extension_set(registered.analyzer.file_extensions());
-        let entries = match scanner::scan_game_entries(&folder_path, &extensions) {
-            Ok(e) => e,
-            Err(e) => {
-                log::warn!("Failed to scan {}: {}", folder_path.display(), e);
-                let fingerprint = crate::cache::compute_fingerprint(&folder_path);
-                let _ = tx.send(AppMessage::ConsoleScanDone {
-                    folder_name,
-                    fingerprint,
-                });
-                ctx.request_repaint();
-                return;
-            }
-        };
-
-        // Detect loose disc entry-point files (for organize feature)
-        let loose_disc_files: Vec<PathBuf> = entries
-            .iter()
-            .filter_map(|e| {
-                if let scanner::GameEntry::SingleFile(path) = e {
-                    let filename = path.file_name()?.to_string_lossy();
-                    if retro_junk_lib::rename::is_m3u_entry_point(&filename) {
-                        return Some(path.clone());
-                    }
+    spawn_background_op(
+        app,
+        description,
+        OperationKind::Scan,
+        scope,
+        ProgressDisplay::Count,
+        move |op_id, cancel, tx| {
+            let registered = match context.get_by_platform(platform) {
+                Some(r) => r,
+                None => {
+                    let fingerprint = crate::cache::compute_fingerprint(&folder_path);
+                    let _ = tx.send(AppMessage::ConsoleScanDone {
+                        folder_name,
+                        fingerprint,
+                    });
+                    ctx.request_repaint();
+                    return;
                 }
-                None
-            })
-            .collect();
+            };
 
-        // Send the full entry list so the UI can show file names immediately
-        let _ = tx.send(AppMessage::ConsoleScanComplete {
-            folder_name: folder_name.clone(),
-            entries: entries.clone(),
-            loose_disc_files,
-        });
-        ctx.request_repaint();
+            let extensions = scanner::extension_set(registered.analyzer.file_extensions());
+            let entries = match scanner::scan_game_entries(&folder_path, &extensions) {
+                Ok(e) => e,
+                Err(e) => {
+                    log::warn!("Failed to scan {}: {}", folder_path.display(), e);
+                    let fingerprint = crate::cache::compute_fingerprint(&folder_path);
+                    let _ = tx.send(AppMessage::ConsoleScanDone {
+                        folder_name,
+                        fingerprint,
+                    });
+                    ctx.request_repaint();
+                    return;
+                }
+            };
 
-        // Analyze each entry
-        let refs: Vec<&scanner::GameEntry> = entries.iter().collect();
-        analyze_entries(
-            &refs,
-            registered.analyzer.as_ref(),
-            &tx,
-            &folder_name,
-            op_id,
-            &cancel,
-            &ctx,
-        );
+            // Detect loose disc entry-point files (for organize feature)
+            let loose_disc_files: Vec<PathBuf> = entries
+                .iter()
+                .filter_map(|e| {
+                    if let scanner::GameEntry::SingleFile(path) = e {
+                        let filename = path.file_name()?.to_string_lossy();
+                        if retro_junk_lib::rename::is_m3u_entry_point(&filename) {
+                            return Some(path.clone());
+                        }
+                    }
+                    None
+                })
+                .collect();
 
-        let fingerprint = crate::cache::compute_fingerprint(&folder_path);
-        let _ = tx.send(AppMessage::ConsoleScanDone {
-            folder_name: folder_name.clone(),
-            fingerprint,
-        });
-        let _ = tx.send(AppMessage::OperationComplete { op_id });
-        ctx.request_repaint();
+            // Send the full entry list so the UI can show file names immediately
+            let _ = tx.send(AppMessage::ConsoleScanComplete {
+                folder_name: folder_name.clone(),
+                entries: entries.clone(),
+                loose_disc_files,
+            });
+            ctx.request_repaint();
 
-        // Auto-load DAT after scan completes
-        crate::backend::dat::load_dat_for_console(tx, context, platform, folder_name, ctx);
-    });
+            // Analyze each entry
+            let refs: Vec<&scanner::GameEntry> = entries.iter().collect();
+            analyze_entries(
+                &refs,
+                registered.analyzer.as_ref(),
+                &tx,
+                &folder_name,
+                op_id,
+                &cancel,
+                &ctx,
+            );
+
+            let fingerprint = crate::cache::compute_fingerprint(&folder_path);
+            let _ = tx.send(AppMessage::ConsoleScanDone {
+                folder_name: folder_name.clone(),
+                fingerprint,
+            });
+            let _ = tx.send(AppMessage::OperationComplete { op_id });
+            ctx.request_repaint();
+
+            // Auto-load DAT after scan completes
+            crate::backend::dat::load_dat_for_console(tx, context, platform, folder_name, ctx);
+        },
+    );
 }
 
 /// Re-analyze selected entries without rediscovering the folder.
@@ -167,31 +178,39 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let count = selected.len();
     let noun = if count == 1 { "entry" } else { "entries" };
     let description = format!("Rescanning {} {}", count, noun);
+    let scope = Some(folder_name.clone());
 
-    spawn_background_op(app, description, move |op_id, cancel, tx| {
-        let registered = match context.get_by_platform(platform) {
-            Some(r) => r,
-            None => {
-                let _ = tx.send(AppMessage::OperationComplete { op_id });
-                ctx.request_repaint();
-                return;
-            }
-        };
+    spawn_background_op(
+        app,
+        description,
+        OperationKind::Scan,
+        scope,
+        ProgressDisplay::Count,
+        move |op_id, cancel, tx| {
+            let registered = match context.get_by_platform(platform) {
+                Some(r) => r,
+                None => {
+                    let _ = tx.send(AppMessage::OperationComplete { op_id });
+                    ctx.request_repaint();
+                    return;
+                }
+            };
 
-        let refs: Vec<&scanner::GameEntry> = selected.iter().collect();
-        analyze_entries(
-            &refs,
-            registered.analyzer.as_ref(),
-            &tx,
-            &folder_name,
-            op_id,
-            &cancel,
-            &ctx,
-        );
+            let refs: Vec<&scanner::GameEntry> = selected.iter().collect();
+            analyze_entries(
+                &refs,
+                registered.analyzer.as_ref(),
+                &tx,
+                &folder_name,
+                op_id,
+                &cancel,
+                &ctx,
+            );
 
-        let _ = tx.send(AppMessage::OperationComplete { op_id });
-        ctx.request_repaint();
-    });
+            let _ = tx.send(AppMessage::OperationComplete { op_id });
+            ctx.request_repaint();
+        },
+    );
 }
 
 /// Check broken references for all entries that haven't been checked yet.

@@ -29,3 +29,6 @@ chrono.workspace = true
 log.workspace = true
 thiserror.workspace = true
 strip-ansi-escapes.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

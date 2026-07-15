@@ -163,6 +163,7 @@ fn run(
             | Commands::Rename { .. }
             | Commands::Organize { .. }
             | Commands::FixCue { .. }
+            | Commands::Compress { .. }
             | Commands::Repair { .. }
             | Commands::Scrape { .. }
     );
@@ -227,6 +228,25 @@ fn run(
                 dry_run,
                 no_backup,
                 roms.consoles,
+                library_path,
+                quiet,
+            )?;
+        }
+        Commands::Compress {
+            dry_run,
+            delete_sources,
+            yes,
+            chdman,
+            roms,
+        } => {
+            commands::compress::run_compress(
+                ctx,
+                dry_run,
+                delete_sources,
+                yes,
+                chdman,
+                roms.consoles,
+                roms.limit,
                 library_path,
                 quiet,
             )?;

@@ -7,7 +7,11 @@
 
 use retro_junk_core::ReadSeek;
 
-use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
+use retro_junk_core::{
+    AnalysisError, AnalysisOptions, ChdExtensionRole, ChdMedia, FileHashes, HashAlgorithms,
+    Platform, RomAnalyzer, RomIdentification,
+};
+use retro_junk_disc::hash::hash_disc_container;
 
 /// Analyzer for Sega CD / Mega CD disc images.
 #[derive(Debug, Default)]
@@ -44,6 +48,20 @@ impl RomAnalyzer for SegaCdAnalyzer {
         Some("mcd")
     }
 
+    fn chd_extensions(&self) -> &'static [(&'static str, ChdExtensionRole)] {
+        &[("cue", ChdExtensionRole::Source(ChdMedia::Cd))]
+    }
+
+    fn compute_container_hashes(
+        &self,
+        reader: &mut dyn ReadSeek,
+        algorithms: HashAlgorithms,
+        file_path: Option<&std::path::Path>,
+        on_progress: retro_junk_core::HashProgressFn<'_>,
+    ) -> Result<Option<FileHashes>, AnalysisError> {
+        hash_disc_container(reader, algorithms, file_path, "Sega CD", on_progress)
+    }
+
     fn dat_download_ids(&self) -> &'static [&'static str] {
         &["mcd"]
     }
@@ -56,3 +74,7 @@ impl RomAnalyzer for SegaCdAnalyzer {
         &["console_sega_megacd_segacd"]
     }
 }
+
+#[cfg(test)]
+#[path = "tests/sega_cd_tests.rs"]
+mod tests;

@@ -153,6 +153,28 @@ impl DatSource {
     }
 }
 
+/// Physical media class of a disc image, as needed for CHD conversion.
+///
+/// CD-family and DVD-family images use different CHD layouts; which class a
+/// given source file belongs to is analyzer knowledge (see
+/// [`RomAnalyzer::chd_extensions`]). The mapping to concrete converter
+/// commands lives in the conversion layer (retro-junk-lib::chd_convert).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ChdMedia {
+    Cd,
+    Dvd,
+}
+
+/// Role of a file extension in CHD conversion, declared per analyzer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChdExtensionRole {
+    /// chdman can convert this source losslessly to CHD.
+    Source(ChdMedia),
+    /// A container/image format chdman cannot read (CSO, DAX, CDI, ...);
+    /// declared so frontends can explain *why* instead of staying silent.
+    Unconvertible,
+}
+
 /// Hash results for a file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileHashes {
@@ -351,6 +373,28 @@ pub trait RomAnalyzer: Send + Sync {
         _on_progress: HashProgressFn<'_>,
     ) -> Result<Option<FileHashes>, AnalysisError> {
         Ok(None)
+    }
+
+    /// Extensions relevant to CHD conversion for this platform. Lowercase,
+    /// no dot. Default: none (cartridge platforms).
+    fn chd_extensions(&self) -> &'static [(&'static str, ChdExtensionRole)] {
+        &[]
+    }
+
+    /// Returns the chdman media type for compressing a source container with
+    /// the given file extension (lowercase, without the dot) to CHD.
+    ///
+    /// Provided: looks up the extension in [`RomAnalyzer::chd_extensions`].
+    /// Returns `None` when the platform or extension has no supported CHD
+    /// conversion — cartridge platforms, already-compressed containers
+    /// (`chd`, `cso`), and disc formats chdman cannot rebuild losslessly.
+    fn chd_media_for_extension(&self, extension: &str) -> Option<ChdMedia> {
+        self.chd_extensions()
+            .iter()
+            .find_map(|(e, role)| match role {
+                ChdExtensionRole::Source(m) if *e == extension => Some(*m),
+                _ => None,
+            })
     }
 
     /// Returns a closure that normalizes each chunk of ROM data before hashing.

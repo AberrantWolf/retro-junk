@@ -253,3 +253,20 @@ fn test_extract_dat_game_code_no_prefix() {
     // No type prefix — should return None
     assert_eq!(analyzer.extract_dat_game_code("MK-1058-00"), None);
 }
+
+// -- CHD extension table --
+
+#[test]
+fn test_chd_extensions_empty_for_cartridge_platform() {
+    // console_supports_chd-equivalent logic: Genesis is cartridge-based, so
+    // it declares no CHD-convertible extensions and no Source role.
+    let analyzer = GenesisAnalyzer;
+    assert!(analyzer.chd_extensions().is_empty());
+    assert!(
+        !analyzer
+            .chd_extensions()
+            .iter()
+            .any(|(_, role)| matches!(role, retro_junk_core::ChdExtensionRole::Source(_)))
+    );
+    assert_eq!(analyzer.chd_media_for_extension("cue"), None);
+}

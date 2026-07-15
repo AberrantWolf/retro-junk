@@ -26,6 +26,12 @@ pub(crate) enum CliError {
     /// Catch-all for other errors
     #[error("{0}")]
     Other(String),
+
+    /// An external tool required by the command is missing or unusable
+    /// (e.g. chdman). Distinct from `UnknownSystem`, which concerns
+    /// unrecognized *platforms*, not missing binaries.
+    #[error("{0}")]
+    ExternalTool(String),
 }
 
 impl CliError {
@@ -47,5 +53,9 @@ impl CliError {
 
     pub(crate) fn other(msg: impl Into<String>) -> Self {
         Self::Other(msg.into())
+    }
+
+    pub(crate) fn external_tool(msg: impl Into<String>) -> Self {
+        Self::ExternalTool(msg.into())
     }
 }

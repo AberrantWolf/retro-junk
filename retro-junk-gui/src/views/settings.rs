@@ -1,4 +1,9 @@
+#[cfg(test)]
+#[path = "settings_tests.rs"]
+mod tests;
+
 use crate::app::RetroJunkApp;
+use crate::widgets::results_dialog::{STATUS_ERR, STATUS_OK};
 
 /// Render the Settings view.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -10,6 +15,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         show_library_section(ui, app);
         ui.add_space(16.0);
         show_output_directories_section(ui, app);
+        ui.add_space(16.0);
+        show_external_tools_section(ui, app);
         ui.add_space(16.0);
         show_cache_section(ui, app);
     });
@@ -112,7 +119,9 @@ fn show_output_directories_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         let response = ui.add(
             egui::TextEdit::singleline(&mut app.settings.general.metadata_dir).desired_width(200.0),
         );
-        if response.lost_focus() || response.changed() {
+        // D9: save on focus-loss (Enter or click-away), not per keystroke —
+        // `changed()` would write settings.toml on every character typed.
+        if response.lost_focus() {
             changed = true;
         }
     });
@@ -127,13 +136,115 @@ fn show_output_directories_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         let response = ui.add(
             egui::TextEdit::singleline(&mut app.settings.general.assets_dir).desired_width(200.0),
         );
-        if response.lost_focus() || response.changed() {
+        if response.lost_focus() {
             changed = true;
         }
     });
     ui.indent("media_hint", |ui| {
         ui.weak("Relative to ROM root. Leave empty for \"{root}-media\" sibling convention.");
     });
+
+    if changed {
+        let _ = crate::settings::save_settings(&app.settings);
+    }
+}
+
+fn show_external_tools_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    ui.strong("External Tools");
+    ui.add_space(4.0);
+
+    let mut changed = false;
+    let mut editing = false;
+
+    ui.horizontal(|ui| {
+        ui.label("chdman path:");
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut app.settings.general.chdman_path)
+                .desired_width(280.0)
+                .hint_text("chdman (from PATH)"),
+        );
+        editing = response.has_focus();
+        // D9: save on focus-loss, not per keystroke. Keep the Browse-button
+        // save below as-is — a discrete event, not a keystroke stream.
+        if response.lost_focus() {
+            changed = true;
+        }
+        if ui.button("Browse...").clicked()
+            && let Some(path) = rfd::FileDialog::new().pick_file()
+        {
+            app.settings.general.chdman_path = path.display().to_string();
+            changed = true;
+        }
+    });
+    ui.indent("chdman_hint", |ui| {
+        ui.weak("Used to compress disc images to CHD. Leave empty to use chdman from PATH.");
+    });
+
+    // D1: probe chdman on a background thread whenever the configured path
+    // changes — `Chdman::detect` spawns a subprocess with no timeout, and a
+    // hung configured binary must not freeze the UI thread. Not per
+    // keystroke while the field is focused, and not while a probe for this
+    // exact path is already in flight.
+    let path_key = app.settings.general.chdman_path.trim().to_string();
+    let needs_probe = app
+        .chdman_probe
+        .as_ref()
+        .is_none_or(|(probed_for, _)| probed_for != &path_key);
+    if needs_probe && !editing && !app.chdman_probe_in_flight {
+        app.chdman_probe_in_flight = true;
+        let tx = app.message_tx.clone();
+        let egui_ctx = ui.ctx().clone();
+        let key = path_key.clone();
+        std::thread::spawn(move || {
+            let result = retro_junk_lib::chd_convert::Chdman::detect_from_setting(&key);
+            let _ = tx.send(crate::state::AppMessage::ChdmanProbeResult { key, result });
+            egui_ctx.request_repaint();
+        });
+    }
+
+    if app.chdman_probe_in_flight {
+        ui.indent("chdman_status", |ui| {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.weak("Checking for chdman…");
+            });
+        });
+    } else if let Some((_, result)) = &app.chdman_probe {
+        let (status_color, status_text, install_hint): (
+            egui::Color32,
+            String,
+            Option<&'static str>,
+        ) = match result {
+            Ok(chdman) => {
+                let version = chdman.version.as_deref().unwrap_or("(unknown version)");
+                (
+                    STATUS_OK,
+                    format!("chdman {version} found: {}", chdman.path.display()),
+                    None,
+                )
+            }
+            Err(e) => (
+                STATUS_ERR,
+                e.to_string(),
+                Some(retro_junk_lib::chd_convert::ChdmanUnavailable::install_hint()),
+            ),
+        };
+
+        ui.indent("chdman_status", |ui| {
+            ui.horizontal(|ui| {
+                ui.colored_label(status_color, &status_text);
+                // Forces a fresh probe next frame — fixes a stale cached
+                // Err staying stuck if the user installs chdman without
+                // restarting the app.
+                if ui.small_button("Re-check").clicked() {
+                    app.chdman_probe = None;
+                }
+            });
+            if let Some(hint) = install_hint {
+                ui.weak(hint);
+            }
+        });
+    }
 
     if changed {
         let _ = crate::settings::save_settings(&app.settings);

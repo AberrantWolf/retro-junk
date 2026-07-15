@@ -28,7 +28,7 @@ use retro_junk_lib::{AnalysisContext, Platform};
 
 use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
-use crate::state::AppMessage;
+use crate::state::{AppMessage, OperationKind, ProgressDisplay};
 
 /// Which download cache a fetch/clear operation targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +139,9 @@ pub fn run_import(app: &mut RetroJunkApp, ctx: &egui::Context) {
     spawn_background_op(
         app,
         "Importing catalog".to_string(),
+        OperationKind::Other,
+        None,
+        ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             import_worker(
                 op_id,
@@ -311,6 +314,9 @@ pub fn run_gdb_enrich(app: &mut RetroJunkApp, ctx: &egui::Context) {
     spawn_background_op(
         app,
         "Enriching from GameDataBase".to_string(),
+        OperationKind::Other,
+        None,
+        ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             gdb_worker(
                 op_id, &cancel, &tx, &context, &selected, &db_path, limit, &egui_ctx,
@@ -392,6 +398,9 @@ pub fn run_ss_enrich(app: &mut RetroJunkApp, ctx: &egui::Context, opts: SsEnrich
     spawn_background_op(
         app,
         "Enriching from ScreenScraper".to_string(),
+        OperationKind::Other,
+        None,
+        ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             ss_worker(op_id, &cancel, &tx, &selected, &db_path, &opts, &egui_ctx);
             finish(&tx, op_id, &egui_ctx);
@@ -575,10 +584,17 @@ pub fn run_cache_fetch(app: &mut RetroJunkApp, ctx: &egui::Context, kind: CacheK
     };
     app.tools_state.data.op_in_flight = true;
 
-    spawn_background_op(app, desc.to_string(), move |op_id, cancel, tx| {
-        cache_fetch_worker(op_id, &cancel, &tx, &context, &selected, kind, &egui_ctx);
-        finish(&tx, op_id, &egui_ctx);
-    });
+    spawn_background_op(
+        app,
+        desc.to_string(),
+        OperationKind::Other,
+        None,
+        ProgressDisplay::Count,
+        move |op_id, cancel, tx| {
+            cache_fetch_worker(op_id, &cancel, &tx, &context, &selected, kind, &egui_ctx);
+            finish(&tx, op_id, &egui_ctx);
+        },
+    );
 }
 
 fn cache_fetch_worker(
@@ -646,6 +662,9 @@ pub fn run_cache_clear(app: &mut RetroJunkApp, ctx: &egui::Context, kind: CacheK
     spawn_background_op(
         app,
         "Clearing cache".to_string(),
+        OperationKind::Other,
+        None,
+        ProgressDisplay::Count,
         move |op_id, _cancel, tx| {
             let result = match kind {
                 CacheKind::Dat => retro_junk_dat::cache::clear(),

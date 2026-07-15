@@ -8,6 +8,10 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+#[path = "tests/scanner_tests.rs"]
+mod tests;
+
 /// A logical game entry — either a single file or a multi-disc set from an .m3u folder.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum GameEntry {
@@ -164,7 +168,7 @@ fn has_matching_extension(path: &Path, extensions: &HashSet<String>) -> bool {
 /// that are already pointed to by a `.cue` entry in the playlist.
 ///
 /// Falls back to extension-based scanning only if no `.m3u` playlist exists.
-fn collect_m3u_disc_files(dir: &Path, extensions: &HashSet<String>) -> Vec<PathBuf> {
+pub fn collect_m3u_disc_files(dir: &Path, extensions: &HashSet<String>) -> Vec<PathBuf> {
     // Find the .m3u playlist file inside the directory
     if let Some(playlist) = find_m3u_playlist(dir) {
         if let Ok(contents) = std::fs::read_to_string(&playlist) {
@@ -248,13 +252,18 @@ fn collect_cue_stems(files: &[PathBuf]) -> HashSet<String> {
 }
 
 /// Returns true if this path is a disc data file whose stem matches a known CUE file.
+///
+/// Includes `"chd"` so a standalone `.chd` sharing a stem with a `.cue` (e.g.
+/// produced by in-place CHD compression that keeps the original sources) is
+/// treated as the same game rather than a second library entry — the cue
+/// entry stays authoritative until sources are actually deleted.
 fn is_data_file_covered_by_cue(path: &Path, cue_stems: &HashSet<String>) -> bool {
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
-    if !matches!(ext.as_str(), "bin" | "img" | "iso") {
+    if !matches!(ext.as_str(), "bin" | "img" | "iso" | "chd") {
         return false;
     }
     let stem = path

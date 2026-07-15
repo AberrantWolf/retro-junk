@@ -26,6 +26,11 @@ pub struct CueTrack {
     pub number: u8,
     pub mode: String,
     pub indexes: Vec<CueIndex>,
+    /// Frames of pregap declared via a PREGAP directive (gap data NOT stored
+    /// in the file). 0 when absent. In-file pregaps use INDEX 00 instead.
+    pub pregap_frames: u64,
+    /// Frames declared via POSTGAP (not stored in the file). 0 when absent.
+    pub postgap_frames: u64,
 }
 
 /// An INDEX entry in a CUE sheet track.
@@ -41,7 +46,7 @@ impl CueIndex {
     /// Convert MSF (minutes:seconds:frames) to an absolute sector offset.
     /// CD audio uses 75 frames per second.
     pub fn to_sector_offset(&self) -> u64 {
-        ((self.minutes * 60 + self.seconds) as u64) * 75 + self.frames as u64
+        (self.minutes as u64 * 60 + self.seconds as u64) * 75 + self.frames as u64
     }
 }
 
@@ -66,57 +71,58 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
             continue;
         }
 
-        let upper = line.to_uppercase();
+        // Detect the directive by its first whitespace-delimited token
+        // (rather than a literal-space prefix) so tab-separated cue sheets
+        // parse identically to space-separated ones.
+        let (token, rest) = split_first_token(line);
+        let keyword = token.to_uppercase();
 
-        if upper.starts_with("FILE ")
-            || upper.starts_with("DATAFILE ")
-            || upper.starts_with("AUDIOFILE ")
-        {
-            // Save previous file entry
-            if let Some(f) = current_file.take() {
-                files.push(f);
+        match keyword.as_str() {
+            "FILE" | "DATAFILE" | "AUDIOFILE" => {
+                // Save previous file entry
+                if let Some(f) = current_file.take() {
+                    files.push(f);
+                }
+
+                let is_datafile = keyword == "DATAFILE";
+                let (filename, file_type) = parse_cue_file_line_at(rest)?;
+                let mut new_file = CueFile {
+                    filename,
+                    file_type: if is_datafile {
+                        "BINARY".to_string()
+                    } else {
+                        file_type
+                    },
+                    tracks: Vec::new(),
+                };
+                // Attach any pending tracks (CDRWin: TRACK before DATAFILE)
+                if !pending_tracks.is_empty() {
+                    new_file.tracks.append(&mut pending_tracks);
+                }
+                current_file = Some(new_file);
             }
-
-            let is_datafile = upper.starts_with("DATAFILE ");
-            let skip_len = if is_datafile {
-                9
-            } else if upper.starts_with("AUDIOFILE ") {
-                10
-            } else {
-                5
-            };
-            let (filename, file_type) = parse_cue_file_line_at(line, skip_len)?;
-            let mut new_file = CueFile {
-                filename,
-                file_type: if is_datafile {
-                    "BINARY".to_string()
+            "TRACK" => {
+                auto_track_number += 1;
+                let (number, mode) = parse_cue_track_line(line, auto_track_number)?;
+                let track = CueTrack {
+                    number,
+                    mode,
+                    indexes: Vec::new(),
+                    pregap_frames: 0,
+                    postgap_frames: 0,
+                };
+                if let Some(ref mut f) = current_file {
+                    f.tracks.push(track);
                 } else {
-                    file_type
-                },
-                tracks: Vec::new(),
-            };
-            // Attach any pending tracks (CDRWin: TRACK before DATAFILE)
-            if !pending_tracks.is_empty() {
-                new_file.tracks.append(&mut pending_tracks);
+                    // CDRWin: TRACK appears before its DATAFILE/FILE
+                    pending_tracks.push(track);
+                }
             }
-            current_file = Some(new_file);
-        } else if upper.starts_with("TRACK ") {
-            auto_track_number += 1;
-            let (number, mode) = parse_cue_track_line(line, auto_track_number)?;
-            let track = CueTrack {
-                number,
-                mode,
-                indexes: Vec::new(),
-            };
-            if let Some(ref mut f) = current_file {
-                f.tracks.push(track);
-            } else {
-                // CDRWin: TRACK appears before its DATAFILE/FILE
-                pending_tracks.push(track);
-            }
-        } else if upper.starts_with("INDEX ") {
-            // Attach to last track in current_file or pending_tracks
-            if let Ok(index) = parse_cue_index_line(line) {
+            "INDEX" => {
+                // A cue that lies about its indexes must fail loudly: a
+                // silently dropped INDEX line now feeds destructive
+                // verify-then-delete logic downstream.
+                let index = parse_cue_index_line(line)?;
                 if let Some(ref mut f) = current_file
                     && let Some(ref mut track) = f.tracks.last_mut()
                 {
@@ -125,8 +131,35 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
                     track.indexes.push(index);
                 }
             }
+            "PREGAP" => {
+                let frames = msf_to_sectors(rest)?;
+                let track = current_file
+                    .as_mut()
+                    .and_then(|f| f.tracks.last_mut())
+                    .or_else(|| pending_tracks.last_mut())
+                    .ok_or_else(|| {
+                        AnalysisError::invalid_format(format!(
+                            "PREGAP directive with no current TRACK: {line}"
+                        ))
+                    })?;
+                track.pregap_frames = frames;
+            }
+            "POSTGAP" => {
+                let frames = msf_to_sectors(rest)?;
+                let track = current_file
+                    .as_mut()
+                    .and_then(|f| f.tracks.last_mut())
+                    .or_else(|| pending_tracks.last_mut())
+                    .ok_or_else(|| {
+                        AnalysisError::invalid_format(format!(
+                            "POSTGAP directive with no current TRACK: {line}"
+                        ))
+                    })?;
+                track.postgap_frames = frames;
+            }
+            // Ignore REM, CD_ROM_XA, NO COPY, etc.
+            _ => {}
         }
-        // Ignore PREGAP, POSTGAP, REM, CD_ROM_XA, NO COPY, etc.
     }
 
     if let Some(f) = current_file.take() {
@@ -143,13 +176,19 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
     Ok(CueSheet { files })
 }
 
-/// Parse a FILE/DATAFILE line: `FILE "filename.bin" BINARY` or `DATAFILE "filename.bin" 01:32:21`
-///
-/// `skip_len` is the number of bytes to skip for the keyword prefix
-/// (5 for "FILE ", 9 for "DATAFILE ").
-fn parse_cue_file_line_at(line: &str, skip_len: usize) -> Result<(String, String), AnalysisError> {
-    let rest = &line[skip_len..];
+/// Split a trimmed CUE line into its first whitespace-delimited token
+/// (verbatim, not case-changed) and the trimmed remainder after it. Tabs and
+/// runs of spaces are both accepted as separators.
+fn split_first_token(line: &str) -> (&str, &str) {
+    match line.find(char::is_whitespace) {
+        Some(idx) => (&line[..idx], line[idx..].trim_start()),
+        None => (line, ""),
+    }
+}
 
+/// Parse the remainder of a FILE/DATAFILE/AUDIOFILE line (after the keyword):
+/// `"filename.bin" BINARY` or `"filename.bin" 01:32:21`.
+fn parse_cue_file_line_at(rest: &str) -> Result<(String, String), AnalysisError> {
     let (filename, remainder) = if let Some(after_quote) = rest.strip_prefix('"') {
         // Quoted filename
         let end_quote = after_quote
@@ -194,29 +233,18 @@ fn parse_cue_track_line(line: &str, fallback_number: u8) -> Result<(u8, String),
 fn parse_cue_index_line(line: &str) -> Result<CueIndex, AnalysisError> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 3 {
-        return Err(AnalysisError::invalid_format("Invalid INDEX line in CUE"));
+        return Err(AnalysisError::invalid_format(format!(
+            "Invalid INDEX line in CUE: {line}"
+        )));
     }
 
-    let number: u8 = parts[1]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid index number in CUE"))?;
+    let number: u8 = parts[1].parse().map_err(|_| {
+        AnalysisError::invalid_format(format!("Invalid index number in CUE: {line}"))
+    })?;
 
-    let msf_parts: Vec<&str> = parts[2].split(':').collect();
-    if msf_parts.len() != 3 {
-        return Err(AnalysisError::invalid_format(
-            "Invalid MSF timestamp in CUE INDEX",
-        ));
-    }
-
-    let minutes: u32 = msf_parts[0]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid minutes in CUE INDEX"))?;
-    let seconds: u32 = msf_parts[1]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid seconds in CUE INDEX"))?;
-    let frames: u32 = msf_parts[2]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid frames in CUE INDEX"))?;
+    let (minutes, seconds, frames) = parse_msf(parts[2]).map_err(|_| {
+        AnalysisError::invalid_format(format!("Invalid MSF timestamp in CUE INDEX: {line}"))
+    })?;
 
     Ok(CueIndex {
         number,
@@ -224,6 +252,29 @@ fn parse_cue_index_line(line: &str) -> Result<CueIndex, AnalysisError> {
         seconds,
         frames,
     })
+}
+
+/// Parse an "MM:SS:FF" timestamp string into its (minutes, seconds, frames)
+/// components. Shared by [`parse_cue_index_line`] and [`msf_to_sectors`].
+fn parse_msf(s: &str) -> Result<(u32, u32, u32), AnalysisError> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 3 {
+        return Err(AnalysisError::invalid_format(format!(
+            "Invalid MSF timestamp: {s}"
+        )));
+    }
+
+    let minutes: u32 = parts[0]
+        .parse()
+        .map_err(|_| AnalysisError::invalid_format(format!("Invalid minutes in MSF: {s}")))?;
+    let seconds: u32 = parts[1]
+        .parse()
+        .map_err(|_| AnalysisError::invalid_format(format!("Invalid seconds in MSF: {s}")))?;
+    let frames: u32 = parts[2]
+        .parse()
+        .map_err(|_| AnalysisError::invalid_format(format!("Invalid frames in MSF: {s}")))?;
+
+    Ok((minutes, seconds, frames))
 }
 
 // -- CDRWin compatibility detection and conversion --
@@ -420,39 +471,41 @@ fn convert_track_mode(mode: &str) -> Option<&'static str> {
     }
 }
 
-/// Sector size in bytes for a track mode (CDRWin or standard).
-fn sector_size_for_mode(mode: &str) -> u16 {
-    match mode.to_uppercase().as_str() {
-        "MODE1/2048" | "MODE2_FORM1" => 2048,
-        "MODE1/2352" | "MODE1_RAW" => 2352,
-        "MODE2/2048" => 2048,
-        "MODE2/2324" | "MODE2_FORM2" => 2324,
-        "MODE2/2336" | "MODE2" | "MODE2_FORM_MIX" => 2336,
-        "MODE2/2352" | "MODE2_RAW" => 2352,
-        "AUDIO" => 2352,
-        // Default to raw sector size for unknown modes
+/// Sector size in bytes for a cue TRACK mode string (standard or CDRWin).
+///
+/// Standard modes carry the size after the slash (`MODE1/2352`, `MODE2/2336`);
+/// CDRWin modes are looked up by name. Unknown modes default to raw (2352).
+///
+/// CDRWin bare mode names (`MODE1`, `MODE2`, `MODE2_FORM1`, `MODE2_FORM2`,
+/// `MODE2_FORM_MIX`, `MODE1_RAW`, `MODE2_RAW`) are CDRWin/cdrdao TOC-format
+/// knowledge; see `.claude/skills/retro-archive/formats/CUE.md` for sourcing.
+pub fn sector_size_for_mode(mode: &str) -> u64 {
+    // A slash suffix is a standard-CUE explicit size (`MODE1/2352`); when
+    // present but not numeric (e.g. a malformed `MODE2/abc`), fall back to
+    // a name lookup on the part before the slash rather than the size we
+    // couldn't parse.
+    let name = match mode.rsplit_once('/') {
+        Some((prefix, size)) => {
+            if let Ok(n) = size.trim().parse::<u64>() {
+                return n;
+            }
+            prefix
+        }
+        None => mode,
+    };
+    match name.to_uppercase().as_str() {
+        "MODE1" | "MODE2_FORM1" => 2048, // CDRWin cooked
+        "MODE2_FORM2" => 2324,
+        "MODE2" | "MODE2_FORM_MIX" => 2336,
+        "MODE1_RAW" | "MODE2_RAW" | "AUDIO" => 2352,
         _ => 2352,
     }
 }
 
 /// Convert an MSF timestamp string "MM:SS:FF" to a sector count.
 fn msf_to_sectors(msf: &str) -> Result<u64, AnalysisError> {
-    let parts: Vec<&str> = msf.split(':').collect();
-    if parts.len() != 3 {
-        return Err(AnalysisError::invalid_format(
-            "Invalid MSF timestamp in DATAFILE",
-        ));
-    }
-    let minutes: u64 = parts[0]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid minutes in DATAFILE MSF"))?;
-    let seconds: u64 = parts[1]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid seconds in DATAFILE MSF"))?;
-    let frames: u64 = parts[2]
-        .parse()
-        .map_err(|_| AnalysisError::invalid_format("Invalid frames in DATAFILE MSF"))?;
-    Ok((minutes * 60 + seconds) * 75 + frames)
+    let (minutes, seconds, frames) = parse_msf(msf)?;
+    Ok((minutes as u64 * 60 + seconds as u64) * 75 + frames as u64)
 }
 
 /// Convert a sector offset back to MSF "MM:SS:FF" format.
@@ -517,14 +570,16 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
                 ));
             }
             // Simple AUDIOFILE without offset: convert to FILE ... WAVE
-            let (filename, _remainder) = parse_cue_file_line_at(trimmed, 10)?;
+            let rest = trimmed["AUDIOFILE".len()..].trim_start();
+            let (filename, _remainder) = parse_cue_file_line_at(rest)?;
             // FILE line must come before its tracks in standard CUE
             output_lines.push(format!("FILE \"{filename}\" WAVE"));
             flush_pending_tracks(&mut output_lines, &mut pending_tracks);
             last_datafile = None;
             cumulative_byte_offset = 0;
         } else if upper.starts_with("DATAFILE ") {
-            let (filename, remainder) = parse_cue_file_line_at(trimmed, 9)?;
+            let rest = trimmed["DATAFILE".len()..].trim_start();
+            let (filename, remainder) = parse_cue_file_line_at(rest)?;
 
             // Check if this DATAFILE has an MSF length
             let msf_length = extract_msf_from_remainder(&remainder);
@@ -540,7 +595,7 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
                 // ensure the first pending track gets the right INDEX
                 if cumulative_byte_offset > 0 && !pending_tracks.is_empty() {
                     let mode = &pending_tracks[0].1;
-                    let sector_sz = sector_size_for_mode(mode) as u64;
+                    let sector_sz = sector_size_for_mode(mode);
                     let sector_offset = cumulative_byte_offset / sector_sz;
                     let msf = sectors_to_msf(sector_offset);
                     // Only add INDEX if the track doesn't already have one
@@ -582,7 +637,7 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
                             })
                         })
                         .unwrap_or("MODE2/2352");
-                    let sector_sz = sector_size_for_mode(mode) as u64;
+                    let sector_sz = sector_size_for_mode(mode);
                     cumulative_byte_offset += sectors * sector_sz;
                 }
             }
@@ -591,7 +646,8 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
         } else if upper.starts_with("FILE ") {
             // Standard FILE directive — pass through as-is, but flush pending tracks first
             flush_pending_tracks(&mut output_lines, &mut pending_tracks);
-            let (filename, file_type) = parse_cue_file_line_at(trimmed, 5)?;
+            let rest = trimmed["FILE".len()..].trim_start();
+            let (filename, file_type) = parse_cue_file_line_at(rest)?;
             // Strip any CDRWin-style #offset or MSF from FILE lines
             let clean_type = if file_type.starts_with('#') || file_type.is_empty() {
                 // CDRWin FILE with #offset — determine type from context

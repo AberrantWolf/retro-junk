@@ -47,6 +47,87 @@ fn sidebar_click_switches_to_settings_view() {
 }
 
 #[test]
+fn chd_compress_busy_scopes_to_operation_kind_and_folder() {
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use crate::state::{BackgroundOperation, OperationKind, ProgressDisplay};
+
+    let mut app = RetroJunkApp::with_parts(
+        &egui::Context::default(),
+        crate::settings::AppSettings::default(),
+        None,
+        None,
+    );
+
+    assert!(!app.chd_compress_busy("X"));
+
+    app.operations.push(BackgroundOperation::new(
+        1,
+        "Compressing".to_string(),
+        Arc::new(AtomicBool::new(false)),
+        OperationKind::ChdCompress,
+        Some("X".to_string()),
+        ProgressDisplay::Percent,
+    ));
+
+    assert!(app.chd_compress_busy("X"));
+    assert!(!app.chd_compress_busy("Y"));
+
+    // A differently-kinded op scoped to the same folder must not trip the guard.
+    app.operations.push(BackgroundOperation::new(
+        2,
+        "Scanning".to_string(),
+        Arc::new(AtomicBool::new(false)),
+        OperationKind::Scan,
+        Some("Z".to_string()),
+        ProgressDisplay::Count,
+    ));
+    assert!(!app.chd_compress_busy("Z"));
+}
+
+#[test]
+fn on_exit_cancels_and_joins_all_operation_threads() {
+    // Exercises `RetroJunkApp::cancel_and_join_all_operations`, the part of
+    // `on_exit` under test (D2). Calling `on_exit()` itself would write the
+    // user's real settings.toml to disk, which this test suite must not do.
+    use crate::state::{BackgroundOperation, OperationKind, ProgressDisplay, next_operation_id};
+
+    let mut app = RetroJunkApp::with_parts(
+        &egui::Context::default(),
+        crate::settings::AppSettings::default(),
+        None,
+        None,
+    );
+
+    let op_id = next_operation_id();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    app.operations.push(BackgroundOperation::new(
+        op_id,
+        "test op".to_string(),
+        cancel.clone(),
+        OperationKind::Other,
+        None,
+        ProgressDisplay::Count,
+    ));
+    let handle = std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    });
+    app.op_threads.insert(op_id, handle);
+
+    app.cancel_and_join_all_operations();
+
+    assert!(
+        cancel.load(std::sync::atomic::Ordering::Relaxed),
+        "on_exit must cancel every in-flight operation"
+    );
+    assert!(
+        app.op_threads.is_empty(),
+        "on_exit must join every operation thread"
+    );
+}
+
+#[test]
 fn tools_data_tab_renders_operation_cards() {
     use crate::state::ToolsTab;
 

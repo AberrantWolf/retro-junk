@@ -411,3 +411,103 @@ AUDIOFILE "audio.bin"
     assert_eq!(parsed.files[1].tracks.len(), 1);
     assert_eq!(parsed.files[1].tracks[0].mode, "AUDIO");
 }
+
+// -- A1: sector_size_for_mode --
+
+#[test]
+fn test_sector_size_for_mode_table() {
+    assert_eq!(sector_size_for_mode("MODE1/2352"), 2352);
+    assert_eq!(sector_size_for_mode("MODE2/2048"), 2048);
+    assert_eq!(sector_size_for_mode("MODE2_FORM1"), 2048);
+    assert_eq!(sector_size_for_mode("MODE2"), 2336);
+    assert_eq!(sector_size_for_mode("MODE2_FORM2"), 2324);
+    assert_eq!(sector_size_for_mode("AUDIO"), 2352);
+    assert_eq!(sector_size_for_mode("MODE1"), 2048);
+    assert_eq!(sector_size_for_mode("totally bogus"), 2352);
+    // Slash suffix present but not numeric: falls through to a name lookup
+    // on the part before the slash ("MODE2" -> 2336), not the raw default.
+    assert_eq!(sector_size_for_mode("MODE2/abc"), 2336);
+}
+
+// -- A2: MSF overflow --
+
+#[test]
+fn test_to_sector_offset_does_not_overflow_u32() {
+    let index = CueIndex {
+        number: 1,
+        minutes: u32::MAX,
+        seconds: 59,
+        frames: 74,
+    };
+    let expected = (u32::MAX as u64 * 60 + 59) * 75 + 74;
+    assert_eq!(index.to_sector_offset(), expected);
+}
+
+// -- A3: parser strictness --
+
+#[test]
+fn test_parse_cue_tab_separated_matches_space_separated() {
+    let space_cue = "FILE \"a.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n";
+    let tab_cue = "FILE\t\"a.bin\"\tBINARY\nTRACK\t01\tMODE1/2352\nINDEX\t01\t00:00:00\n";
+
+    let space_sheet = parse_cue(space_cue).unwrap();
+    let tab_sheet = parse_cue(tab_cue).unwrap();
+
+    assert_eq!(tab_sheet.files.len(), space_sheet.files.len());
+    assert_eq!(tab_sheet.files[0].filename, space_sheet.files[0].filename);
+    assert_eq!(tab_sheet.files[0].file_type, space_sheet.files[0].file_type);
+    assert_eq!(
+        tab_sheet.files[0].tracks[0].mode,
+        space_sheet.files[0].tracks[0].mode
+    );
+    assert_eq!(
+        tab_sheet.files[0].tracks[0].indexes[0].to_sector_offset(),
+        space_sheet.files[0].tracks[0].indexes[0].to_sector_offset()
+    );
+}
+
+#[test]
+fn test_parse_cue_malformed_index_errors_and_names_the_line() {
+    // A period instead of a colon before the frames field (real exporter quirk).
+    let cue = "FILE \"game.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 54:04.52\n";
+    let err = parse_cue(cue).unwrap_err().to_string();
+    assert!(
+        err.contains("54:04.52"),
+        "error should name the offending line: {err}"
+    );
+}
+
+// -- A4: PREGAP/POSTGAP representation --
+
+#[test]
+fn test_parse_cue_pregap_directive_sets_frames_on_current_track() {
+    let cue = r#"FILE "game.bin" BINARY
+  TRACK 01 MODE2/2352
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    PREGAP 00:02:00
+    INDEX 01 00:02:00
+"#;
+    let sheet = parse_cue(cue).unwrap();
+    assert_eq!(sheet.files[0].tracks[0].pregap_frames, 0);
+    assert_eq!(sheet.files[0].tracks[1].pregap_frames, 150);
+    assert_eq!(sheet.files[0].tracks[1].postgap_frames, 0);
+}
+
+#[test]
+fn test_parse_cue_postgap_directive_sets_frames_on_current_track() {
+    let cue = r#"FILE "game.bin" BINARY
+  TRACK 01 MODE2/2352
+    INDEX 01 00:00:00
+    POSTGAP 00:01:00
+"#;
+    let sheet = parse_cue(cue).unwrap();
+    assert_eq!(sheet.files[0].tracks[0].postgap_frames, 75);
+}
+
+#[test]
+fn test_parse_cue_pregap_with_no_current_track_is_an_error() {
+    let cue =
+        "PREGAP 00:02:00\nFILE \"game.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n";
+    assert!(parse_cue(cue).is_err());
+}

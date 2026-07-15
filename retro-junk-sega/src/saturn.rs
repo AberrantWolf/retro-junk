@@ -12,8 +12,8 @@
 use retro_junk_core::ReadSeek;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, FileHashes, HashAlgorithms, Platform, Region, RomAnalyzer,
-    RomIdentification,
+    AnalysisError, AnalysisOptions, ChdExtensionRole, ChdMedia, FileHashes, HashAlgorithms,
+    Platform, Region, RomAnalyzer, RomIdentification,
 };
 
 use retro_junk_disc::chd;
@@ -348,6 +348,10 @@ impl RomAnalyzer for SaturnAnalyzer {
 
     fn redump_slug(&self) -> Option<&'static str> {
         Some("ss")
+    }
+
+    fn chd_extensions(&self) -> &'static [(&'static str, ChdExtensionRole)] {
+        &[("cue", ChdExtensionRole::Source(ChdMedia::Cd))]
     }
 
     fn dat_download_ids(&self) -> &'static [&'static str] {

@@ -267,3 +267,28 @@ fn test_file_extensions() {
     assert!(!exts.contains(&"pbp"));
     assert!(!exts.contains(&"ecm"));
 }
+
+// -- CHD extension table --
+
+#[test]
+fn test_chd_media_for_extension_cue() {
+    let analyzer = Ps1Analyzer;
+    assert_eq!(
+        analyzer.chd_media_for_extension("cue"),
+        Some(retro_junk_core::ChdMedia::Cd)
+    );
+    assert_eq!(analyzer.chd_media_for_extension("iso"), None);
+}
+
+#[test]
+fn test_chd_extensions_declares_a_source_role() {
+    // console_supports_chd-equivalent logic: PS1 is disc-based, so at least
+    // one declared extension must be a CHD Source.
+    let analyzer = Ps1Analyzer;
+    assert!(
+        analyzer
+            .chd_extensions()
+            .iter()
+            .any(|(_, role)| matches!(role, retro_junk_core::ChdExtensionRole::Source(_)))
+    );
+}

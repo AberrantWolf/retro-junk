@@ -1,7 +1,7 @@
 //! CD-ROM sector constants and low-level sector reading.
 
 use retro_junk_core::AnalysisError;
-use std::io::{Read, SeekFrom};
+use std::io::SeekFrom;
 
 use crate::format::DiscFormat;
 

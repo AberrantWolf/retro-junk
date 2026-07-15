@@ -119,6 +119,22 @@ fn test_compute_track1_size_two_tracks() {
 }
 
 #[test]
+fn test_compute_track1_size_is_mode_aware() {
+    // MODE2/2336 sectors: Track 1 boundary must use 2336, not the raw 2352.
+    let cue = r#"FILE "game.bin" BINARY
+  TRACK 01 MODE2/2336
+    INDEX 01 00:00:00
+  TRACK 02 MODE2/2336
+    INDEX 01 00:00:10
+"#;
+    let sheet = crate::cue::parse_cue(cue).unwrap();
+    let bin_size = 10_000_000u64;
+    let (size, warnings) = compute_track1_size_from_cue(&sheet, bin_size);
+    assert_eq!(size, Some(10 * 2336));
+    assert!(warnings.is_empty());
+}
+
+#[test]
 fn test_compute_track1_size_single_track_returns_none() {
     let cue = r#"FILE "game.bin" BINARY
   TRACK 01 MODE2/2352

@@ -458,6 +458,21 @@ fn show_row_context_menu(
         }
     }
 
+    // Compress to CHD — only for consoles whose analyzer supports it. The
+    // dialog itself explains per-disc skips and a missing chdman. Gated
+    // (advisory) while a compression is already running for this console.
+    if backend::chd_compress::console_supports_chd(app, console_idx) {
+        let busy = app.chd_compress_busy(&app.library.consoles[console_idx].folder_name);
+        let button = ui
+            .add_enabled(!busy, egui::Button::new("Compress to CHD…"))
+            .on_disabled_hover_text("A CHD compression is already running for this console");
+        if button.clicked() {
+            let selection: Vec<usize> = app.selected_entries.iter().copied().collect();
+            backend::chd_compress::open_compress_dialog(app, console_idx, &selection);
+            ui.close();
+        }
+    }
+
     // Set Region submenu
     show_set_region_submenu(ui, app, console_idx);
 

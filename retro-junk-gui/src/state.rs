@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "state_tests.rs"]
+mod tests;
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -93,6 +97,19 @@ impl ConsoleState {
         self.entries
             .iter_mut()
             .find(|e| e.game_entry.display_name() == name)
+    }
+
+    /// Look up an entry by one of its constituent files.
+    ///
+    /// Unlike [`Self::find_entry_mut`] (keyed on the display name, which can
+    /// go stale across a rename or CHD compression within the same batch),
+    /// this matches by path — the entry still holds its pre-compression path
+    /// even after the file is deleted, so matching a job's `input` against
+    /// `all_files()` is exact and rename-proof for the batch that just ran.
+    pub fn find_entry_by_file_mut(&mut self, file: &Path) -> Option<&mut LibraryEntry> {
+        self.entries
+            .iter_mut()
+            .find(|e| e.game_entry.all_files().iter().any(|f| f == file))
     }
 }
 
@@ -462,7 +479,99 @@ pub enum CueFixOutcome {
     Error { message: String },
 }
 
+// -- CHD compression --
+
+/// One disc queued in the CHD-compression confirmation dialog.
+pub struct ChdCompressItem {
+    pub job: retro_junk_lib::chd_convert::CompressionJob,
+    /// Precomputed at plan time (D8): "{input} ({size}) -> {output}". Avoids
+    /// re-deriving file-name strings and byte formatting every frame the
+    /// confirmation dialog is open.
+    pub display_line: String,
+}
+
+/// A selected disc that cannot be compressed, with the reason shown to the user.
+pub struct ChdCompressSkip {
+    pub entry_name: String,
+    pub reason: String,
+}
+
+/// State backing the "Compress to CHD" confirmation dialog.
+///
+/// Also carries the chdman probe result: when chdman is missing the dialog
+/// becomes the explanation of why compression is unavailable and how to
+/// install it, instead of silently hiding the feature.
+pub struct ChdCompressPrompt {
+    pub folder_name: String,
+    pub items: Vec<ChdCompressItem>,
+    pub skipped: Vec<ChdCompressSkip>,
+    pub chdman:
+        Result<retro_junk_lib::chd_convert::Chdman, retro_junk_lib::chd_convert::ChdmanUnavailable>,
+    /// Delete original files after a verified compression.
+    pub delete_sources: bool,
+}
+
+pub struct ChdCompressResult {
+    /// The chdman input this result is for (one entry can hold several discs).
+    pub input_name: String,
+    /// The planned job this result came from — carries `input`/`output`/
+    /// `source_files` so the completion handler can look up the affected
+    /// library entry by path (rename-proof) instead of by display name, and
+    /// know exactly which files were deleted.
+    pub job: retro_junk_lib::chd_convert::CompressionJob,
+    pub outcome: ChdCompressOutcome,
+}
+
+pub enum ChdCompressOutcome {
+    /// Compressed and round-trip verified. The output path is available via
+    /// the sibling `ChdCompressResult::job.output` — not duplicated here.
+    Compressed {
+        input_bytes: u64,
+        output_bytes: u64,
+        tracks: usize,
+        sources_deleted: bool,
+        delete_failures: Vec<String>,
+    },
+    /// Round-trip verification failed; the .chd was removed and the original
+    /// files were kept.
+    VerifyFailed {
+        detail: String,
+    },
+    Error {
+        message: String,
+    },
+    Cancelled,
+}
+
 // -- Background operations --
+
+/// What kind of work a `BackgroundOperation` represents. Used by
+/// [`crate::app::RetroJunkApp::chd_compress_busy`] to guard against
+/// overlapping CHD-compression runs on the same console folder, and can grow
+/// further overlap-guards as needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationKind {
+    Scan,
+    Hash,
+    Rename,
+    CueFix,
+    ChdCompress,
+    Other,
+}
+
+/// How a `BackgroundOperation`'s progress_current/progress_total pair should
+/// be rendered. Replaces two mutually-exclusive bools with a type that makes
+/// the "count vs. bytes vs. percent" choice unrepresentable as invalid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProgressDisplay {
+    /// "3/10"
+    #[default]
+    Count,
+    /// "234.5 MB / 4.7 GB"
+    Bytes,
+    /// "42%" (progress_current/progress_total is an abstract unit scale)
+    Percent,
+}
 
 pub struct BackgroundOperation {
     pub id: u64,
@@ -470,20 +579,33 @@ pub struct BackgroundOperation {
     pub progress_current: u64,
     pub progress_total: u64,
     pub cancel_token: Arc<AtomicBool>,
-    /// When true, progress_current/progress_total are byte counts and should
-    /// be displayed as "234.5 MB / 4.7 GB" instead of "3/10".
-    pub progress_is_bytes: bool,
+    /// How to render progress_current/progress_total.
+    pub display: ProgressDisplay,
+    /// What kind of work this operation represents.
+    pub kind: OperationKind,
+    /// Console folder this operation is scoped to, when applicable (used by
+    /// the overlapping-operation guard).
+    pub scope: Option<String>,
 }
 
 impl BackgroundOperation {
-    pub fn new(id: u64, description: String, cancel_token: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        id: u64,
+        description: String,
+        cancel_token: Arc<AtomicBool>,
+        kind: OperationKind,
+        scope: Option<String>,
+        display: ProgressDisplay,
+    ) -> Self {
         Self {
             id,
             description,
             progress_current: 0,
             progress_total: 0,
             cancel_token,
-            progress_is_bytes: false,
+            display,
+            kind,
+            scope,
         }
     }
 
@@ -787,6 +909,31 @@ pub enum AppMessage {
         results: Vec<CueFixResult>,
     },
 
+    // -- CHD compression --
+    /// Background planning (D1) finished: chdman probed + `plan_batch` run for
+    /// every selected entry, off the UI thread. Stores the prompt so the
+    /// dialog appears once everything is ready.
+    ChdCompressPromptReady {
+        prompt: ChdCompressPrompt,
+    },
+    ChdCompressComplete {
+        folder_name: String,
+        results: Vec<ChdCompressResult>,
+    },
+
+    // -- Settings: chdman probe (D1) --
+    /// Result of probing the configured chdman path on a background thread.
+    /// `key` is the probed setting string (trimmed), matched against the
+    /// current setting when applied so a stale in-flight probe from a path
+    /// the user has since changed doesn't clobber a fresher result.
+    ChdmanProbeResult {
+        key: String,
+        result: Result<
+            retro_junk_lib::chd_convert::Chdman,
+            retro_junk_lib::chd_convert::ChdmanUnavailable,
+        >,
+    },
+
     // -- Operations --
     OperationProgress {
         op_id: u64,
@@ -820,7 +967,14 @@ pub fn start_auto_scan_batch(app: &mut crate::app::RetroJunkApp, ctx: &egui::Con
     let total = app.pending_auto_scans.len() as u64;
     let op_id = next_operation_id();
     let cancel = Arc::new(AtomicBool::new(false));
-    let mut op = BackgroundOperation::new(op_id, "Auto-scanning library".to_string(), cancel);
+    let mut op = BackgroundOperation::new(
+        op_id,
+        "Auto-scanning library".to_string(),
+        cancel,
+        OperationKind::Scan,
+        None,
+        ProgressDisplay::Count,
+    );
     op.progress_total = total;
     app.operations.push(op);
     app.auto_scan_op_id = Some(op_id);
@@ -886,6 +1040,60 @@ fn recheck_invalidated_entries(
             ctx.clone(),
         );
     }
+}
+
+/// Re-enumerate a MultiDisc entry's folder after its files changed on disk
+/// (rename, CHD compression): refreshes the entry's `files` list and remaps
+/// `disc_identifications` paths to the new files (matching by filename stem,
+/// then by extension). No-op for single-file entries.
+fn refresh_multidisc_files(
+    entry: &mut LibraryEntry,
+    folder: &std::path::Path,
+    extensions: &std::collections::HashSet<String>,
+) {
+    let retro_junk_lib::scanner::GameEntry::MultiDisc { ref mut files, .. } = entry.game_entry
+    else {
+        return;
+    };
+
+    // Reuse the scanner's playlist-driven collection (D5): reads the .m3u
+    // (rewritten by B5 to point at the new files before this runs) and falls
+    // back to extension-filtered + CUE-deduped scanning only if no playlist
+    // is found. This avoids counting `.sbi`/other non-disc companions as
+    // "discs" and — because the playlist already names the post-compression
+    // `.chd`s — avoids picking up leftover `.bin`s from a failed delete.
+    let new_files = retro_junk_lib::scanner::collect_m3u_disc_files(folder, extensions);
+    if new_files.is_empty() {
+        // A transient read failure (or a genuinely empty folder, which
+        // shouldn't happen for a live entry) must not wipe the entry's file
+        // list; the next full rescan will reconcile it properly.
+        return;
+    }
+
+    if let Some(ref mut discs) = entry.disc_identifications {
+        // Claim tracking: each new file can be assigned to at most one disc,
+        // so two stem-unmatched discs never both collapse onto the same
+        // leftover/renamed path.
+        let mut claimed: std::collections::HashSet<&PathBuf> = std::collections::HashSet::new();
+        for disc in discs.iter_mut() {
+            let old_stem = disc.path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            if let Some(new_path) = new_files.iter().find(|p| {
+                !claimed.contains(p)
+                    && p.file_stem().and_then(|s| s.to_str()).unwrap_or("") == old_stem
+            }) {
+                claimed.insert(new_path);
+                disc.path = new_path.clone();
+            } else {
+                log::warn!(
+                    "multi-disc refresh: no new file matches disc {}",
+                    disc.path.display()
+                );
+                // Keep the stale path; the next full rescan reconciles it.
+            }
+        }
+    }
+
+    *files = new_files;
 }
 
 /// Check whether detected regions match the DAT entry's region string.
@@ -2055,6 +2263,19 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             let mut already = 0usize;
             let mut failed = 0usize;
 
+            // Extension set for the console's platform, used by
+            // `refresh_multidisc_files` (D5) to re-collect a renamed
+            // multi-disc folder's contents via the scanner's playlist logic.
+            let extensions = app
+                .library
+                .find_by_folder(&folder_name)
+                .and_then(|ci| {
+                    app.context
+                        .get_by_platform(app.library.consoles[ci].platform)
+                })
+                .map(|r| retro_junk_lib::scanner::extension_set(r.analyzer.file_extensions()))
+                .unwrap_or_default();
+
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 for r in &results {
                     match &r.outcome {
@@ -2083,61 +2304,17 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             if let Some(entry) =
                                 app.library.consoles[ci].find_entry_mut(&r.entry_name)
                             {
+                                // Update folder name from the target folder
                                 if let retro_junk_lib::scanner::GameEntry::MultiDisc {
                                     ref mut name,
-                                    ref mut files,
+                                    ..
                                 } = entry.game_entry
-                                {
-                                    // Update folder name from the target folder
-                                    if let Some(folder_stem) =
+                                    && let Some(folder_stem) =
                                         target_folder.file_name().and_then(|n| n.to_str())
-                                    {
-                                        *name = folder_stem.to_string();
-                                    }
-                                    // Re-enumerate disc files in the new folder
-                                    if let Ok(entries) = std::fs::read_dir(target_folder) {
-                                        let mut new_files: Vec<PathBuf> = entries
-                                            .flatten()
-                                            .map(|e| e.path())
-                                            .filter(|p| {
-                                                p.is_file()
-                                                    && p.extension()
-                                                        .and_then(|e| e.to_str())
-                                                        .map(|e| !e.eq_ignore_ascii_case("m3u"))
-                                                        .unwrap_or(true)
-                                            })
-                                            .collect();
-                                        new_files.sort();
-
-                                        // Update disc_identifications paths to match new files
-                                        if let Some(ref mut discs) = entry.disc_identifications {
-                                            for disc in discs.iter_mut() {
-                                                // Match old disc path to new file by filename stem
-                                                let old_stem = disc
-                                                    .path
-                                                    .file_stem()
-                                                    .and_then(|s| s.to_str())
-                                                    .unwrap_or("");
-                                                if let Some(new_path) = new_files.iter().find(|p| {
-                                                    p.file_stem()
-                                                        .and_then(|s| s.to_str())
-                                                        .unwrap_or("")
-                                                        == old_stem
-                                                }) {
-                                                    disc.path = new_path.clone();
-                                                } else if let Some(new_path) =
-                                                    new_files.iter().find(|p| {
-                                                        p.extension() == disc.path.extension()
-                                                    })
-                                                {
-                                                    disc.path = new_path.clone();
-                                                }
-                                            }
-                                        }
-
-                                        *files = new_files;
-                                    }
+                                {
+                                    *name = folder_stem.to_string();
                                 }
+                                refresh_multidisc_files(entry, target_folder, &extensions);
                                 // Invalidate cached checks so background re-check picks them up
                                 entry.broken_references = None;
                                 entry.cue_compat_issues = None;
@@ -2280,6 +2457,118 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             app.cue_fix_results = Some(results);
         }
 
+        AppMessage::ChdCompressComplete {
+            folder_name,
+            results,
+        } => {
+            let compressed = results
+                .iter()
+                .filter(|r| matches!(r.outcome, ChdCompressOutcome::Compressed { .. }))
+                .count();
+            let failed = results.len() - compressed;
+            log::info!(
+                "CHD compression {}: {} compressed, {} failed/skipped",
+                folder_name,
+                compressed,
+                failed
+            );
+
+            // Extension set for the console's platform, used by
+            // `refresh_multidisc_files` (D5) when a compressed disc belongs
+            // to a MultiDisc entry.
+            let extensions = app
+                .library
+                .find_by_folder(&folder_name)
+                .and_then(|ci| {
+                    app.context
+                        .get_by_platform(app.library.consoles[ci].platform)
+                })
+                .map(|r| retro_junk_lib::scanner::extension_set(r.analyzer.file_extensions()))
+                .unwrap_or_default();
+
+            if let Some(ci) = app.library.find_by_folder(&folder_name) {
+                let mut changed = false;
+                let mut deleted_files: std::collections::HashSet<PathBuf> =
+                    std::collections::HashSet::new();
+                let mut any_sources_deleted = false;
+
+                // Process every Compressed outcome, not just ones with
+                // sources_deleted: with the dialog default (keep originals),
+                // a verified compression still needs the fingerprint cleared
+                // so the next scan reconciles the new sibling .chd instead of
+                // silently going stale.
+                for r in &results {
+                    let ChdCompressOutcome::Compressed {
+                        sources_deleted, ..
+                    } = &r.outcome
+                    else {
+                        continue;
+                    };
+                    changed = true;
+
+                    // Path-keyed lookup (not display-name): the entry still
+                    // holds its pre-compression path even after the file is
+                    // deleted, so matching this job's input against
+                    // `all_files()` is exact and rename-proof for this batch.
+                    let Some(entry) = app.library.consoles[ci].find_entry_by_file_mut(&r.job.input)
+                    else {
+                        log::warn!(
+                            "CHD compress complete: no library entry found for input {}",
+                            r.job.input.display()
+                        );
+                        continue;
+                    };
+
+                    if *sources_deleted {
+                        any_sources_deleted = true;
+                        deleted_files.extend(r.job.source_files.iter().cloned());
+                        match entry.game_entry {
+                            retro_junk_lib::scanner::GameEntry::SingleFile(ref mut path) => {
+                                *path = r.job.output.clone();
+                            }
+                            retro_junk_lib::scanner::GameEntry::MultiDisc { .. } => {
+                                if let Some(folder) = r.job.output.parent() {
+                                    let folder = folder.to_path_buf();
+                                    refresh_multidisc_files(entry, &folder, &extensions);
+                                }
+                            }
+                        }
+                        // The cached hashes describe the old container; the
+                        // cue checks no longer apply to a .chd.
+                        entry.hashes = None;
+                        entry.broken_references = None;
+                        entry.cue_compat_issues = None;
+                    }
+                    // Else: sources kept — the entry stays on the cue/iso and
+                    // its hashes remain valid. The fingerprint invalidation
+                    // below lets the next scan pick up the new sibling .chd
+                    // (deduped onto this same entry by the scanner's stem
+                    // dedup, which now covers ".chd" — see D4).
+                }
+
+                if any_sources_deleted {
+                    // Drop entries whose every file was deleted: removes
+                    // dangling "(Track N).bin" SingleFile ghosts the scanner
+                    // kept as separate entries (stem-only dedup). Entries
+                    // updated above now point at the .chd, so they survive
+                    // this filter.
+                    app.library.consoles[ci].entries.retain(|e| {
+                        !e.game_entry
+                            .all_files()
+                            .iter()
+                            .all(|f| deleted_files.contains(f))
+                    });
+                }
+
+                if changed {
+                    app.library.consoles[ci].fingerprint = None;
+                    app.save_console_cache(ci);
+                    recheck_invalidated_entries(app, ci, &folder_name, ctx);
+                }
+            }
+            app.chd_compress_results = Some(results);
+        }
+
         AppMessage::OperationProgress {
             op_id,
             current,
@@ -2293,6 +2582,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::OperationComplete { op_id } => {
             app.operations.retain(|op| op.id != op_id);
+            // The worker thread is at (or immediately reaching) its end
+            // after sending this message, so the join is effectively
+            // instant. Reclaiming the handle here (rather than only in
+            // `on_exit`) keeps `op_threads` from growing unboundedly over a
+            // long session.
+            if let Some(handle) = app.op_threads.remove(&op_id) {
+                let _ = handle.join();
+            }
         }
 
         AppMessage::CatalogDataChanged => {
@@ -2307,6 +2604,21 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         AppMessage::CacheListsLoaded { dat, gdb } => {
             app.tools_state.data.dat_cache_entries = dat;
             app.tools_state.data.gdb_cache_entries = gdb;
+        }
+
+        AppMessage::ChdCompressPromptReady { prompt } => {
+            app.chd_compress_prompt = Some(prompt);
+        }
+
+        AppMessage::ChdmanProbeResult { key, result } => {
+            app.chdman_probe_in_flight = false;
+            // Only apply if the setting hasn't changed since this probe was
+            // kicked off — otherwise a slow probe for a since-abandoned path
+            // could clobber a fresher result.
+            let current_key = app.settings.general.chdman_path.trim().to_string();
+            if key == current_key {
+                app.chdman_probe = Some((key, result));
+            }
         }
     }
 }

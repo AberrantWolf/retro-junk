@@ -2218,7 +2218,7 @@ fn fix_cue_references_in_dir(
 }
 
 /// Fix M3U playlist entries in a directory. Returns the number of .m3u files updated.
-fn fix_m3u_references_in_dir(
+pub(crate) fn fix_m3u_references_in_dir(
     dir: &Path,
     rename_map: &HashMap<String, String>,
     errors: &mut Vec<String>,

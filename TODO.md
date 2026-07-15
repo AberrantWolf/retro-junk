@@ -51,6 +51,96 @@
 
 - [ ] **Check nod v2.0 stability** — The `nod` crate v2.0 may bring API changes. Check for stability and migration when it releases.
 
+## Format Conversion (deferred from 2026-07-10 CHD compression work)
+
+CHD *compression* (cue/gdi/iso → chd via chdman, with round-trip verification)
+shipped in `retro-junk-lib::chd_convert` + GUI dialog + CLI `compress`.
+Deferred follow-ups:
+
+- [ ] **PREGAP/POSTGAP round-trip gap compensation** — `chd_convert::plan_compression`
+  now rejects (`ChdConvertError::UnsupportedLayout`) any CUE that declares
+  `PREGAP`/`POSTGAP` (gap not stored in the track file), because chdman
+  synthesizes those gaps into the CHD and materializes them again on
+  extraction, making the extracted track longer than the source span. A
+  disc with such a cue currently just can't be compressed. A future
+  enhancement could compensate during `verify_round_trip` (e.g. skip the
+  synthesized gap region when comparing, using `CueTrack::pregap_frames`/
+  `postgap_frames`) instead of rejecting at plan time.
+
+- [ ] **`convert_cue_to_standard` still requires space-separated directives** —
+  The CDRWin→standard cue fixer's directive detection (`upper.starts_with("DATAFILE ")`
+  etc.) was not updated to the tab-tolerant keyword/rest split that
+  `cue::parse_cue` now uses (2026-07 CHD remediation, Phase A3). A
+  tab-separated CDRWin cue would fail to auto-fix even though `parse_cue`
+  itself now parses tab-separated cues fine. Low priority: CDRWin-format
+  cues encountered in practice have been space-separated. Fixing this
+  properly means extracting `parse_cue`'s directive-token/rest split into a
+  helper both functions share (DRY win alongside the fix).
+
+- [ ] **CHD decompression (chd → cue/bin)** — the reverse operation. Can be
+  done natively (retro-junk-disc already decodes hunks + CHT2 track metadata;
+  writing bins + generating a cue is a modest extension) or via
+  `chdman extractcd`, which `chd_convert::verify_round_trip` already invokes —
+  most of the plumbing exists.
+
+- [ ] **RVZ compression/decompression for GameCube/Wii** — `nod` 2.0
+  (currently 2.0.0-alpha.10, what nodtool ships on) adds a `DiscWriter` with
+  RVZ/WIA/ISO output, compression options, and multithreading. Requires
+  upgrading from nod 1.4 (read-only). Native Rust both directions — no
+  external tool needed. Verify via the existing Redump hashing path.
+
+- [ ] **CSO/ZSO/DAX support for PSP** — the PSP analyzer lists `cso`/`dax`
+  extensions but cannot actually read them (no decompression). CISO is a
+  trivial format (block index + per-block deflate; ZSO uses LZ4) — native
+  read *and* write is a small job with `flate2`/`lz4`. Fix the read gap
+  first, then offer compression.
+
+- [ ] **Batch/whole-library compression job queue** — GUI compression runs
+  per-console selection today. A library-wide "compress everything eligible"
+  pass with disk-space preflight (verification needs temp space equal to the
+  uncompressed size) would suit large collections.
+
+- [ ] **Optional verification skip / quick mode** — round-trip verification
+  roughly doubles wall time per disc. Consider a settings toggle
+  ("verify: full round-trip / chdman verify only"), keeping full round-trip
+  mandatory whenever source deletion is enabled.
+
+- [ ] **chdman codec/hunk tuning knobs** — expose `--compression` /
+  `--hunksize` / `--numprocessors` per platform via analyzer hints (e.g.,
+  some PPSSPP guidance favors 2048-byte hunks for PSP CHDs). Defaults are
+  fine for current emulators; revisit when evidence appears.
+
+- [ ] **CLI compress should honor the GUI's chdman path setting** — the GUI
+  stores `general.chdman_path` in `~/.config/retro-junk/settings.toml`; the
+  CLI currently only has `--chdman` + PATH. Needs a shared typed settings
+  struct in retro-junk-lib instead of the GUI-owned one (see also the DRY
+  note below).
+
+### CHD / analyzer-trait follow-ups (deferred from the 2026-07-14 CHD remediation, Phase F)
+
+- [ ] **`DiscSupport` capability object.** `RomAnalyzer` has accumulated ~5
+  independent disc-specific optional methods (`dat_source`, `redump_slug`,
+  `dat_names`, `compute_container_hashes`, `chd_extensions`) whose defaults
+  fail silently — the Sega CD/Dreamcast hashing gap (closed by the C2
+  invariant test) was the proof. Proposed shape: `fn disc_support(&self) ->
+  Option<&dyn DiscSupport>` returning one bundle so the compiler forces the
+  whole set at once. Large cross-crate refactor; the C2 invariant test
+  contains the risk until then.
+
+- [ ] **Case-insensitive m3u entry resolution** in `find_correct_m3u_entry`
+  (`retro-junk-lib/src/rename.rs`) — `chd_convert::update_m3u_references` now
+  delegates to this machinery (2026-07 CHD remediation, Phase B5), but on
+  case-**sensitive** filesystems a playlist entry whose case differs from the
+  actual file still misses a fix, because the fallback lookup probes the
+  directory only with exact-case candidates. Extend it to probe
+  case-insensitively before giving up.
+
+- [ ] **GDI-aware `expand_disc_set`.** `chd_convert::plan_compression`'s gdi
+  branch inlines resolve-tracks-and-collect-missing that
+  `disc_set::expand_disc_set` provides for cues. `DiscSetFiles` is cue-shaped
+  (`cue: PathBuf` field); unifying means generalizing that struct — worth
+  doing together with any future `.toc`/`.ccd` support, not before.
+
 ## DAT Source Coverage
 
 - [ ] **Wii U has no Redump DAT** — Redump.org has no Wii U disc entries or datfile download. The previous LibRetro "Nintendo - Wii U (Digital)" DAT was not real Redump data. DAT support for Wii U is currently disabled. Options: (1) find an alternative DAT source for Wii U, (2) re-enable using LibRetro's DAT with `DatSource::NoIntro` if the data is good enough, or (3) wait for Redump to add Wii U support.

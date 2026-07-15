@@ -106,6 +106,17 @@ pub fn hash_disc_container(
 /// discs (Saturn with MODE1 boot + MODE2 main), this is typically Track 2.
 ///
 /// Falls back to hashing from sector 0 if no track metadata is found.
+///
+/// DVD-media CHDs (produced by `chdman createdvd`, e.g. PSP UMD / PS2 DVD
+/// dumps) use a 2048-byte `unit_bytes` (one logical ISO 9660 sector per
+/// unit) and carry no `CD_ROM_TRACK`/`CD_ROM_TRACK2` metadata at all — see
+/// `.claude/skills/retro-archive/formats/CHD.md` for how this was verified
+/// against the `chd` crate's header parsing. For those, delegate to
+/// [`hash_chd_whole_stream`], which hashes the logical byte stream directly;
+/// the CD-specific 2352-byte raw-sector extraction below would read past
+/// each unit's bounds (`unit_bytes` < `RAW_SECTOR_SIZE`) and either panic on
+/// a hunk-boundary slice or (mid-hunk) silently mix in the next sector's
+/// bytes.
 pub fn hash_chd_raw_sectors(
     reader: &mut dyn retro_junk_core::ReadSeek,
     algorithms: HashAlgorithms,
@@ -115,6 +126,14 @@ pub fn hash_chd_raw_sectors(
 
     let mut chd = chd::Chd::open(reader, None)
         .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {}", e)))?;
+
+    if (chd.header().unit_bytes() as u64) < RAW_SECTOR_SIZE {
+        log::info!(
+            "CHD hashing: unit_bytes={} < raw CD sector size, treating as DVD-media CHD",
+            chd.header().unit_bytes()
+        );
+        return hash_chd_whole_stream(&mut chd, algorithms, on_progress);
+    }
 
     // Parse all track metadata and select the largest data track.
     let tracks = crate::chd::parse_chd_tracks(&mut chd)?;
@@ -205,6 +224,51 @@ pub fn hash_chd_raw_sectors(
 
         // Report progress per hunk (coarser than per-sector, but avoids
         // excessive callback overhead for the many small sectors per hunk).
+        hasher.report_progress();
+    }
+
+    Ok(hasher.finalize())
+}
+
+/// Hash a DVD-media CHD (`chdman createdvd` output) by streaming its decoded
+/// logical bytes directly, with no CD-style sync/header/subchannel stripping.
+///
+/// DVD CHDs store one 2048-byte ISO 9660 sector per unit and have no track
+/// structure — the decompressed logical stream *is* the ISO image that
+/// Redump hashes, byte for byte. Hunks are padded to `hunk_size`, so this
+/// stops at `logical_bytes`, not at the end of the last hunk.
+fn hash_chd_whole_stream<F: Read + Seek>(
+    chd: &mut chd::Chd<F>,
+    algorithms: HashAlgorithms,
+    on_progress: HashProgressFn<'_>,
+) -> Result<FileHashes, AnalysisError> {
+    let logical_bytes = chd.header().logical_bytes();
+    let total_hunks = chd.header().hunk_count();
+
+    let mut hasher = MultiHasher::new(algorithms, logical_bytes, on_progress);
+
+    let mut hunk_buf = chd.get_hunksized_buffer();
+    let mut cmp_buf = Vec::new();
+    let mut remaining = logical_bytes;
+
+    for hunk_num in 0..total_hunks {
+        if remaining == 0 {
+            break;
+        }
+
+        let mut hunk = chd.hunk(hunk_num).map_err(|e| {
+            AnalysisError::other(format!("Failed to get CHD hunk {}: {}", hunk_num, e))
+        })?;
+
+        hunk.read_hunk_in(&mut cmp_buf, &mut hunk_buf)
+            .map_err(|e| {
+                AnalysisError::other(format!("Failed to decompress CHD hunk {}: {}", hunk_num, e))
+            })?;
+
+        let take = (hunk_buf.len() as u64).min(remaining) as usize;
+        hasher.update(&hunk_buf[..take]);
+        remaining -= take as u64;
+
         hasher.report_progress();
     }
 
@@ -390,8 +454,10 @@ pub fn detect_data_track_size(
 /// Determine Track 1 byte size from CUE INDEX entries.
 ///
 /// If the CUE has 2+ tracks for the same file and Track 2 has an INDEX 01
-/// entry, the Track 1 size is `track2_index01_sector * 2352`.
-/// Returns `None` if the information is insufficient.
+/// entry, the Track 1 size is `track2_index01_sector * sector_size`, where
+/// `sector_size` is derived from the tracks' declared mode (see
+/// [`crate::cue::sector_size_for_mode`]) rather than assumed to be raw
+/// 2352-byte sectors. Returns `None` if the information is insufficient.
 pub fn compute_track1_size_from_cue(
     sheet: &crate::cue::CueSheet,
     bin_size: u64,
@@ -409,10 +475,25 @@ pub fn compute_track1_size_from_cue(
         return (None, warnings);
     }
 
+    // Derive the sector size from the declared mode instead of assuming raw
+    // 2352-byte sectors, so MODE2/2336 and MODE1/2048 single-bin rips get
+    // the correct Track 1 boundary.
+    let sector_size = crate::cue::sector_size_for_mode(&file.tracks[0].mode);
+    if file
+        .tracks
+        .iter()
+        .any(|t| crate::cue::sector_size_for_mode(&t.mode) != sector_size)
+    {
+        warnings.push(
+            "CUE mixes sector sizes within one file; cannot derive Track 1 boundary".to_string(),
+        );
+        return (None, warnings);
+    }
+
     // Look for Track 2's INDEX 01 to find the boundary
     if let Some(track2) = file.tracks.get(1) {
         if let Some(idx01) = track2.indexes.iter().find(|i| i.number == 1) {
-            let track1_size = idx01.to_sector_offset() * RAW_SECTOR_SIZE;
+            let track1_size = idx01.to_sector_offset() * sector_size;
             if track1_size > 0 && track1_size <= bin_size {
                 return (Some(track1_size), warnings);
             }

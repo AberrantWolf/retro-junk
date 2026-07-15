@@ -1,7 +1,7 @@
 //! Disc image format detection.
 
 use retro_junk_core::AnalysisError;
-use std::io::{Read, SeekFrom};
+use std::io::SeekFrom;
 
 use crate::sector::{CD_SYNC_PATTERN, CHD_MAGIC, ISO_SECTOR_SIZE, PVD_SECTOR};
 

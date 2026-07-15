@@ -2,6 +2,10 @@
 #[path = "app_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "id_stability_tests.rs"]
+mod id_stability_tests;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::mpsc;
@@ -15,6 +19,7 @@ use crate::state::{
     AppMessage, BackgroundOperation, CueFixOutcome, CueFixResult, FocusedPanel, Library,
     RenameOutcome, RenameResult, ToolsState, View,
 };
+use crate::util;
 use crate::views;
 use crate::widgets;
 
@@ -83,6 +88,25 @@ pub struct RetroJunkApp {
     /// Results from the last CUE fix operation. When `Some`, the CUE fix results dialog is shown.
     pub cue_fix_results: Option<Vec<crate::state::CueFixResult>>,
 
+    /// Pending CHD compression awaiting user confirmation. When `Some`, the
+    /// compress-to-CHD dialog is shown (including the "chdman missing" explanation).
+    pub chd_compress_prompt: Option<crate::state::ChdCompressPrompt>,
+
+    /// Results from the last CHD compression. When `Some`, the results dialog is shown.
+    pub chd_compress_results: Option<Vec<crate::state::ChdCompressResult>>,
+
+    /// Cached chdman detection for the Settings view: (path probed, result).
+    /// Re-probed when the configured chdman path changes.
+    pub chdman_probe: Option<(
+        String,
+        Result<retro_junk_lib::chd_convert::Chdman, retro_junk_lib::chd_convert::ChdmanUnavailable>,
+    )>,
+
+    /// True while a chdman probe is running on a background thread (D1).
+    /// Guards against launching a second probe while one is already in
+    /// flight, and drives the Settings-view spinner.
+    pub chdman_probe_in_flight: bool,
+
     /// True while the initial cache load is in flight on startup.
     /// Cleared when `StartFolderScan` is processed (the signal that the cache
     /// thread has finished, whether or not a cache existed).
@@ -130,6 +154,11 @@ pub struct RetroJunkApp {
     /// The op shows overall progress (N of M consoles scanned) and lives until
     /// the queue drains.
     pub auto_scan_op_id: Option<u64>,
+
+    /// `JoinHandle`s for every spawned background-operation thread, keyed by
+    /// `op_id`. Joined (and removed) when the operation completes, or all at
+    /// once in `on_exit` so the process never dies mid-write (D2).
+    pub op_threads: HashMap<u64, std::thread::JoinHandle<()>>,
 }
 
 impl RetroJunkApp {
@@ -245,6 +274,10 @@ impl RetroJunkApp {
             db_path,
             rename_results: None,
             cue_fix_results: None,
+            chd_compress_prompt: None,
+            chd_compress_results: None,
+            chdman_probe: None,
+            chdman_probe_in_flight: false,
             loading_library: false,
             tools_state: ToolsState::default(),
             focused_panel: FocusedPanel::default(),
@@ -257,14 +290,45 @@ impl RetroJunkApp {
             pending_auto_scans: std::collections::VecDeque::new(),
             auto_scan_in_flight: None,
             auto_scan_op_id: None,
+            op_threads: HashMap::new(),
         }
     }
 
     /// Drain all pending messages from background threads.
-    fn process_messages(&mut self, ctx: &egui::Context) {
+    fn process_pending_messages(&mut self, ctx: &egui::Context) {
         while let Ok(msg) = self.message_rx.try_recv() {
             crate::state::handle_message(self, msg, ctx);
         }
+    }
+
+    /// Cancel every in-flight background operation and join its thread (D2).
+    ///
+    /// Without this, closing the app mid-`delete_job_sources` (or any other
+    /// multi-step write) could kill the process between steps — a
+    /// half-deleted disc set, a stale cache, an orphaned chdman child. With
+    /// B2's responsive cancellation, a cancelled chdman run stops within
+    /// ~100ms, so these joins complete promptly. Split out from `on_exit` so
+    /// it's testable without touching real settings/cache files on disk.
+    fn cancel_and_join_all_operations(&mut self) {
+        for op in &self.operations {
+            op.cancel_token
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        for (_, handle) in self.op_threads.drain() {
+            let _ = handle.join();
+        }
+    }
+
+    /// Whether a CHD-compression operation (planning or compressing) is
+    /// already running for the given console folder. Used to gate the
+    /// context-menu items (advisory) and guard `start_compression` /
+    /// the D1 planning op (the actual guarantee) against launching a second
+    /// overlapping run against the same inputs/outputs.
+    pub fn chd_compress_busy(&self, folder_name: &str) -> bool {
+        self.operations.iter().any(|op| {
+            op.kind == crate::state::OperationKind::ChdCompress
+                && op.scope.as_deref() == Some(folder_name)
+        })
     }
 
     /// Returns true if any background operations are active.
@@ -318,7 +382,7 @@ impl eframe::App for RetroJunkApp {
         let ctx = &ui.ctx().clone();
 
         // Drain background messages
-        self.process_messages(ctx);
+        self.process_pending_messages(ctx);
 
         // Global view switching: Ctrl+1/2/3
         ctx.input_mut(|i| {
@@ -372,22 +436,44 @@ impl eframe::App for RetroJunkApp {
             });
         }
 
-        // Main content
-        egui::CentralPanel::default().show(ui, |ui| match self.current_view {
+        // Main content. Uses a stable-id central panel so toggling the
+        // conditional log viewer / activity bar panels above doesn't re-id every
+        // widget in the view (see `util::stable_central_panel`).
+        util::stable_central_panel(ui, "main_view", |ui| match self.current_view {
             View::Library => views::library::show(ui, self, ctx),
             View::Settings => views::settings::show(ui, self),
             View::Tools => views::tools::show(ui, self),
         });
 
         // Rename results modal dialog
-        if self.rename_results.is_some() {
-            show_rename_results_dialog(ctx, &mut self.rename_results);
-        }
+        widgets::results_dialog::show_results_dialog(
+            ctx,
+            "Rename Results",
+            &mut self.rename_results,
+            rename_results_summary,
+            rename_results_row,
+        );
 
         // CUE fix results modal dialog
-        if self.cue_fix_results.is_some() {
-            show_cue_fix_results_dialog(ctx, &mut self.cue_fix_results);
-        }
+        widgets::results_dialog::show_results_dialog(
+            ctx,
+            "Fix CUE Results",
+            &mut self.cue_fix_results,
+            cue_fix_results_summary,
+            cue_fix_results_row,
+        );
+
+        // Compress-to-CHD confirmation dialog
+        widgets::chd_compress_dialog::show(ctx, self);
+
+        // CHD compression results modal dialog
+        widgets::results_dialog::show_results_dialog(
+            ctx,
+            "Compress to CHD Results",
+            &mut self.chd_compress_results,
+            chd_compress_results_summary,
+            chd_compress_results_row,
+        );
 
         // Organize preview dialog
         if self.pending_organize_plan.is_some() {
@@ -410,6 +496,15 @@ impl eframe::App for RetroJunkApp {
             self.library.consoles.len()
         );
 
+        // Cancel every in-flight background operation and join its thread
+        // before saving (D2).
+        self.cancel_and_join_all_operations();
+        // Apply whatever completion messages those threads sent (e.g.
+        // ChdCompressComplete) before saving, so the persisted cache
+        // reflects the final post-cancellation state.
+        let ctx = egui::Context::default();
+        self.process_pending_messages(&ctx);
+
         // Save library cache first — if the process is killed between the two,
         // we'd rather lose settings than lose the library cache.
         self.save_library_cache();
@@ -422,10 +517,8 @@ impl eframe::App for RetroJunkApp {
     }
 }
 
-/// Modal dialog showing the results of a rename operation.
-fn show_rename_results_dialog(ctx: &egui::Context, results: &mut Option<Vec<RenameResult>>) {
-    let Some(ref items) = *results else { return };
-
+/// Summary line for the rename-results dialog ([`widgets::results_dialog`]).
+fn rename_results_summary(items: &[RenameResult]) -> String {
     let renamed = items
         .iter()
         .filter(|r| {
@@ -448,88 +541,63 @@ fn show_rename_results_dialog(ctx: &egui::Context, results: &mut Option<Vec<Rena
             )
         })
         .count();
+    format!("{renamed} renamed, {already} already correct, {failed} failed")
+}
 
-    let mut dismiss = false;
-    let mut open = true;
-    egui::Window::new("Rename Results")
-        .collapsible(false)
-        .resizable(true)
-        .open(&mut open)
-        .default_width(500.0)
-        .show(ctx, |ui| {
+/// One row of the rename-results dialog.
+fn rename_results_row(ui: &mut egui::Ui, item: &RenameResult) {
+    use widgets::results_dialog::{STATUS_ERR, STATUS_OK, STATUS_WARN};
+
+    match &item.outcome {
+        RenameOutcome::Renamed { source, target } => {
+            ui.colored_label(STATUS_OK, "Renamed");
             ui.label(format!(
-                "{} renamed, {} already correct, {} failed",
-                renamed, already, failed
+                "{} -> {}",
+                source.file_name().unwrap_or_default().to_string_lossy(),
+                target.file_name().unwrap_or_default().to_string_lossy()
             ));
-            ui.separator();
-
-            egui::ScrollArea::vertical()
-                .max_height(400.0)
-                .show(ui, |ui| {
-                    for item in items {
-                        ui.horizontal(|ui| match &item.outcome {
-                            RenameOutcome::Renamed { source, target } => {
-                                ui.colored_label(egui::Color32::from_rgb(50, 180, 50), "Renamed");
-                                ui.label(format!(
-                                    "{} -> {}",
-                                    source.file_name().unwrap_or_default().to_string_lossy(),
-                                    target.file_name().unwrap_or_default().to_string_lossy()
-                                ));
-                            }
-                            RenameOutcome::AlreadyCorrect => {
-                                ui.colored_label(egui::Color32::GRAY, "OK");
-                                ui.label(format!("{} already correct", item.entry_name));
-                            }
-                            RenameOutcome::NoMatch { reason } => {
-                                ui.colored_label(egui::Color32::from_rgb(220, 180, 30), "No match");
-                                ui.label(reason);
-                            }
-                            RenameOutcome::Error { message } => {
-                                ui.colored_label(egui::Color32::from_rgb(220, 50, 50), "Error");
-                                ui.label(message);
-                            }
-                            RenameOutcome::M3uRenamed {
-                                target_folder,
-                                discs_renamed,
-                                playlist_written,
-                                folder_renamed,
-                                errors,
-                                ..
-                            } => {
-                                ui.colored_label(egui::Color32::from_rgb(50, 180, 50), "M3U");
-                                let folder_name = target_folder
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy();
-                                let mut parts = Vec::new();
-                                parts.push(format!("{} discs", discs_renamed));
-                                if *playlist_written {
-                                    parts.push("playlist written".to_string());
-                                }
-                                if *folder_renamed {
-                                    parts.push(format!("folder -> {}", folder_name));
-                                }
-                                if !errors.is_empty() {
-                                    parts.push(format!("{} errors", errors.len()));
-                                }
-                                ui.label(parts.join(", "));
-                            }
-                        });
-                    }
-                });
-
-            ui.separator();
-            if ui.button("OK").clicked() {
-                dismiss = true;
+        }
+        RenameOutcome::AlreadyCorrect => {
+            ui.colored_label(egui::Color32::GRAY, "OK");
+            ui.label(format!("{} already correct", item.entry_name));
+        }
+        RenameOutcome::NoMatch { reason } => {
+            ui.colored_label(STATUS_WARN, "No match");
+            ui.label(reason);
+        }
+        RenameOutcome::Error { message } => {
+            ui.colored_label(STATUS_ERR, "Error");
+            ui.label(message);
+        }
+        RenameOutcome::M3uRenamed {
+            target_folder,
+            discs_renamed,
+            playlist_written,
+            folder_renamed,
+            errors,
+            ..
+        } => {
+            ui.colored_label(STATUS_OK, "M3U");
+            let folder_name = target_folder
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            let mut parts = Vec::new();
+            parts.push(format!("{} discs", discs_renamed));
+            if *playlist_written {
+                parts.push("playlist written".to_string());
             }
-        });
-
-    if dismiss || !open {
-        *results = None;
+            if *folder_renamed {
+                parts.push(format!("folder -> {}", folder_name));
+            }
+            if !errors.is_empty() {
+                parts.push(format!("{} errors", errors.len()));
+            }
+            ui.label(parts.join(", "));
+        }
     }
 }
 
-/// Modal dialog showing the results of a CUE fix operation.
 /// Modal dialog previewing an organize plan and letting the user confirm or cancel.
 fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
     let Some((ref _folder_name, ref plan)) = app.pending_organize_plan else {
@@ -628,9 +696,8 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
     }
 }
 
-fn show_cue_fix_results_dialog(ctx: &egui::Context, results: &mut Option<Vec<CueFixResult>>) {
-    let Some(ref items) = *results else { return };
-
+/// Summary line for the CUE-fix results dialog ([`widgets::results_dialog`]).
+fn cue_fix_results_summary(items: &[CueFixResult]) -> String {
     let fixed = items
         .iter()
         .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
@@ -648,56 +715,117 @@ fn show_cue_fix_results_dialog(ctx: &egui::Context, results: &mut Option<Vec<Cue
             )
         })
         .count();
+    format!("{fixed} fixed, {already} already standard, {failed} failed")
+}
 
-    let mut dismiss = false;
-    let mut open = true;
-    egui::Window::new("Fix CUE Results")
-        .collapsible(false)
-        .resizable(true)
-        .open(&mut open)
-        .default_width(500.0)
-        .show(ctx, |ui| {
+/// One row of the CUE-fix results dialog.
+fn cue_fix_results_row(ui: &mut egui::Ui, item: &CueFixResult) {
+    use widgets::results_dialog::{STATUS_ERR, STATUS_OK, STATUS_WARN};
+
+    match &item.outcome {
+        CueFixOutcome::Fixed { summary } => {
+            ui.colored_label(STATUS_OK, "Fixed");
+            ui.label(format!("{} ({})", item.file_name, summary));
+        }
+        CueFixOutcome::AlreadyStandard => {
+            ui.colored_label(egui::Color32::GRAY, "OK");
+            ui.label(format!("{} already standard", item.file_name));
+        }
+        CueFixOutcome::Unfixable { reason } => {
+            ui.colored_label(STATUS_WARN, "Unfixable");
+            ui.label(format!("{}: {}", item.file_name, reason));
+        }
+        CueFixOutcome::Error { message } => {
+            ui.colored_label(STATUS_ERR, "Error");
+            ui.label(format!("{}: {}", item.file_name, message));
+        }
+    }
+}
+
+/// Summary line for the CHD-compression results dialog ([`widgets::results_dialog`]).
+fn chd_compress_results_summary(items: &[crate::state::ChdCompressResult]) -> String {
+    use crate::state::ChdCompressOutcome;
+
+    let compressed = items
+        .iter()
+        .filter(|r| matches!(r.outcome, ChdCompressOutcome::Compressed { .. }))
+        .count();
+    let failed = items
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.outcome,
+                ChdCompressOutcome::VerifyFailed { .. } | ChdCompressOutcome::Error { .. }
+            )
+        })
+        .count();
+    let cancelled = items
+        .iter()
+        .filter(|r| matches!(r.outcome, ChdCompressOutcome::Cancelled))
+        .count();
+
+    let mut summary = format!("{compressed} compressed, {failed} failed");
+    if cancelled > 0 {
+        summary.push_str(&format!(", {cancelled} cancelled"));
+    }
+    summary
+}
+
+/// One row of the CHD-compression results dialog.
+fn chd_compress_results_row(ui: &mut egui::Ui, item: &crate::state::ChdCompressResult) {
+    use crate::state::ChdCompressOutcome;
+    use retro_junk_lib::util::format_bytes_approx;
+    use widgets::results_dialog::{STATUS_ERR, STATUS_OK};
+
+    match &item.outcome {
+        ChdCompressOutcome::Compressed {
+            input_bytes,
+            output_bytes,
+            tracks,
+            sources_deleted,
+            delete_failures,
+            ..
+        } => {
+            ui.colored_label(STATUS_OK, "Compressed");
+            let ratio = if *input_bytes > 0 {
+                format!(
+                    " ({:.0}%)",
+                    *output_bytes as f64 / *input_bytes as f64 * 100.0
+                )
+            } else {
+                String::new()
+            };
+            let originals = if !delete_failures.is_empty() {
+                format!(
+                    "some originals could not be deleted: {}",
+                    delete_failures.join(", ")
+                )
+            } else if *sources_deleted {
+                "originals deleted".to_string()
+            } else {
+                "originals kept".to_string()
+            };
             ui.label(format!(
-                "{} fixed, {} already standard, {} failed",
-                fixed, already, failed
+                "{}: {} → {}{ratio}, {tracks} track(s) verified, {originals}",
+                item.input_name,
+                format_bytes_approx(*input_bytes),
+                format_bytes_approx(*output_bytes),
             ));
-            ui.separator();
-
-            egui::ScrollArea::vertical()
-                .max_height(400.0)
-                .show(ui, |ui| {
-                    for item in items {
-                        ui.horizontal(|ui| match &item.outcome {
-                            CueFixOutcome::Fixed { summary } => {
-                                ui.colored_label(egui::Color32::from_rgb(50, 180, 50), "Fixed");
-                                ui.label(format!("{} ({})", item.file_name, summary));
-                            }
-                            CueFixOutcome::AlreadyStandard => {
-                                ui.colored_label(egui::Color32::GRAY, "OK");
-                                ui.label(format!("{} already standard", item.file_name));
-                            }
-                            CueFixOutcome::Unfixable { reason } => {
-                                ui.colored_label(
-                                    egui::Color32::from_rgb(220, 180, 30),
-                                    "Unfixable",
-                                );
-                                ui.label(format!("{}: {}", item.file_name, reason));
-                            }
-                            CueFixOutcome::Error { message } => {
-                                ui.colored_label(egui::Color32::from_rgb(220, 50, 50), "Error");
-                                ui.label(format!("{}: {}", item.file_name, message));
-                            }
-                        });
-                    }
-                });
-
-            ui.separator();
-            if ui.button("OK").clicked() {
-                dismiss = true;
-            }
-        });
-
-    if dismiss || !open {
-        *results = None;
+        }
+        ChdCompressOutcome::VerifyFailed { detail } => {
+            ui.colored_label(STATUS_ERR, "Verify failed");
+            ui.label(format!(
+                "{}: {detail} — the .chd was discarded, originals kept",
+                item.input_name
+            ));
+        }
+        ChdCompressOutcome::Error { message } => {
+            ui.colored_label(STATUS_ERR, "Error");
+            ui.label(format!("{}: {message}", item.input_name));
+        }
+        ChdCompressOutcome::Cancelled => {
+            ui.colored_label(egui::Color32::GRAY, "Cancelled");
+            ui.label(&item.input_name);
+        }
     }
 }

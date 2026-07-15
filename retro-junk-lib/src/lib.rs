@@ -4,6 +4,7 @@ pub use retro_junk_core::*;
 
 // Modules that still live in retro-junk-lib:
 pub mod async_util;
+pub mod chd_convert;
 pub mod context;
 pub mod cue_fix;
 pub mod disc_set;
@@ -63,3 +64,7 @@ pub fn create_default_context() -> AnalysisContext {
 
     ctx
 }
+
+#[cfg(test)]
+#[path = "tests/analyzer_invariants.rs"]
+mod analyzer_invariants;

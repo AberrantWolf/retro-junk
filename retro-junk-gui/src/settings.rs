@@ -42,6 +42,10 @@ pub struct GeneralSettings {
     /// `./catalog` relative to the working directory (matching the CLI default).
     #[serde(default)]
     pub catalog_data_dir: String,
+    /// Path to the chdman executable (MAME tools), used for CHD compression.
+    /// If empty, `chdman` is looked up on PATH.
+    #[serde(default)]
+    pub chdman_path: String,
 }
 
 fn default_true() -> bool {
@@ -60,6 +64,7 @@ impl Default for GeneralSettings {
             metadata_dir: default_metadata_dir(),
             assets_dir: String::new(),
             catalog_data_dir: String::new(),
+            chdman_path: String::new(),
         }
     }
 }

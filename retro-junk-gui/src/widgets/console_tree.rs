@@ -231,6 +231,24 @@ fn show_console_context_menu(
         }
     }
 
+    // Compress to CHD: only for consoles whose analyzer supports it. Gated
+    // (advisory — start_compression and the D1 planning op hold the actual
+    // guarantee) while a compression is already running for this console.
+    if backend::chd_compress::console_supports_chd(app, console_idx) {
+        let busy = app.chd_compress_busy(&app.library.consoles[console_idx].folder_name);
+        let button = ui
+            .add_enabled(
+                is_scanned && entry_count > 0 && !busy,
+                egui::Button::new("Compress All to CHD…"),
+            )
+            .on_disabled_hover_text("A CHD compression is already running for this console");
+        if button.clicked() {
+            let all_entries: Vec<usize> = (0..entry_count).collect();
+            backend::chd_compress::open_compress_dialog(app, console_idx, &all_entries);
+            ui.close();
+        }
+    }
+
     ui.separator();
 
     ui.menu_button("Export", |ui| {

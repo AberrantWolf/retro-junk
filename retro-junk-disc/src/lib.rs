@@ -13,6 +13,7 @@ pub mod format;
 pub mod hash;
 pub mod iso9660;
 pub mod sector;
+pub mod track_layout;
 
 // Re-export primary types for convenience
 pub use cue::{
@@ -26,6 +27,7 @@ pub use sector::{
     CD_SYNC_PATTERN, CHD_MAGIC, ISO_SECTOR_SIZE, MODE1_DATA_OFFSET, MODE2_FORM1_DATA_OFFSET,
     PVD_SECTOR, RAW_SECTOR_SIZE, read_sector_data,
 };
+pub use track_layout::{GdiTrack, TrackSpan, cue_track_spans, gdi_track_spans, parse_gdi};
 
 /// Test helpers for constructing synthetic disc images.
 ///

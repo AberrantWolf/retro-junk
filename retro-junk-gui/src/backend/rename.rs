@@ -10,7 +10,7 @@ use retro_junk_lib::scanner::GameEntry;
 
 use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
-use crate::state::{self, AppMessage, RenameOutcome, RenameResult};
+use crate::state::{self, AppMessage, OperationKind, ProgressDisplay, RenameOutcome, RenameResult};
 
 /// A single-file rename job. Target is resolved on the background thread.
 struct RenameJob {
@@ -261,234 +261,248 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
         .map(|d| d.join("gamelist.xml"))
         .filter(|p| p.is_file());
 
-    spawn_background_op(app, description, move |op_id, cancel, tx| {
-        let gamelist_rewriter = |stem_map: &HashMap<String, String>| -> Vec<(PathBuf, String)> {
-            gamelist_path
-                .as_ref()
-                .and_then(|p| retro_junk_frontend::esde::plan_gamelist_rewrite(p, stem_map))
-                .into_iter()
-                .collect()
-        };
-        let exec = ExecutionContext {
-            media_dir: media_dir.clone(),
-            gamelist_rewriter: Some(&gamelist_rewriter),
-        };
+    let scope = Some(folder_name.clone());
 
-        let mut file_num = 0usize;
-        let send_progress = |file_num: &mut usize| {
-            let _ = tx.send(AppMessage::OperationProgress {
-                op_id,
-                current: *file_num as u64,
-                total: total_work as u64,
-            });
-            *file_num += 1;
-        };
+    spawn_background_op(
+        app,
+        description,
+        OperationKind::Rename,
+        scope,
+        ProgressDisplay::Count,
+        move |op_id, cancel, tx| {
+            let gamelist_rewriter = |stem_map: &HashMap<String, String>| -> Vec<(PathBuf, String)> {
+                gamelist_path
+                    .as_ref()
+                    .and_then(|p| retro_junk_frontend::esde::plan_gamelist_rewrite(p, stem_map))
+                    .into_iter()
+                    .collect()
+            };
+            let exec = ExecutionContext {
+                media_dir: media_dir.clone(),
+                gamelist_rewriter: Some(&gamelist_rewriter),
+            };
 
-        // Step 1: Execute single-file renames (one transaction each)
-        for job in jobs.iter() {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                break;
+            let mut file_num = 0usize;
+            let send_progress = |file_num: &mut usize| {
+                let _ = tx.send(AppMessage::OperationProgress {
+                    op_id,
+                    current: *file_num as u64,
+                    total: total_work as u64,
+                });
+                *file_num += 1;
+            };
+
+            // Step 1: Execute single-file renames (one transaction each)
+            for job in jobs.iter() {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                send_progress(&mut file_num);
+
+                // Detect actual format extension from file content
+                let detected_ext = sniff_detected_extension(&job.source, &context, platform);
+                let target_name = retro_junk_lib::rename::target_filename_for_rename(
+                    &job.dat_rom_name,
+                    &job.source,
+                    detected_ext.as_deref(),
+                );
+                let target = job
+                    .source
+                    .parent()
+                    .unwrap_or(&job.source)
+                    .join(&target_name);
+
+                if job.source == target {
+                    results.push(RenameResult {
+                        entry_name: job.entry_name.clone(),
+                        outcome: RenameOutcome::AlreadyCorrect,
+                    });
+                    continue;
+                }
+
+                match execute_single_rename(&job.source, &target, &exec) {
+                    Ok(single) => {
+                        for warning in &single.warnings {
+                            log::warn!("{}: {}", job.entry_name, warning);
+                        }
+                        results.push(RenameResult {
+                            entry_name: job.entry_name.clone(),
+                            outcome: RenameOutcome::Renamed {
+                                source: job.source.clone(),
+                                target,
+                            },
+                        });
+                    }
+                    Err(e) => {
+                        results.push(RenameResult {
+                            entry_name: job.entry_name.clone(),
+                            outcome: RenameOutcome::Error {
+                                message: format!(
+                                    "Failed to rename '{}': {}",
+                                    job.source.display(),
+                                    e
+                                ),
+                            },
+                        });
+                    }
+                }
             }
-            send_progress(&mut file_num);
 
-            // Detect actual format extension from file content
-            let detected_ext = sniff_detected_extension(&job.source, &context, platform);
-            let target_name = retro_junk_lib::rename::target_filename_for_rename(
-                &job.dat_rom_name,
-                &job.source,
-                detected_ext.as_deref(),
-            );
-            let target = job
-                .source
-                .parent()
-                .unwrap_or(&job.source)
-                .join(&target_name);
+            // Step 2: Plan and execute cue/bin disc sets (one transaction each)
+            for job in cue_jobs.iter() {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                send_progress(&mut file_num);
 
-            if job.source == target {
+                let outcome = plan_cue_set(&job.cue, &dat_index_arc, &context, platform);
                 results.push(RenameResult {
                     entry_name: job.entry_name.clone(),
-                    outcome: RenameOutcome::AlreadyCorrect,
+                    outcome: execute_cue_set_outcome(outcome, &job.cue, &exec),
                 });
-                continue;
             }
 
-            match execute_single_rename(&job.source, &target, &exec) {
-                Ok(single) => {
-                    for warning in &single.warnings {
-                        log::warn!("{}: {}", job.entry_name, warning);
-                    }
-                    results.push(RenameResult {
-                        entry_name: job.entry_name.clone(),
-                        outcome: RenameOutcome::Renamed {
-                            source: job.source.clone(),
-                            target,
-                        },
-                    });
+            // Step 3: Resolve and execute multi-disc renames
+            for m3u_job in &m3u_jobs {
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
                 }
-                Err(e) => {
-                    results.push(RenameResult {
-                        entry_name: job.entry_name.clone(),
-                        outcome: RenameOutcome::Error {
-                            message: format!("Failed to rename '{}': {}", job.source.display(), e),
-                        },
-                    });
-                }
-            }
-        }
+                send_progress(&mut file_num);
 
-        // Step 2: Plan and execute cue/bin disc sets (one transaction each)
-        for job in cue_jobs.iter() {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                break;
-            }
-            send_progress(&mut file_num);
+                // Fix up target_filename extensions for resolved non-cue discs
+                let mut all_discs: Vec<DiscMatchData> = m3u_job
+                    .resolved_discs
+                    .iter()
+                    .map(|d| {
+                        let detected_ext =
+                            sniff_detected_extension(&d.file_path, &context, platform);
+                        DiscMatchData {
+                            file_path: d.file_path.clone(),
+                            game_name: d.game_name.clone(),
+                            target_filename: retro_junk_lib::rename::target_filename_for_rename(
+                                &d.target_filename,
+                                &d.file_path,
+                                detected_ext.as_deref(),
+                            ),
+                        }
+                    })
+                    .collect();
 
-            let outcome = plan_cue_set(&job.cue, &dat_index_arc, &context, platform);
-            results.push(RenameResult {
-                entry_name: job.entry_name.clone(),
-                outcome: execute_cue_set_outcome(outcome, &job.cue, &exec),
-            });
-        }
-
-        // Step 3: Resolve and execute multi-disc renames
-        for m3u_job in &m3u_jobs {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                break;
-            }
-            send_progress(&mut file_num);
-
-            // Fix up target_filename extensions for resolved non-cue discs
-            let mut all_discs: Vec<DiscMatchData> = m3u_job
-                .resolved_discs
-                .iter()
-                .map(|d| {
-                    let detected_ext = sniff_detected_extension(&d.file_path, &context, platform);
-                    DiscMatchData {
-                        file_path: d.file_path.clone(),
-                        game_name: d.game_name.clone(),
-                        target_filename: retro_junk_lib::rename::target_filename_for_rename(
-                            &d.target_filename,
-                            &d.file_path,
-                            detected_ext.as_deref(),
-                        ),
-                    }
-                })
-                .collect();
-
-            // Resolve unresolved non-cue disc files via hashing
-            if let Some(ref di) = dat_index_arc {
-                for file_path in &m3u_job.unresolved_files {
-                    match resolve_disc_file(file_path, di, &context, platform) {
-                        Some(disc_data) => all_discs.push(disc_data),
-                        None => {
-                            log::warn!("Could not resolve disc file: {}", file_path.display());
+                // Resolve unresolved non-cue disc files via hashing
+                if let Some(ref di) = dat_index_arc {
+                    for file_path in &m3u_job.unresolved_files {
+                        match resolve_disc_file(file_path, di, &context, platform) {
+                            Some(disc_data) => all_discs.push(disc_data),
+                            None => {
+                                log::warn!("Could not resolve disc file: {}", file_path.display());
+                            }
                         }
                     }
                 }
-            }
 
-            // Plan a verified disc set for each cue in the folder
-            let mut disc_sets = Vec::new();
-            let mut set_errors = Vec::new();
-            for cue in &m3u_job.cue_files {
-                match plan_cue_set(cue, &dat_index_arc, &context, platform) {
-                    Some(DiscSetOutcome::Planned(plan)) => {
-                        all_discs.push(DiscMatchData {
-                            file_path: cue.clone(),
-                            game_name: plan.game_name.clone(),
-                            target_filename: plan.cue_target_filename.clone(),
-                        });
-                        disc_sets.push(plan);
-                    }
-                    Some(DiscSetOutcome::AlreadyCorrect { game_name, .. }) => {
-                        if let Some(name) = cue.file_name().and_then(|n| n.to_str()) {
+                // Plan a verified disc set for each cue in the folder
+                let mut disc_sets = Vec::new();
+                let mut set_errors = Vec::new();
+                for cue in &m3u_job.cue_files {
+                    match plan_cue_set(cue, &dat_index_arc, &context, platform) {
+                        Some(DiscSetOutcome::Planned(plan)) => {
                             all_discs.push(DiscMatchData {
                                 file_path: cue.clone(),
-                                game_name,
-                                target_filename: name.to_string(),
+                                game_name: plan.game_name.clone(),
+                                target_filename: plan.cue_target_filename.clone(),
                             });
+                            disc_sets.push(plan);
+                        }
+                        Some(DiscSetOutcome::AlreadyCorrect { game_name, .. }) => {
+                            if let Some(name) = cue.file_name().and_then(|n| n.to_str()) {
+                                all_discs.push(DiscMatchData {
+                                    file_path: cue.clone(),
+                                    game_name,
+                                    target_filename: name.to_string(),
+                                });
+                            }
+                        }
+                        Some(other) => {
+                            set_errors.push(describe_set_failure(cue, &other));
+                        }
+                        None => {
+                            set_errors.push(format!(
+                                "{}: no DAT index or analyzer available",
+                                cue.display()
+                            ));
                         }
                     }
-                    Some(other) => {
-                        set_errors.push(describe_set_failure(cue, &other));
-                    }
-                    None => {
-                        set_errors.push(format!(
-                            "{}: no DAT index or analyzer available",
-                            cue.display()
-                        ));
-                    }
+                }
+
+                if all_discs.is_empty() && disc_sets.is_empty() {
+                    results.push(RenameResult {
+                        entry_name: m3u_job.entry_name.clone(),
+                        outcome: RenameOutcome::NoMatch {
+                            reason: if set_errors.is_empty() {
+                                "Could not resolve any disc files".to_string()
+                            } else {
+                                set_errors.join("; ")
+                            },
+                        },
+                    });
+                    continue;
+                }
+
+                let source_folder = match m3u_job.files[0].parent() {
+                    Some(p) => p.to_path_buf(),
+                    None => continue,
+                };
+
+                let lib_job = retro_junk_lib::rename::M3uRenameJob {
+                    source_folder: source_folder.clone(),
+                    discs: all_discs.clone(),
+                    disc_sets,
+                    game_name_override: m3u_job.game_name_override.clone(),
+                };
+                let mut m3u_result = retro_junk_lib::rename::execute_m3u_rename(&lib_job, &exec);
+                m3u_result.errors.extend(set_errors);
+
+                let any_work = m3u_result.discs_renamed > 0
+                    || m3u_result.playlist_written
+                    || m3u_result.playlist_renamed
+                    || m3u_result.folder_renamed
+                    || m3u_result.cue_files_updated > 0
+                    || m3u_result.m3u_references_updated > 0;
+
+                if any_work {
+                    results.push(RenameResult {
+                        entry_name: m3u_job.entry_name.clone(),
+                        outcome: RenameOutcome::M3uRenamed {
+                            target_folder: m3u_result.final_folder,
+                            discs_renamed: m3u_result.discs_renamed,
+                            playlist_written: m3u_result.playlist_written,
+                            folder_renamed: m3u_result.folder_renamed,
+                            errors: m3u_result.errors,
+                        },
+                    });
+                } else if m3u_result.errors.is_empty() {
+                    results.push(RenameResult {
+                        entry_name: m3u_job.entry_name.clone(),
+                        outcome: RenameOutcome::AlreadyCorrect,
+                    });
+                } else {
+                    results.push(RenameResult {
+                        entry_name: m3u_job.entry_name.clone(),
+                        outcome: RenameOutcome::Error {
+                            message: m3u_result.errors.join("; "),
+                        },
+                    });
                 }
             }
 
-            if all_discs.is_empty() && disc_sets.is_empty() {
-                results.push(RenameResult {
-                    entry_name: m3u_job.entry_name.clone(),
-                    outcome: RenameOutcome::NoMatch {
-                        reason: if set_errors.is_empty() {
-                            "Could not resolve any disc files".to_string()
-                        } else {
-                            set_errors.join("; ")
-                        },
-                    },
-                });
-                continue;
-            }
-
-            let source_folder = match m3u_job.files[0].parent() {
-                Some(p) => p.to_path_buf(),
-                None => continue,
-            };
-
-            let lib_job = retro_junk_lib::rename::M3uRenameJob {
-                source_folder: source_folder.clone(),
-                discs: all_discs.clone(),
-                disc_sets,
-                game_name_override: m3u_job.game_name_override.clone(),
-            };
-            let mut m3u_result = retro_junk_lib::rename::execute_m3u_rename(&lib_job, &exec);
-            m3u_result.errors.extend(set_errors);
-
-            let any_work = m3u_result.discs_renamed > 0
-                || m3u_result.playlist_written
-                || m3u_result.playlist_renamed
-                || m3u_result.folder_renamed
-                || m3u_result.cue_files_updated > 0
-                || m3u_result.m3u_references_updated > 0;
-
-            if any_work {
-                results.push(RenameResult {
-                    entry_name: m3u_job.entry_name.clone(),
-                    outcome: RenameOutcome::M3uRenamed {
-                        target_folder: m3u_result.final_folder,
-                        discs_renamed: m3u_result.discs_renamed,
-                        playlist_written: m3u_result.playlist_written,
-                        folder_renamed: m3u_result.folder_renamed,
-                        errors: m3u_result.errors,
-                    },
-                });
-            } else if m3u_result.errors.is_empty() {
-                results.push(RenameResult {
-                    entry_name: m3u_job.entry_name.clone(),
-                    outcome: RenameOutcome::AlreadyCorrect,
-                });
-            } else {
-                results.push(RenameResult {
-                    entry_name: m3u_job.entry_name.clone(),
-                    outcome: RenameOutcome::Error {
-                        message: m3u_result.errors.join("; "),
-                    },
-                });
-            }
-        }
-
-        let _ = tx.send(AppMessage::RenameComplete {
-            folder_name,
-            results,
-        });
-        let _ = tx.send(AppMessage::OperationComplete { op_id });
-        ctx.request_repaint();
-    });
+            let _ = tx.send(AppMessage::RenameComplete {
+                folder_name,
+                results,
+            });
+            let _ = tx.send(AppMessage::OperationComplete { op_id });
+            ctx.request_repaint();
+        },
+    );
 }
 
 /// Map every existing track file referenced by a `.cue` in `dir` to its cue.

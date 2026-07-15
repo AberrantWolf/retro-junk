@@ -44,8 +44,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             });
     }
 
-    // Game table (center, fills remaining space)
-    egui::CentralPanel::default().show(ui, |ui| {
+    // Game table (center, fills remaining space). Stable id so toggling the
+    // conditional detail panel above doesn't re-id the toolbar/table widgets.
+    crate::util::stable_central_panel(ui, "library_center", |ui| {
         // Toolbar
         ui.horizontal(|ui| {
             ui.add(

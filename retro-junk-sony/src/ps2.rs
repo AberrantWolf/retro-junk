@@ -14,8 +14,8 @@ use retro_junk_core::ReadSeek;
 use std::io::{Seek, SeekFrom};
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, FileHashes, HashAlgorithms, Platform, RomAnalyzer,
-    RomIdentification,
+    AnalysisError, AnalysisOptions, ChdExtensionRole, ChdMedia, FileHashes, HashAlgorithms,
+    Platform, RomAnalyzer, RomIdentification,
 };
 
 use crate::sony_disc::{self, BootKey, DiscFormat};
@@ -284,6 +284,14 @@ impl RomAnalyzer for Ps2Analyzer {
 
     fn redump_slug(&self) -> Option<&'static str> {
         Some("ps2")
+    }
+
+    fn chd_extensions(&self) -> &'static [(&'static str, ChdExtensionRole)] {
+        // PS2 CD games (blue discs) are dumped as cue/bin; DVD games as iso.
+        &[
+            ("cue", ChdExtensionRole::Source(ChdMedia::Cd)),
+            ("iso", ChdExtensionRole::Source(ChdMedia::Dvd)),
+        ]
     }
 
     fn dat_download_ids(&self) -> &'static [&'static str] {

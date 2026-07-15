@@ -11,3 +11,6 @@ crc32fast.workspace = true
 sha1.workspace = true
 md5.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

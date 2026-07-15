@@ -6,7 +6,7 @@ use retro_junk_lib::hasher;
 
 use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
-use crate::state::AppMessage;
+use crate::state::{AppMessage, OperationKind, ProgressDisplay};
 
 /// 4 MB throttle — only send a progress update when at least this many new bytes
 /// have been processed since the last report.
@@ -92,113 +92,117 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
     let total_bytes: u64 = work.iter().map(|w| w.file_size).sum();
     let context = app.context.clone();
     let description = format!("Computing hashes ({} files)", work.len());
+    let scope = Some(folder_name.clone());
 
-    let op_id = spawn_background_op(app, description, move |op_id, cancel, tx| {
-        let registered = match context.get_by_platform(platform) {
-            Some(r) => r,
-            None => {
-                let _ = tx.send(AppMessage::OperationComplete { op_id });
-                return;
-            }
-        };
+    spawn_background_op(
+        app,
+        description,
+        OperationKind::Hash,
+        scope,
+        ProgressDisplay::Bytes,
+        move |op_id, cancel, tx| {
+            let registered = match context.get_by_platform(platform) {
+                Some(r) => r,
+                None => {
+                    let _ = tx.send(AppMessage::OperationComplete { op_id });
+                    return;
+                }
+            };
 
-        let mut bytes_completed: u64 = 0;
-        let last_reported = Cell::new(0u64);
+            let mut bytes_completed: u64 = 0;
+            let last_reported = Cell::new(0u64);
 
-        for item in &work {
-            if cancel.load(Ordering::Relaxed) {
-                let _ = tx.send(AppMessage::OperationComplete { op_id });
-                return;
-            }
+            for item in &work {
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = tx.send(AppMessage::OperationComplete { op_id });
+                    return;
+                }
 
-            let file_base = bytes_completed;
+                let file_base = bytes_completed;
 
-            log::debug!("compute_hashes: opening file {}", item.path.display());
-            match std::fs::File::open(&item.path) {
-                Ok(mut file) => {
-                    let item_file_size = item.file_size;
-                    log::debug!("compute_hashes: calling hasher for {}", item.path.display());
-                    match hasher::compute_crc32_sha1_with_progress(
-                        &mut file,
-                        registered.analyzer.as_ref(),
-                        &|file_bytes_done, file_total| {
-                            // Scale progress proportionally: container formats
-                            // (CHD) may hash far fewer bytes than the file size.
-                            // Map hash progress to the file's share of total_bytes.
-                            let scaled = if file_total > 0 && file_total != item_file_size {
-                                (file_bytes_done as f64 / file_total as f64 * item_file_size as f64)
-                                    as u64
-                            } else {
-                                file_bytes_done
-                            };
-                            let current = file_base + scaled;
-                            if current - last_reported.get() >= PROGRESS_THROTTLE {
-                                last_reported.set(current);
-                                let _ = tx.send(AppMessage::OperationProgress {
-                                    op_id,
-                                    current,
-                                    total: total_bytes,
+                log::debug!("compute_hashes: opening file {}", item.path.display());
+                match std::fs::File::open(&item.path) {
+                    Ok(mut file) => {
+                        let item_file_size = item.file_size;
+                        log::debug!("compute_hashes: calling hasher for {}", item.path.display());
+                        match hasher::compute_crc32_sha1_with_progress(
+                            &mut file,
+                            registered.analyzer.as_ref(),
+                            &|file_bytes_done, file_total| {
+                                // Scale progress proportionally: container formats
+                                // (CHD) may hash far fewer bytes than the file size.
+                                // Map hash progress to the file's share of total_bytes.
+                                let scaled = if file_total > 0 && file_total != item_file_size {
+                                    (file_bytes_done as f64 / file_total as f64
+                                        * item_file_size as f64)
+                                        as u64
+                                } else {
+                                    file_bytes_done
+                                };
+                                let current = file_base + scaled;
+                                if current - last_reported.get() >= PROGRESS_THROTTLE {
+                                    last_reported.set(current);
+                                    let _ = tx.send(AppMessage::OperationProgress {
+                                        op_id,
+                                        current,
+                                        total: total_bytes,
+                                    });
+                                }
+                            },
+                            Some(&item.path),
+                        ) {
+                            Ok(hashes) => {
+                                log::debug!(
+                                    "compute_hashes: success for {}, crc32={}, data_size={}",
+                                    item.path.display(),
+                                    hashes.crc32,
+                                    hashes.data_size
+                                );
+                                let msg = if item.is_disc {
+                                    AppMessage::DiscHashComplete {
+                                        folder_name: folder_name.clone(),
+                                        entry_name: item.entry_name.clone(),
+                                        disc_path: item.path.clone(),
+                                        hashes,
+                                    }
+                                } else {
+                                    AppMessage::HashComplete {
+                                        folder_name: folder_name.clone(),
+                                        entry_name: item.entry_name.clone(),
+                                        hashes,
+                                    }
+                                };
+                                let _ = tx.send(msg);
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppMessage::HashFailed {
+                                    folder_name: folder_name.clone(),
+                                    entry_name: item.entry_name.clone(),
+                                    error: e.to_string(),
                                 });
                             }
-                        },
-                        Some(&item.path),
-                    ) {
-                        Ok(hashes) => {
-                            log::debug!(
-                                "compute_hashes: success for {}, crc32={}, data_size={}",
-                                item.path.display(),
-                                hashes.crc32,
-                                hashes.data_size
-                            );
-                            let msg = if item.is_disc {
-                                AppMessage::DiscHashComplete {
-                                    folder_name: folder_name.clone(),
-                                    entry_name: item.entry_name.clone(),
-                                    disc_path: item.path.clone(),
-                                    hashes,
-                                }
-                            } else {
-                                AppMessage::HashComplete {
-                                    folder_name: folder_name.clone(),
-                                    entry_name: item.entry_name.clone(),
-                                    hashes,
-                                }
-                            };
-                            let _ = tx.send(msg);
-                        }
-                        Err(e) => {
-                            let _ = tx.send(AppMessage::HashFailed {
-                                folder_name: folder_name.clone(),
-                                entry_name: item.entry_name.clone(),
-                                error: e.to_string(),
-                            });
                         }
                     }
+                    Err(e) => {
+                        let _ = tx.send(AppMessage::HashFailed {
+                            folder_name: folder_name.clone(),
+                            entry_name: item.entry_name.clone(),
+                            error: e.to_string(),
+                        });
+                    }
                 }
-                Err(e) => {
-                    let _ = tx.send(AppMessage::HashFailed {
-                        folder_name: folder_name.clone(),
-                        entry_name: item.entry_name.clone(),
-                        error: e.to_string(),
-                    });
-                }
+
+                // Always advance past this file (even on failure)
+                bytes_completed += item.file_size;
+                let _ = tx.send(AppMessage::OperationProgress {
+                    op_id,
+                    current: bytes_completed,
+                    total: total_bytes,
+                });
+                last_reported.set(bytes_completed);
             }
 
-            // Always advance past this file (even on failure)
-            bytes_completed += item.file_size;
-            let _ = tx.send(AppMessage::OperationProgress {
-                op_id,
-                current: bytes_completed,
-                total: total_bytes,
-            });
-            last_reported.set(bytes_completed);
-        }
-
-        let _ = tx.send(AppMessage::OperationComplete { op_id });
-    });
-
-    // Mark this operation as byte-level progress
-    if let Some(op) = app.operations.iter_mut().find(|op| op.id == op_id) {
-        op.progress_is_bytes = true;
-    }
+            let _ = tx.send(AppMessage::OperationComplete { op_id });
+        },
+    );
 }

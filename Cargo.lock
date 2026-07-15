@@ -4375,6 +4375,7 @@ dependencies = [
  "retro-junk-sega",
  "retro-junk-sony",
  "strip-ansi-escapes",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -4426,6 +4427,7 @@ dependencies = [
  "md5",
  "retro-junk-core",
  "sha1",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -4474,6 +4476,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tokio",
  "toml 0.8.23",
 ]

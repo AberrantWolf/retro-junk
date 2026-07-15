@@ -282,3 +282,28 @@ fn test_serial_extraction_various() {
     let id = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(id.serial_number.as_deref(), Some("GS-9001"));
 }
+
+// -- CHD extension table --
+
+#[test]
+fn test_chd_media_for_extension_cue() {
+    let analyzer = SaturnAnalyzer;
+    assert_eq!(
+        analyzer.chd_media_for_extension("cue"),
+        Some(retro_junk_core::ChdMedia::Cd)
+    );
+    assert_eq!(analyzer.chd_media_for_extension("iso"), None);
+}
+
+#[test]
+fn test_chd_extensions_declares_a_source_role() {
+    // console_supports_chd-equivalent logic: Saturn is disc-based, so at
+    // least one declared extension must be a CHD Source.
+    let analyzer = SaturnAnalyzer;
+    assert!(
+        analyzer
+            .chd_extensions()
+            .iter()
+            .any(|(_, role)| matches!(role, retro_junk_core::ChdExtensionRole::Source(_)))
+    );
+}

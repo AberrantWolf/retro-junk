@@ -1,6 +1,7 @@
 pub(crate) mod analyze;
 pub(crate) mod cache;
 pub(crate) mod catalog;
+pub(crate) mod compress;
 pub(crate) mod credentials;
 pub(crate) mod fix_cue;
 pub(crate) mod organize;

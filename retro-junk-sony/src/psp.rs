@@ -8,7 +8,11 @@
 
 use retro_junk_core::ReadSeek;
 
-use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
+use retro_junk_core::{
+    AnalysisError, AnalysisOptions, ChdExtensionRole, ChdMedia, FileHashes, HashAlgorithms,
+    Platform, RomAnalyzer, RomIdentification,
+};
+use retro_junk_disc::hash::hash_disc_container;
 
 /// Analyzer for PlayStation Portable disc images.
 #[derive(Debug, Default)]
@@ -30,7 +34,7 @@ impl RomAnalyzer for PspAnalyzer {
     }
 
     fn file_extensions(&self) -> &'static [&'static str] {
-        &["iso", "cso", "pbp", "dax"]
+        &["iso", "cso", "pbp", "dax", "chd"]
     }
 
     fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
@@ -45,6 +49,26 @@ impl RomAnalyzer for PspAnalyzer {
         Some("psp")
     }
 
+    fn chd_extensions(&self) -> &'static [(&'static str, ChdExtensionRole)] {
+        // UMDs are DVD-family media (PPSSPP supports CHD since 1.12).
+        // cso/dax are already-compressed containers chdman cannot read.
+        &[
+            ("iso", ChdExtensionRole::Source(ChdMedia::Dvd)),
+            ("cso", ChdExtensionRole::Unconvertible),
+            ("dax", ChdExtensionRole::Unconvertible),
+        ]
+    }
+
+    fn compute_container_hashes(
+        &self,
+        reader: &mut dyn ReadSeek,
+        algorithms: HashAlgorithms,
+        file_path: Option<&std::path::Path>,
+        on_progress: retro_junk_core::HashProgressFn<'_>,
+    ) -> Result<Option<FileHashes>, AnalysisError> {
+        hash_disc_container(reader, algorithms, file_path, "PSP", on_progress)
+    }
+
     fn dat_download_ids(&self) -> &'static [&'static str] {
         &["psp"]
     }
@@ -53,3 +77,7 @@ impl RomAnalyzer for PspAnalyzer {
         &["Sony - PlayStation Portable"]
     }
 }
+
+#[cfg(test)]
+#[path = "tests/psp_tests.rs"]
+mod tests;
