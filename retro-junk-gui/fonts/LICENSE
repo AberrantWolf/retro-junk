@@ -6,6 +6,15 @@ Files:
   - NotoSansJP-Regular.otf (Japanese subset)
   - NotoSansCJKjp-Regular.otf (Full CJK, Japanese preferred glyphs)
 
+Noto Sans Symbols fonts are licensed under the SIL Open Font License,
+Version 1.1 (Copyright 2022 The Noto Project Authors).
+
+Source: https://github.com/notofonts/symbols
+Files:
+  - NotoSansSymbols2-Regular.ttf (Version 2.008 — dingbats, geometric
+    shapes, warning sign, check/ballot marks, misc pictographs)
+  - NotoSansSymbols-Regular.ttf (Version 2.003 — arrows)
+
 ---
 
 Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved Font Name 'Source'

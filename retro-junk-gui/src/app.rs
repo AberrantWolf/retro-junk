@@ -258,7 +258,7 @@ impl RetroJunkApp {
         db_path: Option<std::path::PathBuf>,
     ) -> Self {
         egui_extras::install_image_loaders(egui_ctx);
-        crate::fonts::configure_cjk_fonts(egui_ctx);
+        crate::fonts::configure_fonts(egui_ctx);
         let (tx, rx) = mpsc::channel();
         let context = Arc::new(retro_junk_lib::create_default_context());
 
