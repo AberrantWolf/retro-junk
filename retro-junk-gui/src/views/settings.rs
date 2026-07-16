@@ -3,7 +3,7 @@
 mod tests;
 
 use crate::app::RetroJunkApp;
-use crate::widgets::results_dialog::{STATUS_ERR, STATUS_OK};
+use crate::widgets::results_dialog::{STATUS_ERR, STATUS_OK, STATUS_WARN};
 
 /// Render the Settings view.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -18,8 +18,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.add_space(16.0);
         show_external_tools_section(ui, app);
         ui.add_space(16.0);
+        show_scraper_section(ui, app);
+        ui.add_space(16.0);
         show_cache_section(ui, app);
     });
+
+    show_credential_info_popup(ui.ctx(), app);
 }
 
 fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -248,6 +252,155 @@ fn show_external_tools_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
     if changed {
         let _ = crate::settings::save_settings(&app.settings);
+    }
+}
+
+/// How long a cached credential-provenance snapshot stays fresh. Short enough
+/// that edits made in an external editor show up on the next repaint after
+/// returning to the window, long enough to avoid re-reading the file and
+/// environment on every frame.
+const CREDENTIAL_STATUS_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn show_scraper_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    use retro_junk_scraper::{CREDENTIAL_FIELDS, CredentialSource};
+
+    ui.strong("ScreenScraper");
+    ui.add_space(4.0);
+
+    // Config file row
+    let config_path = retro_junk_scraper::config_path();
+    ui.horizontal(|ui| {
+        ui.label("Config file:");
+        match &config_path {
+            Some(path) => {
+                ui.monospace(path.display().to_string());
+                if !path.exists() {
+                    ui.weak("(not created yet)");
+                }
+            }
+            None => {
+                ui.colored_label(STATUS_ERR, "could not determine config directory");
+            }
+        }
+        if ui.button("Open Config File").clicked() {
+            match retro_junk_scraper::ensure_config_file() {
+                Ok((path, created)) => {
+                    if created {
+                        log::info!("Created credentials template at {}", path.display());
+                    }
+                    crate::util::open_in_default_app(&path);
+                    // The user is about to edit the file — drop the cached
+                    // provenance so the next repaint re-reads it.
+                    app.credential_status = None;
+                }
+                Err(e) => {
+                    app.error_list.push(crate::state::UserError {
+                        category: "Config".to_string(),
+                        message: format!("Failed to create credentials file: {e}"),
+                    });
+                }
+            }
+        }
+    });
+    ui.indent("scraper_config_hint", |ui| {
+        ui.weak(
+            "Credentials for the ScreenScraper API, used when scraping metadata and artwork. \
+             Environment variables override values in the file.",
+        );
+    });
+
+    ui.add_space(8.0);
+
+    // Refresh the cached provenance snapshot when stale. Reading it means
+    // touching the filesystem and environment, so don't do it every frame.
+    let stale = app
+        .credential_status
+        .as_ref()
+        .is_none_or(|(at, _)| at.elapsed() > CREDENTIAL_STATUS_TTL);
+    if stale {
+        app.credential_status = Some((
+            std::time::Instant::now(),
+            retro_junk_scraper::credential_sources(),
+        ));
+    }
+    // Keep the statuses live while the view is visible, even without input.
+    ui.ctx().request_repaint_after(CREDENTIAL_STATUS_TTL);
+
+    let sources = &app.credential_status.as_ref().expect("just refreshed").1;
+    let mut open_info = None;
+
+    for meta in CREDENTIAL_FIELDS.iter() {
+        let source = sources.by_key(meta.key).expect("known field key");
+
+        let (color, source_text) = match source {
+            CredentialSource::Missing if meta.required => {
+                (STATUS_ERR, "not set (required)".to_string())
+            }
+            CredentialSource::Missing => (egui::Color32::GRAY, "not set (optional)".to_string()),
+            CredentialSource::Default => (STATUS_WARN, source.to_string()),
+            _ => (STATUS_OK, source.to_string()),
+        };
+
+        ui.horizontal(|ui| {
+            ui.colored_label(color, "●");
+            ui.label(meta.label);
+            ui.weak(format!("({})", source_text));
+            if ui
+                .small_button("ℹ")
+                .on_hover_text(format!("What is {}?", meta.label))
+                .clicked()
+            {
+                open_info = Some(meta);
+            }
+        });
+    }
+
+    if open_info.is_some() {
+        app.credential_info_popup = open_info;
+    }
+}
+
+/// Modal explaining one credential field: what it is for and where to get it.
+fn show_credential_info_popup(ctx: &egui::Context, app: &mut RetroJunkApp) {
+    let Some(meta) = app.credential_info_popup else {
+        return;
+    };
+
+    let mut dismiss = false;
+    let mut open = true;
+
+    egui::Window::new(meta.label)
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .default_width(420.0)
+        .show(ctx, |ui| {
+            ui.label(meta.description);
+            ui.add_space(8.0);
+
+            ui.strong("Where to get it");
+            ui.label(meta.how_to_obtain);
+            ui.add_space(8.0);
+
+            ui.strong("How to set it");
+            ui.horizontal(|ui| {
+                ui.label("Environment variable:");
+                ui.monospace(meta.env_var);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Config file key:");
+                ui.monospace(format!("[screenscraper] {}", meta.key));
+            });
+
+            ui.separator();
+            if ui.button("Close").clicked() {
+                dismiss = true;
+            }
+        });
+
+    if dismiss || !open {
+        app.credential_info_popup = None;
     }
 }
 

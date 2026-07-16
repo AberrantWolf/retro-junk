@@ -107,6 +107,14 @@ pub struct RetroJunkApp {
     /// flight, and drives the Settings-view spinner.
     pub chdman_probe_in_flight: bool,
 
+    /// Cached ScreenScraper credential provenance for the Settings view,
+    /// with the time it was computed. Re-read after a short TTL so edits
+    /// made in an external editor show up without a manual refresh.
+    pub credential_status: Option<(std::time::Instant, retro_junk_scraper::CredentialSources)>,
+
+    /// Credential field whose explanation popup is open, if any.
+    pub credential_info_popup: Option<&'static retro_junk_scraper::CredentialFieldMeta>,
+
     /// True while the initial cache load is in flight on startup.
     /// Cleared when `StartFolderScan` is processed (the signal that the cache
     /// thread has finished, whether or not a cache existed).
@@ -278,6 +286,8 @@ impl RetroJunkApp {
             chd_compress_results: None,
             chdman_probe: None,
             chdman_probe_in_flight: false,
+            credential_status: None,
+            credential_info_popup: None,
             loading_library: false,
             tools_state: ToolsState::default(),
             focused_panel: FocusedPanel::default(),

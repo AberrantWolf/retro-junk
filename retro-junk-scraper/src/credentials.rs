@@ -1,3 +1,7 @@
+#[cfg(test)]
+#[path = "tests/credentials_tests.rs"]
+mod tests;
+
 use std::path::PathBuf;
 
 use crate::error::ScrapeError;
@@ -90,50 +94,86 @@ struct ScreenScraperConfig {
     user_password: Option<String>,
 }
 
+/// Treat blank (empty or whitespace-only) values as unset, wherever they came
+/// from — a `user_id = ""` line in the config file, an env var set to "".
+/// A blank user_id must mean "use the anonymous API", not "log in with an
+/// empty username", and a blank dev_id must fall through to the embedded
+/// credentials instead of masking them.
+fn non_blank(v: Option<String>) -> Option<String> {
+    v.filter(|s| !s.trim().is_empty())
+}
+
+/// Resolve one field: env var > config file, skipping blank values at each level.
+fn resolve(env_var: &str, file_value: Option<String>) -> Option<String> {
+    non_blank(std::env::var(env_var).ok()).or_else(|| non_blank(file_value))
+}
+
+/// Provenance decision for one field, given already-fetched raw values.
+/// Blank values don't count as set, mirroring [`resolve`].
+fn source_from(
+    env_var: &'static str,
+    env_value: Option<String>,
+    file_value: Option<&str>,
+    fallback: CredentialSource,
+) -> CredentialSource {
+    if non_blank(env_value).is_some() {
+        CredentialSource::EnvVar(env_var)
+    } else if file_value.is_some_and(|s| !s.trim().is_empty()) {
+        CredentialSource::ConfigFile
+    } else {
+        fallback
+    }
+}
+
 impl Credentials {
     /// Load credentials from environment variables, config file, or embedded defaults.
     ///
     /// Priority: env vars > config file > embedded (compile-time).
+    /// Blank values are treated as unset at every level.
     /// Required: dev_id, dev_password, soft_name.
     /// Optional: user_id, user_password.
     pub fn load() -> Result<Self, ScrapeError> {
         // Try config file first as base values
         let config = load_config_file();
 
-        let dev_id = std::env::var("SCREENSCRAPER_DEVID")
-            .ok()
-            .or_else(|| config.as_ref().and_then(|c| c.dev_id.clone()))
-            .or_else(embedded_dev_id)
-            .ok_or_else(|| {
-                ScrapeError::Config(
-                    "Missing dev_id. Set SCREENSCRAPER_DEVID env var or add to config file"
-                        .to_string(),
-                )
-            })?;
+        let dev_id = resolve(
+            "SCREENSCRAPER_DEVID",
+            config.as_ref().and_then(|c| c.dev_id.clone()),
+        )
+        .or_else(embedded_dev_id)
+        .ok_or_else(|| {
+            ScrapeError::Config(
+                "Missing dev_id. Set SCREENSCRAPER_DEVID env var or add to config file".to_string(),
+            )
+        })?;
 
-        let dev_password = std::env::var("SCREENSCRAPER_DEVPASSWORD")
-            .ok()
-            .or_else(|| config.as_ref().and_then(|c| c.dev_password.clone()))
-            .or_else(embedded_dev_password)
-            .ok_or_else(|| {
-                ScrapeError::Config(
-                    "Missing dev_password. Set SCREENSCRAPER_DEVPASSWORD env var or add to config file"
-                        .to_string(),
-                )
-            })?;
+        let dev_password = resolve(
+            "SCREENSCRAPER_DEVPASSWORD",
+            config.as_ref().and_then(|c| c.dev_password.clone()),
+        )
+        .or_else(embedded_dev_password)
+        .ok_or_else(|| {
+            ScrapeError::Config(
+                "Missing dev_password. Set SCREENSCRAPER_DEVPASSWORD env var or add to config file"
+                    .to_string(),
+            )
+        })?;
 
-        let soft_name = std::env::var("SCREENSCRAPER_SOFTNAME")
-            .ok()
-            .or_else(|| config.as_ref().and_then(|c| c.soft_name.clone()))
-            .unwrap_or_else(|| "retro-junk".to_string());
+        let soft_name = resolve(
+            "SCREENSCRAPER_SOFTNAME",
+            config.as_ref().and_then(|c| c.soft_name.clone()),
+        )
+        .unwrap_or_else(|| "retro-junk".to_string());
 
-        let user_id = std::env::var("SCREENSCRAPER_SSID")
-            .ok()
-            .or_else(|| config.as_ref().and_then(|c| c.user_id.clone()));
+        let user_id = resolve(
+            "SCREENSCRAPER_SSID",
+            config.as_ref().and_then(|c| c.user_id.clone()),
+        );
 
-        let user_password = std::env::var("SCREENSCRAPER_SSPASSWORD")
-            .ok()
-            .or_else(|| config.as_ref().and_then(|c| c.user_password.clone()));
+        let user_password = resolve(
+            "SCREENSCRAPER_SSPASSWORD",
+            config.as_ref().and_then(|c| c.user_password.clone()),
+        );
 
         Ok(Self {
             dev_id,
@@ -166,6 +206,136 @@ impl Credentials {
         }
         self
     }
+}
+
+/// Static description of one credential field: where it can be set and what
+/// it is for. Single source of truth for CLI/GUI help text.
+#[derive(Debug, Clone, Copy)]
+pub struct CredentialFieldMeta {
+    /// TOML key under `[screenscraper]` (also the canonical field name).
+    pub key: &'static str,
+    /// Human-readable label.
+    pub label: &'static str,
+    /// Environment variable that overrides the config file.
+    pub env_var: &'static str,
+    /// Whether the API cannot be used without this field.
+    pub required: bool,
+    /// What the value is for.
+    pub description: &'static str,
+    /// Where a user obtains the value.
+    pub how_to_obtain: &'static str,
+}
+
+/// All ScreenScraper credential fields, in display order.
+pub static CREDENTIAL_FIELDS: [CredentialFieldMeta; 5] = [
+    CredentialFieldMeta {
+        key: "dev_id",
+        label: "Developer ID",
+        env_var: "SCREENSCRAPER_DEVID",
+        required: true,
+        description: "ScreenScraper developer API ID. Identifies the application (not you) \
+                      to the API; every request requires it. Official builds ship with one \
+                      embedded, so you normally only need this when building from source.",
+        how_to_obtain: "Request developer API access from the ScreenScraper team via the \
+                        forums at https://www.screenscraper.fr (developer registration is \
+                        manual and granted per application).",
+    },
+    CredentialFieldMeta {
+        key: "dev_password",
+        label: "Developer password",
+        env_var: "SCREENSCRAPER_DEVPASSWORD",
+        required: true,
+        description: "Password paired with the developer ID. Required alongside it for \
+                      every API request.",
+        how_to_obtain: "Issued together with the developer ID when ScreenScraper grants \
+                        developer API access.",
+    },
+    CredentialFieldMeta {
+        key: "soft_name",
+        label: "Software name",
+        env_var: "SCREENSCRAPER_SOFTNAME",
+        required: false,
+        description: "Name this application reports to the ScreenScraper API. Defaults to \
+                      \"retro-junk\"; there is rarely a reason to change it.",
+        how_to_obtain: "Free-form — no registration needed. Leave unset to use the default.",
+    },
+    CredentialFieldMeta {
+        key: "user_id",
+        label: "User ID",
+        env_var: "SCREENSCRAPER_SSID",
+        required: false,
+        description: "Your personal ScreenScraper account username. Optional, but raises \
+                      your daily request quota and allowed download threads — recommended \
+                      when scraping more than a handful of games.",
+        how_to_obtain: "Create a free account at https://www.screenscraper.fr (Inscription). \
+                        Donating members get higher quotas.",
+    },
+    CredentialFieldMeta {
+        key: "user_password",
+        label: "User password",
+        env_var: "SCREENSCRAPER_SSPASSWORD",
+        required: false,
+        description: "Password for your personal ScreenScraper account, used together with \
+                      the user ID.",
+        how_to_obtain: "Chosen when you register your account at https://www.screenscraper.fr.",
+    },
+];
+
+impl CredentialSources {
+    /// Look up a field's provenance by its canonical key.
+    pub fn by_key(&self, key: &str) -> Option<&CredentialSource> {
+        match key {
+            "dev_id" => Some(&self.dev_id),
+            "dev_password" => Some(&self.dev_password),
+            "soft_name" => Some(&self.soft_name),
+            "user_id" => Some(&self.user_id),
+            "user_password" => Some(&self.user_password),
+            _ => None,
+        }
+    }
+}
+
+/// Starter contents written when creating a fresh credentials file.
+///
+/// Every key is present but commented out: an uncommented empty string would
+/// count as "set in config file" during provenance checks, which is not what
+/// a template should do.
+const CONFIG_TEMPLATE: &str = r#"# retro-junk credentials
+#
+# Uncomment a line and fill in its value to set it. Environment variables
+# take priority over this file:
+#   SCREENSCRAPER_DEVID, SCREENSCRAPER_DEVPASSWORD, SCREENSCRAPER_SOFTNAME,
+#   SCREENSCRAPER_SSID, SCREENSCRAPER_SSPASSWORD
+
+[screenscraper]
+# Developer API credentials. Official builds embed a set, so these are only
+# needed when building from source. Granted by the ScreenScraper team via
+# https://www.screenscraper.fr forums.
+#dev_id = ""
+#dev_password = ""
+
+# Software name reported to the API (default: "retro-junk").
+#soft_name = ""
+
+# Your personal ScreenScraper account (optional; raises rate limits).
+# Register free at https://www.screenscraper.fr
+#user_id = ""
+#user_password = ""
+"#;
+
+/// Ensure the credentials config file exists, writing a commented template if
+/// it does not. Returns the path and whether a new file was created.
+pub fn ensure_config_file() -> Result<(PathBuf, bool), ScrapeError> {
+    let path = config_path()
+        .ok_or_else(|| ScrapeError::Config("Could not determine config directory".to_string()))?;
+    if path.exists() {
+        return Ok((path, false));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, CONFIG_TEMPLATE)?;
+    Ok((path, true))
 }
 
 /// Return the path to the credentials config file.
@@ -223,67 +393,58 @@ pub fn save_to_file(creds: &Credentials) -> Result<PathBuf, ScrapeError> {
 }
 
 /// Determine where each credential field is coming from.
+///
+/// Uses the same blank-means-unset rules as [`Credentials::load`], so the
+/// reported source always matches what `load()` would actually use.
 pub fn credential_sources() -> CredentialSources {
     let config = load_config_file();
 
-    let dev_id = if std::env::var("SCREENSCRAPER_DEVID").is_ok() {
-        CredentialSource::EnvVar("SCREENSCRAPER_DEVID")
-    } else if config.as_ref().and_then(|c| c.dev_id.as_ref()).is_some() {
-        CredentialSource::ConfigFile
-    } else if has_embedded_dev_credentials() {
-        CredentialSource::Embedded
-    } else {
-        CredentialSource::Missing
+    let source = |env_var: &'static str,
+                  file_value: Option<&String>,
+                  fallback: CredentialSource|
+     -> CredentialSource {
+        source_from(
+            env_var,
+            std::env::var(env_var).ok(),
+            file_value.map(String::as_str),
+            fallback,
+        )
     };
 
-    let dev_password = if std::env::var("SCREENSCRAPER_DEVPASSWORD").is_ok() {
-        CredentialSource::EnvVar("SCREENSCRAPER_DEVPASSWORD")
-    } else if config
-        .as_ref()
-        .and_then(|c| c.dev_password.as_ref())
-        .is_some()
-    {
-        CredentialSource::ConfigFile
-    } else if has_embedded_dev_credentials() {
-        CredentialSource::Embedded
-    } else {
-        CredentialSource::Missing
-    };
-
-    let soft_name = if std::env::var("SCREENSCRAPER_SOFTNAME").is_ok() {
-        CredentialSource::EnvVar("SCREENSCRAPER_SOFTNAME")
-    } else if config.as_ref().and_then(|c| c.soft_name.as_ref()).is_some() {
-        CredentialSource::ConfigFile
-    } else {
-        CredentialSource::Default
-    };
-
-    let user_id = if std::env::var("SCREENSCRAPER_SSID").is_ok() {
-        CredentialSource::EnvVar("SCREENSCRAPER_SSID")
-    } else if config.as_ref().and_then(|c| c.user_id.as_ref()).is_some() {
-        CredentialSource::ConfigFile
-    } else {
-        CredentialSource::Missing
-    };
-
-    let user_password = if std::env::var("SCREENSCRAPER_SSPASSWORD").is_ok() {
-        CredentialSource::EnvVar("SCREENSCRAPER_SSPASSWORD")
-    } else if config
-        .as_ref()
-        .and_then(|c| c.user_password.as_ref())
-        .is_some()
-    {
-        CredentialSource::ConfigFile
-    } else {
-        CredentialSource::Missing
+    let dev_fallback = || {
+        if has_embedded_dev_credentials() {
+            CredentialSource::Embedded
+        } else {
+            CredentialSource::Missing
+        }
     };
 
     CredentialSources {
-        dev_id,
-        dev_password,
-        soft_name,
-        user_id,
-        user_password,
+        dev_id: source(
+            "SCREENSCRAPER_DEVID",
+            config.as_ref().and_then(|c| c.dev_id.as_ref()),
+            dev_fallback(),
+        ),
+        dev_password: source(
+            "SCREENSCRAPER_DEVPASSWORD",
+            config.as_ref().and_then(|c| c.dev_password.as_ref()),
+            dev_fallback(),
+        ),
+        soft_name: source(
+            "SCREENSCRAPER_SOFTNAME",
+            config.as_ref().and_then(|c| c.soft_name.as_ref()),
+            CredentialSource::Default,
+        ),
+        user_id: source(
+            "SCREENSCRAPER_SSID",
+            config.as_ref().and_then(|c| c.user_id.as_ref()),
+            CredentialSource::Missing,
+        ),
+        user_password: source(
+            "SCREENSCRAPER_SSPASSWORD",
+            config.as_ref().and_then(|c| c.user_password.as_ref()),
+            CredentialSource::Missing,
+        ),
     }
 }
 

@@ -8,8 +8,73 @@
 //! returns long before the probe could have completed synchronously.
 
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 
 use crate::app::RetroJunkApp;
+
+fn settings_harness<'a>() -> Harness<'a, RetroJunkApp> {
+    Harness::new_eframe(|cc| {
+        let mut app = RetroJunkApp::with_parts(
+            &cc.egui_ctx,
+            crate::settings::AppSettings::default(),
+            None,
+            None,
+        );
+        app.current_view = crate::state::View::Settings;
+        app
+    })
+}
+
+/// The ScreenScraper section lists every credential field with a status dot,
+/// and populates the cached provenance snapshot on first render.
+///
+/// Assertions are structural only — actual statuses depend on the machine's
+/// environment and config file, which these tests must not assume.
+#[test]
+fn scraper_section_lists_all_credential_fields() {
+    let mut harness = settings_harness();
+    harness.run();
+
+    harness.get_by_label("ScreenScraper");
+    harness.get_by_label("Open Config File");
+    for meta in retro_junk_scraper::CREDENTIAL_FIELDS.iter() {
+        harness.get_by_label(meta.label);
+    }
+
+    assert!(
+        harness.state().credential_status.is_some(),
+        "rendering the settings view must populate the credential provenance cache"
+    );
+}
+
+/// Clicking a field's info button opens the explanation popup; closing it
+/// clears the state again.
+#[test]
+fn credential_info_button_opens_and_closes_popup() {
+    let mut harness = settings_harness();
+    harness.run();
+
+    // Info buttons render in CREDENTIAL_FIELDS order, so the first one
+    // belongs to the first field.
+    harness
+        .get_all_by_label("ℹ")
+        .next()
+        .expect("at least one info button")
+        .click();
+    harness.run();
+
+    let meta = harness
+        .state()
+        .credential_info_popup
+        .expect("clicking the info button must open the popup");
+    assert_eq!(meta.key, retro_junk_scraper::CREDENTIAL_FIELDS[0].key);
+    harness.get_by_label("Where to get it");
+    harness.get_by_label(meta.env_var);
+
+    harness.get_by_label("Close").click();
+    harness.run();
+    assert!(harness.state().credential_info_popup.is_none());
+}
 
 /// Write a slow fake "chdman": sleeps, then exits non-zero without ever
 /// printing the CHD banner `Chdman::detect` looks for.

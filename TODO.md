@@ -375,6 +375,8 @@ Audit findings from 2026-03-17.
 
 ## Code Health: DRY Violations (2026-03-17)
 
+- [ ] **CLI `credentials show`/`setup` duplicate credential field metadata** — `retro-junk-cli/src/commands/credentials.rs:78-124` builds its own field list ("dev_id", "dev_password", …) by hand. `retro_junk_scraper::CREDENTIAL_FIELDS` (added 2026-07-15 for the GUI ScreenScraper settings section) is now the single source of field keys/env vars/descriptions; the CLI commands should iterate it instead.
+
 - [ ] **Repeated path extension checking** — `retro-junk-lib/src/scanner.rs` has 4+ copies of the `.extension().and_then().map().unwrap_or(false)` pattern. Extract `has_extension(path, ext)` utility function.
 
 - [x] **Hardcoded disc sector sizes** — Extracted to `retro-junk-disc::sector` as `RAW_SECTOR_SIZE`, `ISO_SECTOR_SIZE`, `MODE1_DATA_OFFSET`, `MODE2_FORM1_DATA_OFFSET`, etc. Used by both Sony and Sega crates.

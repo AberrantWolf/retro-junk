@@ -62,6 +62,31 @@ pub const REVEAL_LABEL: &str = if cfg!(target_os = "macos") {
     "Show in File Manager"
 };
 
+/// Open a file with the OS default application (e.g. a .toml in the user's
+/// editor). Counterpart to [`reveal_in_file_manager`], which opens the parent
+/// folder instead.
+pub fn open_in_default_app(path: &Path) {
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(path);
+        c
+    };
+    #[cfg(target_os = "linux")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(path);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", ""]).arg(path);
+        c
+    };
+    cmd.spawn().ok();
+}
+
 /// Open the OS file manager and highlight the given path.
 pub fn reveal_in_file_manager(path: &Path) {
     #[cfg(target_os = "macos")]

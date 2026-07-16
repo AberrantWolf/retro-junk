@@ -11,8 +11,9 @@ pub mod types;
 pub use assets::{AssetSelection, asset_subdir};
 pub use client::{ScreenScraperClient, create_client};
 pub use credentials::{
-    CredentialSource, CredentialSources, Credentials, config_path, credential_sources,
-    has_embedded_dev_credentials, save_to_file,
+    CREDENTIAL_FIELDS, CredentialFieldMeta, CredentialSource, CredentialSources, Credentials,
+    config_path, credential_sources, ensure_config_file, has_embedded_dev_credentials,
+    save_to_file,
 };
 pub use error::ScrapeError;
 pub use log::{LogEntry, ScrapeLog};
