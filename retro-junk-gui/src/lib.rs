@@ -10,6 +10,9 @@ pub mod fonts;
 pub mod log_capture;
 mod settings;
 mod state;
+#[cfg(test)]
+mod test_support;
+mod theme;
 mod util;
 mod views;
 mod widgets;

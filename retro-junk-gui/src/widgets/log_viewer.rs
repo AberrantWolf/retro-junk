@@ -1,15 +1,5 @@
 use crate::log_capture;
-
-/// Color for a log level.
-fn level_color(level: log::Level) -> egui::Color32 {
-    match level {
-        log::Level::Error => egui::Color32::from_rgb(220, 50, 50),
-        log::Level::Warn => egui::Color32::from_rgb(230, 160, 30),
-        log::Level::Info => egui::Color32::PLACEHOLDER, // sentinel: use default text color
-        log::Level::Debug => egui::Color32::from_rgb(140, 140, 140),
-        log::Level::Trace => egui::Color32::from_rgb(100, 100, 100),
-    }
-}
+use crate::theme::log_level_color as level_color;
 
 /// State for the log viewer panel, stored in the app.
 pub struct LogViewerState {

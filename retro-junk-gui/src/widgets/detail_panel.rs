@@ -1,8 +1,30 @@
+//! Detail panel for the focused library entry.
+//!
+//! # Sizing contract
+//!
+//! egui persists a side panel's width as *the laid-out width of its content*
+//! every frame — a single label that refuses to wrap silently widens the
+//! panel, overrides any width the user dragged, and clips everything else
+//! once the panel hits its max size. Labels inside `ui.horizontal(..)`
+//! default to `TextWrapMode::Extend`, so **every dynamic value rendered here
+//! must go through a wrapping helper** ([`copyable_label`], [`detail_row`],
+//! [`note`]) or otherwise constrain its width (the region `ComboBox`
+//! truncates, images fit to the panel width). `detail_panel_tests.rs` guards
+//! this invariant.
+
+#[cfg(test)]
+#[path = "detail_panel_tests.rs"]
+mod detail_panel_tests;
+
 use retro_junk_catalog::CatalogTag;
 use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
 use crate::state::{DISPLAY_ASSET_TYPES, EntryStatus};
+use crate::theme::{STATUS_ERR, STATUS_WARN, STATUS_WARN_STRONG};
+
+/// Indent for fields nested under a per-disc or per-reference heading.
+const NESTED_INDENT: f32 = 16.0;
 
 /// Render the detail panel for the focused entry.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -86,7 +108,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.add_space(2.0);
             ui.label(egui::RichText::new("Could be one of:").weak());
             for candidate in &entry.ambiguous_candidates {
-                ui.horizontal(|ui| {
+                ui.horizontal_top(|ui| {
                     ui.add_space(8.0);
                     copyable_label(ui, &format!("- {}", candidate));
                 });
@@ -128,10 +150,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.add_space(4.0);
 
         // Platform
-        ui.horizontal(|ui| {
-            ui.label("Platform:");
-            copyable_label(ui, console.platform_name);
-        });
+        field_row(ui, "Platform", console.platform_name);
 
         // Region (ComboBox with override support)
         // Extract needed data before dropping borrows for potential mutation.
@@ -167,6 +186,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 .with(entry_idx);
             egui::ComboBox::from_id_salt(combo_id)
                 .selected_text(&combo_label)
+                // A long "Auto-detect (…)" label must truncate, not widen the panel.
+                .wrap_mode(egui::TextWrapMode::Truncate)
                 .show_ui(ui, |ui| {
                     // Auto-detect option (clears override)
                     let auto_label = if detected_regions.is_empty() {
@@ -241,21 +262,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             };
 
             if should_warn {
-                ui.horizontal(|ui| {
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "\u{26a0} Overriding detected region ({})",
-                            detected_regions
-                                .iter()
-                                .map(|r| r.name())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ))
-                        .small()
-                        .color(egui::Color32::from_rgb(220, 180, 30)),
-                    );
-                });
+                warning_note(
+                    ui,
+                    8.0,
+                    &format!(
+                        "Overriding detected region ({})",
+                        detected_regions
+                            .iter()
+                            .map(|r| r.name())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                );
             }
         }
 
@@ -264,34 +282,25 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         let entry = &console.entries[entry_idx];
 
         // Folder
-        ui.horizontal(|ui| {
-            ui.label("Folder:");
-            copyable_label(ui, &console.folder_name);
-        });
+        field_row(ui, "Folder", &console.folder_name);
 
         // File info
-        ui.horizontal(|ui| {
-            ui.label("File:");
-            let name = match &entry.game_entry {
-                retro_junk_lib::scanner::GameEntry::MultiDisc { name, .. } => name.clone(),
-                _ => {
-                    let path = entry.game_entry.analysis_path();
-                    path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("?")
-                        .to_string()
-                }
-            };
-            copyable_label(ui, &name);
-        });
+        let file_name = match &entry.game_entry {
+            retro_junk_lib::scanner::GameEntry::MultiDisc { name, .. } => name.clone(),
+            _ => {
+                let path = entry.game_entry.analysis_path();
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?")
+                    .to_string()
+            }
+        };
+        field_row(ui, "File", &file_name);
 
         if let Some(ref id) = entry.identification
             && let Some(size) = id.file_size
         {
-            ui.horizontal(|ui| {
-                ui.label("Size:");
-                copyable_label(ui, &retro_junk_lib::util::format_bytes(size));
-            });
+            field_row(ui, "Size", &retro_junk_lib::util::format_bytes(size));
         }
 
         ui.separator();
@@ -346,61 +355,27 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("?");
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("Disc {}:", i + 1)).weak());
-                    copyable_label(ui, filename);
-                });
+                detail_row(ui, &format!("Disc {}", i + 1), filename);
                 if let Some(ref serial) = disc.identification.serial_number {
-                    ui.horizontal(|ui| {
-                        ui.add_space(16.0);
-                        ui.label(egui::RichText::new("Serial:").weak());
-                        copyable_label(ui, serial);
-                    });
+                    nested_detail_row(ui, "Serial", serial);
                 }
                 if let Some(ref name) = disc.identification.internal_name {
-                    ui.horizontal(|ui| {
-                        ui.add_space(16.0);
-                        ui.label(egui::RichText::new("Internal:").weak());
-                        copyable_label(ui, name);
-                    });
+                    nested_detail_row(ui, "Internal", name);
                 }
                 if let Some(ref hashes) = disc.hashes {
-                    ui.horizontal(|ui| {
-                        ui.add_space(16.0);
-                        ui.label(egui::RichText::new("CRC32:").weak());
-                        copyable_label(ui, &hashes.crc32);
-                    });
+                    nested_detail_row(ui, "CRC32", &hashes.crc32);
                     if let Some(ref sha1) = hashes.sha1 {
-                        ui.horizontal(|ui| {
-                            ui.add_space(16.0);
-                            ui.label(egui::RichText::new("SHA1:").weak());
-                            copyable_label(ui, sha1);
-                        });
+                        nested_detail_row(ui, "SHA1", sha1);
                     }
-                }
-                if let Some(ref hashes) = disc.hashes
-                    && !hashes.warnings.is_empty()
-                {
                     for warning in &hashes.warnings {
-                        ui.horizontal(|ui| {
-                            ui.add_space(16.0);
-                            ui.label(
-                                egui::RichText::new(format!("\u{26a0} {}", warning))
-                                    .small()
-                                    .color(egui::Color32::from_rgb(220, 180, 30)),
-                            );
-                        });
+                        warning_note(ui, NESTED_INDENT, warning);
                     }
                 }
                 if let Some(ref dm) = disc.dat_match {
-                    ui.horizontal(|ui| {
-                        ui.add_space(16.0);
-                        ui.label(egui::RichText::new("DAT:").weak());
-                        copyable_label(ui, &dm.rom_name);
-                    });
+                    nested_detail_row(ui, "DAT", &dm.rom_name);
                 } else if entry.status == EntryStatus::Ambiguous {
-                    ui.horizontal(|ui| {
-                        ui.add_space(16.0);
+                    ui.horizontal_top(|ui| {
+                        ui.add_space(NESTED_INDENT);
                         ui.label(egui::RichText::new("DAT:").weak());
                         ui.label(
                             egui::RichText::new("unresolved").color(EntryStatus::Ambiguous.color()),
@@ -414,15 +389,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         if let Some(ref broken) = entry.broken_references
             && !broken.is_empty()
         {
-            let warn_color = egui::Color32::from_rgb(230, 160, 30);
-            let err_color = egui::Color32::from_rgb(220, 50, 50);
-
             ui.add_space(4.0);
             ui.separator();
             ui.label(
                 egui::RichText::new("\u{26a0} Broken References")
                     .strong()
-                    .color(warn_color),
+                    .color(STATUS_WARN_STRONG),
             );
             ui.add_space(2.0);
 
@@ -432,16 +404,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("?");
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("{} ({})", ref_name, br.format)).weak());
-                });
+                note(
+                    ui,
+                    0.0,
+                    egui::RichText::new(format!("{} ({})", ref_name, br.format)).weak(),
+                );
                 for target in &br.missing_targets {
-                    ui.horizontal(|ui| {
-                        ui.add_space(16.0);
-                        ui.label(
-                            egui::RichText::new(format!("Missing: {}", target)).color(err_color),
-                        );
-                    });
+                    note(
+                        ui,
+                        NESTED_INDENT,
+                        egui::RichText::new(format!("Missing: {}", target)).color(STATUS_ERR),
+                    );
                 }
             }
         }
@@ -450,8 +423,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         if let Some(ref issues) = entry.cue_compat_issues
             && !issues.is_empty()
         {
-            let warn_color = egui::Color32::from_rgb(230, 160, 30);
-            let err_color = egui::Color32::from_rgb(220, 50, 50);
             let has_unfixable = issues.iter().any(|i| !i.can_auto_fix);
 
             ui.add_space(4.0);
@@ -461,29 +432,28 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             } else {
                 "\u{26a0} CUE Sheet Compatibility"
             };
-            ui.label(egui::RichText::new(header).strong().color(warn_color));
+            ui.label(
+                egui::RichText::new(header)
+                    .strong()
+                    .color(STATUS_WARN_STRONG),
+            );
             ui.add_space(2.0);
 
             for issue in issues {
-                ui.horizontal(|ui| {
-                    if issue.can_auto_fix {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}: {} (fixable)",
-                                issue.file_name, issue.summary
-                            ))
-                            .color(warn_color),
-                        );
-                    } else {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{}: {} (re-dump required)",
-                                issue.file_name, issue.summary
-                            ))
-                            .color(err_color),
-                        );
-                    }
-                });
+                let (suffix, color) = if issue.can_auto_fix {
+                    ("fixable", STATUS_WARN_STRONG)
+                } else {
+                    ("re-dump required", STATUS_ERR)
+                };
+                note(
+                    ui,
+                    0.0,
+                    egui::RichText::new(format!(
+                        "{}: {} ({})",
+                        issue.file_name, issue.summary, suffix
+                    ))
+                    .color(color),
+                );
             }
         }
 
@@ -508,13 +478,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 &retro_junk_lib::util::format_bytes(hashes.data_size),
             );
             for warning in &hashes.warnings {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("\u{26a0} {}", warning))
-                            .small()
-                            .color(egui::Color32::from_rgb(220, 180, 30)),
-                    );
-                });
+                warning_note(ui, 0.0, warning);
             }
         }
 
@@ -539,16 +503,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                             .join(", ")
                     })
                     .unwrap_or_else(|| "unknown".to_string());
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "\u{26a0} Hash matches {} release \u{2014} detected region is {}",
-                            dat_region, detected
-                        ))
-                        .small()
-                        .color(egui::Color32::from_rgb(220, 180, 30)),
-                    );
-                });
+                warning_note(
+                    ui,
+                    0.0,
+                    &format!(
+                        "Hash matches {} release \u{2014} detected region is {}",
+                        dat_region, detected
+                    ),
+                );
             }
         }
 
@@ -598,9 +560,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     });
 }
 
-/// A label that offers "Copy" on right-click.
+/// A label that wraps within the available width and offers "Copy" on
+/// right-click. The explicit wrap mode matters: inside `ui.horizontal(..)`
+/// labels default to extending, which widens the whole panel (see module doc).
 fn copyable_label(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    let resp = ui.label(text);
+    let resp = ui.add(egui::Label::new(text).wrap());
     resp.context_menu(|ui| {
         if ui.button("Copy").clicked() {
             crate::util::copy_and_close(ui, text.to_string());
@@ -609,9 +573,60 @@ fn copyable_label(ui: &mut egui::Ui, text: &str) -> egui::Response {
     resp
 }
 
+/// A top-level `Name: value` row (normal-weight name, wrapping copyable value).
+fn field_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    row_impl(ui, 0.0, egui::RichText::new(format!("{label}:")), value);
+}
+
+/// A `Name: value` row with a de-emphasized name, as used in the
+/// Identification/Hashes/DAT sections.
 fn detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(format!("{}:", label)).weak());
+    row_impl(
+        ui,
+        0.0,
+        egui::RichText::new(format!("{label}:")).weak(),
+        value,
+    );
+}
+
+/// A [`detail_row`] indented one level (per-disc fields).
+fn nested_detail_row(ui: &mut egui::Ui, label: &str, value: &str) {
+    row_impl(
+        ui,
+        NESTED_INDENT,
+        egui::RichText::new(format!("{label}:")).weak(),
+        value,
+    );
+}
+
+fn row_impl(ui: &mut egui::Ui, indent: f32, name: egui::RichText, value: &str) {
+    // Top-aligned so the name stays on the first line when the value wraps.
+    ui.horizontal_top(|ui| {
+        if indent > 0.0 {
+            ui.add_space(indent);
+        }
+        ui.label(name);
         copyable_label(ui, value);
     });
+}
+
+/// A styled one-off line (warning/error text) that wraps within the panel.
+fn note(ui: &mut egui::Ui, indent: f32, text: egui::RichText) {
+    ui.horizontal_top(|ui| {
+        if indent > 0.0 {
+            ui.add_space(indent);
+        }
+        ui.add(egui::Label::new(text).wrap());
+    });
+}
+
+/// A small yellow "⚠ …" [`note`].
+fn warning_note(ui: &mut egui::Ui, indent: f32, text: &str) {
+    note(
+        ui,
+        indent,
+        egui::RichText::new(format!("\u{26a0} {text}"))
+            .small()
+            .color(STATUS_WARN),
+    );
 }

@@ -6,12 +6,9 @@
 //! ~100-line copies. `show_results_dialog` extracts the common scaffold;
 //! callers only supply the summary line and one row per item.
 
-/// Status color for a successful/neutral outcome.
-pub const STATUS_OK: egui::Color32 = egui::Color32::from_rgb(50, 180, 50);
-/// Status color for a failed outcome.
-pub const STATUS_ERR: egui::Color32 = egui::Color32::from_rgb(220, 50, 50);
-/// Status color for a "needs attention but not an error" outcome.
-pub const STATUS_WARN: egui::Color32 = egui::Color32::from_rgb(220, 180, 30);
+// Status colors, re-exported for the row-renderer callbacks (the shared
+// definitions live in `crate::theme`).
+pub use crate::theme::{STATUS_ERR, STATUS_OK, STATUS_WARN};
 
 /// Generic modal listing per-item outcomes of a batch operation.
 ///

@@ -59,12 +59,12 @@ pub fn show_with_warning(
                 AssetStatus::Partial { .. } => {
                     // Orange/yellow filled square
                     ui.painter()
-                        .rect_filled(sq_rect, 0.0, egui::Color32::from_rgb(230, 160, 30));
+                        .rect_filled(sq_rect, 0.0, crate::theme::STATUS_WARN_STRONG);
                 }
                 AssetStatus::Complete => {
                     // Green filled square
                     ui.painter()
-                        .rect_filled(sq_rect, 0.0, egui::Color32::from_rgb(50, 180, 50));
+                        .rect_filled(sq_rect, 0.0, crate::theme::STATUS_OK);
                 }
                 AssetStatus::Unknown => unreachable!(),
             }
@@ -75,7 +75,7 @@ pub fn show_with_warning(
 
 /// Paint a small orange warning triangle (equilateral, pointing up).
 fn paint_warning_triangle(painter: &egui::Painter, center: egui::Pos2, half_size: f32) {
-    let color = egui::Color32::from_rgb(230, 160, 30);
+    let color = crate::theme::STATUS_WARN_STRONG;
     // Equilateral triangle vertices centered on `center`
     let top = egui::pos2(center.x, center.y - half_size);
     let bottom_left = egui::pos2(center.x - half_size, center.y + half_size * 0.6);

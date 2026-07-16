@@ -36,7 +36,7 @@ pub fn show(ctx: &egui::Context, errors: &mut Vec<UserError>) {
                 .show(ui, |ui| {
                     for error in errors.iter() {
                         ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::from_rgb(220, 50, 50), &error.category);
+                            ui.colored_label(crate::theme::STATUS_ERR, &error.category);
                             ui.label(&error.message);
                         });
                     }

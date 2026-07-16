@@ -371,9 +371,9 @@ impl EntryStatus {
     pub fn color(&self) -> egui::Color32 {
         match self {
             EntryStatus::Unknown => egui::Color32::GRAY,
-            EntryStatus::Unrecognized => egui::Color32::from_rgb(220, 50, 50),
-            EntryStatus::Ambiguous => egui::Color32::from_rgb(220, 180, 30),
-            EntryStatus::Matched => egui::Color32::from_rgb(50, 180, 50),
+            EntryStatus::Unrecognized => crate::theme::STATUS_ERR,
+            EntryStatus::Ambiguous => crate::theme::STATUS_WARN,
+            EntryStatus::Matched => crate::theme::STATUS_OK,
             EntryStatus::Tagged(_) => egui::Color32::from_rgb(100, 150, 220),
         }
     }

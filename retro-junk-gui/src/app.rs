@@ -638,7 +638,7 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
             ));
             if unmatched_count > 0 {
                 ui.colored_label(
-                    egui::Color32::from_rgb(220, 180, 30),
+                    crate::theme::STATUS_WARN,
                     format!("{} files could not be matched", unmatched_count),
                 );
             }
@@ -656,7 +656,7 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 .show(ui, |ui| {
                     for job in &plan.jobs {
                         ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::from_rgb(50, 180, 50), "\u{2192}");
+                            ui.colored_label(crate::theme::STATUS_OK, "\u{2192}");
                             ui.label(format!(
                                 "{}.m3u ({} discs)",
                                 job.game_name,
@@ -677,7 +677,7 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                         for uf in &plan.unmatched {
                             let name = uf.path.file_name().unwrap_or_default().to_string_lossy();
                             ui.horizontal(|ui| {
-                                ui.colored_label(egui::Color32::from_rgb(220, 180, 30), "\u{26A0}");
+                                ui.colored_label(crate::theme::STATUS_WARN, "\u{26A0}");
                                 ui.label(format!("{} \u{2014} {}", name, uf.reason));
                             });
                         }
