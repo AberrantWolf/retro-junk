@@ -1,6 +1,7 @@
 # Summary
 
 [Introduction](FriendlyIntro.md)
+[Preservation vs. Playable Copies](PreservationVsPlayable.md)
 
 # Consoles
 
@@ -59,4 +60,15 @@
 - [Saturn](formats/Saturn.md)
 - [PlayStation (PS1)](formats/PSX.md)
 - [PlayStation 2](formats/PS2.md)
+
+## Optical Disc
+
+- [CD-ROM Physical & Logical Format](formats/CD.md)
 - [Redump DAT Reference](formats/Redump.md)
+- [Redumper Raw Dump Format](formats/Redumper.md)
+- [CUE Sheets](formats/CUE.md)
+- [CUE Compatibility Quirks](formats/CUECompat.md)
+- [GD-ROM / GDI](formats/GDI.md)
+- [CHD (Compressed Hunks of Data)](formats/CHD.md)
+- [RVZ](formats/RVZ.md)
+- [Zero-Padded Audio Tracks](formats/ZeroPaddedAudioTracks.md)

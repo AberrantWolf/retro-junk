@@ -141,6 +141,88 @@ Deferred follow-ups:
   (`cue: PathBuf` field); unifying means generalizing that struct — worth
   doing together with any future `.toc`/`.ccd` support, not before.
 
+## Raw Redumper Archival + Dual Representation (design, 2026-07-16)
+
+Goal: ingest **raw redumper dump folders** (`.scram`/`.subcode`/`.state`/`.fulltoc`/`.log`) as
+archival sources, and let one logical game hold **multiple physical representations** — a pristine
+archival master and a compressed emulator-playable copy — that live in **separate sibling folders**
+(`RetroLibrary/archive/` vs `RetroLibrary/roms/`) yet share metadata and scraped assets. Driven by a
+Syncthing-synced library with per-device selective sync. Format knowledge is in
+`.claude/skills/retro-archive/formats/Redumper.md`; methodology/prior-art in
+`PreservationVsPlayable.md`. Design reviewed by a Fable subagent; its ranked risks are folded in below.
+
+**Decide before building (the load-bearing question):**
+- [ ] **Pick the persistence world.** The GUI renders from the **`library_entries` cache world**, not
+  the catalog `media` world (they're disjoint; joined only via `cover_title`/`screen_title`
+  enrichment, `views/library.rs`). A `media_representations` table under `media` would NOT surface in
+  the GUI without either migrating the whole library view onto the catalog (large — see "Migrate
+  matching source-of-truth" below) or duplicating representation data in the cache world. For this
+  feature, model representations in the **library-cache world** and leave catalog-side representations
+  to the already-planned catalog migration. Do not straddle both.
+
+**Data model:**
+- [ ] **Add a representation/location model** (`kind` = source/archive/playable, `format` =
+  redumper/cue-bin/iso/chd/rvz, `location_id`, entry-point `path`, integrity hashes,
+  `redumper_build`). `path` = entry point (cue/gdi/iso/folder); keep per-track detail in the existing
+  `media_tracks`. Do **not** enumerate each `.bin` as its own representation.
+- [ ] **Do NOT relax `collection`'s `UNIQUE(media_id, user_id)`.** `collection` carries ownership
+  (owned/condition/notes), which is per-dump, not per-representation; overloading it muddies ownership
+  queries and forces a risky 12-step SQLite table rebuild. Add a separate additive table; deprecate
+  `collection.rom_path`.
+- [ ] **Identity vs integrity hashes.** Logical identity stays the normalized `media.sha1`
+  (`compute_container_hashes` already collapses CHD/RVZ to the uncompressed representation, so all
+  playable forms resolve to one SHA1). A raw `.scram` matches no DAT — its representation hash is
+  **integrity-only** (bit-rot), not identity.
+
+**Storage layout / multi-root:**
+- [ ] **Model `archive/` as a derived sibling directory, not a peer library root.** Reuse the existing
+  `assets_dir`/`metadata_dir` sibling-resolution pattern (`state.rs:140-182`): for
+  `roms/psx/Game (USA).chd`, resolve `archive/psx/Game (USA)/` by convention. Avoids a multi-root
+  rewrite, the `find_by_folder` collision (two roots with a `psx/` folder → one silently dropped,
+  `state.rs:70`), and cross-root hash correlation. If true multi-root is ever pursued instead, consoles
+  MUST be re-keyed by `(root, folder)` and a cross-root identity key (normalized `media.sha1`) chosen.
+
+**Selective-sync correctness (missed in first design pass):**
+- [ ] **Per-device presence ≠ catalog existence.** Under selective sync a device routinely has a
+  catalog row whose file is absent locally; `verify_collection` currently treats an absent path as an
+  error (`scan_import.rs:225`) and would fire constantly. Make "known but not present here" a normal
+  state.
+- [ ] **Store representation paths root-relative + `location_id`,** not absolute
+  (`scan_import.rs:165`) — absolute paths don't survive different mount points across devices.
+
+**Scanner / ingestion:**
+- [ ] **Teach the scanner to see raw folders.** `scan_game_entries` only recognizes top-level files by
+  extension and `.m3u` dirs (`scanner.rs:110`). Add detection of a directory containing
+  `.scram`/`.sdram`/`.sbram` = redumper archive, a `GameEntry::RedumperRaw` variant, and an
+  entry-creation path that lists **archive-only games with no playable file**.
+- [ ] **Ingest via `redumper split` + `redumper hash` subprocess,** mirroring `Chdman::detect()`
+  (`chd_convert.rs:70`). No JSON output exists; the `.log` `dat:` block is clrmamepro `<rom .../>`
+  lines — route them through the **existing `retro-junk-dat` parser**, not a bespoke scraper.
+- [ ] **Handle split failure as a first-class state.** `redumper split` throws on unrecovered C2/SCSI
+  errors or positive combined offset with missing lead-out. "Archive present, playable unrealizable"
+  must be a normal state that stores the `.log` error and does not mark the game bad.
+- [ ] **Record the redumper build; verify against Redump DB hashes, not byte-identical re-splits.**
+  redumper ships rolling builds with no determinism guarantee across versions.
+
+**GUI/UX:**
+- [ ] **One row per game; representation badge cluster** (source/archive/playable, filled/hollow) in
+  the game table; a **Representations** section in the detail panel with per-row
+  Verify/Regenerate/Compress/Reveal actions; context-menu items for ingest/verify/regenerate. Badges
+  must roll up across discs for a multi-disc `.m3u` entry.
+- [ ] **Reuse `chd_convert::finalize_verified`** (already round-trip-verifies before deleting sources)
+  for the Compress action.
+
+**DB / sync hygiene (independent of this feature but surfaced by it):**
+- [ ] **Move the catalog DB from XDG cache → XDG data.** It's in `~/.cache/retro-junk/dats/catalog.db`
+  (`app.rs:177`) but CLAUDE.md calls it the long-lived store; cache dirs get cleaned.
+- [ ] **Never sync a live WAL SQLite DB** through Syncthing (atomic per-file, not across `.db`/`-wal`;
+  corruption risk). Keep the DB out of the synced tree (currently true); sync the YAML catalog and
+  rebuild the per-device cache. On open, detect sibling `*.sync-conflict-*` DB files and warn.
+
+**Prior art to borrow** (`PreservationVsPlayable.md`): romba/RomVaultX content-addressed depot + built
+views; igir `--link-mode` for zero-copy playable projections; MAME merged/split set policy; expose
+only the playable tree to frontends.
+
 ## DAT Source Coverage
 
 - [ ] **Wii U has no Redump DAT** — Redump.org has no Wii U disc entries or datfile download. The previous LibRetro "Nintendo - Wii U (Digital)" DAT was not real Redump data. DAT support for Wii U is currently disabled. Options: (1) find an alternative DAT source for Wii U, (2) re-enable using LibRetro's DAT with `DatSource::NoIntro` if the data is good enough, or (3) wait for Redump to add Wii U support.
