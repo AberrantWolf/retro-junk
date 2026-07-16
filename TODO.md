@@ -155,10 +155,19 @@ Syncthing-synced library with per-device selective sync. Format knowledge is in
 - [ ] **Pick the persistence world.** The GUI renders from the **`library_entries` cache world**, not
   the catalog `media` world (they're disjoint; joined only via `cover_title`/`screen_title`
   enrichment, `views/library.rs`). A `media_representations` table under `media` would NOT surface in
-  the GUI without either migrating the whole library view onto the catalog (large — see "Migrate
-  matching source-of-truth" below) or duplicating representation data in the cache world. For this
-  feature, model representations in the **library-cache world** and leave catalog-side representations
-  to the already-planned catalog migration. Do not straddle both.
+  the GUI without either migrating the library view onto the catalog or duplicating representation data
+  in the cache world.
+  - **Direction (per the "authoritative over cache" lean, 2026-07-16):** make the **catalog** the
+    authoritative home for representations (a representations table under `media`, plus the YAML
+    catalog as it becomes the matching source of truth), and keep **`library_entries` a pure derived
+    cache** — rebuildable, and *read* on hot paths only where hitting the catalog live is **observably**
+    too slow. Do not treat the cache as a second primary model. This **converges with** the planned
+    "Migrate matching source-of-truth from raw DAT to catalog DB" work below, so the dual-representation
+    feature becomes a reason to advance that migration rather than route around it.
+  - Fable's "cheapest = model it in the cache world" is therefore reframed as a **performance question,
+    not the default**: only cache once a real slowdown is measured. The likeliest place that need shows
+    up is the selective-sync / multi-device case (many entries, files absent locally) — measure there
+    first, don't preemptively cache. Do not straddle both worlds.
 
 **Data model:**
 - [ ] **Add a representation/location model** (`kind` = source/archive/playable, `format` =
