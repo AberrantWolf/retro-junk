@@ -22,10 +22,8 @@ pub enum AnalysisProgress {
     Phase {
         /// Name of the current phase
         name: String,
-        /// Optional phase number (e.g., 1 of 3)
-        current: Option<u32>,
-        /// Optional total number of phases
-        total: Option<u32>,
+        /// Phase numbering as (current, total), e.g. (1, 3), when known
+        numbering: Option<(u32, u32)>,
     },
 
     /// Intermediate finding during analysis
@@ -59,16 +57,14 @@ impl AnalysisProgress {
     pub fn phase(name: impl Into<String>) -> Self {
         Self::Phase {
             name: name.into(),
-            current: None,
-            total: None,
+            numbering: None,
         }
     }
 
     pub fn phase_numbered(name: impl Into<String>, current: u32, total: u32) -> Self {
         Self::Phase {
             name: name.into(),
-            current: Some(current),
-            total: Some(total),
+            numbering: Some((current, total)),
         }
     }
 

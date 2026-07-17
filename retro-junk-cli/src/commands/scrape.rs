@@ -31,7 +31,7 @@ fn enrich_from_catalog(games: &mut [retro_junk_frontend::ScrapedGame]) {
     };
 
     for game in games.iter_mut() {
-        if game.cover_title.is_some() {
+        if !game.cover_title.is_empty() {
             continue;
         }
         if let Ok(releases) = retro_junk_db::search_releases(&conn, &game.name) {
@@ -43,7 +43,7 @@ fn enrich_from_catalog(games: &mut [retro_junk_frontend::ScrapedGame]) {
             if let Some(release) = exact
                 && !release.cover_title.is_empty()
             {
-                game.cover_title = Some(release.cover_title.clone());
+                game.cover_title = release.cover_title.clone();
             }
         }
     }
@@ -139,26 +139,25 @@ pub(crate) fn run_scrape(
     options.dry_run = dry_run;
     options.skip_existing = skip_existing;
     options.no_log = no_log;
-    options.no_miximage = no_miximage;
     options.force_redownload = force_redownload;
     options.limit = limit;
 
     // Load miximage layout unless disabled
-    if !no_miximage {
+    options.miximage = if no_miximage {
+        retro_junk_scraper::MiximageMode::Disabled
+    } else {
         match retro_junk_frontend::miximage_layout::MiximageLayout::load_or_create() {
-            Ok(layout) => {
-                options.miximage_layout = Some(layout);
-            }
+            Ok(layout) => retro_junk_scraper::MiximageMode::Enabled(layout),
             Err(e) => {
                 log::warn!(
                     "{} Failed to load miximage layout, disabling miximages: {}",
                     "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                     e,
                 );
-                options.no_miximage = true;
+                retro_junk_scraper::MiximageMode::Disabled
             }
         }
-    }
+    };
 
     if let Some(mdir) = metadata_dir {
         options.metadata_dir = mdir;
@@ -440,25 +439,28 @@ pub(crate) fn run_scrape(
                                 errors,
                             } => {
                                 log::warn!("  ? {}: unidentified", file);
-                                if let Some(s) = serial_tried {
-                                    log::warn!("      ROM serial: {}", s);
+                                if !serial_tried.is_empty() {
+                                    log::warn!("      ROM serial: {}", serial_tried);
                                 }
-                                if let Some(s) = scraper_serial_tried {
-                                    log::warn!("      Scraper serial tried: {}", s);
+                                if !scraper_serial_tried.is_empty() {
+                                    log::warn!(
+                                        "      Scraper serial tried: {}",
+                                        scraper_serial_tried
+                                    );
                                 }
                                 if *filename_tried {
                                     log::warn!("      Filename lookup: tried");
                                 }
                                 if *hashes_tried {
                                     log::warn!("      Hash lookup: tried");
-                                    if let Some(c) = crc32 {
-                                        log::warn!("        CRC32: {}", c);
+                                    if !crc32.is_empty() {
+                                        log::warn!("        CRC32: {}", crc32);
                                     }
-                                    if let Some(m) = md5 {
-                                        log::warn!("        MD5:   {}", m);
+                                    if !md5.is_empty() {
+                                        log::warn!("        MD5:   {}", md5);
                                     }
-                                    if let Some(s) = sha1 {
-                                        log::warn!("        SHA1:  {}", s);
+                                    if !sha1.is_empty() {
+                                        log::warn!("        SHA1:  {}", sha1);
                                     }
                                 }
                                 for e in errors {

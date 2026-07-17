@@ -334,10 +334,10 @@ fn to_identification(
     file_size: u64,
     crc_result: Option<(u32, u32)>,
 ) -> RomIdentification {
-    let mut id = RomIdentification::new().with_platform(Platform::N64);
+    let mut id = RomIdentification::new();
 
     if !header.title.is_empty() {
-        id.internal_name = Some(header.title.clone());
+        id.internal_name = header.title.clone();
     }
 
     let region = region_from_destination(header.destination_code);
@@ -346,11 +346,11 @@ fn to_identification(
     }
 
     if let Some(serial) = build_serial(header, &region) {
-        id.serial_number = Some(serial);
+        id.serial_number = serial;
     }
 
-    id.version = Some(format!("v1.{}", header.rom_version));
-    id.file_size = Some(file_size);
+    id.version = format!("v1.{}", header.rom_version);
+    id.file_size = file_size;
 
     id.extra
         .insert("format".into(), rom_format_name(header.format).into());

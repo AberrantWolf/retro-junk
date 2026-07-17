@@ -43,23 +43,34 @@ pub struct LookupResult {
     pub warnings: Vec<String>,
 }
 
+/// The full hash triple required for a ScreenScraper hash lookup.
+///
+/// The API's hash tier needs CRC32, MD5, and SHA1 together, so partial
+/// combinations are unrepresentable by construction.
+#[derive(Debug, Clone)]
+pub struct RomHashes {
+    /// CRC32 hash (uppercase hex)
+    pub crc32: String,
+    /// MD5 hash (lowercase hex)
+    pub md5: String,
+    /// SHA1 hash (lowercase hex)
+    pub sha1: String,
+}
+
 /// Information about a ROM file for lookup purposes.
 #[derive(Debug, Clone)]
 pub struct RomInfo {
-    /// Serial number from ROM header analysis (if any)
-    pub serial: Option<String>,
-    /// Serial adapted for ScreenScraper lookups (from `extract_scraper_serial()`)
-    pub scraper_serial: Option<String>,
+    /// Serial number from ROM header analysis (empty = none)
+    pub serial: String,
+    /// Serial adapted for ScreenScraper lookups (from `extract_scraper_serial()`;
+    /// empty = none)
+    pub scraper_serial: String,
     /// ROM filename with extension
     pub filename: String,
     /// ROM file size in bytes
     pub file_size: u64,
-    /// CRC32 hash (uppercase hex, computed if needed)
-    pub crc32: Option<String>,
-    /// MD5 hash (lowercase hex, computed if needed)
-    pub md5: Option<String>,
-    /// SHA1 hash (lowercase hex, computed if needed)
-    pub sha1: Option<String>,
+    /// Hash triple for the hash lookup tier (None = hashes not computed)
+    pub hashes: Option<RomHashes>,
     /// Platform identifier
     pub platform: Platform,
     /// Whether this platform's analyzer expects ROMs to have serials
@@ -121,11 +132,11 @@ pub async fn lookup_game(
             }
 
             // All serial attempts failed — add summary warning with ROM serial and tried values
-            if let Some(raw) = &rom_info.serial {
+            if !rom_info.serial.is_empty() {
                 let tried: Vec<&str> = attempts.iter().map(|s| s.as_str()).collect();
                 warnings.push(format!(
                     "Serial lookup failed \u{2014} ROM serial: \"{}\", tried: [{}]",
-                    raw,
+                    rom_info.serial,
                     tried.join(", "),
                 ));
             }
@@ -139,11 +150,9 @@ pub async fn lookup_game(
         // Tier 2: Hash match — most reliable when hashes are available (e.g.,
         // from DAT entries). Skipped naturally when hashes are None (e.g., scrape
         // path for serial consoles that skip hashing for speed).
-        if let (Some(crc), Some(md5), Some(sha1)) =
-            (&rom_info.crc32, &rom_info.md5, &rom_info.sha1)
-        {
+        if let Some(hashes) = &rom_info.hashes {
             log::debug!("Tier 2 (hash): trying for '{}'", filename);
-            match try_hash_lookup(client, system_id, crc, md5, sha1, &rom_info.filename, rom_info.file_size).await {
+            match try_hash_lookup(client, system_id, hashes, &rom_info.filename, rom_info.file_size).await {
                 Ok(game) => {
                     if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
                         warnings.push(format!(
@@ -262,20 +271,18 @@ async fn try_filename_lookup(
 
 /// Build a deduped list of serial strings to try, scraper serial first.
 ///
-/// Returns an empty list if neither serial is available.
-fn serial_attempts(serial: &Option<String>, scraper_serial: &Option<String>) -> Vec<String> {
+/// Empty serials are skipped; returns an empty list if neither is available.
+fn serial_attempts(serial: &str, scraper_serial: &str) -> Vec<String> {
     let mut attempts = Vec::new();
 
     // Scraper serial first (adapted form)
-    if let Some(ss) = scraper_serial {
-        attempts.push(ss.clone());
+    if !scraper_serial.is_empty() {
+        attempts.push(scraper_serial.to_string());
     }
 
     // Raw serial as fallback (if different from scraper serial)
-    if let Some(s) = serial
-        && !attempts.iter().any(|a| a == s)
-    {
-        attempts.push(s.clone());
+    if !serial.is_empty() && !attempts.iter().any(|a| a == serial) {
+        attempts.push(serial.to_string());
     }
 
     attempts
@@ -284,17 +291,15 @@ fn serial_attempts(serial: &Option<String>, scraper_serial: &Option<String>) -> 
 async fn try_hash_lookup(
     client: &ScreenScraperClient,
     system_id: u32,
-    crc32: &str,
-    md5: &str,
-    sha1: &str,
+    hashes: &RomHashes,
     filename: &str,
     file_size: u64,
 ) -> Result<GameInfo, ScrapeError> {
     let mut params = HashMap::new();
     params.insert("systemeid", system_id.to_string());
-    params.insert("crc", crc32.to_uppercase());
-    params.insert("md5", md5.to_string());
-    params.insert("sha1", sha1.to_string());
+    params.insert("crc", hashes.crc32.to_uppercase());
+    params.insert("md5", hashes.md5.clone());
+    params.insert("sha1", hashes.sha1.clone());
     params.insert("romnom", filename.to_string());
     params.insert("romtaille", file_size.to_string());
     params.insert("romtype", "rom".to_string());

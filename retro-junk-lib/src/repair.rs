@@ -472,7 +472,10 @@ fn get_expected_data_size(
     let file_size = file.seek(io::SeekFrom::End(0)).ok()?;
     let skip = analyzer.dat_header_size(&mut file, file_size).ok()?;
     let info = analyzer.analyze(&mut file, &file_options).ok()?;
-    let expected = info.expected_size?;
+    let expected = info.expected_size;
+    if expected == 0 {
+        return None;
+    }
     Some(expected.saturating_sub(skip))
 }
 

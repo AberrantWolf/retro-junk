@@ -59,8 +59,8 @@ impl RomAnalyzer for GameCubeAnalyzer {
         }
 
         let mut id = nintendo_disc::build_identification(&header, Platform::GameCube);
-        id.file_size = Some(file_size);
-        id.expected_size = Some(GCM_DISC_SIZE);
+        id.file_size = file_size;
+        id.expected_size = GCM_DISC_SIZE;
         id.extra.insert("format".into(), format_name.into());
         id.extra.insert(
             "detected_extension".into(),

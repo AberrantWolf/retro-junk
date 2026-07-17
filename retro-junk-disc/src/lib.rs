@@ -17,7 +17,7 @@ pub mod track_layout;
 
 // Re-export primary types for convenience
 pub use cue::{
-    CueCompatReport, CueFile, CueIndex, CueSheet, CueTrack, check_cue_compat,
+    AutoFix, CueCompatReport, CueFile, CueIndex, CueSheet, CueTrack, check_cue_compat,
     convert_cue_to_standard,
 };
 pub use format::{DiscFormat, detect_disc_format};

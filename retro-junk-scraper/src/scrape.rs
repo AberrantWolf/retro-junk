@@ -19,8 +19,27 @@ use crate::assets::{self, AssetSelection, asset_subdir};
 use crate::client::ScreenScraperClient;
 use crate::error::ScrapeError;
 use crate::log::{LogEntry, ScrapeLog};
-use crate::lookup::{self, RomInfo};
+use crate::lookup::{self, RomHashes, RomInfo};
 use crate::systems;
+
+/// Whether and how to generate miximages.
+#[derive(Debug, Clone)]
+pub enum MiximageMode {
+    /// Do not generate miximages.
+    Disabled,
+    /// Generate miximages using the given layout.
+    Enabled(MiximageLayout),
+}
+
+impl MiximageMode {
+    /// The layout to generate with, if generation is enabled.
+    fn layout(&self) -> Option<&MiximageLayout> {
+        match self {
+            MiximageMode::Disabled => None,
+            MiximageMode::Enabled(layout) => Some(layout),
+        }
+    }
+}
 
 /// Options for a scraping session.
 #[derive(Debug, Clone)]
@@ -49,12 +68,10 @@ pub struct ScrapeOptions {
     pub no_log: bool,
     /// Maximum number of ROMs to process per console
     pub limit: Option<usize>,
-    /// Disable miximage generation
-    pub no_miximage: bool,
+    /// Whether and how to generate miximages
+    pub miximage: MiximageMode,
     /// Force redownload of all media, ignoring existing files
     pub force_redownload: bool,
-    /// Layout config for miximage generation (None when no_miximage is true)
-    pub miximage_layout: Option<MiximageLayout>,
 }
 
 impl ScrapeOptions {
@@ -76,9 +93,8 @@ impl ScrapeOptions {
             skip_existing: false,
             no_log: false,
             limit: None,
-            no_miximage: false,
+            miximage: MiximageMode::Disabled,
             force_redownload: false,
-            miximage_layout: None,
         }
     }
 }
@@ -438,13 +454,13 @@ async fn process_single_game(
 
         let has_screenshot = existing.contains_key(&retro_junk_frontend::AssetType::Screenshot);
         let has_miximage = miximage_path(system_media_dir, rom_stem).exists();
-        let needs_miximage = !options.no_miximage && !has_miximage;
+        let needs_miximage = options.miximage.layout().is_some() && !has_miximage;
 
-        if has_screenshot && (!needs_miximage || options.miximage_layout.is_some()) {
+        if has_screenshot {
             let mut media_map = existing;
 
             if needs_miximage {
-                if let Some(layout) = options.miximage_layout.as_ref() {
+                if let Some(layout) = options.miximage.layout() {
                     try_generate_miximage(
                         &mut media_map,
                         system_media_dir,
@@ -475,15 +491,15 @@ async fn process_single_game(
                 rom_stem: rom_stem.to_string(),
                 rom_filename: filename,
                 name: entry.display_name().to_string(),
-                description: None,
-                developer: None,
-                publisher: None,
-                genre: None,
-                players: None,
+                description: String::new(),
+                developer: String::new(),
+                publisher: String::new(),
+                genre: String::new(),
+                players: String::new(),
                 rating: None,
-                release_date: None,
+                release_date: String::new(),
                 assets: media_map,
-                cover_title: None,
+                cover_title: String::new(),
             };
             return GameResult::Skipped {
                 scraped: Some(scraped),
@@ -496,10 +512,10 @@ async fn process_single_game(
 
     // Analyze the ROM to extract serial and regions
     let analysis_opts = AnalysisOptions::new().quick(true).file_path(rom_path);
-    let (serial, rom_regions): (Option<String>, Vec<Region>) = match std::fs::File::open(rom_path) {
+    let (serial, rom_regions): (String, Vec<Region>) = match std::fs::File::open(rom_path) {
         Ok(mut f) => match analyzer.analyze(&mut f, &analysis_opts) {
             Ok(info) => (info.serial_number, info.regions),
-            Err(_) => (None, Vec::new()),
+            Err(_) => (String::new(), Vec::new()),
         },
         Err(e) => {
             let message = format!("Failed to open file: {}", e);
@@ -534,42 +550,51 @@ async fn process_single_game(
         options.language.clone()
     };
 
-    // Compute hashes if needed (for non-serial consoles or force_hash)
-    let (crc32, md5, sha1) = if !systems::expects_serial(platform) || options.force_hash {
+    // Compute hashes if needed (for non-serial consoles or force_hash).
+    // The hash lookup tier needs the full CRC32+MD5+SHA1 triple, so a partial
+    // result counts as no hashes.
+    let hashes: Option<RomHashes> = if !systems::expects_serial(platform) || options.force_hash {
         match std::fs::File::open(rom_path) {
             Ok(mut f) => {
                 match retro_junk_lib::hasher::compute_all_hashes(&mut f, analyzer, Some(rom_path)) {
-                    Ok(hashes) => (Some(hashes.crc32), hashes.md5, hashes.sha1),
+                    Ok(hashes) => match (hashes.md5, hashes.sha1) {
+                        (Some(md5), Some(sha1)) => Some(RomHashes {
+                            crc32: hashes.crc32,
+                            md5,
+                            sha1,
+                        }),
+                        _ => None,
+                    },
                     Err(e) => {
                         log::debug!("Failed to hash {}: {}", filename, e);
-                        (None, None, None)
+                        None
                     }
                 }
             }
-            Err(_) => (None, None, None),
+            Err(_) => None,
         }
     } else {
-        (None, None, None)
+        None
     };
 
-    let scraper_serial = serial
-        .as_ref()
-        .and_then(|s| analyzer.extract_scraper_serial(s));
+    let scraper_serial = if serial.is_empty() {
+        String::new()
+    } else {
+        analyzer.extract_scraper_serial(&serial).unwrap_or_default()
+    };
 
     let rom_info = RomInfo {
         serial: serial.clone(),
         scraper_serial,
         filename: filename.clone(),
         file_size,
-        crc32,
-        md5,
-        sha1,
+        hashes,
         platform,
         expects_serial: analyzer.expects_serial(),
     };
 
     if options.dry_run {
-        let method = if serial.is_some() {
+        let method = if !serial.is_empty() {
             "serial"
         } else if !systems::expects_serial(platform) {
             "hash"
@@ -623,7 +648,7 @@ async fn process_single_game(
             .unwrap_or_default();
 
             // Generate miximage if enabled
-            if let Some(ref layout) = options.miximage_layout {
+            if let Some(layout) = options.miximage.layout() {
                 try_generate_miximage(
                     &mut media_map,
                     system_media_dir,
@@ -662,30 +687,48 @@ async fn process_single_game(
                         .synopsis_for_language(&options.language_fallback)
                 })
                 .or_else(|| result.game.synopsis_for_language("en"))
-                .map(|s| s.to_string());
+                .map(|s| s.to_string())
+                .unwrap_or_default();
 
             let genre = result
                 .game
                 .genre_for_language(&effective_language)
                 .or_else(|| result.game.genre_for_language(&options.language_fallback))
-                .or_else(|| result.game.genre_for_language("en"));
+                .or_else(|| result.game.genre_for_language("en"))
+                .unwrap_or_default();
 
             let scraped = ScrapedGame {
                 rom_stem: rom_stem.to_string(),
                 rom_filename: filename.clone(),
                 name: game_name.clone(),
                 description,
-                developer: result.game.developpeur.as_ref().map(|d| d.text.clone()),
-                publisher: result.game.editeur.as_ref().map(|p| p.text.clone()),
+                developer: result
+                    .game
+                    .developpeur
+                    .as_ref()
+                    .map(|d| d.text.clone())
+                    .unwrap_or_default(),
+                publisher: result
+                    .game
+                    .editeur
+                    .as_ref()
+                    .map(|p| p.text.clone())
+                    .unwrap_or_default(),
                 genre,
-                players: result.game.joueurs.as_ref().map(|j| j.text.clone()),
+                players: result
+                    .game
+                    .joueurs
+                    .as_ref()
+                    .map(|j| j.text.clone())
+                    .unwrap_or_default(),
                 rating: result.game.rating_normalized(),
                 release_date: result
                     .game
                     .date_for_region(&effective_region)
-                    .map(|d| d.to_string()),
+                    .map(|d| d.to_string())
+                    .unwrap_or_default(),
                 assets: media_map,
-                cover_title: None,
+                cover_title: String::new(),
             };
 
             let _ = events.send(ScrapeEvent::GameCompleted {
@@ -711,16 +754,20 @@ async fn process_single_game(
             } else {
                 warnings
             };
+            let (crc32, md5, sha1) = match &rom_info.hashes {
+                Some(h) => (h.crc32.clone(), h.md5.clone(), h.sha1.clone()),
+                None => Default::default(),
+            };
             GameResult::Failed {
                 log_entry: LogEntry::Unidentified {
                     file: filename,
                     scraper_serial_tried: rom_info.scraper_serial.clone(),
                     serial_tried: serial,
                     filename_tried: true,
-                    hashes_tried: rom_info.crc32.is_some(),
-                    crc32: rom_info.crc32.clone(),
-                    md5: rom_info.md5.clone(),
-                    sha1: rom_info.sha1.clone(),
+                    hashes_tried: rom_info.hashes.is_some(),
+                    crc32,
+                    md5,
+                    sha1,
                     errors,
                 },
             }

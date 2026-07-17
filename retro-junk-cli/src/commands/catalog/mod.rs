@@ -21,12 +21,6 @@ pub(crate) fn default_catalog_db_path() -> PathBuf {
         .join("catalog.db")
 }
 
-/// Default path for catalog YAML data.
-pub(crate) fn default_catalog_dir() -> PathBuf {
-    // Look for catalog/ relative to the current directory
-    PathBuf::from("catalog")
-}
-
 /// Truncate a string to a maximum width, appending "..." if needed.
 pub(crate) fn truncate_str(s: &str, max: usize) -> String {
     if s.len() <= max {

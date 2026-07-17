@@ -121,15 +121,16 @@ fn compute_header_checksum(reader: &mut dyn ReadSeek) -> Result<u8, AnalysisErro
 /// Derive region from the 4th character of the game code.
 /// Round file size up to the nearest power of 2, capped at 32 MB.
 /// GBA has no ROM size field in the header so we infer from file size.
-fn expected_rom_size(file_size: u64) -> Option<u64> {
+/// Returns 0 when the file size is unknown (0).
+fn expected_rom_size(file_size: u64) -> u64 {
     if file_size == 0 {
-        return None;
+        return 0;
     }
     let mut size = 1u64;
     while size < file_size && size < MAX_ROM_SIZE {
         size <<= 1;
     }
-    Some(size.min(MAX_ROM_SIZE))
+    size.min(MAX_ROM_SIZE)
 }
 
 /// Scan ROM data for save type magic strings.
@@ -171,27 +172,24 @@ fn to_identification(
     computed_checksum: u8,
     save_type: Option<&str>,
 ) -> RomIdentification {
-    let mut id = RomIdentification::new().with_platform(Platform::Gba);
+    let mut id = RomIdentification::new();
 
     // Internal name
     if !header.title.is_empty() {
-        id.internal_name = Some(header.title.clone());
+        id.internal_name = header.title.clone();
     }
 
     // Serial number: AGB-XXXX format
     if header.game_code.len() == 4 {
-        id.serial_number = Some(format!("AGB-{}", header.game_code));
+        id.serial_number = format!("AGB-{}", header.game_code);
     }
 
     // Maker code
-    let maker = if header.maker_code.len() == 2 {
-        crate::licensee::maker_code_name(&header.maker_code)
+    if header.maker_code.len() == 2 {
+        id.maker_code = crate::licensee::maker_code_name(&header.maker_code)
             .map(|s| s.to_string())
-            .or_else(|| Some(header.maker_code.clone()))
-    } else {
-        None
-    };
-    id.maker_code = maker;
+            .unwrap_or_else(|| header.maker_code.clone());
+    }
 
     // Region from game code
     if header.game_code.len() == 4
@@ -201,10 +199,10 @@ fn to_identification(
     }
 
     // Version
-    id.version = Some(format!("v{}", header.software_version));
+    id.version = format!("v{}", header.software_version);
 
     // File and expected size
-    id.file_size = Some(file_size);
+    id.file_size = file_size;
     id.expected_size = expected_rom_size(file_size);
 
     // Expected checksums

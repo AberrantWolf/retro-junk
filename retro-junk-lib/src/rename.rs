@@ -181,7 +181,8 @@ pub enum SetProblemKind {
     Broken { missing: Vec<String> },
     /// A game was identified but the set failed full-track verification.
     NotVerified {
-        game_name: Option<String>,
+        /// Identified game name; empty when unidentified
+        game_name: String,
         issues: Vec<String>,
     },
     /// No DAT game matched.
@@ -203,14 +204,21 @@ pub struct ExecutionContext<'a> {
     pub gamelist_rewriter: Option<&'a dyn Fn(&HashMap<String, String>) -> Vec<(PathBuf, String)>>,
 }
 
+/// CRC32 and size of hashed data, recorded when hashing was attempted.
+#[derive(Debug, Clone)]
+pub struct HashInfo {
+    /// CRC32 hash of the file data
+    pub crc32: String,
+    /// Data size that was hashed (after header stripping)
+    pub data_size: u64,
+}
+
 /// A file that couldn't be matched by serial or hash.
 #[derive(Debug, Clone)]
 pub struct UnmatchedFile {
     pub file: PathBuf,
-    /// CRC32 hash of the file data (if hashing was attempted)
-    pub crc32: Option<String>,
-    /// Data size that was hashed (after header stripping)
-    pub data_size: Option<u64>,
+    /// Hash details, present if hashing was attempted
+    pub hash_info: Option<HashInfo>,
 }
 
 /// A discrepancy between serial-based and hash-based matching (reported in --hash mode).
@@ -226,10 +234,8 @@ pub struct MatchDiscrepancy {
 pub struct SerialWarning {
     pub file: PathBuf,
     pub kind: SerialWarningKind,
-    /// CRC32 of the file data (if hash matching was attempted)
-    pub crc32: Option<String>,
-    /// Data size that was hashed (after header stripping)
-    pub data_size: Option<u64>,
+    /// Hash details, present if hash matching was attempted
+    pub hash_info: Option<HashInfo>,
     /// Whether the file ultimately matched by hash despite serial failure
     pub matched_by_hash: bool,
 }
@@ -240,12 +246,14 @@ pub enum SerialWarningKind {
     /// Serial found in ROM header but no DAT match
     NoMatch {
         full_serial: String,
-        game_code: Option<String>,
+        /// Extracted game code used for lookup; empty when none
+        game_code: String,
     },
     /// Serial matches multiple DAT entries (ambiguous) — fell back to hash
     Ambiguous {
         full_serial: String,
-        game_code: Option<String>,
+        /// Extracted game code used for lookup; empty when none
+        game_code: String,
         candidates: Vec<String>,
     },
     /// Platform expects serial but none was found in ROM
@@ -261,14 +269,18 @@ pub enum SerialWarningKind {
 pub fn target_filename_for_rename(
     dat_rom_name: &str,
     source_path: &Path,
-    detected_extension: Option<&str>,
+    detected_extension: &str,
 ) -> String {
     let dat_stem = Path::new(dat_rom_name)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(dat_rom_name);
 
-    let ext = detected_extension.or_else(|| source_path.extension().and_then(|e| e.to_str()));
+    let ext = if detected_extension.is_empty() {
+        source_path.extension().and_then(|e| e.to_str())
+    } else {
+        Some(detected_extension)
+    };
 
     match ext {
         Some(e) => format!("{}.{}", dat_stem, e),
@@ -279,14 +291,15 @@ pub fn target_filename_for_rename(
 /// Internal result from serial matching, carrying diagnostic info.
 pub struct SerialMatchOutcome {
     pub result: Option<MatchResult>,
-    /// Full serial from ROM header (e.g., "NUS-NSME-USA")
-    pub full_serial: Option<String>,
-    /// Extracted game code used for DAT lookup (e.g., "NSME")
-    pub game_code: Option<String>,
-    /// When serial matched multiple games, the candidate names
-    pub ambiguous_candidates: Option<Vec<String>>,
-    /// Detected file format extension from analyzer (e.g., "iso", "chd", "rvz")
-    pub detected_extension: Option<String>,
+    /// Full serial from ROM header (e.g., "NUS-NSME-USA"); empty when none found
+    pub full_serial: String,
+    /// Extracted game code used for DAT lookup (e.g., "NSME"); empty when none
+    pub game_code: String,
+    /// When serial matched multiple games, the candidate names; empty otherwise
+    pub ambiguous_candidates: Vec<String>,
+    /// Detected file format extension from analyzer (e.g., "iso", "chd", "rvz");
+    /// empty when undetected
+    pub detected_extension: String,
 }
 
 /// A planned M3U folder rename + playlist write for a multi-disc set.
@@ -314,7 +327,7 @@ pub struct DiscMatchData {
 
 /// Plan M3U actions for a multi-disc set given pre-resolved disc data.
 ///
-/// When `game_name_override` is `Some`, uses that name directly instead of
+/// When `game_name_override` is non-empty, uses that name directly instead of
 /// deriving it from per-disc DAT names. This is used by the GUI when the
 /// catalog DB has already resolved the canonical game name.
 ///
@@ -323,19 +336,18 @@ pub fn plan_m3u_action(
     source_folder: &Path,
     discs: &[DiscMatchData],
     existing_m3u_contents: Option<&str>,
-    game_name_override: Option<&str>,
+    game_name_override: &str,
 ) -> Option<M3uAction> {
     if discs.is_empty() {
         return None;
     }
 
     // Use override if provided, otherwise derive from per-disc DAT names
-    let base_game_name = match game_name_override {
-        Some(name) if !name.is_empty() => name.to_string(),
-        _ => {
-            let game_names: Vec<&str> = discs.iter().map(|d| d.game_name.as_str()).collect();
-            derive_base_game_name(&game_names)
-        }
+    let base_game_name = if game_name_override.is_empty() {
+        let game_names: Vec<&str> = discs.iter().map(|d| d.game_name.as_str()).collect();
+        derive_base_game_name(&game_names)
+    } else {
+        game_name_override.to_string()
     };
     if base_game_name.is_empty() {
         return None;
@@ -504,8 +516,9 @@ pub struct M3uRenameJob {
     /// Verified cue/bin sets inside this folder, renamed transactionally
     /// (cue + tracks + FILE-line rewrite) before the plain disc renames.
     pub disc_sets: Vec<DiscSetPlan>,
-    /// Pre-resolved game name (from catalog DB); skips derive_base_game_name
-    pub game_name_override: Option<String>,
+    /// Pre-resolved game name (from catalog DB); skips derive_base_game_name.
+    /// Empty means derive from per-disc DAT names.
+    pub game_name_override: String,
 }
 
 /// Result of executing a single M3U folder rename via `execute_m3u_rename()`.
@@ -616,7 +629,7 @@ pub fn execute_m3u_rename(job: &M3uRenameJob, exec: &ExecutionContext<'_>) -> M3
         &job.source_folder,
         &job.discs,
         None,
-        job.game_name_override.as_deref(),
+        &job.game_name_override,
     ) {
         // Step 5: Rename misnamed inner .m3u (only when playlist won't be rewritten)
         if action.playlist_entries.is_empty() {
@@ -988,12 +1001,15 @@ pub fn plan_renames(
         });
 
         // Track hash info for diagnostics if the file ends up unmatched
-        let mut last_hash: Option<(String, u64)> = None;
+        let mut last_hash: Option<HashInfo> = None;
 
         let (match_result, detected_ext) = if options.hash_mode {
             // Hash mode: hash is authoritative, but also check serial for discrepancies
             let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
-            last_hash = Some((hash_outcome.crc32, hash_outcome.data_size));
+            last_hash = Some(HashInfo {
+                crc32: hash_outcome.crc32,
+                data_size: hash_outcome.data_size,
+            });
             if !hash_outcome.warnings.is_empty() {
                 hash_warnings.push((file_path.clone(), hash_outcome.warnings));
             }
@@ -1021,41 +1037,36 @@ pub fn plan_renames(
             } else {
                 // Serial failed — try hash, then create serial warning with hash info
                 let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
-                last_hash = Some((hash_outcome.crc32.clone(), hash_outcome.data_size));
+                last_hash = Some(HashInfo {
+                    crc32: hash_outcome.crc32.clone(),
+                    data_size: hash_outcome.data_size,
+                });
                 if !hash_outcome.warnings.is_empty() {
                     hash_warnings.push((file_path.clone(), hash_outcome.warnings.clone()));
                 }
 
-                if let Some(ref candidates) = serial_outcome.ambiguous_candidates {
+                let warning_kind = if !serial_outcome.ambiguous_candidates.is_empty() {
                     // Serial matched multiple games — report ambiguity
-                    serial_warnings.push(SerialWarning {
-                        file: file_path.clone(),
-                        kind: SerialWarningKind::Ambiguous {
-                            full_serial: serial_outcome.full_serial.clone().unwrap_or_default(),
-                            game_code: serial_outcome.game_code.clone(),
-                            candidates: candidates.clone(),
-                        },
-                        crc32: Some(hash_outcome.crc32.clone()),
-                        data_size: Some(hash_outcome.data_size),
-                        matched_by_hash: hash_outcome.result.is_some(),
-                    });
-                } else if let Some(ref full_serial) = serial_outcome.full_serial {
-                    serial_warnings.push(SerialWarning {
-                        file: file_path.clone(),
-                        kind: SerialWarningKind::NoMatch {
-                            full_serial: full_serial.clone(),
-                            game_code: serial_outcome.game_code.clone(),
-                        },
-                        crc32: Some(hash_outcome.crc32.clone()),
-                        data_size: Some(hash_outcome.data_size),
-                        matched_by_hash: hash_outcome.result.is_some(),
-                    });
+                    Some(SerialWarningKind::Ambiguous {
+                        full_serial: serial_outcome.full_serial.clone(),
+                        game_code: serial_outcome.game_code.clone(),
+                        candidates: serial_outcome.ambiguous_candidates.clone(),
+                    })
+                } else if !serial_outcome.full_serial.is_empty() {
+                    Some(SerialWarningKind::NoMatch {
+                        full_serial: serial_outcome.full_serial.clone(),
+                        game_code: serial_outcome.game_code.clone(),
+                    })
                 } else if analyzer.expects_serial() {
+                    Some(SerialWarningKind::Missing)
+                } else {
+                    None
+                };
+                if let Some(kind) = warning_kind {
                     serial_warnings.push(SerialWarning {
                         file: file_path.clone(),
-                        kind: SerialWarningKind::Missing,
-                        crc32: Some(hash_outcome.crc32.clone()),
-                        data_size: Some(hash_outcome.data_size),
+                        kind,
+                        hash_info: last_hash.clone(),
                         matched_by_hash: hash_outcome.result.is_some(),
                     });
                 }
@@ -1069,8 +1080,7 @@ pub fn plan_renames(
             let rom = &game.roms[result.rom_index];
 
             let parent = file_path.parent().unwrap_or(folder);
-            let target_name =
-                target_filename_for_rename(&rom.name, file_path, detected_ext.as_deref());
+            let target_name = target_filename_for_rename(&rom.name, file_path, &detected_ext);
             let target = parent.join(&target_name);
 
             let target_filename = target
@@ -1091,14 +1101,9 @@ pub fn plan_renames(
                 });
             }
         } else {
-            let (crc32, data_size) = match last_hash {
-                Some((c, s)) => (Some(c), Some(s)),
-                None => (None, None),
-            };
             unmatched.push(UnmatchedFile {
                 file: file_path.clone(),
-                crc32,
-                data_size,
+                hash_info: last_hash,
             });
         }
     }
@@ -1242,14 +1247,14 @@ pub fn plan_renames(
                 !set_cues.contains(&d.file_path)
                     && d.file_path != source_folder.join(&d.target_filename)
             });
-            let needs_m3u_action = plan_m3u_action(&source_folder, &discs, None, None).is_some();
+            let needs_m3u_action = plan_m3u_action(&source_folder, &discs, None, "").is_some();
 
             if any_plain_rename || !folder_sets.is_empty() || needs_m3u_action {
                 m3u_jobs.push(M3uRenameJob {
                     source_folder,
                     discs,
                     disc_sets: folder_sets,
-                    game_name_override: None,
+                    game_name_override: String::new(),
                 });
             }
         }
@@ -1422,10 +1427,10 @@ pub fn serial_lookup(
     let analysis_options = AnalysisOptions::new().quick(true).file_path(file_path);
     let no_match = SerialMatchOutcome {
         result: None,
-        full_serial: None,
-        game_code: None,
-        ambiguous_candidates: None,
-        detected_extension: None,
+        full_serial: String::new(),
+        game_code: String::new(),
+        ambiguous_candidates: Vec::new(),
+        detected_extension: String::new(),
     };
 
     let mut file = match fs::File::open(file_path) {
@@ -1437,41 +1442,44 @@ pub fn serial_lookup(
         Err(_) => return no_match,
     };
 
-    let detected_extension = info.extra.get("detected_extension").cloned();
+    let detected_extension = info
+        .extra
+        .get("detected_extension")
+        .cloned()
+        .unwrap_or_default();
 
-    let serial = match info.serial_number {
-        Some(s) => s,
-        None => {
-            return SerialMatchOutcome {
-                detected_extension,
-                ..no_match
-            };
-        }
-    };
+    let serial = info.serial_number;
+    if serial.is_empty() {
+        return SerialMatchOutcome {
+            detected_extension,
+            ..no_match
+        };
+    }
 
     let game_code = analyzer.extract_dat_game_code(&serial);
     let lookup = index.match_by_serial(&serial, game_code.as_deref());
+    let game_code = game_code.unwrap_or_default();
 
     match lookup {
         SerialLookupResult::Match(result) => SerialMatchOutcome {
             result: Some(result),
-            full_serial: Some(serial),
+            full_serial: serial,
             game_code,
-            ambiguous_candidates: None,
+            ambiguous_candidates: Vec::new(),
             detected_extension,
         },
         SerialLookupResult::Ambiguous { candidates } => SerialMatchOutcome {
             result: None,
-            full_serial: Some(serial),
+            full_serial: serial,
             game_code,
-            ambiguous_candidates: Some(candidates),
+            ambiguous_candidates: candidates,
             detected_extension,
         },
         SerialLookupResult::NotFound => SerialMatchOutcome {
             result: None,
-            full_serial: Some(serial),
+            full_serial: serial,
             game_code,
-            ambiguous_candidates: None,
+            ambiguous_candidates: Vec::new(),
             detected_extension,
         },
     }
@@ -1749,7 +1757,7 @@ pub fn plan_media_renames(
             &job.source_folder,
             &job.discs,
             None,
-            job.game_name_override.as_deref(),
+            &job.game_name_override,
         ) {
             if action.source_folder != action.target_folder {
                 let old_folder_stem = action

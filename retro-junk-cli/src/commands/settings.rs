@@ -43,7 +43,7 @@ pub(crate) fn run_config_library_path(
     clear: bool,
 ) -> Result<(), CliError> {
     if clear {
-        retro_junk_lib::settings::save_library_path(None)
+        retro_junk_lib::settings::clear_library_path()
             .map_err(|e| CliError::config(format!("Failed to clear library path: {}", e)))?;
         log::info!(
             "{} Library path cleared",
@@ -54,7 +54,7 @@ pub(crate) fn run_config_library_path(
 
     if let Some(path) = new_path {
         let canonical = path.canonicalize().unwrap_or(path);
-        retro_junk_lib::settings::save_library_path(Some(&canonical))
+        retro_junk_lib::settings::save_library_path(&canonical)
             .map_err(|e| CliError::config(format!("Failed to save library path: {}", e)))?;
         log::info!(
             "{} Library path set to: {}",

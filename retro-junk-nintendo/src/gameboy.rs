@@ -43,9 +43,11 @@ const NINTENDO_LOGO: [u8; 48] = [
 /// Parsed Game Boy cartridge header (0x0100-0x014F).
 struct GbHeader {
     title: String,
-    manufacturer_code: Option<String>,
+    /// Manufacturer code (CGB-only field). Empty when absent.
+    manufacturer_code: String,
     cgb_flag: u8,
-    new_licensee_code: Option<String>,
+    /// New licensee code (only when old licensee is 0x33). Empty when absent.
+    new_licensee_code: String,
     sgb_flag: u8,
     cartridge_type: u8,
     rom_size_code: u8,
@@ -95,15 +97,14 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<GbHeader, AnalysisError> {
         .collect();
 
     // Manufacturer code (CGB only): 4 bytes at 0x013F-0x0142
-    let manufacturer_code = if cgb_flag == 0x80 || cgb_flag == 0xC0 {
-        let mfr: String = buf[0x3F..0x43]
+    let manufacturer_code: String = if cgb_flag == 0x80 || cgb_flag == 0xC0 {
+        buf[0x3F..0x43]
             .iter()
             .filter(|&&b| (0x20..0x7F).contains(&b))
             .map(|&b| b as char)
-            .collect();
-        if mfr.is_empty() { None } else { Some(mfr) }
+            .collect()
     } else {
-        None
+        String::new()
     };
 
     // New licensee code at 0x0144-0x0145 (ASCII)
@@ -114,9 +115,9 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<GbHeader, AnalysisError> {
             .filter(|&&b| (0x20..0x7F).contains(&b))
             .map(|&b| b as char)
             .collect();
-        if code.len() == 2 { Some(code) } else { None }
+        if code.len() == 2 { code } else { String::new() }
     } else {
-        None
+        String::new()
     };
 
     Ok(GbHeader {
@@ -264,36 +265,34 @@ fn to_identification(
         None
     };
 
-    let mut id = RomIdentification::new().with_platform(Platform::GameBoy);
+    let mut id = RomIdentification::new();
     if let Some(variant) = platform_variant {
         id.extra.insert("platform_variant".into(), variant.into());
     }
 
     // Internal name
     if !header.title.is_empty() {
-        id.internal_name = Some(header.title.clone());
+        id.internal_name = header.title.clone();
     }
 
     // Version
-    id.version = Some(format!("v{}", header.version));
+    id.version = format!("v{}", header.version);
 
     // Maker/licensee
     let licensee = if header.old_licensee_code == 0x33 {
-        header
-            .new_licensee_code
-            .as_deref()
-            .and_then(crate::licensee::maker_code_name)
-            .map(|s| s.to_string())
+        crate::licensee::maker_code_name(&header.new_licensee_code)
     } else {
-        crate::licensee::old_licensee_name(header.old_licensee_code).map(|s| s.to_string())
+        crate::licensee::old_licensee_name(header.old_licensee_code)
     };
-    id.maker_code = licensee;
+    if let Some(licensee) = licensee {
+        id.maker_code = licensee.to_string();
+    }
 
     // File size
-    id.file_size = Some(file_size);
+    id.file_size = file_size;
 
     // Expected size from ROM size code
-    id.expected_size = rom_size(header.rom_size_code);
+    id.expected_size = rom_size(header.rom_size_code).unwrap_or(0);
 
     // Region
     match header.destination_code {
@@ -344,8 +343,9 @@ fn to_identification(
     }
 
     // Extra: manufacturer code (CGB only)
-    if let Some(ref mfr) = header.manufacturer_code {
-        id.extra.insert("manufacturer_code".into(), mfr.clone());
+    if !header.manufacturer_code.is_empty() {
+        id.extra
+            .insert("manufacturer_code".into(), header.manufacturer_code.clone());
     }
 
     // Checksum status: header

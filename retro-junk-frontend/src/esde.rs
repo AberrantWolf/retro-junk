@@ -33,30 +33,34 @@ impl Frontend for EsDeFrontend {
         for game in games {
             xml.push_str("  <game>\n");
             write_tag(&mut xml, "path", &format!("./{}", game.rom_filename));
-            let display_name = game.cover_title.as_deref().unwrap_or(&game.name);
+            let display_name = if game.cover_title.is_empty() {
+                &game.name
+            } else {
+                &game.cover_title
+            };
             write_tag(&mut xml, "name", display_name);
 
-            if let Some(ref desc) = game.description {
-                write_tag(&mut xml, "desc", desc);
+            if !game.description.is_empty() {
+                write_tag(&mut xml, "desc", &game.description);
             }
-            if let Some(ref dev) = game.developer {
-                write_tag(&mut xml, "developer", dev);
+            if !game.developer.is_empty() {
+                write_tag(&mut xml, "developer", &game.developer);
             }
-            if let Some(ref pub_) = game.publisher {
-                write_tag(&mut xml, "publisher", pub_);
+            if !game.publisher.is_empty() {
+                write_tag(&mut xml, "publisher", &game.publisher);
             }
-            if let Some(ref genre) = game.genre {
-                write_tag(&mut xml, "genre", genre);
+            if !game.genre.is_empty() {
+                write_tag(&mut xml, "genre", &game.genre);
             }
-            if let Some(ref players) = game.players {
-                write_tag(&mut xml, "players", players);
+            if !game.players.is_empty() {
+                write_tag(&mut xml, "players", &game.players);
             }
             if let Some(rating) = game.rating {
                 write_tag(&mut xml, "rating", &format!("{:.1}", rating));
             }
-            if let Some(ref date) = game.release_date {
+            if !game.release_date.is_empty() {
                 // Convert YYYY-MM-DD or YYYYMMDD to YYYYMMDDTHHMMSS
-                let formatted = format_esde_date(date);
+                let formatted = format_esde_date(&game.release_date);
                 write_tag(&mut xml, "releasedate", &formatted);
             }
 

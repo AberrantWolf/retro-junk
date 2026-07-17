@@ -34,7 +34,7 @@ pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &e
     let ctx = ctx.clone();
     let total = cue_files.len();
     let description = format!("Fixing {} CUE file(s)", total);
-    let scope = Some(folder_name.clone());
+    let scope = folder_name.clone();
 
     spawn_background_op(
         app,
@@ -87,7 +87,7 @@ pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &e
                     continue;
                 }
 
-                if let Some(reason) = &report.unfixable_reason {
+                if let Some(reason) = report.blocked_reason() {
                     results.push(CueFixResult {
                         file_name,
                         outcome: CueFixOutcome::Unfixable {

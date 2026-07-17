@@ -21,7 +21,7 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
         app,
         "Scanning folders...".to_string(),
         OperationKind::Scan,
-        None,
+        String::new(),
         ProgressDisplay::Count,
         move |_op_id, cancel, tx| {
             let result = context.scan_console_folders(&root, None);
@@ -71,7 +71,7 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
 
     let platform_name = console.platform_name.to_string();
     let description = format!("Scanning {} ({})", platform_name, folder_name);
-    let scope = Some(folder_name.clone());
+    let scope = folder_name.clone();
 
     spawn_background_op(
         app,
@@ -178,7 +178,7 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let count = selected.len();
     let noun = if count == 1 { "entry" } else { "entries" };
     let description = format!("Rescanning {} {}", count, noun);
-    let scope = Some(folder_name.clone());
+    let scope = folder_name.clone();
 
     spawn_background_op(
         app,

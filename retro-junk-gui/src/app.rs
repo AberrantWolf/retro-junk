@@ -23,6 +23,39 @@ use crate::util;
 use crate::views;
 use crate::widgets;
 
+/// Which batch-results dialog is open, if any. The three result kinds are
+/// mutually exclusive by construction: at most one dialog at a time.
+pub enum ResultsDialog {
+    /// No results dialog is open.
+    None,
+    /// Results from the last rename operation.
+    Rename(Vec<RenameResult>),
+    /// Results from the last CUE fix operation.
+    CueFix(Vec<CueFixResult>),
+    /// Results from the last CHD compression.
+    ChdCompress(Vec<crate::state::ChdCompressResult>),
+}
+
+/// State of the Settings-view chdman detection probe.
+///
+/// `Chdman::detect` spawns a subprocess with no timeout, so it runs on a
+/// background thread (D1); `Probing` guards against launching a second probe
+/// while one is already in flight and drives the Settings-view spinner.
+pub enum ChdmanProbe {
+    /// No probe has run for the current setting (or it was invalidated).
+    Idle,
+    /// A probe is running on a background thread.
+    Probing,
+    /// A probe finished for `path` (the configured chdman path it ran against).
+    Done {
+        path: String,
+        result: Result<
+            retro_junk_lib::chd_convert::Chdman,
+            retro_junk_lib::chd_convert::ChdmanUnavailable,
+        >,
+    },
+}
+
 /// Main application state.
 pub struct RetroJunkApp {
     /// Analysis context with all registered console analyzers.
@@ -82,30 +115,17 @@ pub struct RetroJunkApp {
     /// Path to the catalog database file (for opening separate connections in background threads).
     pub db_path: Option<std::path::PathBuf>,
 
-    /// Results from the last rename operation. When `Some`, the rename results dialog is shown.
-    pub rename_results: Option<Vec<crate::state::RenameResult>>,
-
-    /// Results from the last CUE fix operation. When `Some`, the CUE fix results dialog is shown.
-    pub cue_fix_results: Option<Vec<crate::state::CueFixResult>>,
+    /// Which batch-results dialog is open, if any, with its per-item results.
+    /// The rename / CUE fix / CHD compression dialogs are mutually exclusive.
+    pub results_dialog: ResultsDialog,
 
     /// Pending CHD compression awaiting user confirmation. When `Some`, the
     /// compress-to-CHD dialog is shown (including the "chdman missing" explanation).
     pub chd_compress_prompt: Option<crate::state::ChdCompressPrompt>,
 
-    /// Results from the last CHD compression. When `Some`, the results dialog is shown.
-    pub chd_compress_results: Option<Vec<crate::state::ChdCompressResult>>,
-
-    /// Cached chdman detection for the Settings view: (path probed, result).
+    /// Cached chdman detection for the Settings view.
     /// Re-probed when the configured chdman path changes.
-    pub chdman_probe: Option<(
-        String,
-        Result<retro_junk_lib::chd_convert::Chdman, retro_junk_lib::chd_convert::ChdmanUnavailable>,
-    )>,
-
-    /// True while a chdman probe is running on a background thread (D1).
-    /// Guards against launching a second probe while one is already in
-    /// flight, and drives the Settings-view spinner.
-    pub chdman_probe_in_flight: bool,
+    pub chdman_probe: ChdmanProbe,
 
     /// Cached ScreenScraper credential provenance for the Settings view,
     /// with the time it was computed. Re-read after a short TTL so edits
@@ -280,12 +300,9 @@ impl RetroJunkApp {
             settings,
             catalog_db,
             db_path,
-            rename_results: None,
-            cue_fix_results: None,
+            results_dialog: ResultsDialog::None,
             chd_compress_prompt: None,
-            chd_compress_results: None,
-            chdman_probe: None,
-            chdman_probe_in_flight: false,
+            chdman_probe: ChdmanProbe::Idle,
             credential_status: None,
             credential_info_popup: None,
             loading_library: false,
@@ -337,7 +354,8 @@ impl RetroJunkApp {
     pub fn chd_compress_busy(&self, folder_name: &str) -> bool {
         self.operations.iter().any(|op| {
             op.kind == crate::state::OperationKind::ChdCompress
-                && op.scope.as_deref() == Some(folder_name)
+                && !op.scope.is_empty()
+                && op.scope == folder_name
         })
     }
 
@@ -455,35 +473,37 @@ impl eframe::App for RetroJunkApp {
             View::Tools => views::tools::show(ui, self),
         });
 
-        // Rename results modal dialog
-        widgets::results_dialog::show_results_dialog(
-            ctx,
-            "Rename Results",
-            &mut self.rename_results,
-            rename_results_summary,
-            rename_results_row,
-        );
-
-        // CUE fix results modal dialog
-        widgets::results_dialog::show_results_dialog(
-            ctx,
-            "Fix CUE Results",
-            &mut self.cue_fix_results,
-            cue_fix_results_summary,
-            cue_fix_results_row,
-        );
+        // Batch-results modal dialog (rename / CUE fix / CHD compression)
+        let dismissed = match &self.results_dialog {
+            ResultsDialog::None => false,
+            ResultsDialog::Rename(items) => widgets::results_dialog::show_results_dialog(
+                ctx,
+                "Rename Results",
+                items,
+                rename_results_summary,
+                rename_results_row,
+            ),
+            ResultsDialog::CueFix(items) => widgets::results_dialog::show_results_dialog(
+                ctx,
+                "Fix CUE Results",
+                items,
+                cue_fix_results_summary,
+                cue_fix_results_row,
+            ),
+            ResultsDialog::ChdCompress(items) => widgets::results_dialog::show_results_dialog(
+                ctx,
+                "Compress to CHD Results",
+                items,
+                chd_compress_results_summary,
+                chd_compress_results_row,
+            ),
+        };
+        if dismissed {
+            self.results_dialog = ResultsDialog::None;
+        }
 
         // Compress-to-CHD confirmation dialog
         widgets::chd_compress_dialog::show(ctx, self);
-
-        // CHD compression results modal dialog
-        widgets::results_dialog::show_results_dialog(
-            ctx,
-            "Compress to CHD Results",
-            &mut self.chd_compress_results,
-            chd_compress_results_summary,
-            chd_compress_results_row,
-        );
 
         // Organize preview dialog
         if self.pending_organize_plan.is_some() {

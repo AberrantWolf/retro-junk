@@ -52,7 +52,7 @@ pub fn import_dat(
     dat: &DatFile,
     platform: Platform,
     dat_source: &str,
-    progress: Option<&dyn ImportProgress>,
+    progress: &dyn ImportProgress,
 ) -> Result<ImportStats, ImportError> {
     let mut stats = ImportStats {
         total_games: dat.games.len() as u64,
@@ -64,9 +64,7 @@ pub fn import_dat(
     for (i, game) in dat.games.iter().enumerate() {
         import_game(&tx, game, platform, dat_source, &mut stats)?;
 
-        if let Some(p) = progress {
-            p.on_game(i + 1, dat.games.len(), &game.name);
-        }
+        progress.on_game(i + 1, dat.games.len(), &game.name);
     }
 
     tx.commit()?;

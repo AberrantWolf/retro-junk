@@ -18,9 +18,9 @@ const PREFIX_MEDIA: &str = "med-";
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn run_catalog_lookup(
     query: Option<String>,
-    platform: Option<String>,
-    entity_type: Option<String>,
-    manufacturer: Option<String>,
+    platform: String,
+    entity_type: String,
+    manufacturer: String,
     crc: Option<String>,
     sha1: Option<String>,
     md5: Option<String>,
@@ -41,24 +41,11 @@ pub(crate) fn run_catalog_lookup(
         .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
 
     // ── Hash / serial lookups (original behavior) ─────────────────────
+    // Mutual exclusivity of --crc/--sha1/--md5/--serial is enforced by
+    // clap via the "hash_lookup" ArgGroup.
     let has_hash_or_serial = crc.is_some() || sha1.is_some() || md5.is_some() || serial.is_some();
 
     if has_hash_or_serial {
-        let mode_count = [
-            crc.is_some(),
-            sha1.is_some(),
-            md5.is_some(),
-            serial.is_some(),
-        ]
-        .iter()
-        .filter(|&&b| b)
-        .count();
-        if mode_count > 1 {
-            return Err(CliError::other(
-                "Only one of --crc, --sha1, --md5, or --serial at a time.",
-            ));
-        }
-
         let platform_label = make_platform_label(&conn);
         let company_label = make_company_label(&conn);
 
@@ -69,7 +56,7 @@ pub(crate) fn run_catalog_lookup(
                 "CRC32",
                 &hash,
                 |h| retro_junk_db::find_media_by_crc32(&conn, h),
-                platform.as_deref(),
+                &platform,
                 &platform_label,
                 &company_label,
             );
@@ -80,7 +67,7 @@ pub(crate) fn run_catalog_lookup(
                 "SHA1",
                 &hash,
                 |h| retro_junk_db::find_media_by_sha1(&conn, h),
-                platform.as_deref(),
+                &platform,
                 &platform_label,
                 &company_label,
             );
@@ -91,18 +78,12 @@ pub(crate) fn run_catalog_lookup(
                 "MD5",
                 &hash,
                 |h| retro_junk_db::find_media_by_md5(&conn, h),
-                platform.as_deref(),
+                &platform,
                 &platform_label,
                 &company_label,
             );
         } else if let Some(ref s) = serial {
-            lookup_by_serial(
-                &conn,
-                s,
-                platform.as_deref(),
-                &platform_label,
-                &company_label,
-            );
+            lookup_by_serial(&conn, s, &platform, &platform_label, &company_label);
         }
         return Ok(());
     }
@@ -110,19 +91,12 @@ pub(crate) fn run_catalog_lookup(
     // ── Browse/search modes ───────────────────────────────────────────
     match query {
         Some(q) if is_prefixed_id(&q) => dispatch_id_lookup(&conn, &q),
-        Some(q) => dispatch_search(
-            &conn,
-            &q,
-            entity_type.as_deref(),
-            platform.as_deref(),
-            limit,
-            offset,
-        ),
+        Some(q) => dispatch_search(&conn, &q, &entity_type, &platform, limit, offset),
         None => dispatch_listing(
             &conn,
-            entity_type.as_deref(),
-            platform.as_deref(),
-            manufacturer.as_deref(),
+            &entity_type,
+            &platform,
+            &manufacturer,
             limit,
             offset,
             group,
@@ -149,7 +123,7 @@ fn lookup_by_hash<F>(
     hash_type: &str,
     hash: &str,
     find_fn: F,
-    platform_filter: Option<&str>,
+    platform_filter: &str,
     platform_label: &dyn Fn(&str) -> String,
     company_label: &dyn Fn(&str) -> String,
 ) where
@@ -190,9 +164,7 @@ fn lookup_by_hash<F>(
             }
         };
 
-        if let Some(cf) = platform_filter
-            && release.platform_id != cf
-        {
+        if !platform_filter.is_empty() && release.platform_id != platform_filter {
             continue;
         }
 
@@ -205,7 +177,7 @@ fn lookup_by_hash<F>(
 fn lookup_by_serial(
     conn: &retro_junk_db::Connection,
     serial: &str,
-    platform_filter: Option<&str>,
+    platform_filter: &str,
     platform_label: &dyn Fn(&str) -> String,
     company_label: &dyn Fn(&str) -> String,
 ) {
@@ -234,8 +206,8 @@ fn lookup_by_serial(
     }
 
     // Apply platform filter
-    if let Some(pf) = platform_filter {
-        releases.retain(|r| r.platform_id == *pf);
+    if !platform_filter.is_empty() {
+        releases.retain(|r| r.platform_id == platform_filter);
     }
 
     if releases.is_empty() {
@@ -310,15 +282,17 @@ fn dispatch_id_lookup(conn: &retro_junk_db::Connection, q: &str) {
 fn dispatch_search(
     conn: &retro_junk_db::Connection,
     query: &str,
-    entity_type: Option<&str>,
-    platform: Option<&str>,
+    entity_type: &str,
+    platform: &str,
     limit: u32,
     offset: u32,
 ) {
     let platform_label = make_platform_label(conn);
+    // DB search functions treat a None platform as "no filter".
+    let platform = (!platform.is_empty()).then_some(platform);
 
     match entity_type {
-        Some("works" | "work") => {
+        "works" | "work" => {
             let results = match retro_junk_db::search_works(conn, query, limit, offset) {
                 Ok(r) => r,
                 Err(e) => {
@@ -332,7 +306,7 @@ fn dispatch_search(
             }
             print_works_table(&results, offset);
         }
-        Some("releases" | "release") => {
+        "releases" | "release" => {
             let results =
                 match retro_junk_db::search_releases_paged(conn, query, platform, limit, offset) {
                     Ok(r) => r,
@@ -347,7 +321,7 @@ fn dispatch_search(
             }
             print_releases_table(&results, &platform_label, offset, limit);
         }
-        Some("media") => {
+        "media" => {
             let results = match retro_junk_db::search_media(conn, query, platform, limit, offset) {
                 Ok(r) => r,
                 Err(e) => {
@@ -361,14 +335,8 @@ fn dispatch_search(
             }
             print_media_table(conn, &results, &platform_label, offset, limit);
         }
-        Some(other) => {
-            log::error!(
-                "Unknown type \"{}\". Use: platforms, works, releases, media",
-                other
-            );
-        }
         // Unified search across all types
-        None => {
+        "" => {
             let works = retro_junk_db::search_works(conn, query, limit, 0).unwrap_or_default();
             let releases = retro_junk_db::search_releases_paged(conn, query, platform, limit, 0)
                 .unwrap_or_default();
@@ -443,6 +411,12 @@ fn dispatch_search(
                 "Use --type to search a single type with pagination, or pass a prefixed ID for details."
             );
         }
+        other => {
+            log::error!(
+                "Unknown type \"{}\". Use: platforms, works, releases, media",
+                other
+            );
+        }
     }
 }
 
@@ -450,41 +424,41 @@ fn dispatch_search(
 
 fn dispatch_listing(
     conn: &retro_junk_db::Connection,
-    entity_type: Option<&str>,
-    platform: Option<&str>,
-    manufacturer: Option<&str>,
+    entity_type: &str,
+    platform: &str,
+    manufacturer: &str,
     limit: u32,
     offset: u32,
     group: bool,
 ) -> Result<(), CliError> {
     match entity_type {
-        None | Some("platforms" | "platform") => {
+        "" | "platforms" | "platform" => {
             list_platforms(conn, manufacturer, group);
         }
-        Some("works" | "work") => {
+        "works" | "work" => {
             log::info!(
                 "Listing works requires a search query. Try: catalog lookup <query> --type works"
             );
         }
-        Some("releases" | "release") => {
-            if let Some(pid) = platform {
-                list_releases_for_platform(conn, pid, limit, offset);
+        "releases" | "release" => {
+            if !platform.is_empty() {
+                list_releases_for_platform(conn, platform, limit, offset);
             } else {
                 log::info!(
                     "Listing releases requires --platform. Try: catalog lookup --type releases --platform nes"
                 );
             }
         }
-        Some("media") => {
-            if let Some(pid) = platform {
-                list_media_for_platform(conn, pid, limit, offset);
+        "media" => {
+            if !platform.is_empty() {
+                list_media_for_platform(conn, platform, limit, offset);
             } else {
                 log::info!(
                     "Listing media requires --platform. Try: catalog lookup --type media --platform nes"
                 );
             }
         }
-        Some(other) => {
+        other => {
             return Err(CliError::other(format!(
                 "Unknown type \"{}\". Use: platforms, works, releases, media",
                 other
@@ -496,11 +470,7 @@ fn dispatch_listing(
 
 // ── Platform listing ────────────────────────────────────────────────────────
 
-fn list_platforms(
-    conn: &retro_junk_db::Connection,
-    manufacturer_filter: Option<&str>,
-    group: bool,
-) {
+fn list_platforms(conn: &retro_junk_db::Connection, manufacturer_filter: &str, group: bool) {
     let platforms = match retro_junk_db::list_platforms(conn) {
         Ok(p) => p,
         Err(e) => {
@@ -521,15 +491,19 @@ fn list_platforms(
     let filtered: Vec<_> = platforms
         .iter()
         .filter(|p| {
-            manufacturer_filter
-                .map(|mf| p.manufacturer.to_lowercase().contains(&mf.to_lowercase()))
-                .unwrap_or(true)
+            manufacturer_filter.is_empty()
+                || p.manufacturer
+                    .to_lowercase()
+                    .contains(&manufacturer_filter.to_lowercase())
         })
         .collect();
 
     if filtered.is_empty() {
-        if let Some(mf) = manufacturer_filter {
-            log::info!("No platforms found for manufacturer \"{}\".", mf);
+        if !manufacturer_filter.is_empty() {
+            log::info!(
+                "No platforms found for manufacturer \"{}\".",
+                manufacturer_filter
+            );
         } else {
             log::info!("No platforms in the catalog.");
         }

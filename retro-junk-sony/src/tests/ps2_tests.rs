@@ -72,8 +72,7 @@ fn test_analyze_iso_basic() {
     let analyzer = Ps2Analyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.platform, Some(Platform::Ps2));
-    assert_eq!(result.internal_name.as_deref(), Some("TEST_VOLUME"));
+    assert_eq!(result.internal_name, "TEST_VOLUME");
     assert_eq!(
         result.extra.get("format").map(|s| s.as_str()),
         Some("ISO 9660")
@@ -87,7 +86,7 @@ fn test_analyze_iso_with_serial() {
     let analyzer = Ps2Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.serial_number.as_deref(), Some("SLUS-20062"));
+    assert_eq!(result.serial_number, "SLUS-20062");
     assert_eq!(result.regions, vec![retro_junk_core::Region::Usa]);
     assert!(result.extra.contains_key("boot_path"));
     assert_eq!(result.extra.get("vmode").map(|s| s.as_str()), Some("NTSC"));
@@ -100,7 +99,7 @@ fn test_analyze_iso_us_serial() {
     let analyzer = Ps2Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.serial_number.as_deref(), Some("SLUS-20062"));
+    assert_eq!(result.serial_number, "SLUS-20062");
     assert_eq!(result.regions, vec![retro_junk_core::Region::Usa]);
 }
 
@@ -111,7 +110,7 @@ fn test_analyze_iso_eu_serial() {
     let analyzer = Ps2Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.serial_number.as_deref(), Some("SLES-50100"));
+    assert_eq!(result.serial_number, "SLES-50100");
     assert_eq!(result.regions, vec![retro_junk_core::Region::Europe]);
 }
 
@@ -122,7 +121,7 @@ fn test_analyze_iso_jp_serial() {
     let analyzer = Ps2Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.serial_number.as_deref(), Some("SLPS-25001"));
+    assert_eq!(result.serial_number, "SLPS-25001");
     assert_eq!(result.regions, vec![retro_junk_core::Region::Japan]);
 }
 
@@ -154,7 +153,6 @@ fn test_analyze_cue_basic() {
     let analyzer = Ps2Analyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.platform, Some(Platform::Ps2));
     assert_eq!(
         result.extra.get("format").map(|s| s.as_str()),
         Some("CUE Sheet")

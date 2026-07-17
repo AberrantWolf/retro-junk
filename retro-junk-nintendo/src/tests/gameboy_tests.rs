@@ -85,12 +85,11 @@ fn test_basic_analysis() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.internal_name.as_deref(), Some("TESTGAME"));
-    assert_eq!(result.platform, Some(Platform::GameBoy));
-    assert_eq!(result.version.as_deref(), Some("v0"));
-    assert_eq!(result.maker_code.as_deref(), Some("Nintendo"));
-    assert_eq!(result.file_size, Some(0x8000));
-    assert_eq!(result.expected_size, Some(0x8000));
+    assert_eq!(result.internal_name, "TESTGAME");
+    assert_eq!(result.version, "v0");
+    assert_eq!(result.maker_code, "Nintendo");
+    assert_eq!(result.file_size, 0x8000);
+    assert_eq!(result.expected_size, 0x8000);
     assert_eq!(result.regions, vec![Region::World]);
     assert_eq!(result.extra.get("format").unwrap(), "Game Boy");
     assert_eq!(result.extra.get("cartridge_type").unwrap(), "ROM ONLY");
@@ -110,7 +109,6 @@ fn test_cgb_compatible() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform, Some(Platform::GameBoy));
     assert_eq!(
         result.extra.get("platform_variant").map(|s| s.as_str()),
         Some("Game Boy Color")
@@ -131,7 +129,6 @@ fn test_cgb_exclusive() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform, Some(Platform::GameBoy));
     assert_eq!(
         result.extra.get("platform_variant").map(|s| s.as_str()),
         Some("Game Boy Color")
@@ -233,7 +230,7 @@ fn test_new_licensee_code() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.maker_code.as_deref(), Some("Nintendo R&D1"));
+    assert_eq!(result.maker_code, "Nintendo R&D1");
 }
 
 #[test]
@@ -250,7 +247,7 @@ fn test_title_with_cgb_flag() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.internal_name.as_deref(), Some("SHORTNAME"));
+    assert_eq!(result.internal_name, "SHORTNAME");
 }
 
 #[test]
@@ -265,7 +262,7 @@ fn test_title_full_16_chars() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.internal_name.as_deref(), Some("ABCDEFGHIJKLMNOP"));
+    assert_eq!(result.internal_name, "ABCDEFGHIJKLMNOP");
 }
 
 #[test]
@@ -279,8 +276,8 @@ fn test_size_mismatch_truncated() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.file_size, Some(0x8000)); // 32 KB actual
-    assert_eq!(result.expected_size, Some(0x10000)); // 64 KB expected
+    assert_eq!(result.file_size, 0x8000); // 32 KB actual
+    assert_eq!(result.expected_size, 0x10000); // 64 KB expected
 }
 
 #[test]

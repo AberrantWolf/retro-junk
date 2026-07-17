@@ -1,7 +1,7 @@
 //! Compress disc images to CHD via chdman, with round-trip verification.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -35,7 +35,7 @@ pub(crate) fn run_compress(
     library_path: PathBuf,
     quiet: bool,
 ) -> Result<(), CliError> {
-    let chdman = match Chdman::detect(chdman_override.as_deref()) {
+    let chdman = match Chdman::detect(chdman_override.as_deref().unwrap_or(Path::new(""))) {
         Ok(c) => c,
         Err(e) => {
             log::error!("{}", e.to_string().if_supports_color(Stdout, |t| t.red()));
@@ -49,7 +49,11 @@ pub(crate) fn run_compress(
 
     log::info!(
         "Using chdman {} ({})",
-        chdman.version.as_deref().unwrap_or("(unknown version)"),
+        if chdman.version.is_empty() {
+            "(unknown version)"
+        } else {
+            &chdman.version
+        },
         chdman
             .path
             .display()

@@ -8,6 +8,7 @@ use owo_colors::Stream::Stdout;
 
 use std::collections::HashMap;
 
+use retro_junk_lib::disc_set::CueVerification;
 use retro_junk_lib::rename::{
     ExecutionContext, M3uRenameJob, MediaRenamePlan, RenameOptions, RenamePlan, RenameProgress,
     SerialWarningKind, SetProblemKind, execute_renames, format_match_method, plan_m3u_action,
@@ -449,7 +450,7 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
                 "\u{1F527}".if_supports_color(Stdout, |t| t.green()),
             );
         }
-        if set.cue_verified == Some(false) {
+        if set.cue_verified == CueVerification::Mismatch {
             log::warn!(
                 "    {} cue sheet content differs from Redump's (renaming anyway)",
                 "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
@@ -474,7 +475,11 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
                 );
             }
             SetProblemKind::NotVerified { game_name, issues } => {
-                let game = game_name.as_deref().unwrap_or("unknown game");
+                let game = if game_name.is_empty() {
+                    "unknown game"
+                } else {
+                    game_name.as_str()
+                };
                 log::warn!(
                     "  {} {}: identified as \"{}\" but NOT verified — set left untouched",
                     "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
@@ -516,7 +521,8 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
     // Unmatched
     for uf in &plan.unmatched {
         let name = uf.file.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        if let Some(ref crc) = uf.crc32 {
+        if let Some(ref hash_info) = uf.hash_info {
+            let crc = &hash_info.crc32;
             log::warn!(
                 "  {} {} (no match, CRC32: {})",
                 "?".if_supports_color(Stdout, |t| t.yellow()),
@@ -558,14 +564,16 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
         let file_name = w.file.file_name().and_then(|n| n.to_str()).unwrap_or("?");
 
         // Build hash suffix: "(matched by CRC32: abc123)" or "(CRC32: abc123, no DAT match)"
-        let hash_suffix = match (&w.crc32, w.matched_by_hash) {
-            (Some(crc), true) => format!(
+        let hash_suffix = match (&w.hash_info, w.matched_by_hash) {
+            (Some(hash_info), true) => format!(
                 " {}",
-                format!("(matched by CRC32: {crc})").if_supports_color(Stdout, |t| t.dimmed()),
+                format!("(matched by CRC32: {})", hash_info.crc32)
+                    .if_supports_color(Stdout, |t| t.dimmed()),
             ),
-            (Some(crc), false) => format!(
+            (Some(hash_info), false) => format!(
                 " {}",
-                format!("(CRC32: {crc}, no DAT match)").if_supports_color(Stdout, |t| t.dimmed()),
+                format!("(CRC32: {}, no DAT match)", hash_info.crc32)
+                    .if_supports_color(Stdout, |t| t.dimmed()),
             ),
             _ => String::new(),
         };
@@ -575,7 +583,8 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
                 full_serial,
                 game_code,
             } => {
-                if let Some(code) = game_code {
+                if !game_code.is_empty() {
+                    let code = game_code;
                     log::warn!(
                         "  {} {}: serial \"{}\" (looked up as \"{}\") not found in DAT{}",
                         "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
@@ -735,7 +744,7 @@ pub(crate) fn print_m3u_jobs(jobs: &[M3uRenameJob]) {
             &job.source_folder,
             &job.discs,
             None,
-            job.game_name_override.as_deref(),
+            &job.game_name_override,
         ) {
             if action.source_folder != action.target_folder {
                 let source_name = action

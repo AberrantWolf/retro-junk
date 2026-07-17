@@ -19,7 +19,7 @@ pub fn organize_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::
 
     let description = format!("Organizing disc files in {}", folder_name);
     let ctx = ctx.clone();
-    let scope = Some(folder_name.clone());
+    let scope = folder_name.clone();
 
     spawn_background_op(
         app,
@@ -119,7 +119,7 @@ pub fn execute_organize_plan(
 ) {
     let description = format!("Moving disc files in {}", folder_name);
     let ctx = ctx.clone();
-    let scope = Some(folder_name.clone());
+    let scope = folder_name.clone();
 
     spawn_background_op(
         app,

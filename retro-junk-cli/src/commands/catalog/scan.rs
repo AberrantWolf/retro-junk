@@ -116,7 +116,7 @@ pub(crate) fn run_catalog_scan(
         console.analyzer.as_ref(),
         console.metadata.platform,
         &options,
-        Some(&progress),
+        &progress,
     )
     .map_err(|e| CliError::other(format!("Scan failed: {}", e)))?;
 

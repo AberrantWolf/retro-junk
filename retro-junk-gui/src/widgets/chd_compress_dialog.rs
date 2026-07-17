@@ -50,12 +50,15 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     }
                 }
                 Ok(chdman) => {
-                    match &chdman.version {
-                        Some(v) => {
-                            ui.label(format!("Using chdman {v} ({})", chdman.path.display()))
-                        }
-                        None => ui.label(format!("Using chdman ({})", chdman.path.display())),
-                    };
+                    if chdman.version.is_empty() {
+                        ui.label(format!("Using chdman ({})", chdman.path.display()));
+                    } else {
+                        ui.label(format!(
+                            "Using chdman {} ({})",
+                            chdman.version,
+                            chdman.path.display()
+                        ));
+                    }
                     ui.separator();
 
                     if prompt.items.is_empty() {

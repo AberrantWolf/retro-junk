@@ -161,17 +161,25 @@ pub struct SnesHeader {
     /// Offset of the header within the file (including copier header if present).
     pub header_offset: u64,
 
-    // Extended header fields (valid when developer_id == 0x33)
-    /// 2-character maker code (extended header).
-    pub maker_code: Option<String>,
-    /// 4-character game code (extended header).
-    pub game_code: Option<String>,
-    /// Expansion RAM size in bytes (extended header).
-    pub expansion_ram_size: Option<u64>,
-    /// Special version byte (extended header).
-    pub special_version: Option<u8>,
-    /// Cartridge sub-type byte (extended header).
-    pub cartridge_subtype: Option<u8>,
+    /// Extended header ("ExHeader"), present only when developer_id == 0x33.
+    pub extended: Option<SnesExtendedHeader>,
+}
+
+/// SNES extended header fields (valid only when the developer ID is 0x33).
+///
+/// Documents the ExHeader layout at 0x00-0x0F before the main header.
+#[derive(Debug, Clone)]
+pub struct SnesExtendedHeader {
+    /// 2-character maker code. Empty when blank in the ROM.
+    pub maker_code: String,
+    /// 4-character game code. Empty when blank in the ROM.
+    pub game_code: String,
+    /// Expansion RAM size in bytes (0 = none).
+    pub expansion_ram_size: u64,
+    /// Special version byte.
+    pub special_version: u8,
+    /// Cartridge sub-type byte.
+    pub cartridge_subtype: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -398,30 +406,29 @@ fn parse_header(
     let checksum = u16::from_le_bytes([buf[OFF_CHECKSUM], buf[OFF_CHECKSUM + 1]]);
 
     // Extended header: only valid when developer_id == 0x33
-    let (maker_code, game_code, expansion_ram_size, special_version, cartridge_subtype) =
-        if developer_id == 0x33 {
-            let maker = String::from_utf8_lossy(&buf[OFF_EXT_MAKER_CODE..OFF_EXT_MAKER_CODE + 2])
-                .trim()
-                .to_string();
-            let game = String::from_utf8_lossy(&buf[OFF_EXT_GAME_CODE..OFF_EXT_GAME_CODE + 4])
-                .trim()
-                .to_string();
-            let exp_ram_code = buf[OFF_EXT_EXPANSION_RAM];
-            let exp_ram = if exp_ram_code > 0 {
-                Some((1u64 << exp_ram_code as u64) * 1024)
-            } else {
-                None
-            };
-            (
-                if maker.is_empty() { None } else { Some(maker) },
-                if game.is_empty() { None } else { Some(game) },
-                exp_ram,
-                Some(buf[OFF_EXT_SPECIAL_VERSION]),
-                Some(buf[OFF_EXT_CARTRIDGE_SUBTYPE]),
-            )
+    let extended = if developer_id == 0x33 {
+        let maker_code = String::from_utf8_lossy(&buf[OFF_EXT_MAKER_CODE..OFF_EXT_MAKER_CODE + 2])
+            .trim()
+            .to_string();
+        let game_code = String::from_utf8_lossy(&buf[OFF_EXT_GAME_CODE..OFF_EXT_GAME_CODE + 4])
+            .trim()
+            .to_string();
+        let exp_ram_code = buf[OFF_EXT_EXPANSION_RAM];
+        let expansion_ram_size = if exp_ram_code > 0 {
+            (1u64 << exp_ram_code as u64) * 1024
         } else {
-            (None, None, None, None, None)
+            0
         };
+        Some(SnesExtendedHeader {
+            maker_code,
+            game_code,
+            expansion_ram_size,
+            special_version: buf[OFF_EXT_SPECIAL_VERSION],
+            cartridge_subtype: buf[OFF_EXT_CARTRIDGE_SUBTYPE],
+        })
+    } else {
+        None
+    };
 
     Ok(SnesHeader {
         title,
@@ -437,11 +444,7 @@ fn parse_header(
         checksum_complement,
         has_copier_header: has_copier,
         header_offset: offset,
-        maker_code,
-        game_code,
-        expansion_ram_size,
-        special_version,
-        cartridge_subtype,
+        extended,
     })
 }
 
@@ -630,7 +633,7 @@ fn to_identification(
     file_size: u64,
     computed_checksum: Option<u16>,
 ) -> RomIdentification {
-    let mut id = RomIdentification::new().with_platform(Platform::Snes);
+    let mut id = RomIdentification::new();
 
     // Internal name
     if !header.title.is_empty() {
@@ -638,33 +641,35 @@ fn to_identification(
     }
 
     // Serial / game code
-    if let Some(ref game_code) = header.game_code {
+    if let Some(ext) = &header.extended
+        && !ext.game_code.is_empty()
+    {
         // Prepend SHVC- to game code so that we don't overlap with NDS/3DS
         // on accident, which get shortened to 4-letter codes
-        // id.serial_number = Some(format!("SHVC-{}", game_code.clone()));
-        id.serial_number = Some(game_code.clone());
+        // id.serial_number = format!("SHVC-{}", ext.game_code);
+        id.serial_number = ext.game_code.clone();
     }
 
     // Version
-    id.version = Some(format!("1.{}", header.version));
+    id.version = format!("1.{}", header.version);
 
     // Maker code
-    if header.developer_id == 0x33 {
-        if let Some(ref maker) = header.maker_code {
-            if let Some(name) = crate::licensee::maker_code_name(maker) {
-                id.maker_code = Some(format!("{} ({})", maker, name));
+    if let Some(ext) = &header.extended {
+        if !ext.maker_code.is_empty() {
+            if let Some(name) = crate::licensee::maker_code_name(&ext.maker_code) {
+                id.maker_code = format!("{} ({})", ext.maker_code, name);
             } else {
-                id.maker_code = Some(maker.clone());
+                id.maker_code = ext.maker_code.clone();
             }
         }
     } else if let Some(name) = crate::licensee::old_licensee_name(header.developer_id) {
-        id.maker_code = Some(format!("0x{:02X} ({})", header.developer_id, name));
+        id.maker_code = format!("0x{:02X} ({})", header.developer_id, name);
     } else if header.developer_id != 0 {
-        id.maker_code = Some(format!("0x{:02X}", header.developer_id));
+        id.maker_code = format!("0x{:02X}", header.developer_id);
     }
 
     // File sizes
-    id.file_size = Some(file_size);
+    id.file_size = file_size;
     if header.rom_size > 0 {
         let copier = if header.has_copier_header {
             COPIER_HEADER_SIZE
@@ -681,7 +686,7 @@ fn to_identification(
             let is_valid_multi_chip =
                 rom_data_size > header.rom_size / 2 && rom_data_size < header.rom_size;
             if !is_valid_multi_chip {
-                id.expected_size = Some(header.rom_size + copier);
+                id.expected_size = header.rom_size + copier;
             }
         }
     }
@@ -756,15 +761,18 @@ fn to_identification(
     }
 
     // Extended header fields
-    if let Some(ref maker) = header.maker_code {
-        id.extra.insert("maker_code_raw".into(), maker.clone());
-    }
-    if let Some(ref game_code) = header.game_code {
-        id.extra.insert("game_code".into(), game_code.clone());
-    }
-    if let Some(exp_ram) = header.expansion_ram_size {
-        id.extra
-            .insert("expansion_ram".into(), format_bytes(exp_ram));
+    if let Some(ext) = &header.extended {
+        if !ext.maker_code.is_empty() {
+            id.extra
+                .insert("maker_code_raw".into(), ext.maker_code.clone());
+        }
+        if !ext.game_code.is_empty() {
+            id.extra.insert("game_code".into(), ext.game_code.clone());
+        }
+        if ext.expansion_ram_size > 0 {
+            id.extra
+                .insert("expansion_ram".into(), format_bytes(ext.expansion_ram_size));
+        }
     }
 
     id

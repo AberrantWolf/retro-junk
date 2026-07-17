@@ -25,7 +25,7 @@ fn make_plan(dir: &Path) -> DiscSetPlan {
         new_cue_content: Some(format!(
             "FILE \"{GAME} (Track 1).bin\" BINARY\nFILE \"{GAME} (Track 2).bin\" BINARY\n"
         )),
-        cue_verified: Some(true),
+        cue_verified: crate::disc_set::CueVerification::Verified,
     }
 }
 

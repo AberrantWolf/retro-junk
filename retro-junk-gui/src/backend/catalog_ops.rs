@@ -140,7 +140,7 @@ pub fn run_import(app: &mut RetroJunkApp, ctx: &egui::Context) {
         app,
         "Importing catalog".to_string(),
         OperationKind::Other,
-        None,
+        String::new(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             import_worker(
@@ -240,13 +240,7 @@ fn import_worker(
                 tx: tx.clone(),
                 ctx: ctx.clone(),
             };
-            match import_dat(
-                &conn,
-                dat,
-                console.metadata.platform,
-                source_str,
-                Some(&progress),
-            ) {
+            match import_dat(&conn, dat, console.metadata.platform, source_str, &progress) {
                 Ok(stats) => {
                     if let Err(e) = log_import(&conn, source_str, &dat.name, &dat.version, &stats) {
                         log::warn!("Failed to log import: {}", e);
@@ -313,7 +307,7 @@ pub fn run_gdb_enrich(app: &mut RetroJunkApp, ctx: &egui::Context) {
         app,
         "Enriching from GameDataBase".to_string(),
         OperationKind::Other,
-        None,
+        String::new(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             gdb_worker(
@@ -397,7 +391,7 @@ pub fn run_ss_enrich(app: &mut RetroJunkApp, ctx: &egui::Context, opts: SsEnrich
         app,
         "Enriching from ScreenScraper".to_string(),
         OperationKind::Other,
-        None,
+        String::new(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             ss_worker(op_id, &cancel, &tx, &selected, &db_path, &opts, &egui_ctx);
@@ -586,7 +580,7 @@ pub fn run_cache_fetch(app: &mut RetroJunkApp, ctx: &egui::Context, kind: CacheK
         app,
         desc.to_string(),
         OperationKind::Other,
-        None,
+        String::new(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             cache_fetch_worker(op_id, &cancel, &tx, &context, &selected, kind, &egui_ctx);
@@ -661,7 +655,7 @@ pub fn run_cache_clear(app: &mut RetroJunkApp, ctx: &egui::Context, kind: CacheK
         app,
         "Clearing cache".to_string(),
         OperationKind::Other,
-        None,
+        String::new(),
         ProgressDisplay::Count,
         move |op_id, _cancel, tx| {
             let result = match kind {

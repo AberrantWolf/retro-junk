@@ -38,8 +38,9 @@ struct M3uJob {
     unresolved_files: Vec<PathBuf>,
     /// Cue files inside the folder — each becomes a verified disc set
     cue_files: Vec<PathBuf>,
-    /// Pre-resolved game name from catalog DB (skips derive_base_game_name)
-    game_name_override: Option<String>,
+    /// Pre-resolved game name from catalog DB (skips derive_base_game_name).
+    /// Empty = derive from per-disc DAT names.
+    game_name_override: String,
 }
 
 /// Rename selected entries to their DAT-matched filenames.
@@ -215,7 +216,11 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     resolved_discs: resolved,
                     unresolved_files: unresolved,
                     cue_files,
-                    game_name_override: entry.dat_match.as_ref().map(|dm| dm.game_name.clone()),
+                    game_name_override: entry
+                        .dat_match
+                        .as_ref()
+                        .map(|dm| dm.game_name.clone())
+                        .unwrap_or_default(),
                 });
             }
         }
@@ -261,7 +266,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
         .map(|d| d.join("gamelist.xml"))
         .filter(|p| p.is_file());
 
-    let scope = Some(folder_name.clone());
+    let scope = folder_name.clone();
 
     spawn_background_op(
         app,
@@ -304,7 +309,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 let target_name = retro_junk_lib::rename::target_filename_for_rename(
                     &job.dat_rom_name,
                     &job.source,
-                    detected_ext.as_deref(),
+                    &detected_ext,
                 );
                 let target = job
                     .source
@@ -382,7 +387,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                             target_filename: retro_junk_lib::rename::target_filename_for_rename(
                                 &d.target_filename,
                                 &d.file_path,
-                                detected_ext.as_deref(),
+                                &detected_ext,
                             ),
                         }
                     })
@@ -592,7 +597,11 @@ fn describe_set_failure(cue: &Path, outcome: &DiscSetOutcome) -> String {
         }
         DiscSetOutcome::NotVerified { game_name, issues } => format!(
             "{cue_name}: identified as \"{}\" but not verified: {}",
-            game_name.as_deref().unwrap_or("unknown"),
+            if game_name.is_empty() {
+                "unknown"
+            } else {
+                game_name
+            },
             issues.join("; "),
         ),
         DiscSetOutcome::Unmatched { issues } => {
@@ -632,7 +641,7 @@ fn resolve_disc_file(
         target_filename: retro_junk_lib::rename::target_filename_for_rename(
             &rom.name,
             file_path,
-            detected_ext.as_deref(),
+            &detected_ext,
         ),
     })
 }
@@ -669,7 +678,8 @@ fn get_target_rom_name(
 
     // 3. Try serial lookup
     if let Some(ref id) = entry.identification {
-        if let Some(ref serial) = id.serial_number {
+        let serial = &id.serial_number;
+        if !serial.is_empty() {
             let console = app
                 .library
                 .consoles
@@ -697,12 +707,21 @@ fn sniff_detected_extension(
     file_path: &Path,
     context: &AnalysisContext,
     platform: retro_junk_lib::Platform,
-) -> Option<String> {
-    let registered = context.get_by_platform(platform)?;
-    let mut file = std::fs::File::open(file_path).ok()?;
+) -> String {
+    let Some(registered) = context.get_by_platform(platform) else {
+        return String::new();
+    };
+    let Ok(mut file) = std::fs::File::open(file_path) else {
+        return String::new();
+    };
     let opts = retro_junk_lib::AnalysisOptions::new()
         .quick(true)
         .file_path(file_path);
-    let info = registered.analyzer.analyze(&mut file, &opts).ok()?;
-    info.extra.get("detected_extension").cloned()
+    let Ok(info) = registered.analyzer.analyze(&mut file, &opts) else {
+        return String::new();
+    };
+    info.extra
+        .get("detected_extension")
+        .cloned()
+        .unwrap_or_default()
 }

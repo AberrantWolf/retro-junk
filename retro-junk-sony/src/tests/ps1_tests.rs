@@ -69,8 +69,7 @@ fn test_analyze_iso_basic() {
     let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.platform, Some(Platform::Ps1));
-    assert_eq!(result.internal_name.as_deref(), Some("TEST_VOLUME"));
+    assert_eq!(result.internal_name, "TEST_VOLUME");
     assert_eq!(
         result.extra.get("format").map(|s| s.as_str()),
         Some("ISO 9660")
@@ -84,7 +83,6 @@ fn test_analyze_raw_bin_basic() {
     let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.platform, Some(Platform::Ps1));
     assert_eq!(
         result.extra.get("format").map(|s| s.as_str()),
         Some("Raw BIN (2352)")
@@ -109,7 +107,7 @@ fn test_analyze_iso_with_serial() {
     let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.serial_number.as_deref(), Some("SLUS-01234"));
+    assert_eq!(result.serial_number, "SLUS-01234");
     assert_eq!(result.regions, vec![retro_junk_core::Region::Usa]);
     assert!(result.extra.contains_key("boot_path"));
     assert_eq!(result.extra.get("vmode").map(|s| s.as_str()), Some("NTSC"));
@@ -122,7 +120,7 @@ fn test_analyze_iso_quick_mode_still_extracts_serial() {
     let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.serial_number.as_deref(), Some("SLUS-01234"));
+    assert_eq!(result.serial_number, "SLUS-01234");
     assert_eq!(result.regions, vec![retro_junk_core::Region::Usa]);
 }
 
@@ -133,7 +131,7 @@ fn test_analyze_iso_european_serial() {
     let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.serial_number.as_deref(), Some("SLES-12345"));
+    assert_eq!(result.serial_number, "SLES-12345");
     assert_eq!(result.regions, vec![retro_junk_core::Region::Europe]);
 }
 
@@ -144,7 +142,7 @@ fn test_analyze_iso_japanese_serial() {
     let analyzer = Ps1Analyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(result.serial_number.as_deref(), Some("SLPS-00001"));
+    assert_eq!(result.serial_number, "SLPS-00001");
     assert_eq!(result.regions, vec![retro_junk_core::Region::Japan]);
 }
 

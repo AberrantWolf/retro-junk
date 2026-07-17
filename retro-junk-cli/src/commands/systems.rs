@@ -119,10 +119,7 @@ pub(crate) fn resolve_platform_ids(
 }
 
 /// List all supported systems grouped by manufacturer.
-pub(crate) fn run_systems(
-    ctx: &AnalysisContext,
-    manufacturer: Option<String>,
-) -> Result<(), CliError> {
+pub(crate) fn run_systems(ctx: &AnalysisContext, manufacturer: String) -> Result<(), CliError> {
     log::info!(
         "{}",
         "Supported systems:".if_supports_color(Stdout, |t| t.bold()),
@@ -135,10 +132,8 @@ pub(crate) fn run_systems(
     let mut gdb_count = 0u32;
 
     for mfr in &manufacturers {
-        if let Some(ref filter) = manufacturer {
-            if !mfr.eq_ignore_ascii_case(filter) {
-                continue;
-            }
+        if !manufacturer.is_empty() && !mfr.eq_ignore_ascii_case(&manufacturer) {
+            continue;
         }
 
         let consoles: Vec<_> = ctx

@@ -66,11 +66,12 @@ struct ScrapeWorkItem {
     rom_stem: String,
     filename: String,
     file_size: u64,
-    serial: Option<String>,
-    scraper_serial: Option<String>,
-    crc32: Option<String>,
-    md5: Option<String>,
-    sha1: Option<String>,
+    /// Serial from ROM header analysis. Empty = none.
+    serial: String,
+    /// Serial adapted for ScreenScraper lookups. Empty = none.
+    scraper_serial: String,
+    /// Hash triple for the ScreenScraper hash tier (all-or-nothing).
+    hashes: Option<retro_junk_scraper::lookup::RomHashes>,
     preferred_region: String,
     platform: Platform,
 }
@@ -145,10 +146,12 @@ fn scrape_media_for_selection(
             let serial = entry
                 .identification
                 .as_ref()
-                .and_then(|id| id.serial_number.clone());
-            let scraper_serial = serial
-                .as_deref()
-                .and_then(|s| analyzer.and_then(|a| a.analyzer.extract_scraper_serial(s)));
+                .map(|id| id.serial_number.clone())
+                .unwrap_or_default();
+            let scraper_serial = (!serial.is_empty())
+                .then(|| analyzer.and_then(|a| a.analyzer.extract_scraper_serial(&serial)))
+                .flatten()
+                .unwrap_or_default();
 
             let regions = entry.effective_regions();
             let preferred_region = regions
@@ -163,9 +166,13 @@ fn scrape_media_for_selection(
                 file_size,
                 serial,
                 scraper_serial,
-                crc32: entry.hashes.as_ref().map(|h| h.crc32.clone()),
-                md5: entry.hashes.as_ref().and_then(|h| h.md5.clone()),
-                sha1: entry.hashes.as_ref().and_then(|h| h.sha1.clone()),
+                hashes: entry.hashes.as_ref().and_then(|h| {
+                    Some(retro_junk_scraper::lookup::RomHashes {
+                        crc32: h.crc32.clone(),
+                        md5: h.md5.clone()?,
+                        sha1: h.sha1.clone()?,
+                    })
+                }),
                 preferred_region,
                 platform,
             })
@@ -200,7 +207,7 @@ fn scrape_media_for_selection(
         app,
         description,
         OperationKind::Other,
-        Some(folder_name.clone()),
+        folder_name.clone(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             let rt = match tokio::runtime::Runtime::new() {
@@ -295,9 +302,7 @@ fn scrape_media_for_selection(
                         scraper_serial: item.scraper_serial.clone(),
                         filename: item.filename.clone(),
                         file_size: item.file_size,
-                        crc32: item.crc32.clone(),
-                        md5: item.md5.clone(),
-                        sha1: item.sha1.clone(),
+                        hashes: item.hashes.clone(),
                         platform: item.platform,
                         expects_serial: retro_junk_scraper::expects_serial(item.platform),
                     };
@@ -447,7 +452,7 @@ pub fn regenerate_miximages_for_selection(
         app,
         description,
         OperationKind::Other,
-        Some(folder_name.clone()),
+        folder_name.clone(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             let media_dir =

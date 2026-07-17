@@ -135,8 +135,8 @@ pub struct INesHeader {
     pub chr_rom_size: u32,
     /// Mapper number (0-4095 for NES 2.0, 0-255 for iNES).
     pub mapper: u16,
-    /// Submapper number (NES 2.0 only, 0-15).
-    pub submapper: Option<u8>,
+    /// Submapper number (NES 2.0 only, 0-15; 0 = none/absent).
+    pub submapper: u8,
     /// Nametable mirroring.
     pub mirroring: Mirroring,
     /// Battery-backed PRG RAM or other persistent memory.
@@ -307,7 +307,7 @@ fn parse_ines_header(header: &[u8; 16]) -> Result<INesHeader, AnalysisError> {
             prg_rom_size,
             chr_rom_size,
             mapper,
-            submapper: Some(submapper),
+            submapper,
             mirroring,
             has_battery,
             has_trainer,
@@ -339,7 +339,7 @@ fn parse_ines_header(header: &[u8; 16]) -> Result<INesHeader, AnalysisError> {
             prg_rom_size,
             chr_rom_size,
             mapper,
-            submapper: None,
+            submapper: 0,
             mirroring,
             has_battery,
             has_trainer,
@@ -706,8 +706,8 @@ fn fds_expected_size(format: NesFormat, side_count: usize) -> u64 {
 
 /// Convert parsed NES ROM info into a generic `RomIdentification`.
 fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
-    let mut id = RomIdentification::new().with_platform(Platform::Nes);
-    id.file_size = Some(file_size);
+    let mut id = RomIdentification::new();
+    id.file_size = file_size;
 
     match info {
         NesRomInfo::INes(hdr) => {
@@ -716,10 +716,9 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
             if let Some(name) = mapper_name(hdr.mapper) {
                 id.extra.insert("mapper_name".into(), name.into());
             }
-            if let Some(sub) = hdr.submapper
-                && sub != 0
-            {
-                id.extra.insert("submapper".into(), sub.to_string());
+            if hdr.submapper != 0 {
+                id.extra
+                    .insert("submapper".into(), hdr.submapper.to_string());
             }
             id.extra
                 .insert("mirroring".into(), hdr.mirroring.name().into());
@@ -783,14 +782,13 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
                 }
             }
 
-            id.expected_size = Some(ines_expected_size(hdr));
+            id.expected_size = ines_expected_size(hdr);
         }
         NesRomInfo::Fds {
             format,
             disk_count,
             sides,
         } => {
-            id.platform = Some(Platform::Nes);
             id.extra
                 .insert("platform_variant".into(), "Famicom Disk System".into());
             id.extra.insert("format".into(), format.name().into());
@@ -798,19 +796,19 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
             id.extra
                 .insert("side_count".into(), sides.len().to_string());
             id.regions = vec![Region::Japan]; // FDS was Japan-only
-            id.expected_size = Some(fds_expected_size(*format, sides.len()));
+            id.expected_size = fds_expected_size(*format, sides.len());
 
             if let Some(first) = sides.first() {
                 if !first.game_name.is_empty() {
-                    id.internal_name = Some(first.game_name.clone());
+                    id.internal_name = first.game_name.clone();
                 }
                 if let Some(name) = fds_manufacturer_name(first.manufacturer_code) {
-                    id.maker_code = Some(format!("0x{:02X} ({})", first.manufacturer_code, name));
+                    id.maker_code = format!("0x{:02X} ({})", first.manufacturer_code, name);
                 } else {
-                    id.maker_code = Some(format!("0x{:02X}", first.manufacturer_code));
+                    id.maker_code = format!("0x{:02X}", first.manufacturer_code);
                 }
                 if first.revision > 0 {
-                    id.version = Some(format!("Rev. {}", first.revision));
+                    id.version = format!("Rev. {}", first.revision);
                 }
                 if let Some((y, m, d)) = first.manufacturing_date {
                     id.extra

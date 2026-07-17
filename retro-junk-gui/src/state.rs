@@ -254,9 +254,11 @@ pub struct LibraryEntry {
     /// User-set region override. When set, takes precedence over detected regions.
     pub region_override: Option<Region>,
     /// Box/cover title from catalog DB (e.g., the title printed on the game box).
-    pub cover_title: Option<String>,
+    /// Empty = absent.
+    pub cover_title: String,
     /// Screen title from catalog DB (e.g., the title shown on the title screen).
-    pub screen_title: Option<String>,
+    /// Empty = absent.
+    pub screen_title: String,
     /// Per-disc identification data for multi-disc entries. `None` for single-file entries.
     pub disc_identifications: Option<Vec<DiscIdentification>>,
     /// Broken CUE/M3U references. `None` = not yet checked, `Some(empty)` = checked and clean.
@@ -338,6 +340,20 @@ impl LibraryEntry {
     }
 }
 
+/// Deserialize a JSON `null` (or missing field) as the type's default.
+///
+/// Cached `DiscIdentification` JSON written before the empty-string
+/// convention serializes absent fields as `null`; this keeps those caches
+/// loadable. (Mirrors the private helper in `retro-junk-core`.)
+fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + serde::Deserialize<'de>,
+{
+    use serde::Deserialize;
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatMatchInfo {
     pub game_name: String,
@@ -345,9 +361,9 @@ pub struct DatMatchInfo {
     #[serde(default)]
     pub rom_name: String,
     pub method: MatchMethod,
-    /// Region string from the DAT entry (e.g., "USA", "Japan").
-    #[serde(default)]
-    pub region: Option<String>,
+    /// Region string from the DAT entry (e.g., "USA", "Japan"). Empty = unknown.
+    #[serde(default, deserialize_with = "null_default")]
+    pub region: String,
     /// True when the DAT match's region differs from the file's detected region.
     #[serde(default)]
     pub cross_region: bool,
@@ -583,9 +599,9 @@ pub struct BackgroundOperation {
     pub display: ProgressDisplay,
     /// What kind of work this operation represents.
     pub kind: OperationKind,
-    /// Console folder this operation is scoped to, when applicable (used by
-    /// the overlapping-operation guard).
-    pub scope: Option<String>,
+    /// Console folder this operation is scoped to (used by the
+    /// overlapping-operation guard). Empty = unscoped.
+    pub scope: String,
 }
 
 impl BackgroundOperation {
@@ -594,7 +610,7 @@ impl BackgroundOperation {
         description: String,
         cancel_token: Arc<AtomicBool>,
         kind: OperationKind,
-        scope: Option<String>,
+        scope: String,
         display: ProgressDisplay,
     ) -> Self {
         Self {
@@ -644,7 +660,7 @@ fn describe_m3u_format(files: &[PathBuf]) -> String {
 ///
 /// Used as a fallback for multi-disc entries that have per-disc serials but no SHA1.
 fn try_catalog_enrich_by_serial(entry: &mut LibraryEntry, conn: &retro_junk_db::Connection) {
-    if entry.cover_title.is_some() {
+    if !entry.cover_title.is_empty() {
         return;
     }
     let discs = match entry.disc_identifications.as_ref() {
@@ -652,10 +668,10 @@ fn try_catalog_enrich_by_serial(entry: &mut LibraryEntry, conn: &retro_junk_db::
         _ => return,
     };
     for disc in discs {
-        let serial = match disc.identification.serial_number.as_deref() {
-            Some(s) => s,
-            None => continue,
-        };
+        let serial = &disc.identification.serial_number;
+        if serial.is_empty() {
+            continue;
+        }
         let media_list = match retro_junk_db::find_media_by_serial(conn, serial) {
             Ok(m) => m,
             Err(_) => continue,
@@ -665,8 +681,8 @@ fn try_catalog_enrich_by_serial(entry: &mut LibraryEntry, conn: &retro_junk_db::
             None => continue,
         };
         if let Ok(Some(release)) = retro_junk_db::get_release_by_id(conn, release_id) {
-            entry.cover_title = (!release.cover_title.is_empty()).then_some(release.cover_title);
-            entry.screen_title = (!release.screen_title.is_empty()).then_some(release.screen_title);
+            entry.cover_title = release.cover_title;
+            entry.screen_title = release.screen_title;
             return;
         }
     }
@@ -689,11 +705,10 @@ fn try_catalog_game_name(
 
     for disc in discs {
         // Try serial first, then SHA1
-        let media = disc
-            .identification
-            .serial_number
-            .as_deref()
-            .and_then(|s| retro_junk_db::find_media_by_serial(conn, s).ok())
+        let serial = &disc.identification.serial_number;
+        let media = (!serial.is_empty())
+            .then(|| retro_junk_db::find_media_by_serial(conn, serial).ok())
+            .flatten()
             .and_then(|v| if v.is_empty() { None } else { Some(v) })
             .or_else(|| {
                 disc.hashes
@@ -740,7 +755,7 @@ fn try_catalog_game_name(
 /// Skips if the entry already has a cover_title or has no SHA1 hash.
 /// SQLite indexed lookups are sub-millisecond, safe for the main thread.
 fn try_catalog_enrich(entry: &mut LibraryEntry, conn: &retro_junk_db::Connection) {
-    if entry.cover_title.is_some() {
+    if !entry.cover_title.is_empty() {
         return;
     }
     let sha1 = match entry.hashes.as_ref().and_then(|h| h.sha1.as_deref()) {
@@ -756,8 +771,8 @@ fn try_catalog_enrich(entry: &mut LibraryEntry, conn: &retro_junk_db::Connection
         None => return,
     };
     if let Ok(Some(release)) = retro_junk_db::get_release_by_id(conn, release_id) {
-        entry.cover_title = (!release.cover_title.is_empty()).then_some(release.cover_title);
-        entry.screen_title = (!release.screen_title.is_empty()).then_some(release.screen_title);
+        entry.cover_title = release.cover_title;
+        entry.screen_title = release.screen_title;
     }
 }
 
@@ -972,7 +987,7 @@ pub fn start_auto_scan_batch(app: &mut crate::app::RetroJunkApp, ctx: &egui::Con
         "Auto-scanning library".to_string(),
         cancel,
         OperationKind::Scan,
-        None,
+        String::new(),
         ProgressDisplay::Count,
     );
     op.progress_total = total;
@@ -1117,10 +1132,8 @@ fn build_dat_match_info(
     detected_regions: &[Region],
 ) -> DatMatchInfo {
     let game = &dat_index.games[game_index];
-    let region = game.region.clone();
-    let cross_region = region
-        .as_deref()
-        .is_some_and(|r| !regions_match_dat(detected_regions, r));
+    let region = game.region.clone().unwrap_or_default();
+    let cross_region = !region.is_empty() && !regions_match_dat(detected_regions, &region);
     DatMatchInfo {
         game_name: game.name.clone(),
         rom_name: game.roms[rom_index].name.clone(),
@@ -1281,8 +1294,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 ambiguous_candidates: Vec::new(),
                                 asset_paths: None,
                                 region_override: None,
-                                cover_title: None,
-                                screen_title: None,
+                                cover_title: String::new(),
+                                screen_title: String::new(),
                                 disc_identifications: None,
                                 broken_references: None,
                                 cue_compat_issues: None,
@@ -1317,7 +1330,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
                 match result {
                     Ok(id) => {
-                        let has_serial = id.serial_number.is_some();
+                        let has_serial = !id.serial_number.is_empty();
                         entry.identification = Some(id);
                         entry.status = if has_serial {
                             EntryStatus::Ambiguous
@@ -1337,10 +1350,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 {
                     // Try serial matching.
                     if let Some(ref id) = entry.identification
-                        && let Some(ref serial) = id.serial_number
+                        && !id.serial_number.is_empty()
                         && let Some(p) = platform
                         && let Some(ref registered) = context.get_by_platform(p)
                     {
+                        let serial = &id.serial_number;
                         let game_code = registered.analyzer.extract_dat_game_code(serial);
                         match dat.match_by_serial(serial, game_code.as_deref()) {
                             SerialLookupResult::Match(m) => {
@@ -1351,7 +1365,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                     game_name,
                                     rom_name,
                                     method: m.method,
-                                    region: None,
+                                    region: String::new(),
                                     cross_region: false,
                                 });
                                 entry.status = EntryStatus::Matched;
@@ -1452,7 +1466,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
                 // Build game-level identification by merging disc data
                 let mut regions = Vec::new();
-                let mut platform = None;
                 let mut has_serial = false;
                 for disc in &disc_ids {
                     for r in &disc.identification.regions {
@@ -1460,10 +1473,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             regions.push(*r);
                         }
                     }
-                    if platform.is_none() {
-                        platform = disc.identification.platform.clone();
-                    }
-                    if disc.identification.serial_number.is_some() {
+                    if !disc.identification.serial_number.is_empty() {
                         has_serial = true;
                     }
                 }
@@ -1474,7 +1484,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
                 let mut game_id = RomIdentification::new();
                 game_id.regions = regions;
-                game_id.platform = platform;
                 game_id.extra.insert("format".to_string(), format_str);
                 game_id
                     .extra
@@ -1508,7 +1517,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
                     if let Some(ref mut discs) = entry.disc_identifications {
                         for disc in discs.iter_mut() {
-                            if let Some(ref serial) = disc.identification.serial_number {
+                            let serial = &disc.identification.serial_number;
+                            if !serial.is_empty() {
                                 let game_code = registered.analyzer.extract_dat_game_code(serial);
                                 match dat.match_by_serial(serial, game_code.as_deref()) {
                                     SerialLookupResult::Match(m) => {
@@ -1522,7 +1532,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                             game_name: name.clone(),
                                             rom_name,
                                             method: MatchMethod::Serial,
-                                            region: None,
+                                            region: String::new(),
                                             cross_region: false,
                                         });
                                         matched_names.push(name);
@@ -1560,7 +1570,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             game_name: combined,
                             rom_name: first_rom_name.clone(),
                             method: MatchMethod::Serial,
-                            region: None,
+                            region: String::new(),
                             cross_region: false,
                         });
                         if any_ambiguous {
@@ -1588,7 +1598,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 game_name: base_name,
                                 rom_name: first_rom_name,
                                 method: MatchMethod::Serial,
-                                region: None,
+                                region: String::new(),
                                 cross_region: false,
                             });
                         } else {
@@ -1719,8 +1729,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             continue;
                         }
                         if let Some(ref id) = entry.identification
-                            && let Some(ref serial) = id.serial_number
+                            && !id.serial_number.is_empty()
                         {
+                            let serial = &id.serial_number;
                             let game_code = registered.analyzer.extract_dat_game_code(serial);
                             match index.match_by_serial(serial, game_code.as_deref()) {
                                 SerialLookupResult::Match(m) => {
@@ -1731,7 +1742,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                         game_name,
                                         rom_name,
                                         method: m.method,
-                                        region: None,
+                                        region: String::new(),
                                         cross_region: false,
                                     });
                                     entry.status = EntryStatus::Matched;
@@ -1764,7 +1775,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         let mut all_candidates: Vec<String> = Vec::new();
 
                         for disc in discs.iter_mut() {
-                            if let Some(ref serial) = disc.identification.serial_number {
+                            let serial = &disc.identification.serial_number;
+                            if !serial.is_empty() {
                                 let game_code = registered.analyzer.extract_dat_game_code(serial);
                                 match index.match_by_serial(serial, game_code.as_deref()) {
                                     SerialLookupResult::Match(m) => {
@@ -1780,7 +1792,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                             game_name: name.clone(),
                                             rom_name,
                                             method: MatchMethod::Serial,
-                                            region: None,
+                                            region: String::new(),
                                             cross_region: false,
                                         });
                                         matched_names.push(name);
@@ -1842,7 +1854,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                 game_name: combined,
                                 rom_name: first_rom_name.clone(),
                                 method: MatchMethod::Serial,
-                                region: None,
+                                region: String::new(),
                                 cross_region,
                             });
                             if any_ambiguous {
@@ -1870,7 +1882,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                     game_name: base_name,
                                     rom_name: first_rom_name,
                                     method: MatchMethod::Serial,
-                                    region: None,
+                                    region: String::new(),
                                     cross_region: false,
                                 });
                             } else {
@@ -2034,7 +2046,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     let method = first_match
                         .map(|dm| dm.method.clone())
                         .unwrap_or(MatchMethod::Crc32);
-                    let region = first_match.and_then(|dm| dm.region.clone());
+                    let region = first_match.map(|dm| dm.region.clone()).unwrap_or_default();
                     // Cross-region if any disc has a cross-region match
                     let cross_region = discs
                         .iter()
@@ -2334,7 +2346,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 already,
                 failed
             );
-            app.rename_results = Some(results);
+            app.results_dialog = crate::app::ResultsDialog::Rename(results);
 
             // Invalidate fingerprint so the next save recomputes it from the
             // actual (post-rename) file names on disk.
@@ -2454,7 +2466,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     recheck_invalidated_entries(app, ci, &folder_name, ctx);
                 }
             }
-            app.cue_fix_results = Some(results);
+            app.results_dialog = crate::app::ResultsDialog::CueFix(results);
         }
 
         AppMessage::ChdCompressComplete {
@@ -2566,7 +2578,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     recheck_invalidated_entries(app, ci, &folder_name, ctx);
                 }
             }
-            app.chd_compress_results = Some(results);
+            app.results_dialog = crate::app::ResultsDialog::ChdCompress(results);
         }
 
         AppMessage::OperationProgress {
@@ -2611,14 +2623,15 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         }
 
         AppMessage::ChdmanProbeResult { key, result } => {
-            app.chdman_probe_in_flight = false;
             // Only apply if the setting hasn't changed since this probe was
             // kicked off — otherwise a slow probe for a since-abandoned path
             // could clobber a fresher result.
             let current_key = app.settings.general.chdman_path.trim().to_string();
-            if key == current_key {
-                app.chdman_probe = Some((key, result));
-            }
+            app.chdman_probe = if key == current_key {
+                crate::app::ChdmanProbe::Done { path: key, result }
+            } else {
+                crate::app::ChdmanProbe::Idle
+            };
         }
     }
 }

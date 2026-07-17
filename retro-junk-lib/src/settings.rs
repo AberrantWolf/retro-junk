@@ -40,11 +40,23 @@ fn load_library_path() -> Option<PathBuf> {
     }
 }
 
-/// Save (or clear) the library path in `settings.toml`.
+/// Save the library path in `settings.toml`.
 ///
 /// Uses `toml::Value` for a surgical update so GUI-specific fields
 /// (`recent_roots`, `auto_scan_on_open`, etc.) are preserved.
-pub fn save_library_path(path: Option<&Path>) -> io::Result<()> {
+pub fn save_library_path(path: &Path) -> io::Result<()> {
+    update_library_root(Some(path))
+}
+
+/// Remove the saved library path from `settings.toml`.
+///
+/// Preserves all other settings, same as [`save_library_path`].
+pub fn clear_library_path() -> io::Result<()> {
+    update_library_root(None)
+}
+
+/// Shared surgical update of `library.current_root`.
+fn update_library_root(path: Option<&Path>) -> io::Result<()> {
     let settings = settings_path();
     let mut doc: toml::Value = if let Ok(contents) = std::fs::read_to_string(&settings) {
         contents

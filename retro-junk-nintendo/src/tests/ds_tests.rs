@@ -131,13 +131,12 @@ fn test_basic_analysis() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.internal_name.as_deref(), Some("TESTGAME"));
-    assert_eq!(result.platform, Some(Platform::Ds));
-    assert_eq!(result.serial_number.as_deref(), Some("NTR-ADME"));
-    assert_eq!(result.maker_code.as_deref(), Some("Nintendo R&D1"));
-    assert_eq!(result.version.as_deref(), Some("v0"));
-    assert_eq!(result.file_size, Some(0x10000));
-    assert_eq!(result.expected_size, Some(0x10000)); // file == used_rom_size → OK
+    assert_eq!(result.internal_name, "TESTGAME");
+    assert_eq!(result.serial_number, "NTR-ADME");
+    assert_eq!(result.maker_code, "Nintendo R&D1");
+    assert_eq!(result.version, "v0");
+    assert_eq!(result.file_size, 0x10000);
+    assert_eq!(result.expected_size, 0x10000); // file == used_rom_size → OK
     assert_eq!(result.regions, vec![Region::Usa]);
     assert_eq!(result.extra.get("game_code").unwrap(), "ADME");
     assert_eq!(result.extra.get("unit_code").unwrap(), "NDS");
@@ -255,14 +254,13 @@ fn test_dsi_enhanced() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform, Some(Platform::Ds));
     assert_eq!(
         result.extra.get("platform_variant").map(|s| s.as_str()),
         Some("Nintendo DS (DSi Enhanced)")
     );
     assert_eq!(result.extra.get("unit_code").unwrap(), "NDS+DSi");
     // DSi-enhanced gets TWL prefix
-    assert!(result.serial_number.as_deref().unwrap().starts_with("TWL-"));
+    assert!(result.serial_number.starts_with("TWL-"));
 }
 
 #[test]
@@ -276,13 +274,12 @@ fn test_dsi_only() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform, Some(Platform::Ds));
     assert_eq!(
         result.extra.get("platform_variant").map(|s| s.as_str()),
         Some("Nintendo DSi")
     );
     assert_eq!(result.extra.get("unit_code").unwrap(), "DSi");
-    assert!(result.serial_number.as_deref().unwrap().starts_with("TWL-"));
+    assert!(result.serial_number.starts_with("TWL-"));
 }
 
 #[test]
@@ -355,7 +352,7 @@ fn test_device_capacity() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     // file_size == used_rom_size and both < chip_capacity → trimmed, OK
-    assert_eq!(result.expected_size, Some(0x10000));
+    assert_eq!(result.expected_size, 0x10000);
     assert_eq!(result.extra.get("dump_status").unwrap(), "Trimmed");
     assert_eq!(result.extra.get("cartridge_capacity").unwrap(), "64 MB");
 }
@@ -373,8 +370,8 @@ fn test_untrimmed_rom() {
     let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert_eq!(result.file_size, Some(capacity as u64));
-    assert_eq!(result.expected_size, Some(capacity as u64)); // OK, not oversized
+    assert_eq!(result.file_size, capacity as u64);
+    assert_eq!(result.expected_size, capacity as u64); // OK, not oversized
     assert_eq!(result.extra.get("dump_status").unwrap(), "Untrimmed");
 }
 
@@ -388,8 +385,8 @@ fn test_trimmed_rom() {
     let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert_eq!(result.file_size, Some(0x10000));
-    assert_eq!(result.expected_size, Some(0x10000)); // OK, not truncated
+    assert_eq!(result.file_size, 0x10000);
+    assert_eq!(result.expected_size, 0x10000); // OK, not truncated
     assert_eq!(result.extra.get("dump_status").unwrap(), "Trimmed");
 }
 
@@ -405,8 +402,8 @@ fn test_partially_trimmed_rom() {
     let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert_eq!(result.file_size, Some(0xC000));
-    assert_eq!(result.expected_size, Some(0xC000)); // OK
+    assert_eq!(result.file_size, 0xC000);
+    assert_eq!(result.expected_size, 0xC000); // OK
     assert_eq!(
         result.extra.get("dump_status").unwrap(),
         "Partially trimmed"
@@ -427,8 +424,8 @@ fn test_actually_truncated_rom() {
         ..Default::default()
     };
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert_eq!(result.file_size, Some(0x10000));
-    assert_eq!(result.expected_size, Some(0x20000)); // shows TRUNCATED
+    assert_eq!(result.file_size, 0x10000);
+    assert_eq!(result.expected_size, 0x20000); // shows TRUNCATED
 }
 
 #[test]
@@ -440,7 +437,7 @@ fn test_rom_version() {
     let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert_eq!(result.version.as_deref(), Some("v2"));
+    assert_eq!(result.version, "v2");
 }
 
 #[test]
@@ -452,7 +449,7 @@ fn test_title_trimming() {
     let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert_eq!(result.internal_name.as_deref(), Some("HI"));
+    assert_eq!(result.internal_name, "HI");
 }
 
 #[test]
@@ -519,7 +516,7 @@ fn test_serial_number_format_nds() {
     let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert!(result.serial_number.as_deref().unwrap().starts_with("NTR-"));
+    assert!(result.serial_number.starts_with("NTR-"));
 }
 
 #[test]

@@ -12,20 +12,18 @@ pub use crate::theme::{STATUS_ERR, STATUS_OK, STATUS_WARN};
 
 /// Generic modal listing per-item outcomes of a batch operation.
 ///
-/// `results` is the `Option<Vec<T>>` holding the batch (typically an
-/// `app.*_results` field): the dialog is shown while it is `Some`, and is
-/// cleared (dismissing the dialog) when the user closes the window or clicks
-/// OK. `summary` renders the header line from the full result slice;
+/// `items` holds the batch results (typically from the app's `results_dialog`
+/// enum). Returns `true` when the user dismisses the dialog (closes the
+/// window or clicks OK) — the caller then clears its results state.
+/// `summary` renders the header line from the full result slice;
 /// `row` renders one line per item inside a scrolling area.
 pub fn show_results_dialog<T>(
     ctx: &egui::Context,
     title: &str,
-    results: &mut Option<Vec<T>>,
+    items: &[T],
     summary: impl Fn(&[T]) -> String,
     row: impl Fn(&mut egui::Ui, &T),
-) {
-    let Some(ref items) = *results else { return };
-
+) -> bool {
     let mut dismiss = false;
     let mut open = true;
     egui::Window::new(title)
@@ -51,9 +49,7 @@ pub fn show_results_dialog<T>(
             }
         });
 
-    if dismiss || !open {
-        *results = None;
-    }
+    dismiss || !open
 }
 
 #[cfg(test)]

@@ -44,7 +44,7 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
         app,
         description,
         OperationKind::Other,
-        None,
+        String::new(),
         ProgressDisplay::Count,
         move |op_id, _cancel, tx| {
             let result = do_generate(
@@ -70,7 +70,8 @@ struct EntrySnapshot {
     rom_stem: String,
     rom_filename: String,
     name: String,
-    cover_title: Option<String>,
+    /// Box/cover title from the catalog DB. Empty = absent.
+    cover_title: String,
 }
 
 fn do_generate(
@@ -96,13 +97,13 @@ fn do_generate(
                 rom_stem: e.rom_stem.clone(),
                 rom_filename: e.rom_filename.clone(),
                 name: e.name.clone(),
-                description: None,
-                developer: None,
-                publisher: None,
-                genre: None,
-                players: None,
+                description: String::new(),
+                developer: String::new(),
+                publisher: String::new(),
+                genre: String::new(),
+                players: String::new(),
                 rating: None,
-                release_date: None,
+                release_date: String::new(),
                 assets,
                 cover_title: e.cover_title.clone(),
             }

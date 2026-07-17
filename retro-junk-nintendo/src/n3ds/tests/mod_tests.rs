@@ -151,8 +151,7 @@ fn test_full_cci_via_analyzer() {
     };
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform, Some(Platform::N3ds));
-    assert_eq!(result.serial_number.as_deref(), Some("CTR-P-ABCE"));
+    assert_eq!(result.serial_number, "CTR-P-ABCE");
     assert_eq!(result.regions, vec![Region::Usa]);
 }
 
@@ -166,7 +165,6 @@ fn test_full_cia_via_analyzer() {
     };
     let result = analyzer.analyze(&mut Cursor::new(cia), &options).unwrap();
 
-    assert_eq!(result.platform, Some(Platform::N3ds));
-    assert_eq!(result.serial_number.as_deref(), Some("CTR-N-ABCJ"));
+    assert_eq!(result.serial_number, "CTR-N-ABCJ");
     assert_eq!(result.regions, vec![Region::Japan]);
 }

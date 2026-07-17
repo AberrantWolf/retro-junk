@@ -32,15 +32,15 @@ pub struct SystemCnf {
     pub boot_path: String,
     /// Which key was used (`BOOT` for PS1, `BOOT2` for PS2).
     pub boot_key: BootKey,
-    /// Video mode from VMODE key, if present.
-    pub vmode: Option<String>,
+    /// Video mode from VMODE key. Empty when absent.
+    pub vmode: String,
 }
 
 /// Parse the contents of a SYSTEM.CNF file.
 pub fn parse_system_cnf(content: &str) -> Result<SystemCnf, AnalysisError> {
     let mut boot_path = None;
     let mut boot_key = None;
-    let mut vmode = None;
+    let mut vmode = String::new();
 
     for line in content.lines() {
         let line = line.trim();
@@ -65,7 +65,7 @@ pub fn parse_system_cnf(content: &str) -> Result<SystemCnf, AnalysisError> {
                     }
                 }
                 "VMODE" => {
-                    vmode = Some(value.to_string());
+                    vmode = value.to_string();
                 }
                 _ => {}
             }

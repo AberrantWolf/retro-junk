@@ -241,27 +241,27 @@ fn to_identification(
         None
     };
 
-    let mut id = RomIdentification::new().with_platform(Platform::Ds);
+    let mut id = RomIdentification::new();
     if let Some(variant) = platform_variant {
         id.extra.insert("platform_variant".into(), variant.into());
     }
 
     // Internal name
     if !header.title.is_empty() {
-        id.internal_name = Some(header.title.clone());
+        id.internal_name = header.title.clone();
     }
 
     // Serial number: NTR-XXXX for NDS, TWL-XXXX for DSi
     if header.game_code.len() == 4 {
         let prefix = if is_dsi { "TWL" } else { "NTR" };
-        id.serial_number = Some(format!("{}-{}", prefix, header.game_code));
+        id.serial_number = format!("{}-{}", prefix, header.game_code);
     }
 
     // Maker code
     if header.maker_code.len() == 2 {
         id.maker_code = crate::licensee::maker_code_name(&header.maker_code)
             .map(|s| s.to_string())
-            .or_else(|| Some(header.maker_code.clone()));
+            .unwrap_or_else(|| header.maker_code.clone());
     }
 
     // Region from game code
@@ -272,7 +272,7 @@ fn to_identification(
     }
 
     // Version
-    id.version = Some(format!("v{}", header.rom_version));
+    id.version = format!("v{}", header.rom_version);
 
     // File and expected size
     //
@@ -280,7 +280,7 @@ fn to_identification(
     // `total_used_rom_size` and the full cartridge chip capacity is stripped.
     // Both trimmed and untrimmed (full capacity) dumps are valid. Only files
     // smaller than total_used_rom_size are truly truncated.
-    id.file_size = Some(file_size);
+    id.file_size = file_size;
     let used_size = header.total_used_rom_size as u64;
     let chip_capacity = if header.device_capacity <= 20 {
         let cap = expected_rom_size_from_capacity(header.device_capacity);
@@ -294,7 +294,7 @@ fn to_identification(
             // File is between used_size and chip_capacity — perfectly valid
             // (trimmed, partially trimmed, or full dump). Set expected = actual
             // so the CLI size verdict shows OK.
-            id.expected_size = Some(file_size);
+            id.expected_size = file_size;
 
             if file_size == used_size {
                 id.extra.insert("dump_status".into(), "Trimmed".into());
@@ -306,15 +306,15 @@ fn to_identification(
             }
         } else if file_size > used_size && chip_capacity.is_none() {
             // No valid chip capacity to compare; file has all the data it needs
-            id.expected_size = Some(file_size);
+            id.expected_size = file_size;
         } else {
             // file_size < used_size → actually truncated
             // file_size > chip_capacity → oversized (shouldn't happen normally)
-            id.expected_size = Some(used_size);
+            id.expected_size = used_size;
         }
     } else if let Some(cap) = chip_capacity {
         // Fallback: use device capacity if used ROM size is missing
-        id.expected_size = Some(cap);
+        id.expected_size = cap;
     }
 
     // Report device (cartridge chip) capacity for informational purposes

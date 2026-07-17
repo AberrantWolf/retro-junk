@@ -298,9 +298,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         field_row(ui, "File", &file_name);
 
         if let Some(ref id) = entry.identification
-            && let Some(size) = id.file_size
+            && id.file_size != 0
         {
-            field_row(ui, "Size", &retro_junk_lib::util::format_bytes(size));
+            field_row(
+                ui,
+                "Size",
+                &retro_junk_lib::util::format_bytes(id.file_size),
+            );
         }
 
         ui.separator();
@@ -310,17 +314,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.label(egui::RichText::new("Identification").strong());
             ui.add_space(2.0);
 
-            if let Some(ref serial) = id.serial_number {
-                detail_row(ui, "Serial", serial);
+            if !id.serial_number.is_empty() {
+                detail_row(ui, "Serial", &id.serial_number);
             }
-            if let Some(ref name) = id.internal_name {
-                detail_row(ui, "Internal Name", name);
+            if !id.internal_name.is_empty() {
+                detail_row(ui, "Internal Name", &id.internal_name);
             }
-            if let Some(ref maker) = id.maker_code {
-                detail_row(ui, "Maker", maker);
+            if !id.maker_code.is_empty() {
+                detail_row(ui, "Maker", &id.maker_code);
             }
-            if let Some(ref version) = id.version {
-                detail_row(ui, "Version", version);
+            if !id.version.is_empty() {
+                detail_row(ui, "Version", &id.version);
             }
             if !id.regions.is_empty() {
                 let regions: Vec<&str> = id.regions.iter().map(|r| r.name()).collect();
@@ -356,11 +360,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     .and_then(|n| n.to_str())
                     .unwrap_or("?");
                 detail_row(ui, &format!("Disc {}", i + 1), filename);
-                if let Some(ref serial) = disc.identification.serial_number {
-                    nested_detail_row(ui, "Serial", serial);
+                if !disc.identification.serial_number.is_empty() {
+                    nested_detail_row(ui, "Serial", &disc.identification.serial_number);
                 }
-                if let Some(ref name) = disc.identification.internal_name {
-                    nested_detail_row(ui, "Internal", name);
+                if !disc.identification.internal_name.is_empty() {
+                    nested_detail_row(ui, "Internal", &disc.identification.internal_name);
                 }
                 if let Some(ref hashes) = disc.hashes {
                     nested_detail_row(ui, "CRC32", &hashes.crc32);
@@ -491,7 +495,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             detail_row(ui, "Game", &dm.game_name);
             detail_row(ui, "Method", &format!("{:?}", dm.method));
             if dm.cross_region {
-                let dat_region = dm.region.as_deref().unwrap_or("unknown");
+                let dat_region: &str = if dm.region.is_empty() {
+                    "unknown"
+                } else {
+                    &dm.region
+                };
                 let detected = entry
                     .identification
                     .as_ref()
@@ -515,16 +523,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
 
         // Titles (from catalog DB enrichment)
-        if entry.cover_title.is_some() || entry.screen_title.is_some() {
+        if !entry.cover_title.is_empty() || !entry.screen_title.is_empty() {
             ui.add_space(4.0);
             ui.separator();
             ui.label(egui::RichText::new("Titles").strong());
             ui.add_space(2.0);
-            if let Some(ref ct) = entry.cover_title {
-                detail_row(ui, "Box Title", ct);
+            if !entry.cover_title.is_empty() {
+                detail_row(ui, "Box Title", &entry.cover_title);
             }
-            if let Some(ref st) = entry.screen_title {
-                detail_row(ui, "Screen Title", st);
+            if !entry.screen_title.is_empty() {
+                detail_row(ui, "Screen Title", &entry.screen_title);
             }
         }
 

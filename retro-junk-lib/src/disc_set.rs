@@ -55,8 +55,18 @@ pub struct DiscSetPlan {
     /// Rewritten cue content (FILE lines updated), if any rename changes it.
     pub new_cue_content: Option<String>,
     /// Whether the final cue content hash-matches the DAT's `.cue` ROM entry.
-    /// `None` when the DAT has no cue entry for this game.
-    pub cue_verified: Option<bool>,
+    pub cue_verified: CueVerification,
+}
+
+/// Result of verifying a set's cue content against the DAT's `.cue` entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CueVerification {
+    /// The final cue content hash-matches the DAT's `.cue` ROM entry.
+    Verified,
+    /// The DAT has a `.cue` entry but the content does not match it.
+    Mismatch,
+    /// The DAT has no cue entry for this game.
+    NoCueEntry,
 }
 
 impl DiscSetPlan {
@@ -136,12 +146,13 @@ pub enum DiscSetOutcome {
     /// Fully verified and already correctly named.
     AlreadyCorrect {
         game_name: String,
-        cue_verified: Option<bool>,
+        cue_verified: CueVerification,
     },
     /// A game was identified, but the set could not be fully verified
     /// (missing/extra/mismatched tracks). Renaming would be unsafe.
     NotVerified {
-        game_name: Option<String>,
+        /// Identified game name; empty when unidentified
+        game_name: String,
         issues: Vec<String>,
     },
     /// The cue references files that do not exist.
@@ -272,7 +283,7 @@ pub fn plan_disc_set_from_files(
                     return build_plan(files, &index.games[gi], assignment, MatchMethod::Crc32);
                 }
                 return DiscSetOutcome::NotVerified {
-                    game_name: Some(index.games[gi].name.clone()),
+                    game_name: index.games[gi].name.clone(),
                     issues: serial_issues,
                 };
             }
@@ -285,12 +296,18 @@ pub fn plan_disc_set_from_files(
     }
 
     let mut issues = describe_track_matches(index, &files.tracks, &track_hashes);
-    if let Some(ref full_serial) = serial_outcome.full_serial {
-        issues.insert(0, format!("Serial \"{full_serial}\" not found in DAT"));
-    } else if let Some(candidates) = serial_outcome.ambiguous_candidates {
+    if !serial_outcome.full_serial.is_empty() {
         issues.insert(
             0,
-            format!("Serial is ambiguous across: {}", candidates.join(", ")),
+            format!("Serial \"{}\" not found in DAT", serial_outcome.full_serial),
+        );
+    } else if !serial_outcome.ambiguous_candidates.is_empty() {
+        issues.insert(
+            0,
+            format!(
+                "Serial is ambiguous across: {}",
+                serial_outcome.ambiguous_candidates.join(", ")
+            ),
         );
     }
     DiscSetOutcome::Unmatched { issues }
@@ -478,7 +495,7 @@ fn build_plan(
         Ok(c) => c,
         Err(e) => {
             return DiscSetOutcome::NotVerified {
-                game_name: Some(game.name.clone()),
+                game_name: game.name.clone(),
                 issues: vec![format!("Failed to read cue for rewrite: {e}")],
             };
         }
@@ -487,12 +504,20 @@ fn build_plan(
 
     // Verify the final cue content against the DAT's cue entry, if present.
     let final_content = new_cue_content.as_deref().unwrap_or(&original_content);
-    let cue_verified = cue_rom.map(|rom| {
-        rom.size == final_content.len() as u64
-            && rom
-                .crc
-                .eq_ignore_ascii_case(&crc32_of(final_content.as_bytes()))
-    });
+    let cue_verified = match cue_rom {
+        Some(rom) => {
+            if rom.size == final_content.len() as u64
+                && rom
+                    .crc
+                    .eq_ignore_ascii_case(&crc32_of(final_content.as_bytes()))
+            {
+                CueVerification::Verified
+            } else {
+                CueVerification::Mismatch
+            }
+        }
+        None => CueVerification::NoCueEntry,
+    };
 
     let plan = DiscSetPlan {
         cue: files.cue.clone(),

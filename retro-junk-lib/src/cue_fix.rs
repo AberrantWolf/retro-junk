@@ -127,7 +127,7 @@ pub fn plan_cue_fixes(folder: &Path, progress: &dyn Fn(CueFixProgress)) -> CueFi
             continue;
         }
 
-        if let Some(reason) = &report.unfixable_reason {
+        if let Some(reason) = report.blocked_reason() {
             plan.unfixable.push((cue_path.clone(), reason.to_string()));
             continue;
         }

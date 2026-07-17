@@ -159,9 +159,8 @@ fn test_cci_basic_analysis() {
     let options = AnalysisOptions::default();
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
-    assert_eq!(result.platform, Some(Platform::N3ds));
-    assert_eq!(result.serial_number.as_deref(), Some("CTR-P-ABCE"));
-    assert_eq!(result.maker_code.as_deref(), Some("Nintendo"));
+    assert_eq!(result.serial_number, "CTR-P-ABCE");
+    assert_eq!(result.maker_code, "Nintendo");
     assert_eq!(result.regions, vec![retro_junk_core::Region::Usa]);
     assert_eq!(result.extra.get("format").unwrap(), "CCI (NCSD)");
     assert_eq!(result.extra.get("product_code").unwrap(), "CTR-P-ABCE");
@@ -279,8 +278,8 @@ fn test_cci_file_size() {
     let options = AnalysisOptions::default();
     let result = analyze_cci(&mut Cursor::new(rom), expected_size, &options).unwrap();
 
-    assert_eq!(result.file_size, Some(expected_size));
-    assert_eq!(result.expected_size, Some(expected_size));
+    assert_eq!(result.file_size, expected_size);
+    assert_eq!(result.expected_size, expected_size);
 }
 
 #[test]
@@ -381,8 +380,8 @@ fn test_cci_untrimmed() {
     let options = AnalysisOptions::default();
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
-    assert_eq!(result.file_size, Some(file_size));
-    assert_eq!(result.expected_size, Some(file_size));
+    assert_eq!(result.file_size, file_size);
+    assert_eq!(result.expected_size, file_size);
     assert_eq!(result.extra.get("dump_status").unwrap(), "Untrimmed");
 }
 
@@ -403,8 +402,8 @@ fn test_cci_trimmed() {
     };
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
-    assert_eq!(result.file_size, Some(file_size));
-    assert_eq!(result.expected_size, Some(file_size)); // OK, not red
+    assert_eq!(result.file_size, file_size);
+    assert_eq!(result.expected_size, file_size); // OK, not red
     assert_eq!(result.extra.get("dump_status").unwrap(), "Trimmed");
 }
 
@@ -426,8 +425,8 @@ fn test_cci_partially_trimmed() {
     };
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
-    assert_eq!(result.file_size, Some(file_size));
-    assert_eq!(result.expected_size, Some(file_size)); // OK
+    assert_eq!(result.file_size, file_size);
+    assert_eq!(result.expected_size, file_size); // OK
     assert_eq!(
         result.extra.get("dump_status").unwrap(),
         "Partially trimmed"
@@ -453,7 +452,7 @@ fn test_cci_genuinely_truncated() {
     };
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
-    assert_eq!(result.file_size, Some(file_size));
-    assert_eq!(result.expected_size, Some(filled as u64)); // genuinely truncated
+    assert_eq!(result.file_size, file_size);
+    assert_eq!(result.expected_size, filled as u64); // genuinely truncated
     assert!(result.extra.get("dump_status").is_none()); // no status for truncated
 }

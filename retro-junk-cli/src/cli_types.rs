@@ -252,8 +252,8 @@ pub(crate) enum Commands {
     /// List all supported systems and their capabilities
     Systems {
         /// Filter by manufacturer (e.g., Nintendo, Sega, Sony)
-        #[arg(long)]
-        manufacturer: Option<String>,
+        #[arg(long, default_value = "")]
+        manufacturer: String,
     },
 }
 
@@ -358,9 +358,9 @@ pub(crate) enum CatalogAction {
         #[arg(value_delimiter = ',')]
         systems: Vec<String>,
 
-        /// Path to catalog YAML data directory (default: ./catalog)
-        #[arg(long)]
-        catalog_dir: Option<PathBuf>,
+        /// Path to catalog YAML data directory
+        #[arg(long, default_value = "catalog")]
+        catalog_dir: PathBuf,
 
         /// Path to the catalog database file (default: ~/.cache/retro-junk/catalog.db)
         #[arg(long)]
@@ -471,12 +471,12 @@ pub(crate) enum CatalogAction {
         db: Option<PathBuf>,
 
         /// Filter by system (e.g., nes, snes)
-        #[arg(long)]
-        system: Option<String>,
+        #[arg(long, default_value = "")]
+        system: String,
 
         /// Filter by field name (e.g., release_date, title)
-        #[arg(long)]
-        field: Option<String>,
+        #[arg(long, default_value = "")]
+        field: String,
 
         /// Maximum number of disagreements to show
         #[arg(long, default_value = "50")]
@@ -528,36 +528,37 @@ pub(crate) enum CatalogAction {
     },
 
     /// Browse, search, and look up games in the catalog database
+    #[command(group = clap::ArgGroup::new("hash_lookup").multiple(false))]
     Lookup {
         /// Search query, prefixed ID (plt-X, wrk-X, rel-X, med-X), or omit to list
         query: Option<String>,
 
         /// Filter by entity type: platforms, works, releases, media
-        #[arg(long, short = 't')]
-        r#type: Option<String>,
+        #[arg(long, short = 't', default_value = "")]
+        r#type: String,
 
         /// Filter by platform short name (e.g., nes, snes, psx)
-        #[arg(long)]
-        platform: Option<String>,
+        #[arg(long, default_value = "")]
+        platform: String,
 
         /// Filter by manufacturer (e.g., Nintendo, Sega)
-        #[arg(long)]
-        manufacturer: Option<String>,
+        #[arg(long, default_value = "")]
+        manufacturer: String,
 
         /// Look up by CRC32 hash
-        #[arg(long)]
+        #[arg(long, group = "hash_lookup")]
         crc: Option<String>,
 
         /// Look up by SHA1 hash
-        #[arg(long)]
+        #[arg(long, group = "hash_lookup")]
         sha1: Option<String>,
 
         /// Look up by MD5 hash
-        #[arg(long)]
+        #[arg(long, group = "hash_lookup")]
         md5: Option<String>,
 
         /// Look up by serial number
-        #[arg(long)]
+        #[arg(long, group = "hash_lookup")]
         serial: Option<String>,
 
         /// Maximum number of results (default 25)

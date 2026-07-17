@@ -18,14 +18,18 @@ pub enum LogEntry {
     },
     Unidentified {
         file: String,
-        serial_tried: Option<String>,
-        /// Scraper serial format(s) that were actually sent to the API
-        scraper_serial_tried: Option<String>,
+        /// Serial from the ROM header (empty = none found)
+        serial_tried: String,
+        /// Scraper serial format(s) that were actually sent to the API (empty = none)
+        scraper_serial_tried: String,
         filename_tried: bool,
         hashes_tried: bool,
-        crc32: Option<String>,
-        md5: Option<String>,
-        sha1: Option<String>,
+        /// CRC32 hash tried (empty = not computed)
+        crc32: String,
+        /// MD5 hash tried (empty = not computed)
+        md5: String,
+        /// SHA1 hash tried (empty = not computed)
+        sha1: String,
         errors: Vec<String>,
     },
     GroupedDisc {
@@ -152,25 +156,25 @@ impl ScrapeLog {
                     errors,
                 } => {
                     writeln!(file, "[UNIDENTIFIED] {}", f)?;
-                    if let Some(serial) = serial_tried {
-                        writeln!(file, "     ROM serial: {}", serial)?;
+                    if !serial_tried.is_empty() {
+                        writeln!(file, "     ROM serial: {}", serial_tried)?;
                     }
-                    if let Some(scraper) = scraper_serial_tried {
-                        writeln!(file, "     Scraper serial tried: {}", scraper)?;
+                    if !scraper_serial_tried.is_empty() {
+                        writeln!(file, "     Scraper serial tried: {}", scraper_serial_tried)?;
                     }
                     if *filename_tried {
                         writeln!(file, "     Filename lookup: tried")?;
                     }
                     if *hashes_tried {
                         writeln!(file, "     Hash lookup: tried")?;
-                        if let Some(crc) = crc32 {
-                            writeln!(file, "       CRC32: {}", crc)?;
+                        if !crc32.is_empty() {
+                            writeln!(file, "       CRC32: {}", crc32)?;
                         }
-                        if let Some(md5_val) = md5 {
-                            writeln!(file, "       MD5:   {}", md5_val)?;
+                        if !md5.is_empty() {
+                            writeln!(file, "       MD5:   {}", md5)?;
                         }
-                        if let Some(sha1_val) = sha1 {
-                            writeln!(file, "       SHA1:  {}", sha1_val)?;
+                        if !sha1.is_empty() {
+                            writeln!(file, "       SHA1:  {}", sha1)?;
                         }
                     }
                     for e in errors {

@@ -44,14 +44,14 @@ impl Ps1Analyzer {
             )));
         }
 
-        let mut id = RomIdentification::new().with_platform(Platform::Ps1);
-        id.file_size = Some(file_size);
+        let mut id = RomIdentification::new();
+        id.file_size = file_size;
         id.extra.insert("format".into(), format.name().into());
         id.extra
             .insert("detected_extension".into(), format.extension().into());
 
         if !pvd.volume_identifier.is_empty() {
-            id.internal_name = Some(pvd.volume_identifier.clone());
+            id.internal_name = pvd.volume_identifier.clone();
         }
 
         // Calculate expected size from PVD
@@ -59,7 +59,7 @@ impl Ps1Analyzer {
             DiscFormat::RawSector2352 => retro_junk_disc::RAW_SECTOR_SIZE,
             _ => retro_junk_disc::ISO_SECTOR_SIZE,
         };
-        id.expected_size = Some(pvd.volume_space_size as u64 * sector_size);
+        id.expected_size = pvd.volume_space_size as u64 * sector_size;
 
         // Read SYSTEM.CNF for serial and region (fast: just 1-2 sector reads)
         if let Ok(content) = sony_disc::find_file_in_root(reader, format, &pvd, "SYSTEM.CNF") {
@@ -92,8 +92,8 @@ impl Ps1Analyzer {
 
         let sheet = sony_disc::parse_cue(&cue_text)?;
 
-        let mut id = RomIdentification::new().with_platform(Platform::Ps1);
-        id.file_size = Some(file_size);
+        let mut id = RomIdentification::new();
+        id.file_size = file_size;
         id.extra.insert("format".into(), "CUE Sheet".into());
         id.extra.insert("detected_extension".into(), "cue".into());
 
@@ -158,7 +158,7 @@ impl Ps1Analyzer {
                             && pvd.system_identifier.starts_with("PLAYSTATION")
                         {
                             if !pvd.volume_identifier.is_empty() {
-                                id.internal_name = Some(pvd.volume_identifier.clone());
+                                id.internal_name = pvd.volume_identifier.clone();
                             }
                             if let Ok(content) = sony_disc::find_file_in_root(
                                 &mut bin_file,
@@ -187,8 +187,8 @@ impl Ps1Analyzer {
 
         let chd_info = sony_disc::read_chd_info(reader)?;
 
-        let mut id = RomIdentification::new().with_platform(Platform::Ps1);
-        id.file_size = Some(file_size);
+        let mut id = RomIdentification::new();
+        id.file_size = file_size;
         id.extra.insert("format".into(), "CHD".into());
         id.extra.insert("detected_extension".into(), "chd".into());
         id.extra
@@ -224,14 +224,14 @@ impl Ps1Analyzer {
     /// Apply parsed SYSTEM.CNF data to the identification.
     fn apply_system_cnf_parsed(&self, cnf: &sony_disc::SystemCnf, id: &mut RomIdentification) {
         id.extra.insert("boot_path".into(), cnf.boot_path.clone());
-        if let Some(ref vmode) = cnf.vmode {
-            id.extra.insert("vmode".into(), vmode.clone());
+        if !cnf.vmode.is_empty() {
+            id.extra.insert("vmode".into(), cnf.vmode.clone());
         }
         if let Some(serial) = sony_disc::extract_serial(&cnf.boot_path) {
             if let Some(region) = sony_disc::serial_to_region(&serial) {
                 id.regions.push(region);
             }
-            id.serial_number = Some(serial);
+            id.serial_number = serial;
         }
     }
 }

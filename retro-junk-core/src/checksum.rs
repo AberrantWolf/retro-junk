@@ -40,8 +40,9 @@ pub struct ExpectedChecksum {
     pub algorithm: ChecksumAlgorithm,
     /// The expected checksum value as raw bytes
     pub value: Vec<u8>,
-    /// Optional description of what this checksum covers
-    pub description: Option<String>,
+    /// Description of what this checksum covers. Empty when unspecified.
+    #[serde(default)]
+    pub description: String,
 }
 
 impl ExpectedChecksum {
@@ -49,12 +50,12 @@ impl ExpectedChecksum {
         Self {
             algorithm,
             value,
-            description: None,
+            description: String::new(),
         }
     }
 
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
-        self.description = Some(desc.into());
+        self.description = desc.into();
         self
     }
 

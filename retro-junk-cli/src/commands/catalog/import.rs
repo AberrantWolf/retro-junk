@@ -8,20 +8,19 @@ use retro_junk_lib::AnalysisContext;
 use crate::CliError;
 use crate::commands::systems::{SystemCapability, resolve_systems};
 
-use super::{default_catalog_db_path, default_catalog_dir};
+use super::default_catalog_db_path;
 
 /// Import DAT files into the catalog database.
 pub(crate) fn run_catalog_import(
     ctx: &AnalysisContext,
     systems: Vec<String>,
-    catalog_dir: Option<PathBuf>,
+    catalog_dir: PathBuf,
     db_path: Option<PathBuf>,
     dat_dir: Option<PathBuf>,
 ) -> Result<(), CliError> {
     use retro_junk_import::{ImportStats, dat_source_str, import_dat, log_import};
 
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
-    let catalog_dir = catalog_dir.unwrap_or_else(default_catalog_dir);
 
     // Open or create the database
     let conn = retro_junk_db::open_database(&db_path).map_err(|e| {
@@ -101,24 +100,19 @@ pub(crate) fn run_catalog_import(
         // Import each DAT
         for dat in &dats {
             let progress = CliImportProgress::new(short_name);
-            let stats = match import_dat(
-                &conn,
-                dat,
-                console.metadata.platform,
-                source_str,
-                Some(&progress),
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::warn!(
-                        "  {} {}: import failed: {}",
-                        "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                        short_name.if_supports_color(Stdout, |t| t.bold()),
-                        e,
-                    );
-                    continue;
-                }
-            };
+            let stats =
+                match import_dat(&conn, dat, console.metadata.platform, source_str, &progress) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::warn!(
+                            "  {} {}: import failed: {}",
+                            "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                            short_name.if_supports_color(Stdout, |t| t.bold()),
+                            e,
+                        );
+                        continue;
+                    }
+                };
 
             // Log the import
             if let Err(e) = log_import(&conn, source_str, &dat.name, &dat.version, &stats) {

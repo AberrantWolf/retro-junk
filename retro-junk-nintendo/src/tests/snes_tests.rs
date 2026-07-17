@@ -178,14 +178,13 @@ fn test_analyze_lorom() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform, Some(Platform::Snes));
-    assert_eq!(result.internal_name.as_deref(), Some("TEST ROM"));
+    assert_eq!(result.internal_name, "TEST ROM");
     assert_eq!(result.extra.get("mapping").unwrap(), "LoROM");
     assert_eq!(result.extra.get("format").unwrap(), "SFC (headerless)");
     assert_eq!(result.extra.get("country").unwrap(), "USA");
     assert_eq!(result.regions, vec![Region::Usa]);
-    assert_eq!(result.version.as_deref(), Some("1.0"));
-    assert_eq!(result.file_size, Some(256 * 1024));
+    assert_eq!(result.version, "1.0");
+    assert_eq!(result.file_size, 256 * 1024);
 }
 
 #[test]
@@ -195,12 +194,12 @@ fn test_analyze_hirom() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.internal_name.as_deref(), Some("HIROM TEST"));
+    assert_eq!(result.internal_name, "HIROM TEST");
     assert_eq!(result.extra.get("mapping").unwrap(), "HiROM");
     assert_eq!(result.extra.get("chipset").unwrap(), "ROM + RAM + Battery");
     assert_eq!(result.extra.get("country").unwrap(), "Japan");
     assert_eq!(result.regions, vec![Region::Japan]);
-    assert_eq!(result.version.as_deref(), Some("1.1"));
+    assert_eq!(result.version, "1.1");
     assert!(result.extra.get("sram_size").is_some());
 }
 
@@ -214,7 +213,7 @@ fn test_analyze_with_copier_header() {
         .analyze(&mut Cursor::new(rom_with_copier), &options)
         .unwrap();
 
-    assert_eq!(result.internal_name.as_deref(), Some("TEST ROM"));
+    assert_eq!(result.internal_name, "TEST ROM");
     assert_eq!(result.extra.get("format").unwrap(), "SMC (copier header)");
     assert_eq!(result.extra.get("copier_header").unwrap(), "Yes");
 }
@@ -258,10 +257,10 @@ fn test_analyze_extended_header() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.serial_number.as_deref(), Some("ABCD"));
+    assert_eq!(result.serial_number, "ABCD");
     assert_eq!(result.extra.get("game_code").unwrap(), "ABCD");
     assert_eq!(result.extra.get("maker_code_raw").unwrap(), "01");
-    assert_eq!(result.maker_code.as_deref(), Some("01 (Nintendo R&D1)"));
+    assert_eq!(result.maker_code, "01 (Nintendo R&D1)");
 }
 
 // -- Checksum tests --
@@ -354,7 +353,7 @@ fn test_version_number() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.version.as_deref(), Some("1.3"));
+    assert_eq!(result.version, "1.3");
 }
 
 #[test]
@@ -373,7 +372,7 @@ fn test_game_code_extraction() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.serial_number.as_deref(), Some("SMWJ"));
+    assert_eq!(result.serial_number, "SMWJ");
     assert_eq!(result.extra.get("game_code").unwrap(), "SMWJ");
 }
 

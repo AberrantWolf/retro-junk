@@ -4,8 +4,7 @@ use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, Platform,
-    RomIdentification,
+    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, RomIdentification,
 };
 
 use super::common::*;
@@ -136,14 +135,14 @@ pub(crate) fn analyze_cci(
     let partition0_offset = ncsd.partitions[0].0 as u64 * MEDIA_UNIT;
     let ncch = parse_ncch_header(reader, partition0_offset)?;
 
-    let mut id = RomIdentification::new().with_platform(Platform::N3ds);
+    let mut id = RomIdentification::new();
 
     // Format
     id.extra.insert("format".into(), "CCI (NCSD)".into());
 
     // Product code -> serial number
     if !ncch.product_code.is_empty() {
-        id.serial_number = Some(ncch.product_code.clone());
+        id.serial_number = ncch.product_code.clone();
         id.extra
             .insert("product_code".into(), ncch.product_code.clone());
     }
@@ -152,7 +151,7 @@ pub(crate) fn analyze_cci(
     if !ncch.maker_code.is_empty() {
         id.maker_code = crate::licensee::maker_code_name(&ncch.maker_code)
             .map(|s| s.to_string())
-            .or_else(|| Some(ncch.maker_code.clone()));
+            .unwrap_or_else(|| ncch.maker_code.clone());
         id.extra
             .insert("maker_code_raw".into(), ncch.maker_code.clone());
     }
@@ -176,13 +175,13 @@ pub(crate) fn analyze_cci(
         let major = ncsd.title_version >> 10;
         let minor = (ncsd.title_version >> 4) & 0x3F;
         let micro = ncsd.title_version & 0xF;
-        id.version = Some(format!("v{}.{}.{}", major, minor, micro));
+        id.version = format!("v{}.{}.{}", major, minor, micro);
         id.extra.insert(
             "title_version_raw".into(),
             format!("{}", ncsd.title_version),
         );
     } else {
-        id.version = Some("v0".into());
+        id.version = "v0".into();
     }
 
     // File size and trimming detection
@@ -192,7 +191,7 @@ pub(crate) fn analyze_cci(
     // card capacity (`image_size_mu * MEDIA_UNIT`) is stripped. Both trimmed
     // and untrimmed dumps are valid. Only files smaller than `filled_size`
     // are genuinely truncated.
-    id.file_size = Some(file_size);
+    id.file_size = file_size;
     let image_size = ncsd.image_size_mu as u64 * MEDIA_UNIT;
     let used_size = ncsd.filled_size;
 
@@ -201,7 +200,7 @@ pub(crate) fn analyze_cci(
             // File is between used_size and image_size — perfectly valid
             // (trimmed, partially trimmed, or full dump). Set expected = actual
             // so the CLI size verdict shows OK.
-            id.expected_size = Some(file_size);
+            id.expected_size = file_size;
 
             if file_size == used_size {
                 id.extra.insert("dump_status".into(), "Trimmed".into());
@@ -213,14 +212,14 @@ pub(crate) fn analyze_cci(
             }
         } else if file_size < used_size {
             // file_size < used_size -> genuinely truncated
-            id.expected_size = Some(used_size);
+            id.expected_size = used_size;
         } else {
             // file_size > image_size -> oversized (shouldn't happen normally)
-            id.expected_size = Some(image_size);
+            id.expected_size = image_size;
         }
     } else if image_size > 0 {
         // No filled_size available; fall back to image_size
-        id.expected_size = Some(image_size);
+        id.expected_size = image_size;
     }
 
     // Media type

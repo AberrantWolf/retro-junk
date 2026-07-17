@@ -14,26 +14,26 @@ fn test_escape_xml() {
     assert_eq!(escape_xml("a < b"), "a &lt; b");
 }
 
-fn make_game(name: &str, cover_title: Option<&str>) -> ScrapedGame {
+fn make_game(name: &str, cover_title: &str) -> ScrapedGame {
     ScrapedGame {
         rom_stem: "test".to_string(),
         rom_filename: "test.rom".to_string(),
         name: name.to_string(),
-        description: None,
-        developer: None,
-        publisher: None,
-        genre: None,
-        players: None,
+        description: String::new(),
+        developer: String::new(),
+        publisher: String::new(),
+        genre: String::new(),
+        players: String::new(),
         rating: None,
-        release_date: None,
+        release_date: String::new(),
         assets: HashMap::new(),
-        cover_title: cover_title.map(|s| s.to_string()),
+        cover_title: cover_title.to_string(),
     }
 }
 
 #[test]
 fn test_cover_title_overrides_name_in_esde() {
-    let games = vec![make_game("Scraper Name", Some("Box Title"))];
+    let games = vec![make_game("Scraper Name", "Box Title")];
     let dir = tempfile::tempdir().unwrap();
     let rom_dir = dir.path().join("roms");
     let meta_dir = dir.path().join("meta");
@@ -51,8 +51,8 @@ fn test_cover_title_overrides_name_in_esde() {
 }
 
 #[test]
-fn test_name_used_when_cover_title_is_none() {
-    let games = vec![make_game("Scraper Name", None)];
+fn test_name_used_when_cover_title_is_empty() {
+    let games = vec![make_game("Scraper Name", "")];
     let dir = tempfile::tempdir().unwrap();
     let rom_dir = dir.path().join("roms");
     let meta_dir = dir.path().join("meta");

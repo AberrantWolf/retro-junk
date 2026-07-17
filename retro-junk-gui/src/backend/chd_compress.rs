@@ -80,7 +80,7 @@ pub fn open_compress_dialog(app: &mut RetroJunkApp, console_idx: usize, entry_in
     let context = app.context.clone();
     let chdman_setting = app.settings.general.chdman_path.clone();
     let description = format!("Preparing CHD compression for {}", folder_name);
-    let scope = Some(folder_name.clone());
+    let scope = folder_name.clone();
 
     spawn_background_op(
         app,
@@ -188,7 +188,7 @@ pub fn start_compression(app: &mut RetroJunkApp, ctx: &egui::Context) {
     let ctx = ctx.clone();
     let total_units = items.len() as u64 * JOB_PROGRESS_UNITS;
     let description = format!("Compressing {} disc(s) to CHD", items.len());
-    let scope = Some(folder_name.clone());
+    let scope = folder_name.clone();
 
     spawn_background_op(
         app,

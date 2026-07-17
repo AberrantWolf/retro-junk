@@ -102,14 +102,13 @@ fn test_header_fields() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.internal_name.as_deref(), Some("SONIC THE HEDGEHOG"));
-    assert_eq!(result.serial_number.as_deref(), Some("GM 00001009-00"));
+    assert_eq!(result.internal_name, "SONIC THE HEDGEHOG");
+    assert_eq!(result.serial_number, "GM 00001009-00");
     assert_eq!(result.extra.get("system_type").unwrap(), "SEGA MEGA DRIVE");
     assert_eq!(
         result.extra.get("overseas_title").unwrap(),
         "SONIC THE HEDGEHOG"
     );
-    assert_eq!(result.platform, Some(Platform::Genesis));
 }
 
 #[test]
@@ -171,8 +170,8 @@ fn test_expected_size_exact() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     // ROM end = 0x3FF, file is exactly 0x400 — expected should match file
-    assert_eq!(result.expected_size, Some(0x0400));
-    assert_eq!(result.file_size, Some(0x0400));
+    assert_eq!(result.expected_size, 0x0400);
+    assert_eq!(result.file_size, 0x0400);
 }
 
 #[test]
@@ -185,7 +184,7 @@ fn test_padded_rom_not_oversized() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     // Padded ROM: expected_size should equal file_size (no false oversized report)
-    assert_eq!(result.file_size, Some(0x80000));
+    assert_eq!(result.file_size, 0x80000);
     assert_eq!(result.expected_size, result.file_size);
     // Checksum should still be valid (only covers 0x0200..=0x03FF)
     assert_eq!(result.extra.get("checksum_status:rom").unwrap(), "Valid");

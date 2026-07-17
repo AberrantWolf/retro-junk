@@ -138,8 +138,8 @@ fn test_basic_analysis() {
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
 
-    assert_eq!(id.serial_number.as_deref(), Some("GALE"));
-    assert_eq!(id.internal_name.as_deref(), Some("THE LEGEND OF ZELDA"));
+    assert_eq!(id.serial_number, "GALE");
+    assert_eq!(id.internal_name, "THE LEGEND OF ZELDA");
     assert_eq!(id.regions, vec![Region::Usa]);
     assert_eq!(id.extra.get("game_code").map(|s| s.as_str()), Some("GALE"));
     assert_eq!(id.extra.get("maker_code").map(|s| s.as_str()), Some("01"));
@@ -152,7 +152,7 @@ fn test_basic_analysis() {
         id.extra.get("product_code").map(|s| s.as_str()),
         Some("DOL-GALE-0")
     );
-    assert_eq!(id.expected_size, Some(GCM_DISC_SIZE));
+    assert_eq!(id.expected_size, GCM_DISC_SIZE);
 }
 
 #[test]
@@ -202,17 +202,17 @@ fn test_version_nonzero() {
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
-    assert_eq!(id.version.as_deref(), Some("1.02"));
+    assert_eq!(id.version, "1.02");
 }
 
 #[test]
-fn test_version_zero_is_none() {
+fn test_version_zero_is_empty() {
     let disc = make_gc_disc(b"GALE", b"01", 0, "GAME");
     let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
-    assert_eq!(id.version, None);
+    assert_eq!(id.version, "");
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn test_game_name_trimming() {
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
-    assert_eq!(id.internal_name.as_deref(), Some("TEST GAME"));
+    assert_eq!(id.internal_name, "TEST GAME");
 }
 
 #[test]

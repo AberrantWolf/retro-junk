@@ -125,18 +125,17 @@ impl SaturnAnalyzer {
         })?;
 
         let mut id = self.build_identification(&header);
-        id.file_size = Some(file_size);
+        id.file_size = file_size;
         id.extra.insert("format".into(), format.name().into());
         id.extra
             .insert("detected_extension".into(), format.extension().into());
 
         // Optionally read PVD for volume identifier
         if let Ok(pvd) = iso9660::read_pvd(reader, format) {
-            if !pvd.volume_identifier.is_empty() && id.internal_name.is_none() {
-                id.internal_name = Some(pvd.volume_identifier);
+            if !pvd.volume_identifier.is_empty() && id.internal_name.is_empty() {
+                id.internal_name = pvd.volume_identifier;
             }
-            id.expected_size =
-                Some(pvd.volume_space_size as u64 * retro_junk_disc::ISO_SECTOR_SIZE);
+            id.expected_size = pvd.volume_space_size as u64 * retro_junk_disc::ISO_SECTOR_SIZE;
         }
 
         Ok(id)
@@ -154,8 +153,8 @@ impl SaturnAnalyzer {
         reader.read_to_string(&mut cue_text)?;
         let sheet = cue::parse_cue(&cue_text)?;
 
-        let mut id = RomIdentification::new().with_platform(Platform::Saturn);
-        id.file_size = Some(file_size);
+        let mut id = RomIdentification::new();
+        id.file_size = file_size;
         id.extra.insert("format".into(), "CUE Sheet".into());
         id.extra.insert("detected_extension".into(), "cue".into());
 
@@ -239,7 +238,7 @@ impl SaturnAnalyzer {
         })?;
 
         let mut id = self.build_identification(&header);
-        id.file_size = Some(file_size);
+        id.file_size = file_size;
         id.extra.insert("format".into(), "CHD".into());
         id.extra.insert("detected_extension".into(), "chd".into());
         id.extra
@@ -253,8 +252,8 @@ impl SaturnAnalyzer {
 
         // Try to read PVD for volume identifier
         if let Ok(pvd) = chd::read_pvd_from_chd(reader) {
-            if !pvd.volume_identifier.is_empty() && id.internal_name.is_none() {
-                id.internal_name = Some(pvd.volume_identifier);
+            if !pvd.volume_identifier.is_empty() && id.internal_name.is_empty() {
+                id.internal_name = pvd.volume_identifier;
             }
         }
 
@@ -263,14 +262,14 @@ impl SaturnAnalyzer {
 
     /// Build a RomIdentification from a parsed Saturn header.
     fn build_identification(&self, header: &SaturnHeader) -> RomIdentification {
-        let mut id = RomIdentification::new().with_platform(Platform::Saturn);
+        let mut id = RomIdentification::new();
 
         if !header.game_name.is_empty() {
-            id.internal_name = Some(header.game_name.clone());
+            id.internal_name = header.game_name.clone();
         }
 
         if !header.serial.is_empty() {
-            id.serial_number = Some(header.serial.clone());
+            id.serial_number = header.serial.clone();
         }
 
         id.regions = saturn_region_codes(&header.region_codes);

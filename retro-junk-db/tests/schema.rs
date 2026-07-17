@@ -183,9 +183,14 @@ fn create_legacy_db(db_path: &std::path::Path, version: i32) {
          INSERT INTO works (id, canonical_name) VALUES ('w1', 'Work 1');
          INSERT INTO releases (id, work_id, platform_id, region, title) VALUES ('r1', 'w1', 'nes', 'usa', 'Work 1');
          INSERT INTO media (id, release_id) VALUES ('m1', 'r1');
+         INSERT INTO overrides (entity_type, field, override_value, reason) VALUES ('media', 'game_serial', 'X-1', 'test');
          INSERT INTO overrides (entity_type, field, override_value, reason) VALUES ('media', 'game_serial', 'X-1', 'test');",
     )
     .unwrap();
+    // The duplicate override row above is deliberate: the old UNIQUE key
+    // contained NULL entity_id, which never conflicts in SQLite, so real
+    // databases accumulated duplicates from repeated imports. The v9 rebuild
+    // must dedupe them instead of failing on the new wider key.
 }
 
 /// Assert the migrated database converted legacy NULLs to ''/0 defaults.
@@ -233,6 +238,17 @@ fn assert_nulls_became_defaults(conn: &rusqlite::Connection) {
     assert_eq!(entity_id, "");
     assert_eq!(platform_id, "");
     assert_eq!(dat_name_pattern, "");
+
+    // The legacy duplicate override rows must be deduped by the rebuild, not
+    // abort it (the old NULL-containing UNIQUE key never fired).
+    let override_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM overrides WHERE field = 'game_serial'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(override_count, 1);
 }
 
 #[test]

@@ -267,7 +267,8 @@ fn format_analysis(
     ));
 
     // (a) Identity fields
-    if let Some(ref serial) = info.serial_number {
+    if !info.serial_number.is_empty() {
+        let serial = &info.serial_number;
         lines.push((
             Level::Info,
             format!(
@@ -278,7 +279,8 @@ fn format_analysis(
             ),
         ));
     }
-    if let Some(ref name) = info.internal_name {
+    if !info.internal_name.is_empty() {
+        let name = &info.internal_name;
         lines.push((
             Level::Info,
             format!(
@@ -289,7 +291,8 @@ fn format_analysis(
             ),
         ));
     }
-    if let Some(ref maker) = info.maker_code {
+    if !info.maker_code.is_empty() {
+        let maker = &info.maker_code;
         lines.push((
             Level::Info,
             format!(
@@ -300,7 +303,8 @@ fn format_analysis(
             ),
         ));
     }
-    if let Some(ref version) = info.version {
+    if !info.version.is_empty() {
+        let version = &info.version;
         lines.push((
             Level::Info,
             format!(
@@ -365,7 +369,8 @@ fn format_analysis(
 
     // (d) Size verdict
     match (info.file_size, info.expected_size) {
-        (Some(actual), Some(expected)) => {
+        (0, _) => {}
+        (actual, expected) if expected != 0 => {
             let verdict = compute_size_verdict(actual, expected);
             let level = if matches!(verdict, SizeVerdict::Ok) {
                 Level::Info
@@ -384,7 +389,7 @@ fn format_analysis(
                 ),
             ));
         }
-        (Some(actual), None) => {
+        (actual, _) => {
             lines.push((
                 Level::Info,
                 format!(
@@ -395,7 +400,6 @@ fn format_analysis(
                 ),
             ));
         }
-        _ => {}
     }
 
     // (e) Checksums

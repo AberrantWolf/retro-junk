@@ -2,7 +2,7 @@
 #[path = "settings_tests.rs"]
 mod tests;
 
-use crate::app::RetroJunkApp;
+use crate::app::{ChdmanProbe, RetroJunkApp};
 use crate::widgets::results_dialog::{STATUS_ERR, STATUS_OK, STATUS_WARN};
 
 /// Render the Settings view.
@@ -190,12 +190,13 @@ fn show_external_tools_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // keystroke while the field is focused, and not while a probe for this
     // exact path is already in flight.
     let path_key = app.settings.general.chdman_path.trim().to_string();
-    let needs_probe = app
-        .chdman_probe
-        .as_ref()
-        .is_none_or(|(probed_for, _)| probed_for != &path_key);
-    if needs_probe && !editing && !app.chdman_probe_in_flight {
-        app.chdman_probe_in_flight = true;
+    let needs_probe = match &app.chdman_probe {
+        ChdmanProbe::Idle => true,
+        ChdmanProbe::Probing => false,
+        ChdmanProbe::Done { path, .. } => path != &path_key,
+    };
+    if needs_probe && !editing {
+        app.chdman_probe = ChdmanProbe::Probing;
         let tx = app.message_tx.clone();
         let egui_ctx = ui.ctx().clone();
         let key = path_key.clone();
@@ -206,21 +207,25 @@ fn show_external_tools_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         });
     }
 
-    if app.chdman_probe_in_flight {
+    if matches!(app.chdman_probe, ChdmanProbe::Probing) {
         ui.indent("chdman_status", |ui| {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.weak("Checking for chdman…");
             });
         });
-    } else if let Some((_, result)) = &app.chdman_probe {
+    } else if let ChdmanProbe::Done { result, .. } = &app.chdman_probe {
         let (status_color, status_text, install_hint): (
             egui::Color32,
             String,
             Option<&'static str>,
         ) = match result {
             Ok(chdman) => {
-                let version = chdman.version.as_deref().unwrap_or("(unknown version)");
+                let version: &str = if chdman.version.is_empty() {
+                    "(unknown version)"
+                } else {
+                    &chdman.version
+                };
                 (
                     STATUS_OK,
                     format!("chdman {version} found: {}", chdman.path.display()),
@@ -241,7 +246,7 @@ fn show_external_tools_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 // Err staying stuck if the user installs chdman without
                 // restarting the app.
                 if ui.small_button("Re-check").clicked() {
-                    app.chdman_probe = None;
+                    app.chdman_probe = ChdmanProbe::Idle;
                 }
             });
             if let Some(hint) = install_hint {

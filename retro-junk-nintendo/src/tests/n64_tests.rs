@@ -196,12 +196,11 @@ fn test_basic_analysis() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.platform, Some(Platform::N64));
-    assert_eq!(result.internal_name.as_deref(), Some("SUPER MARIO 64"));
-    assert_eq!(result.serial_number.as_deref(), Some("NUS-NSME-USA"));
+    assert_eq!(result.internal_name, "SUPER MARIO 64");
+    assert_eq!(result.serial_number, "NUS-NSME-USA");
     assert_eq!(result.regions, vec![Region::Usa]);
-    assert_eq!(result.version.as_deref(), Some("v1.0"));
-    assert_eq!(result.file_size, Some(MIN_CRC_SIZE));
+    assert_eq!(result.version, "v1.0");
+    assert_eq!(result.file_size, MIN_CRC_SIZE);
     assert_eq!(result.extra.get("format").unwrap(), "z64 (big-endian)");
 }
 
@@ -400,8 +399,8 @@ fn test_v64_analysis() {
         .analyze(&mut Cursor::new(v64), &AnalysisOptions::default())
         .unwrap();
 
-    assert_eq!(result.internal_name.as_deref(), Some("SUPER MARIO 64"));
-    assert_eq!(result.serial_number.as_deref(), Some("NUS-NSME-USA"));
+    assert_eq!(result.internal_name, "SUPER MARIO 64");
+    assert_eq!(result.serial_number, "NUS-NSME-USA");
     assert_eq!(result.extra.get("format").unwrap(), "v64 (byte-swapped)");
     assert_eq!(result.extra.get("checksum_status:N64 CRC").unwrap(), "OK");
 }
@@ -415,8 +414,8 @@ fn test_n64_format_analysis() {
         .analyze(&mut Cursor::new(n64), &AnalysisOptions::default())
         .unwrap();
 
-    assert_eq!(result.internal_name.as_deref(), Some("SUPER MARIO 64"));
-    assert_eq!(result.serial_number.as_deref(), Some("NUS-NSME-USA"));
+    assert_eq!(result.internal_name, "SUPER MARIO 64");
+    assert_eq!(result.serial_number, "NUS-NSME-USA");
     assert_eq!(result.extra.get("format").unwrap(), "n64 (little-endian)");
     assert_eq!(result.extra.get("checksum_status:N64 CRC").unwrap(), "OK");
 }
@@ -493,7 +492,7 @@ fn test_title_trimming_spaces() {
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
-    assert_eq!(result.internal_name.as_deref(), Some("HI"));
+    assert_eq!(result.internal_name, "HI");
 }
 
 #[test]
@@ -505,7 +504,7 @@ fn test_title_trimming_nulls() {
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
-    assert_eq!(result.internal_name.as_deref(), Some("HI"));
+    assert_eq!(result.internal_name, "HI");
 }
 
 // -- Extra fields --
@@ -519,7 +518,7 @@ fn test_version_field() {
     let result = analyzer
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
-    assert_eq!(result.version.as_deref(), Some("v1.2"));
+    assert_eq!(result.version, "v1.2");
 }
 
 #[test]

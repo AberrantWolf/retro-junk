@@ -33,8 +33,8 @@ fn parses_compress_and_extract_progress_lines() {
 fn parses_version_from_banner() {
     let banner =
         "chdman - MAME Compressed Hunks of Data (CHD) manager 0.288 (mame0288-dirty)\nUsage:";
-    assert_eq!(parse_chdman_version(banner), Some("0.288".to_string()));
-    assert_eq!(parse_chdman_version("gibberish"), None);
+    assert_eq!(parse_chdman_version(banner), "0.288");
+    assert_eq!(parse_chdman_version("gibberish"), "");
 }
 
 // -- planning --
@@ -528,7 +528,7 @@ fn write_fake_chdman(dir: &Path, body: &str) -> Chdman {
     fs::set_permissions(&path, perms).unwrap();
     Chdman {
         path,
-        version: None,
+        version: String::new(),
     }
 }
 
@@ -635,7 +635,7 @@ fn cancel_returns_quickly_when_chdman_hangs() {
 
 #[test]
 fn round_trip_compress_verify_delete_with_real_chdman() {
-    let Ok(chdman) = Chdman::detect(None) else {
+    let Ok(chdman) = Chdman::detect(Path::new("")) else {
         eprintln!("chdman not installed; skipping integration test");
         return;
     };
@@ -678,7 +678,7 @@ fn round_trip_compress_verify_delete_with_real_chdman() {
 
 #[test]
 fn compression_failure_leaves_no_partial_output() {
-    let Ok(chdman) = Chdman::detect(None) else {
+    let Ok(chdman) = Chdman::detect(Path::new("")) else {
         eprintln!("chdman not installed; skipping integration test");
         return;
     };
@@ -737,5 +737,5 @@ fn detect_rejects_non_chdman_binary() {
     if !true_path.exists() {
         return;
     }
-    assert!(Chdman::detect(Some(true_path)).is_err());
+    assert!(Chdman::detect(true_path).is_err());
 }

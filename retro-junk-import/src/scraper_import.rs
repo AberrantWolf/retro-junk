@@ -16,7 +16,7 @@ use retro_junk_core::Platform;
 use retro_junk_db::{operations, queries};
 use retro_junk_scraper::client::ScreenScraperClient;
 use retro_junk_scraper::error::ScrapeError;
-use retro_junk_scraper::lookup::{self, LookupMethod, LookupResult, RomInfo};
+use retro_junk_scraper::lookup::{self, LookupMethod, LookupResult, RomHashes, RomInfo};
 use retro_junk_scraper::systems;
 use retro_junk_scraper::types::GameInfo;
 use tokio::time::{Duration, Instant};
@@ -958,21 +958,24 @@ fn pick_best_media_for_lookup(media: &[Media]) -> &Media {
     &media[0]
 }
 
-/// Convert an empty string to `None`, otherwise `Some(owned)`.
-fn non_empty(s: &str) -> Option<String> {
-    (!s.is_empty()).then(|| s.to_string())
-}
-
 /// Build a RomInfo struct from catalog Media data.
 fn build_rom_info(media: &Media, platform: Platform) -> RomInfo {
+    // Hash lookup needs all three hashes; catalog media from DAT import
+    // either has them all or none.
+    let hashes =
+        (!media.crc32.is_empty() && !media.md5.is_empty() && !media.sha1.is_empty()).then(|| {
+            RomHashes {
+                crc32: media.crc32.to_uppercase(),
+                md5: media.md5.clone(),
+                sha1: media.sha1.clone(),
+            }
+        });
     RomInfo {
-        serial: non_empty(&media.media_serial),
-        scraper_serial: None,
+        serial: media.media_serial.clone(),
+        scraper_serial: String::new(),
         filename: media.dat_name.clone(),
         file_size: media.file_size as u64,
-        crc32: non_empty(&media.crc32).map(|s| s.to_uppercase()),
-        md5: non_empty(&media.md5),
-        sha1: non_empty(&media.sha1),
+        hashes,
         platform,
         expects_serial: systems::expects_serial(platform),
     }

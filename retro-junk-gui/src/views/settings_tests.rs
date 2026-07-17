@@ -120,12 +120,12 @@ fn chdman_probe_runs_off_the_ui_thread() {
     );
 
     assert!(
-        harness.state().chdman_probe_in_flight,
-        "expected a probe to be kicked off for the configured path"
-    );
-    assert!(
-        harness.state().chdman_probe.is_none(),
-        "the probe result must not appear until the background thread's message is delivered"
+        matches!(
+            harness.state().chdman_probe,
+            crate::app::ChdmanProbe::Probing
+        ),
+        "expected a probe to be kicked off for the configured path, with no result until the \
+         background thread's message is delivered"
     );
 
     // Drain frames until the background thread's result message lands.
@@ -133,13 +133,18 @@ fn chdman_probe_runs_off_the_ui_thread() {
     for _ in 0..100 {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
-        if !harness.state().chdman_probe_in_flight {
+        if !matches!(
+            harness.state().chdman_probe,
+            crate::app::ChdmanProbe::Probing
+        ) {
             settled = true;
             break;
         }
     }
     assert!(settled, "chdman probe never completed");
-    assert!(harness.state().chdman_probe.is_some());
     // The fake binary never prints the CHD banner, so this must be an error.
-    assert!(harness.state().chdman_probe.as_ref().unwrap().1.is_err());
+    assert!(matches!(
+        harness.state().chdman_probe,
+        crate::app::ChdmanProbe::Done { result: Err(_), .. }
+    ));
 }

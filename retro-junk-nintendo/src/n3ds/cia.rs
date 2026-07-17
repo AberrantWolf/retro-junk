@@ -4,8 +4,7 @@ use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, Platform,
-    RomIdentification,
+    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, RomIdentification,
 };
 
 use super::common::*;
@@ -179,11 +178,11 @@ pub(crate) fn analyze_cia(
 ) -> Result<RomIdentification, AnalysisError> {
     let cia = parse_cia_header(reader)?;
 
-    let mut id = RomIdentification::new().with_platform(Platform::N3ds);
+    let mut id = RomIdentification::new();
 
     // Format
     id.extra.insert("format".into(), "CIA".into());
-    id.file_size = Some(file_size);
+    id.file_size = file_size;
 
     // Expected size from CIA sections
     let content_offset = cia_content_offset(&cia);
@@ -197,9 +196,9 @@ pub(crate) fn analyze_cia(
     // CIA files may have trailing alignment; accept anything >= content end
     let content_end = content_offset + cia.content_size;
     if file_size >= content_end {
-        id.expected_size = Some(file_size); // OK, no truncation
+        id.expected_size = file_size; // OK, no truncation
     } else {
-        id.expected_size = Some(expected_size);
+        id.expected_size = expected_size;
     }
 
     // Parse TMD for title info
@@ -221,13 +220,13 @@ pub(crate) fn analyze_cia(
         let major = tmd_info.title_version >> 10;
         let minor = (tmd_info.title_version >> 4) & 0x3F;
         let micro = tmd_info.title_version & 0xF;
-        id.version = Some(format!("v{}.{}.{}", major, minor, micro));
+        id.version = format!("v{}.{}.{}", major, minor, micro);
         id.extra.insert(
             "title_version_raw".into(),
             format!("{}", tmd_info.title_version),
         );
     } else {
-        id.version = Some("v0".into());
+        id.version = "v0".into();
     }
 
     // Content count
@@ -251,7 +250,7 @@ pub(crate) fn analyze_cia(
     if let Ok(ncch) = ncch_result {
         // Product code
         if !ncch.product_code.is_empty() {
-            id.serial_number = Some(ncch.product_code.clone());
+            id.serial_number = ncch.product_code.clone();
             id.extra
                 .insert("product_code".into(), ncch.product_code.clone());
         }
@@ -260,7 +259,7 @@ pub(crate) fn analyze_cia(
         if !ncch.maker_code.is_empty() {
             id.maker_code = crate::licensee::maker_code_name(&ncch.maker_code)
                 .map(|s| s.to_string())
-                .or_else(|| Some(ncch.maker_code.clone()));
+                .unwrap_or_else(|| ncch.maker_code.clone());
             id.extra
                 .insert("maker_code_raw".into(), ncch.maker_code.clone());
         }

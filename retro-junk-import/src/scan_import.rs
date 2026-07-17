@@ -98,7 +98,7 @@ pub fn scan_folder(
     analyzer: &dyn RomAnalyzer,
     platform: Platform,
     options: &ScanOptions,
-    progress: Option<&dyn ScanProgress>,
+    progress: &dyn ScanProgress,
 ) -> Result<ScanResult, ScanError> {
     let extensions: HashSet<String> = analyzer
         .file_extensions()
@@ -124,9 +124,7 @@ pub fn scan_folder(
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        if let Some(p) = progress {
-            p.on_file(i + 1, total, &filename);
-        }
+        progress.on_file(i + 1, total, &filename);
 
         stats.files_scanned += 1;
 
@@ -134,9 +132,7 @@ pub fn scan_folder(
         let hashes = match hash_file(file_path, analyzer) {
             Ok(h) => h,
             Err(e) => {
-                if let Some(p) = progress {
-                    p.on_error(&filename, &e.to_string());
-                }
+                progress.on_error(&filename, &e.to_string());
                 stats.errors += 1;
                 continue;
             }
@@ -169,9 +165,7 @@ pub fn scan_folder(
                     stats.matched += 1;
                 }
 
-                if let Some(p) = progress {
-                    p.on_match(&filename, &title);
-                }
+                progress.on_match(&filename, &title);
             }
             None => {
                 stats.unmatched += 1;
@@ -182,16 +176,12 @@ pub fn scan_folder(
                     file_size: hashes.data_size,
                 });
 
-                if let Some(p) = progress {
-                    p.on_no_match(&filename);
-                }
+                progress.on_no_match(&filename);
             }
         }
     }
 
-    if let Some(p) = progress {
-        p.on_complete(&stats);
-    }
+    progress.on_complete(&stats);
 
     Ok(ScanResult { stats, unmatched })
 }

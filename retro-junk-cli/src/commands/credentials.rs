@@ -108,7 +108,10 @@ pub(crate) fn run_credentials_show() -> Result<(), CliError> {
             &sources.user_id,
             get_value(
                 &sources.user_id,
-                creds.as_ref().and_then(|c| c.user_id.clone()),
+                creds
+                    .as_ref()
+                    .map(|c| c.user_id.clone())
+                    .filter(|v| !v.is_empty()),
                 false,
             ),
         ),
@@ -117,7 +120,10 @@ pub(crate) fn run_credentials_show() -> Result<(), CliError> {
             &sources.user_password,
             get_value(
                 &sources.user_password,
-                creds.as_ref().and_then(|c| c.user_password.clone()),
+                creds
+                    .as_ref()
+                    .map(|c| c.user_password.clone())
+                    .filter(|v| !v.is_empty()),
                 true,
             ),
         ),
@@ -230,14 +236,22 @@ pub(crate) fn run_credentials_setup() -> Result<(), CliError> {
     );
     let user_id = read_line(
         "user_id",
-        existing.as_ref().and_then(|c| c.user_id.as_deref()),
+        existing
+            .as_ref()
+            .map(|c| c.user_id.as_str())
+            .filter(|s| !s.is_empty()),
         false,
-    );
+    )
+    .unwrap_or_default();
     let user_password = read_line(
         "user_password",
-        existing.as_ref().and_then(|c| c.user_password.as_deref()),
+        existing
+            .as_ref()
+            .map(|c| c.user_password.as_str())
+            .filter(|s| !s.is_empty()),
         false,
-    );
+    )
+    .unwrap_or_default();
 
     let creds = retro_junk_scraper::Credentials {
         dev_id,

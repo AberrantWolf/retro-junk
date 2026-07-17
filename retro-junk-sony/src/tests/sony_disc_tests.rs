@@ -18,7 +18,7 @@ fn test_parse_system_cnf_standard() {
     let result = parse_system_cnf(cnf).unwrap();
     assert_eq!(result.boot_path, "cdrom:\\SLUS_012.34;1");
     assert_eq!(result.boot_key, BootKey::Boot);
-    assert_eq!(result.vmode.as_deref(), Some("NTSC"));
+    assert_eq!(result.vmode, "NTSC");
 }
 
 #[test]
@@ -27,7 +27,7 @@ fn test_parse_system_cnf_boot2() {
     let result = parse_system_cnf(cnf).unwrap();
     assert_eq!(result.boot_path, "cdrom0:\\SLPS_123.45;1");
     assert_eq!(result.boot_key, BootKey::Boot2);
-    assert_eq!(result.vmode, None);
+    assert_eq!(result.vmode, "");
 }
 
 #[test]

@@ -68,7 +68,8 @@ pub struct OrganizeEntry {
 #[derive(Debug, Clone)]
 pub struct UnorganizedFile {
     pub path: PathBuf,
-    pub serial: Option<String>,
+    /// Serial from the disc data; empty when none was found
+    pub serial: String,
     pub reason: String,
 }
 
@@ -248,18 +249,12 @@ pub fn plan_organize(
         }
 
         // Unmatched
-        let reason = if serial_outcome.full_serial.is_none() {
+        let reason = if serial_outcome.full_serial.is_empty() {
             "No serial found in disc data".to_string()
-        } else if serial_outcome.ambiguous_candidates.is_some() {
-            format!(
-                "Ambiguous serial '{}'",
-                serial_outcome.full_serial.as_deref().unwrap_or("?")
-            )
+        } else if !serial_outcome.ambiguous_candidates.is_empty() {
+            format!("Ambiguous serial '{}'", serial_outcome.full_serial)
         } else {
-            format!(
-                "Serial '{}' not found in DAT",
-                serial_outcome.full_serial.as_deref().unwrap_or("?")
-            )
+            format!("Serial '{}' not found in DAT", serial_outcome.full_serial)
         };
 
         unmatched.push(UnorganizedFile {

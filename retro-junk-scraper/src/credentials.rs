@@ -38,8 +38,10 @@ pub struct Credentials {
     pub dev_id: String,
     pub dev_password: String,
     pub soft_name: String,
-    pub user_id: Option<String>,
-    pub user_password: Option<String>,
+    /// Personal ScreenScraper account username (empty = anonymous API access).
+    pub user_id: String,
+    /// Personal ScreenScraper account password (empty = anonymous API access).
+    pub user_password: String,
 }
 
 /// Where a credential field's value came from.
@@ -168,12 +170,14 @@ impl Credentials {
         let user_id = resolve(
             "SCREENSCRAPER_SSID",
             config.as_ref().and_then(|c| c.user_id.clone()),
-        );
+        )
+        .unwrap_or_default();
 
         let user_password = resolve(
             "SCREENSCRAPER_SSPASSWORD",
             config.as_ref().and_then(|c| c.user_password.clone()),
-        );
+        )
+        .unwrap_or_default();
 
         Ok(Self {
             dev_id,
@@ -199,10 +203,10 @@ impl Credentials {
             self.dev_password = pw;
         }
         if let Some(id) = user_id {
-            self.user_id = Some(id);
+            self.user_id = id;
         }
         if let Some(pw) = user_password {
-            self.user_password = Some(pw);
+            self.user_password = pw;
         }
         self
     }
@@ -380,8 +384,8 @@ pub fn save_to_file(creds: &Credentials) -> Result<PathBuf, ScrapeError> {
             } else {
                 Some(creds.soft_name.clone())
             },
-            user_id: creds.user_id.clone(),
-            user_password: creds.user_password.clone(),
+            user_id: non_blank(Some(creds.user_id.clone())),
+            user_password: non_blank(Some(creds.user_password.clone())),
         }),
     };
 

@@ -187,8 +187,8 @@ impl RomAnalyzer for GenesisAnalyzer {
         let header = parse_header(&header_buf);
 
         // Build identification
-        let mut id = RomIdentification::new().with_platform(Platform::Genesis);
-        id.file_size = Some(file_size);
+        let mut id = RomIdentification::new();
+        id.file_size = file_size;
 
         if !header.serial_number.is_empty() {
             id = id.with_serial(&header.serial_number);
@@ -214,9 +214,9 @@ impl RomAnalyzer for GenesisAnalyzer {
             // from power-of-2 padding.  If the file is truncated, report the
             // declared size so the mismatch is visible.
             if file_size >= declared_size {
-                id.expected_size = Some(file_size);
+                id.expected_size = file_size;
             } else {
-                id.expected_size = Some(declared_size);
+                id.expected_size = declared_size;
             }
         }
 

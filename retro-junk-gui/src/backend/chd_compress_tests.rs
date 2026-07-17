@@ -39,7 +39,7 @@ fn start_compression_noops_when_busy() {
         "existing compression".to_string(),
         Arc::new(AtomicBool::new(false)),
         OperationKind::ChdCompress,
-        Some("psx".to_string()),
+        "psx".to_string(),
         ProgressDisplay::Percent,
     ));
 
@@ -52,7 +52,7 @@ fn start_compression_noops_when_busy() {
         skipped: Vec::new(),
         chdman: Ok(Chdman {
             path: PathBuf::from("chdman"),
-            version: None,
+            version: String::new(),
         }),
         delete_sources: false,
     });
@@ -91,7 +91,7 @@ fn start_compression_spawns_when_not_busy() {
         // checks that the operation gets registered, not that it succeeds.
         chdman: Ok(Chdman {
             path: PathBuf::from("/nonexistent/chdman-binary"),
-            version: None,
+            version: String::new(),
         }),
         delete_sources: false,
     });
@@ -106,7 +106,7 @@ fn start_compression_spawns_when_not_busy() {
         "a compression op should be spawned"
     );
     assert_eq!(app.operations[0].kind, OperationKind::ChdCompress);
-    assert_eq!(app.operations[0].scope.as_deref(), Some("psx"));
+    assert_eq!(app.operations[0].scope, "psx");
 
     // Let the worker thread finish and clean up so the test doesn't leak a
     // background thread past the end of the test process.

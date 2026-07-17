@@ -60,36 +60,56 @@ impl AnalysisOptions {
     }
 }
 
+/// Deserialize a JSON `null` (or missing field) as the type's default.
+///
+/// Cached identifications written before the empty-string/zero convention
+/// serialize absent fields as `null`; this keeps those caches loadable.
+fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// Information extracted from analyzing a ROM or disc image.
+///
+/// Text fields use the empty string and sizes use 0 when the format has no
+/// such value; the platform is authoritative from [`RomAnalyzer::platform`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RomIdentification {
-    /// Serial number (e.g., "SLUS-00123" for PS1, "NUS-NSME-USA" for N64)
-    pub serial_number: Option<String>,
+    /// Serial number (e.g., "SLUS-00123" for PS1, "NUS-NSME-USA" for N64).
+    /// Empty when the format carries none.
+    #[serde(default, deserialize_with = "null_default")]
+    pub serial_number: String,
 
-    /// Internal name stored in the ROM header
-    pub internal_name: Option<String>,
+    /// Internal name stored in the ROM header. Empty when absent.
+    #[serde(default, deserialize_with = "null_default")]
+    pub internal_name: String,
 
     /// Region(s) the ROM is intended for
     pub regions: Vec<Region>,
 
-    /// Version or revision number
-    pub version: Option<String>,
+    /// Version or revision number. Empty when the header has none.
+    #[serde(default, deserialize_with = "null_default")]
+    pub version: String,
 
     /// Expected checksums stored in the ROM itself (for self-verification)
     pub expected_checksums: Vec<ExpectedChecksum>,
 
-    /// Actual file size on disk in bytes
-    pub file_size: Option<u64>,
+    /// Actual file size on disk in bytes. 0 = not recorded.
+    #[serde(default, deserialize_with = "null_default")]
+    pub file_size: u64,
 
-    /// Expected file size in bytes, derived from header/metadata.
-    /// Compare with `file_size` to detect truncated or padded dumps.
-    pub expected_size: Option<u64>,
+    /// Expected file size in bytes, derived from header/metadata; 0 when the
+    /// format has no size metadata. Compare with `file_size` to detect
+    /// truncated or padded dumps.
+    #[serde(default, deserialize_with = "null_default")]
+    pub expected_size: u64,
 
-    /// Platform/console identifier
-    pub platform: Option<Platform>,
-
-    /// Maker/publisher code
-    pub maker_code: Option<String>,
+    /// Maker/publisher code. Empty when absent.
+    #[serde(default, deserialize_with = "null_default")]
+    pub maker_code: String,
 
     /// Additional platform-specific metadata
     pub extra: std::collections::HashMap<String, String>,
@@ -101,22 +121,17 @@ impl RomIdentification {
     }
 
     pub fn with_serial(mut self, serial: impl Into<String>) -> Self {
-        self.serial_number = Some(serial.into());
+        self.serial_number = serial.into();
         self
     }
 
     pub fn with_internal_name(mut self, name: impl Into<String>) -> Self {
-        self.internal_name = Some(name.into());
+        self.internal_name = name.into();
         self
     }
 
     pub fn with_region(mut self, region: Region) -> Self {
         self.regions.push(region);
-        self
-    }
-
-    pub fn with_platform(mut self, platform: Platform) -> Self {
-        self.platform = Some(platform);
         self
     }
 }

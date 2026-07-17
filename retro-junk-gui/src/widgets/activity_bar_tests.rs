@@ -11,7 +11,7 @@ fn op(display: ProgressDisplay, current: u64, total: u64) -> BackgroundOperation
         "test".to_string(),
         Arc::new(AtomicBool::new(false)),
         OperationKind::Other,
-        None,
+        String::new(),
         display,
     );
     op.progress_current = current;

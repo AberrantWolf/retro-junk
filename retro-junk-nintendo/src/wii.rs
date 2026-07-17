@@ -60,7 +60,7 @@ impl RomAnalyzer for WiiAnalyzer {
         }
 
         let mut id = nintendo_disc::build_identification(&header, Platform::Wii);
-        id.file_size = Some(file_size);
+        id.file_size = file_size;
         id.extra.insert("format".into(), format_name.into());
         id.extra.insert(
             "detected_extension".into(),

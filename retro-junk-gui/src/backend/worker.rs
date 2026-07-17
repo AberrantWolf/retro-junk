@@ -20,7 +20,7 @@ pub fn spawn_background_op<F>(
     app: &mut RetroJunkApp,
     description: String,
     kind: OperationKind,
-    scope: Option<String>,
+    scope: String,
     display: ProgressDisplay,
     work: F,
 ) -> u64

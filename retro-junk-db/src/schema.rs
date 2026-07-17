@@ -436,9 +436,13 @@ fn rebuild_table(
     select_exprs: &str,
 ) -> Result<(), SchemaError> {
     let body = table_body(name)?;
+    // INSERT OR IGNORE: under the old schema, UNIQUE keys containing NULL
+    // columns never conflicted (SQLite treats NULLs as distinct), so legacy
+    // databases can hold duplicate rows — e.g. overrides re-inserted by every
+    // catalog import. The rebuild keeps the first copy and drops duplicates.
     conn.execute_batch(&format!(
         "CREATE TABLE {name}_new {body};
-         INSERT INTO {name}_new SELECT {select_exprs} FROM {name};
+         INSERT OR IGNORE INTO {name}_new SELECT {select_exprs} FROM {name};
          DROP TABLE {name};
          ALTER TABLE {name}_new RENAME TO {name};"
     ))?;

@@ -9,6 +9,15 @@ use crate::miximage_layout::{
 };
 use crate::{AssetType, FrontendError};
 
+/// Where the box art landed on the canvas — used to position physical media
+/// relative to it.
+struct BoxPlacement {
+    /// Bottom-right corner of the box art (x, y).
+    bottom_right: (i64, i64),
+    /// Bottom edge y-coordinate of the box art.
+    bottom_y: i64,
+}
+
 /// Generate a composite miximage from component images.
 ///
 /// Returns `Ok(true)` if the miximage was generated, `Ok(false)` if the
@@ -69,8 +78,7 @@ pub fn generate_miximage(
     imageops::overlay(&mut canvas, &framed, ss_x, ss_y);
 
     // Track box art placement for physical media positioning
-    let mut box_bottom_right: Option<(i64, i64)> = None;
-    let mut box_bottom_y: Option<i64> = None;
+    let mut box_placement: Option<BoxPlacement> = None;
 
     // Box art (prefer 3D if configured and available)
     let box_path = if layout.box_art.prefer_3d {
@@ -108,8 +116,10 @@ pub fn generate_miximage(
         }
 
         imageops::overlay(&mut canvas, &box_img, bx, by);
-        box_bottom_right = Some((bx + bw as i64, by + bh as i64));
-        box_bottom_y = Some(by + bh as i64);
+        box_placement = Some(BoxPlacement {
+            bottom_right: (bx + bw as i64, by + bh as i64),
+            bottom_y: by + bh as i64,
+        });
     }
 
     // Marquee / logo
@@ -159,8 +169,7 @@ pub fn generate_miximage(
             canvas_w,
             canvas_h,
             layout.physical_media.gap,
-            box_bottom_right,
-            box_bottom_y,
+            box_placement.as_ref(),
             &layout.physical_media.shadow,
         );
 
@@ -482,8 +491,7 @@ fn physical_media_position(
     canvas_w: u32,
     canvas_h: u32,
     gap: u32,
-    box_bottom_right: Option<(i64, i64)>,
-    box_bottom_y: Option<i64>,
+    box_placement: Option<&BoxPlacement>,
     shadow: &ShadowConfig,
 ) -> (i64, i64) {
     let margin = if shadow.enabled {
@@ -492,17 +500,17 @@ fn physical_media_position(
         8
     };
 
-    match (position, box_bottom_right) {
-        (PhysMediaPosition::RightOfBox, Some((box_right_x, _))) => {
-            let x = box_right_x + gap as i64;
-            let y = box_bottom_y.unwrap_or(canvas_h as i64) - elem_h as i64 - margin;
+    match (position, box_placement) {
+        (PhysMediaPosition::RightOfBox, Some(placement)) => {
+            let x = placement.bottom_right.0 + gap as i64;
+            let y = placement.bottom_y - elem_h as i64 - margin;
             (x, y)
         }
-        (PhysMediaPosition::LeftOfBox, Some((box_left_x, _))) => {
-            // box_bottom_right.0 is actually the right edge; for LeftOfBox we'd need left edge
-            // For now, just place it to the left of the box's left edge
-            let x = box_left_x - elem_w as i64 - gap as i64;
-            let y = box_bottom_y.unwrap_or(canvas_h as i64) - elem_h as i64 - margin;
+        (PhysMediaPosition::LeftOfBox, Some(placement)) => {
+            // bottom_right.0 is the right edge; for LeftOfBox we'd need the left edge
+            // For now, just place it to the left of the box's right edge
+            let x = placement.bottom_right.0 - elem_w as i64 - gap as i64;
+            let y = placement.bottom_y - elem_h as i64 - margin;
             (x, y)
         }
         // No box art present — place at bottom-center

@@ -113,8 +113,8 @@ fn test_basic_analysis() {
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
 
-    assert_eq!(id.serial_number.as_deref(), Some("RSBE"));
-    assert_eq!(id.internal_name.as_deref(), Some("Wii Sports"));
+    assert_eq!(id.serial_number, "RSBE");
+    assert_eq!(id.internal_name, "Wii Sports");
     assert_eq!(id.regions, vec![Region::Usa]);
     assert_eq!(id.extra.get("game_code").map(|s| s.as_str()), Some("RSBE"));
     assert_eq!(id.extra.get("maker_code").map(|s| s.as_str()), Some("01"));
@@ -152,7 +152,7 @@ fn test_version_nonzero() {
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
-    assert_eq!(id.version.as_deref(), Some("1.01"));
+    assert_eq!(id.version, "1.01");
 }
 
 #[test]

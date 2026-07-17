@@ -10,8 +10,8 @@ use super::{default_catalog_db_path, or_str};
 /// List unresolved disagreements between data sources.
 pub(crate) fn run_catalog_disagreements(
     db_path: Option<PathBuf>,
-    system: Option<String>,
-    field: Option<String>,
+    system: String,
+    field: String,
     limit: u32,
 ) -> Result<(), CliError> {
     use retro_junk_db::DisagreementFilter;
@@ -28,8 +28,8 @@ pub(crate) fn run_catalog_disagreements(
         .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
 
     let filter = DisagreementFilter {
-        platform_id: system.as_deref(),
-        field: field.as_deref(),
+        platform_id: (!system.is_empty()).then_some(system.as_str()),
+        field: (!field.is_empty()).then_some(field.as_str()),
         limit: Some(limit),
         ..Default::default()
     };

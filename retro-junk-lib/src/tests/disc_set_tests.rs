@@ -157,7 +157,7 @@ fn plans_full_set_by_serial() {
         plan.new_cue_content.as_deref(),
         Some(canonical_cue().as_str())
     );
-    assert_eq!(plan.cue_verified, Some(true));
+    assert_eq!(plan.cue_verified, CueVerification::Verified);
     // 2 tracks + cue all rename
     assert_eq!(plan.file_renames().len(), 3);
 }
@@ -198,7 +198,7 @@ fn already_correct_set_is_not_planned() {
         panic!("expected AlreadyCorrect, got {outcome:?}");
     };
     assert_eq!(game_name, GAME);
-    assert_eq!(cue_verified, Some(true));
+    assert_eq!(cue_verified, CueVerification::Verified);
 }
 
 #[test]
@@ -218,7 +218,7 @@ fn corrupt_track_fails_verification_and_is_not_planned() {
     let DiscSetOutcome::NotVerified { game_name, issues } = outcome else {
         panic!("expected NotVerified, got {outcome:?}");
     };
-    assert_eq!(game_name.as_deref(), Some(GAME));
+    assert_eq!(game_name, GAME);
     assert!(!issues.is_empty());
 
     // Without a serial: no full hash match either
@@ -340,7 +340,7 @@ fn single_track_set_renames_cue_and_bin() {
     };
     let renames = plan.file_renames();
     assert_eq!(renames.len(), 2, "both bin and cue must rename");
-    assert_eq!(plan.cue_verified, Some(true));
+    assert_eq!(plan.cue_verified, CueVerification::Verified);
 }
 
 #[test]

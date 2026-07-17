@@ -67,7 +67,7 @@ fn chd_compress_busy_scopes_to_operation_kind_and_folder() {
         "Compressing".to_string(),
         Arc::new(AtomicBool::new(false)),
         OperationKind::ChdCompress,
-        Some("X".to_string()),
+        "X".to_string(),
         ProgressDisplay::Percent,
     ));
 
@@ -80,7 +80,7 @@ fn chd_compress_busy_scopes_to_operation_kind_and_folder() {
         "Scanning".to_string(),
         Arc::new(AtomicBool::new(false)),
         OperationKind::Scan,
-        Some("Z".to_string()),
+        "Z".to_string(),
         ProgressDisplay::Count,
     ));
     assert!(!app.chd_compress_busy("Z"));
@@ -107,7 +107,7 @@ fn on_exit_cancels_and_joins_all_operation_threads() {
         "test op".to_string(),
         cancel.clone(),
         OperationKind::Other,
-        None,
+        String::new(),
         ProgressDisplay::Count,
     ));
     let handle = std::thread::spawn(|| {

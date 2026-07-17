@@ -92,13 +92,12 @@ fn test_basic_analysis() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
-    assert_eq!(result.internal_name.as_deref(), Some("TESTGAME"));
-    assert_eq!(result.platform, Some(Platform::Gba));
-    assert_eq!(result.serial_number.as_deref(), Some("AGB-ATEJ"));
-    assert_eq!(result.maker_code.as_deref(), Some("Nintendo R&D1"));
-    assert_eq!(result.version.as_deref(), Some("v0"));
-    assert_eq!(result.file_size, Some(256 * 1024));
-    assert_eq!(result.expected_size, Some(256 * 1024));
+    assert_eq!(result.internal_name, "TESTGAME");
+    assert_eq!(result.serial_number, "AGB-ATEJ");
+    assert_eq!(result.maker_code, "Nintendo R&D1");
+    assert_eq!(result.version, "v0");
+    assert_eq!(result.file_size, 256 * 1024);
+    assert_eq!(result.expected_size, 256 * 1024);
     assert_eq!(result.regions, vec![Region::Japan]);
     assert_eq!(
         result.extra.get("checksum_status:GBA Complement").unwrap(),
@@ -212,23 +211,23 @@ fn test_software_version() {
     let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert_eq!(result.version.as_deref(), Some("v3"));
+    assert_eq!(result.version, "v3");
 }
 
 #[test]
 fn test_expected_size_power_of_2() {
     // 256 KB is already a power of 2
-    assert_eq!(expected_rom_size(256 * 1024), Some(256 * 1024));
+    assert_eq!(expected_rom_size(256 * 1024), 256 * 1024);
     // 300 KB rounds up to 512 KB
-    assert_eq!(expected_rom_size(300 * 1024), Some(512 * 1024));
+    assert_eq!(expected_rom_size(300 * 1024), 512 * 1024);
     // 1 byte rounds up to 1
-    assert_eq!(expected_rom_size(1), Some(1));
-    // 0 returns None
-    assert_eq!(expected_rom_size(0), None);
+    assert_eq!(expected_rom_size(1), 1);
+    // 0 (unknown) returns 0
+    assert_eq!(expected_rom_size(0), 0);
     // Exactly 32 MB
-    assert_eq!(expected_rom_size(32 * 1024 * 1024), Some(32 * 1024 * 1024));
+    assert_eq!(expected_rom_size(32 * 1024 * 1024), 32 * 1024 * 1024);
     // Over 32 MB caps at 32 MB
-    assert_eq!(expected_rom_size(33 * 1024 * 1024), Some(32 * 1024 * 1024));
+    assert_eq!(expected_rom_size(33 * 1024 * 1024), 32 * 1024 * 1024);
 }
 
 #[test]
@@ -293,7 +292,7 @@ fn test_title_trimming() {
     let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert_eq!(result.internal_name.as_deref(), Some("HI"));
+    assert_eq!(result.internal_name, "HI");
 }
 
 #[test]
@@ -302,7 +301,7 @@ fn test_serial_number_format() {
     let analyzer = GbaAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert!(result.serial_number.as_deref().unwrap().starts_with("AGB-"));
+    assert!(result.serial_number.starts_with("AGB-"));
 }
 
 #[test]

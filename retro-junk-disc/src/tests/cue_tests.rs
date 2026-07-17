@@ -183,7 +183,7 @@ FILE "game (Track 2).bin" BINARY
 fn test_compat_detects_disc_type_header() {
     let cue = "CD_ROM_XA\n\nTRACK MODE2_RAW\nDATAFILE \"game.bin\"\n";
     let report = check_cue_compat(cue);
-    assert_eq!(report.disc_type_header.as_deref(), Some("CD_ROM_XA"));
+    assert_eq!(report.disc_type_header, "CD_ROM_XA");
     assert!(!report.is_standard());
 }
 
@@ -221,7 +221,7 @@ fn test_compat_audiofile_with_offset_is_unfixable() {
     let cue = "TRACK AUDIO\nAUDIOFILE \"game.bin\" #16278192 0 00:08:08\n";
     let report = check_cue_compat(cue);
     assert!(report.has_audiofile);
-    assert!(report.unfixable_reason.is_some());
+    assert!(report.blocked_reason().is_some());
     assert!(!report.can_auto_fix());
 }
 
@@ -236,7 +236,7 @@ DATAFILE "game.bin"
 "#;
     let report = check_cue_compat(cue);
     assert!(report.can_auto_fix());
-    assert!(report.disc_type_header.is_some());
+    assert!(!report.disc_type_header.is_empty());
     assert!(!report.cdwin_track_modes.is_empty());
     assert!(report.has_datafile);
     assert!(report.has_extra_directives);

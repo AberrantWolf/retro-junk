@@ -34,15 +34,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             if name.contains(&filter) {
                 return true;
             }
+            // `filter` is non-empty here, so empty fields can never match.
             if let Some(ref id) = entry.identification {
-                if let Some(ref serial) = id.serial_number
-                    && serial.to_lowercase().contains(&filter)
-                {
+                if id.serial_number.to_lowercase().contains(&filter) {
                     return true;
                 }
-                if let Some(ref iname) = id.internal_name
-                    && iname.to_lowercase().contains(&filter)
-                {
+                if id.internal_name.to_lowercase().contains(&filter) {
                     return true;
                 }
             }
@@ -150,21 +147,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 asset_status: entry.asset_status(),
                 name: entry.game_entry.display_name().to_string(),
                 file_path: entry.game_entry.analysis_path().to_path_buf(),
-                serial: entry
-                    .identification
-                    .as_ref()
-                    .and_then(|id| id.serial_number.clone())
-                    .or_else(|| {
-                        entry
-                            .disc_identifications
-                            .as_ref()?
-                            .iter()
-                            .find_map(|d| d.identification.serial_number.clone())
-                    }),
+                serial: entry_serial(entry),
                 internal_name: entry
                     .identification
                     .as_ref()
-                    .and_then(|id| id.internal_name.clone()),
+                    .map(|id| id.internal_name.clone())
+                    .unwrap_or_default(),
                 regions: {
                     let codes: Vec<&str> =
                         entry.effective_regions().iter().map(|r| r.code()).collect();
@@ -175,8 +163,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         text
                     }
                 },
-                crc32: entry.hashes.as_ref().map(|h| h.crc32.clone()),
-                dat_match: entry.dat_match.as_ref().map(|dm| dm.game_name.clone()),
+                crc32: entry
+                    .hashes
+                    .as_ref()
+                    .map(|h| h.crc32.clone())
+                    .unwrap_or_default(),
+                dat_match: entry
+                    .dat_match
+                    .as_ref()
+                    .map(|dm| dm.game_name.clone())
+                    .unwrap_or_default(),
             }
         })
         .collect();
@@ -295,10 +291,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         // allowing the cell response to handle all click interaction.
                         let r2 = row.col(|ui| paint_cell_text(ui, &data.name));
                         let r3 = row.col(|ui| {
-                            paint_cell_text(ui, data.serial.as_deref().unwrap_or(""));
+                            paint_cell_text(ui, &data.serial);
                         });
                         let r4 = row.col(|ui| {
-                            paint_cell_text(ui, data.internal_name.as_deref().unwrap_or(""));
+                            paint_cell_text(ui, &data.internal_name);
                         });
                         let r5 = row.col(|ui| {
                             paint_cell_text(
@@ -311,10 +307,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             );
                         });
                         let r6 = row.col(|ui| {
-                            paint_cell_text(ui, data.crc32.as_deref().unwrap_or(""));
+                            paint_cell_text(ui, &data.crc32);
                         });
                         let r7 = row.col(|ui| {
-                            paint_cell_text(ui, data.dat_match.as_deref().unwrap_or(""));
+                            paint_cell_text(ui, &data.dat_match);
                         });
 
                         // Scroll-to-row: when keyboard navigation targets this row
@@ -498,14 +494,13 @@ fn show_row_context_menu(
         crate::util::copy_and_close(ui, paths);
     }
 
-    let has_serial = data.serial.is_some()
+    let has_serial = !data.serial.is_empty()
         || app.selected_entries.iter().any(|&i| {
             app.library.consoles[console_idx]
                 .entries
                 .get(i)
                 .and_then(|e| e.identification.as_ref())
-                .and_then(|id| id.serial_number.as_ref())
-                .is_some()
+                .is_some_and(|id| !id.serial_number.is_empty())
         });
     if ui
         .add_enabled(has_serial, egui::Button::new("Copy Serial"))
@@ -515,12 +510,13 @@ fn show_row_context_menu(
             entry
                 .identification
                 .as_ref()
-                .and_then(|id| id.serial_number.clone())
+                .filter(|id| !id.serial_number.is_empty())
+                .map(|id| id.serial_number.clone())
         });
         crate::util::copy_and_close(ui, serials);
     }
 
-    let has_crc32 = data.crc32.is_some()
+    let has_crc32 = !data.crc32.is_empty()
         || app.selected_entries.iter().any(|&i| {
             app.library.consoles[console_idx]
                 .entries
@@ -538,7 +534,7 @@ fn show_row_context_menu(
         crate::util::copy_and_close(ui, crcs);
     }
 
-    let has_dat = data.dat_match.is_some()
+    let has_dat = !data.dat_match.is_empty()
         || app.selected_entries.iter().any(|&i| {
             app.library.consoles[console_idx]
                 .entries
@@ -646,6 +642,24 @@ fn collect_selected_field(
     values.join("\n")
 }
 
+/// Serial for a table row: the entry's own, falling back to the first
+/// disc-level serial for multi-disc sets. Empty when none.
+fn entry_serial(entry: &crate::state::LibraryEntry) -> String {
+    if let Some(ref id) = entry.identification
+        && !id.serial_number.is_empty()
+    {
+        return id.serial_number.clone();
+    }
+    entry
+        .disc_identifications
+        .iter()
+        .flatten()
+        .map(|d| &d.identification.serial_number)
+        .find(|s| !s.is_empty())
+        .cloned()
+        .unwrap_or_default()
+}
+
 struct RowData {
     entry_idx: usize,
     status: EntryStatus,
@@ -655,11 +669,11 @@ struct RowData {
     asset_status: AssetStatus,
     name: String,
     file_path: PathBuf,
-    serial: Option<String>,
-    internal_name: Option<String>,
+    serial: String,
+    internal_name: String,
     regions: String,
-    crc32: Option<String>,
-    dat_match: Option<String>,
+    crc32: String,
+    dat_match: String,
 }
 
 fn handle_row_click(app: &mut RetroJunkApp, entry_idx: usize, modifiers: egui::Modifiers) {

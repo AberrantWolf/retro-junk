@@ -386,11 +386,11 @@ impl ScreenScraperClient {
         params.insert("devid", self.creds.dev_id.clone());
         params.insert("devpassword", self.creds.dev_password.clone());
         params.insert("softname", self.creds.soft_name.clone());
-        if let Some(ref id) = self.creds.user_id {
-            params.insert("ssid", id.clone());
+        if !self.creds.user_id.is_empty() {
+            params.insert("ssid", self.creds.user_id.clone());
         }
-        if let Some(ref pw) = self.creds.user_password {
-            params.insert("sspassword", pw.clone());
+        if !self.creds.user_password.is_empty() {
+            params.insert("sspassword", self.creds.user_password.clone());
         }
         params
     }

@@ -166,7 +166,6 @@ pub(crate) fn build_identification(
     let maker = maker_code_str(header);
 
     let mut id = RomIdentification::new()
-        .with_platform(platform)
         .with_serial(&code)
         .with_internal_name(&header.game_name);
 
@@ -177,11 +176,11 @@ pub(crate) fn build_identification(
 
     // Version
     if header.version > 0 {
-        id.version = Some(format!("1.{:02}", header.version));
+        id.version = format!("1.{:02}", header.version);
     }
 
     // Maker code
-    id.maker_code = Some(maker.clone());
+    id.maker_code = maker.clone();
 
     // Composite product code for display (e.g., "DOL-GALE-0" for GC, "RVL-RSBE-0" for Wii)
     let platform_prefix = match platform {

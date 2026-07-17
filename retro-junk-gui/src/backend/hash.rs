@@ -92,7 +92,7 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
     let total_bytes: u64 = work.iter().map(|w| w.file_size).sum();
     let context = app.context.clone();
     let description = format!("Computing hashes ({} files)", work.len());
-    let scope = Some(folder_name.clone());
+    let scope = folder_name.clone();
 
     spawn_background_op(
         app,

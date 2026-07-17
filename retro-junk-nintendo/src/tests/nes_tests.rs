@@ -66,9 +66,9 @@ fn test_parse_ines_basic() {
     assert_eq!(result.extra.get("mirroring").unwrap(), "Horizontal");
     assert_eq!(result.extra.get("format").unwrap(), "iNES");
     // Expected: 16 header + 32KB PRG + 8KB CHR = 40976
-    assert_eq!(result.expected_size, Some(16 + 32768 + 8192));
+    assert_eq!(result.expected_size, 16 + 32768 + 8192);
     // File only has the 16-byte header
-    assert_eq!(result.file_size, Some(16));
+    assert_eq!(result.file_size, 16);
 }
 
 #[test]
@@ -87,7 +87,7 @@ fn test_parse_ines_mapper4_vertical_battery() {
     assert_eq!(result.extra.get("prg_rom_size").unwrap(), "256 KB");
     assert_eq!(result.extra.get("chr_rom_size").unwrap(), "128 KB");
     // Expected: 16 + 256KB + 128KB = 393232
-    assert_eq!(result.expected_size, Some(16 + 262144 + 131072));
+    assert_eq!(result.expected_size, 16 + 262144 + 131072);
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn test_ines_size_with_trainer() {
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.extra.get("trainer").unwrap(), "Yes");
     // Expected: 16 header + 512 trainer + 16KB PRG + 8KB CHR
-    assert_eq!(result.expected_size, Some(16 + 512 + 16384 + 8192));
+    assert_eq!(result.expected_size, 16 + 512 + 16384 + 8192);
 }
 
 #[test]

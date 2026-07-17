@@ -284,11 +284,21 @@ const CDRWIN_STRIP_DIRECTIVES: &[&str] = &[
     "ZERO ",
 ];
 
+/// Whether a nonstandard CUE can be rewritten automatically.
+#[derive(Debug, Clone, Default)]
+pub enum AutoFix {
+    /// Auto-conversion to standard format is possible.
+    #[default]
+    Possible,
+    /// Auto-conversion is not possible; contains the reason.
+    Blocked(String),
+}
+
 /// Detected CDRWin compatibility issues in a CUE sheet.
 #[derive(Debug, Clone)]
 pub struct CueCompatReport {
-    /// CDRWin disc-type header found (e.g., "CD_ROM_XA").
-    pub disc_type_header: Option<String>,
+    /// CDRWin disc-type header found (e.g., "CD_ROM_XA"). Empty if none found.
+    pub disc_type_header: String,
     /// Tracks using CDRWin mode syntax: (track number, CDRWin mode).
     pub cdwin_track_modes: Vec<(u8, String)>,
     /// Whether DATAFILE directives are present.
@@ -299,14 +309,14 @@ pub struct CueCompatReport {
     pub has_extra_directives: bool,
     /// Whether `//` comments are present.
     pub has_comments: bool,
-    /// If set, auto-conversion is not possible; contains the reason.
-    pub unfixable_reason: Option<String>,
+    /// Whether auto-conversion to standard format is possible.
+    pub auto_fix: AutoFix,
 }
 
 impl CueCompatReport {
     /// Returns true if the CUE file uses only standard format (no CDRWin-isms).
     pub fn is_standard(&self) -> bool {
-        self.disc_type_header.is_none()
+        self.disc_type_header.is_empty()
             && self.cdwin_track_modes.is_empty()
             && !self.has_datafile
             && !self.has_audiofile
@@ -316,14 +326,22 @@ impl CueCompatReport {
 
     /// Returns true if auto-conversion to standard format is possible.
     pub fn can_auto_fix(&self) -> bool {
-        !self.is_standard() && self.unfixable_reason.is_none()
+        !self.is_standard() && matches!(self.auto_fix, AutoFix::Possible)
+    }
+
+    /// If auto-conversion is blocked, returns the reason.
+    pub fn blocked_reason(&self) -> Option<&str> {
+        match &self.auto_fix {
+            AutoFix::Possible => None,
+            AutoFix::Blocked(reason) => Some(reason),
+        }
     }
 
     /// Short human-readable summary of what was detected.
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
-        if let Some(ref dt) = self.disc_type_header {
-            parts.push(format!("{dt} header"));
+        if !self.disc_type_header.is_empty() {
+            parts.push(format!("{} header", self.disc_type_header));
         }
         if !self.cdwin_track_modes.is_empty() {
             parts.push(format!(
@@ -353,13 +371,13 @@ impl CueCompatReport {
 /// structure. It identifies which CDRWin features are present.
 pub fn check_cue_compat(content: &str) -> CueCompatReport {
     let mut report = CueCompatReport {
-        disc_type_header: None,
+        disc_type_header: String::new(),
         cdwin_track_modes: Vec::new(),
         has_datafile: false,
         has_audiofile: false,
         has_extra_directives: false,
         has_comments: false,
-        unfixable_reason: None,
+        auto_fix: AutoFix::Possible,
     };
 
     let mut auto_track_number: u8 = 0;
@@ -382,7 +400,7 @@ pub fn check_cue_compat(content: &str) -> CueCompatReport {
         // Check for disc-type headers
         for dt in CDRWIN_DISC_TYPES {
             if upper == *dt {
-                report.disc_type_header = Some(dt.to_string());
+                report.disc_type_header = dt.to_string();
             }
         }
 
@@ -440,7 +458,7 @@ pub fn check_cue_compat(content: &str) -> CueCompatReport {
     }
 
     if has_audiofile_with_offset {
-        report.unfixable_reason = Some(
+        report.auto_fix = AutoFix::Blocked(
             "AUDIOFILE with byte offset (#) cannot be converted to standard CUE without splitting the audio file".to_string()
         );
     }

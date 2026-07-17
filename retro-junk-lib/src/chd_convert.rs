@@ -59,18 +59,21 @@ impl ChdmanUnavailable {
 #[derive(Debug, Clone)]
 pub struct Chdman {
     pub path: PathBuf,
-    /// Version string parsed from the banner (e.g. "0.288"), when available.
-    pub version: Option<String>,
+    /// Version string parsed from the banner (e.g. "0.288"). Empty when the
+    /// banner carried no recognizable version.
+    pub version: String,
 }
 
 impl Chdman {
     /// Locate chdman: an explicit override path if given (from settings),
-    /// otherwise `chdman` on PATH. Runs it once to confirm it executes and
-    /// to capture its version banner.
-    pub fn detect(override_path: Option<&Path>) -> Result<Chdman, ChdmanUnavailable> {
-        let candidate: PathBuf = match override_path {
-            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-            _ => PathBuf::from("chdman"),
+    /// otherwise `chdman` on PATH (pass an empty path for PATH lookup).
+    /// Runs it once to confirm it executes and to capture its version banner.
+    pub fn detect(override_path: &Path) -> Result<Chdman, ChdmanUnavailable> {
+        let use_path_lookup = override_path.as_os_str().is_empty();
+        let candidate: PathBuf = if use_path_lookup {
+            PathBuf::from("chdman")
+        } else {
+            override_path.to_path_buf()
         };
 
         // chdman with no arguments prints its banner + usage and exits
@@ -79,9 +82,10 @@ impl Chdman {
             .stdin(Stdio::null())
             .output()
             .map_err(|e| ChdmanUnavailable {
-                reason: match override_path {
-                    Some(p) => format!("Cannot run chdman at {}: {e}", p.display()),
-                    None => format!("chdman not found on PATH ({e})"),
+                reason: if use_path_lookup {
+                    format!("chdman not found on PATH ({e})")
+                } else {
+                    format!("Cannot run chdman at {}: {e}", override_path.display())
                 },
             })?;
 
@@ -104,23 +108,23 @@ impl Chdman {
 
     /// Detect chdman from a settings string: empty/whitespace means "use PATH".
     pub fn detect_from_setting(setting: &str) -> Result<Chdman, ChdmanUnavailable> {
-        let trimmed = setting.trim();
-        let override_path = (!trimmed.is_empty()).then(|| PathBuf::from(trimmed));
-        Self::detect(override_path.as_deref())
+        Self::detect(Path::new(setting.trim()))
     }
 }
 
 /// Parse the version from chdman's banner line:
 /// `chdman - MAME Compressed Hunks of Data (CHD) manager 0.288 (mame0288-dirty)`
-fn parse_chdman_version(banner: &str) -> Option<String> {
-    let line = banner.lines().find(|l| l.contains("manager"))?;
-    let after = line.split("manager").nth(1)?.trim();
-    let version = after.split_whitespace().next()?;
-    version
-        .chars()
-        .next()
-        .filter(|c| c.is_ascii_digit())
-        .map(|_| version.to_string())
+///
+/// Returns an empty string when the banner carries no recognizable version.
+fn parse_chdman_version(banner: &str) -> String {
+    banner
+        .lines()
+        .find(|l| l.contains("manager"))
+        .and_then(|line| line.split("manager").nth(1))
+        .and_then(|after| after.trim().split_whitespace().next())
+        .filter(|version| version.starts_with(|c: char| c.is_ascii_digit()))
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Why a file cannot be compressed to CHD. Display text derives from this;

@@ -180,9 +180,8 @@ fn test_analyze_saturn_iso() {
     let options = AnalysisOptions::default();
     let id = analyzer.analyze(&mut cursor, &options).unwrap();
 
-    assert_eq!(id.platform, Some(Platform::Saturn));
-    assert_eq!(id.serial_number.as_deref(), Some("MK-81009"));
-    assert_eq!(id.internal_name.as_deref(), Some("NiGHTS into Dreams..."));
+    assert_eq!(id.serial_number, "MK-81009");
+    assert_eq!(id.internal_name, "NiGHTS into Dreams...");
     assert_eq!(id.regions, vec![Region::Japan, Region::Usa, Region::Europe]);
     assert_eq!(id.extra.get("format").map(|s| s.as_str()), Some("ISO 9660"));
     assert_eq!(
@@ -204,7 +203,7 @@ fn test_analyze_saturn_iso_japan_only() {
     let options = AnalysisOptions::default();
     let id = analyzer.analyze(&mut cursor, &options).unwrap();
 
-    assert_eq!(id.serial_number.as_deref(), Some("GS-9001"));
+    assert_eq!(id.serial_number, "GS-9001");
     assert_eq!(id.regions, vec![Region::Japan]);
 }
 
@@ -270,17 +269,17 @@ fn test_serial_extraction_various() {
     let analyzer = SaturnAnalyzer;
     let options = AnalysisOptions::default();
     let id = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(id.serial_number.as_deref(), Some("MK-81009"));
+    assert_eq!(id.serial_number, "MK-81009");
 
     let data2 = make_saturn_iso("T-1001G", "J", "Third Party");
     let mut cursor = Cursor::new(data2);
     let id = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(id.serial_number.as_deref(), Some("T-1001G"));
+    assert_eq!(id.serial_number, "T-1001G");
 
     let data3 = make_saturn_iso("GS-9001", "J", "Sega Game");
     let mut cursor = Cursor::new(data3);
     let id = analyzer.analyze(&mut cursor, &options).unwrap();
-    assert_eq!(id.serial_number.as_deref(), Some("GS-9001"));
+    assert_eq!(id.serial_number, "GS-9001");
 }
 
 // -- CHD extension table --

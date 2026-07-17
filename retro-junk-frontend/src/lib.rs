@@ -18,24 +18,24 @@ pub struct ScrapedGame {
     pub rom_filename: String,
     /// Display name
     pub name: String,
-    /// Game description
-    pub description: Option<String>,
-    /// Developer name
-    pub developer: Option<String>,
-    /// Publisher name
-    pub publisher: Option<String>,
-    /// Genre
-    pub genre: Option<String>,
-    /// Number of players (e.g., "1", "1-4")
-    pub players: Option<String>,
+    /// Game description (empty = unknown, omitted from output)
+    pub description: String,
+    /// Developer name (empty = unknown, omitted from output)
+    pub developer: String,
+    /// Publisher name (empty = unknown, omitted from output)
+    pub publisher: String,
+    /// Genre (empty = unknown, omitted from output)
+    pub genre: String,
+    /// Number of players (e.g., "1", "1-4"; empty = unknown, omitted from output)
+    pub players: String,
     /// Rating from 0.0 to 1.0
     pub rating: Option<f32>,
-    /// Release date in YYYYMMDD format
-    pub release_date: Option<String>,
+    /// Release date in YYYYMMDD format (empty = unknown, omitted from output)
+    pub release_date: String,
     /// Map of asset type to downloaded file path
     pub assets: std::collections::HashMap<AssetType, std::path::PathBuf>,
-    /// Box/cover title from catalog DB (used as ES-DE `<name>` when present)
-    pub cover_title: Option<String>,
+    /// Box/cover title from catalog DB (used as ES-DE `<name>` when non-empty)
+    pub cover_title: String,
 }
 
 /// Trait for gaming frontend metadata generators.
