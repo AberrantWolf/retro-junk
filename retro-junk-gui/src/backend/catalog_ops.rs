@@ -248,9 +248,7 @@ fn import_worker(
                 Some(&progress),
             ) {
                 Ok(stats) => {
-                    if let Err(e) =
-                        log_import(&conn, source_str, &dat.name, Some(&dat.version), &stats)
-                    {
+                    if let Err(e) = log_import(&conn, source_str, &dat.name, &dat.version, &stats) {
                         log::warn!("Failed to log import: {}", e);
                     }
                     log::info!(
@@ -537,7 +535,7 @@ fn ss_worker(
                 retro_junk_db::list_platforms(&conn)
                     .map(|ps| {
                         ps.into_iter()
-                            .filter(|p| p.core_platform.is_some())
+                            .filter(|p| !p.core_platform.is_empty())
                             .map(|p| p.id)
                             .collect()
                     })

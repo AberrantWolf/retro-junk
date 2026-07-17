@@ -270,10 +270,13 @@ pub struct PlatformRow {
     pub display_name: String,
     pub short_name: String,
     pub manufacturer: String,
-    pub generation: Option<u32>,
+    /// Console generation. 0 = unknown.
+    pub generation: u32,
     pub media_type: String,
-    pub release_year: Option<u32>,
-    pub core_platform: Option<String>,
+    /// First release year. 0 = unknown.
+    pub release_year: u32,
+    /// retro-junk-core Platform variant name; empty when unsupported.
+    pub core_platform: String,
 }
 
 /// A lightweight work row for search results.
@@ -481,11 +484,12 @@ pub struct CollectionRow {
     pub platform_id: String,
     pub title: String,
     pub region: String,
-    pub dat_name: Option<String>,
-    pub crc32: Option<String>,
-    pub sha1: Option<String>,
-    pub rom_path: Option<String>,
-    pub verified_at: Option<String>,
+    pub dat_name: String,
+    pub crc32: String,
+    pub sha1: String,
+    pub rom_path: String,
+    /// Timestamp of last hash verification. Empty = never verified.
+    pub verified_at: String,
     pub owned: bool,
 }
 
@@ -1211,7 +1215,7 @@ pub fn count_collection(
 pub struct CompanyRow {
     pub id: String,
     pub name: String,
-    pub country: Option<String>,
+    pub country: String,
     pub alias_count: i64,
 }
 
@@ -1345,10 +1349,23 @@ fn row_to_work(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkRow> {
 }
 
 fn row_to_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
+    let release_id: Option<String> = row.get(1)?;
+    let media_id: Option<String> = row.get(2)?;
+    // The schema CHECK guarantees exactly one owner column is set.
+    let owner = match (release_id, media_id) {
+        (Some(id), None) => AssetOwner::Release(id),
+        (None, Some(id)) => AssetOwner::Media(id),
+        _ => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Text,
+                "media_assets row must have exactly one of release_id/media_id".into(),
+            ));
+        }
+    };
     Ok(Asset {
         id: row.get(0)?,
-        release_id: row.get(1)?,
-        media_id: row.get(2)?,
+        owner,
         asset_type: row.get(3)?,
         region: row.get(4)?,
         source: row.get(5)?,

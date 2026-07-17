@@ -221,20 +221,18 @@ pub async fn enrich_releases(
             }
         };
 
-        let core_platform = match &platform_row.core_platform {
-            Some(cp) => match cp.parse::<Platform>() {
-                Ok(p) => p,
-                Err(_) => {
-                    log::warn!(
-                        "Unknown core_platform '{}' for {}, skipping",
-                        cp,
-                        platform_id
-                    );
-                    continue;
-                }
-            },
-            None => {
-                log::debug!("No core_platform for {}, skipping enrichment", platform_id);
+        if platform_row.core_platform.is_empty() {
+            log::debug!("No core_platform for {}, skipping enrichment", platform_id);
+            continue;
+        }
+        let core_platform = match platform_row.core_platform.parse::<Platform>() {
+            Ok(p) => p,
+            Err(_) => {
+                log::warn!(
+                    "Unknown core_platform '{}' for {}, skipping",
+                    platform_row.core_platform,
+                    platform_id
+                );
                 continue;
             }
         };
@@ -672,15 +670,15 @@ pub async fn enrich_releases(
                         let tx_result: Result<u32, EnrichError> = (|| {
                             conn.execute_batch("BEGIN")?;
 
-                            let publisher_id = if let Some(ref pub_name) = mapped.publisher {
-                                Some(find_or_create_company(conn, pub_name, &mut stats)?)
-                            } else {
+                            let publisher_id = if mapped.publisher.is_empty() {
                                 None
+                            } else {
+                                Some(find_or_create_company(conn, &mapped.publisher, &mut stats)?)
                             };
-                            let developer_id = if let Some(ref dev_name) = mapped.developer {
-                                Some(find_or_create_company(conn, dev_name, &mut stats)?)
-                            } else {
+                            let developer_id = if mapped.developer.is_empty() {
                                 None
+                            } else {
+                                Some(find_or_create_company(conn, &mapped.developer, &mut stats)?)
                             };
 
                             let disagreement_count = merge::merge_release_fields(
@@ -688,41 +686,44 @@ pub async fn enrich_releases(
                                 &release.id,
                                 &release,
                                 "screenscraper",
-                                mapped.title.as_deref(),
-                                mapped.release_date.as_deref(),
-                                mapped.genre.as_deref(),
-                                mapped.players.as_deref(),
-                                mapped.description.as_deref(),
+                                &merge::ReleaseFieldValues {
+                                    title: &mapped.title,
+                                    release_date: &mapped.release_date,
+                                    genre: &mapped.genre,
+                                    players: &mapped.players,
+                                    description: &mapped.description,
+                                },
                             )?;
 
                             operations::update_release_enrichment(
                                 conn,
                                 &release.id,
-                                &game.id,
-                                mapped.title.as_deref(),
-                                mapped.release_date.as_deref(),
-                                mapped.genre.as_deref(),
-                                mapped.players.as_deref(),
-                                mapped.rating,
-                                mapped.description.as_deref(),
-                                publisher_id.as_deref(),
-                                developer_id.as_deref(),
+                                &operations::ReleaseEnrichment {
+                                    screenscraper_id: &game.id,
+                                    title: &mapped.title,
+                                    release_date: &mapped.release_date,
+                                    genre: &mapped.genre,
+                                    players: &mapped.players,
+                                    rating: mapped.rating,
+                                    description: &mapped.description,
+                                    publisher_id: publisher_id.as_deref(),
+                                    developer_id: developer_id.as_deref(),
+                                },
                             )?;
 
                             for asset in &downloaded_assets {
                                 let asset_record = Asset {
                                     id: 0,
-                                    release_id: Some(release.id.clone()),
-                                    media_id: None,
+                                    owner: AssetOwner::Release(release.id.clone()),
                                     asset_type: asset.asset_type.clone(),
-                                    region: Some(asset.region.clone()),
+                                    region: asset.region.clone(),
                                     source: "screenscraper".to_string(),
-                                    file_path: Some(asset.file_path.to_string_lossy().to_string()),
-                                    source_url: Some(asset.source_url.clone()),
+                                    file_path: asset.file_path.to_string_lossy().to_string(),
+                                    source_url: asset.source_url.clone(),
                                     scraped: true,
-                                    file_hash: None,
-                                    width: None,
-                                    height: None,
+                                    file_hash: String::new(),
+                                    width: 0,
+                                    height: 0,
                                     created_at: String::new(),
                                 };
                                 operations::insert_asset(conn, &asset_record)?;
@@ -886,16 +887,18 @@ pub async fn enrich_releases(
 
 // ── Mapping Functions ───────────────────────────────────────────────────────
 
-/// Fields extracted from a GameInfo response.
+/// Fields extracted from a GameInfo response. This is the boundary where the
+/// ScreenScraper wire format's nullability ends: text fields are empty when
+/// the response had no data. `rating` stays `Option` — 0.0 is a real rating.
 pub struct MappedGameInfo {
-    pub title: Option<String>,
-    pub release_date: Option<String>,
-    pub genre: Option<String>,
-    pub players: Option<String>,
+    pub title: String,
+    pub release_date: String,
+    pub genre: String,
+    pub players: String,
     pub rating: Option<f64>,
-    pub description: Option<String>,
-    pub publisher: Option<String>,
-    pub developer: Option<String>,
+    pub description: String,
+    pub publisher: String,
+    pub developer: String,
 }
 
 /// Extract release-relevant fields from a ScreenScraper GameInfo response.
@@ -903,17 +906,35 @@ pub fn map_game_info(game: &GameInfo, region: &str, language: &str) -> MappedGam
     let ss_region = catalog_region_to_ss(region);
 
     MappedGameInfo {
-        title: game.name_for_region(ss_region).map(|s| s.to_string()),
+        title: game
+            .name_for_region(ss_region)
+            .unwrap_or_default()
+            .to_string(),
         release_date: game
             .date_for_region(ss_region)
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty()),
-        genre: game.genre_for_language(language),
-        players: game.joueurs.as_ref().map(|j| j.text.clone()),
+            .unwrap_or_default(),
+        genre: game.genre_for_language(language).unwrap_or_default(),
+        players: game
+            .joueurs
+            .as_ref()
+            .map(|j| j.text.clone())
+            .unwrap_or_default(),
         rating: game.rating_normalized().map(|r| r as f64),
-        description: game.synopsis_for_language(language).map(|s| s.to_string()),
-        publisher: game.editeur.as_ref().map(|e| e.text.clone()),
-        developer: game.developpeur.as_ref().map(|d| d.text.clone()),
+        description: game
+            .synopsis_for_language(language)
+            .unwrap_or_default()
+            .to_string(),
+        publisher: game
+            .editeur
+            .as_ref()
+            .map(|e| e.text.clone())
+            .unwrap_or_default(),
+        developer: game
+            .developpeur
+            .as_ref()
+            .map(|d| d.text.clone())
+            .unwrap_or_default(),
     }
 }
 
@@ -922,33 +943,36 @@ pub fn map_game_info(game: &GameInfo, region: &str, language: &str) -> MappedGam
 /// Prefers entries with SHA1 hashes, then CRC32, then serial, then any.
 fn pick_best_media_for_lookup(media: &[Media]) -> &Media {
     // Prefer media with SHA1 hash (strongest match)
-    if let Some(m) = media.iter().find(|m| m.sha1.is_some()) {
+    if let Some(m) = media.iter().find(|m| !m.sha1.is_empty()) {
         return m;
     }
     // Then CRC32
-    if let Some(m) = media.iter().find(|m| m.crc32.is_some()) {
+    if let Some(m) = media.iter().find(|m| !m.crc32.is_empty()) {
         return m;
     }
     // Then serial
-    if let Some(m) = media.iter().find(|m| m.media_serial.is_some()) {
+    if let Some(m) = media.iter().find(|m| !m.media_serial.is_empty()) {
         return m;
     }
     // Fallback to first
     &media[0]
 }
 
+/// Convert an empty string to `None`, otherwise `Some(owned)`.
+fn non_empty(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_string())
+}
+
 /// Build a RomInfo struct from catalog Media data.
 fn build_rom_info(media: &Media, platform: Platform) -> RomInfo {
-    let filename = media.dat_name.as_deref().unwrap_or("").to_string();
-
     RomInfo {
-        serial: media.media_serial.clone(),
+        serial: non_empty(&media.media_serial),
         scraper_serial: None,
-        filename,
-        file_size: media.file_size.unwrap_or(0) as u64,
-        crc32: media.crc32.clone().map(|s| s.to_uppercase()),
-        md5: media.md5.clone(),
-        sha1: media.sha1.clone(),
+        filename: media.dat_name.clone(),
+        file_size: media.file_size as u64,
+        crc32: non_empty(&media.crc32).map(|s| s.to_uppercase()),
+        md5: non_empty(&media.md5),
+        sha1: non_empty(&media.sha1),
         platform,
         expects_serial: systems::expects_serial(platform),
     }
@@ -982,7 +1006,7 @@ fn find_or_create_company(
     let company = Company {
         id: slug.clone(),
         name: name.to_string(),
-        country: None,
+        country: String::new(),
         aliases: vec![name.to_string()],
     };
     operations::upsert_company(conn, &company)?;

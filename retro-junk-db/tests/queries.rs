@@ -1,96 +1,116 @@
 use retro_junk_catalog::types::*;
 use retro_junk_db::*;
 
+fn test_platform(
+    id: &str,
+    display_name: &str,
+    short_name: &str,
+    manufacturer: &str,
+) -> CatalogPlatform {
+    CatalogPlatform {
+        id: id.to_string(),
+        display_name: display_name.to_string(),
+        short_name: short_name.to_string(),
+        manufacturer: manufacturer.to_string(),
+        generation: 3,
+        media_type: MediaType::Cartridge,
+        release_year: 1985,
+        description: String::new(),
+        core_platform: "Nes".to_string(),
+        regions: vec![],
+        relationships: vec![],
+    }
+}
+
+/// A release with every unset field at its empty default.
+fn test_release(id: &str, work_id: &str, platform_id: &str, title: &str) -> Release {
+    Release {
+        id: id.to_string(),
+        work_id: work_id.to_string(),
+        platform_id: platform_id.to_string(),
+        region: "usa".to_string(),
+        revision: String::new(),
+        variant: String::new(),
+        title: title.to_string(),
+        alt_title: String::new(),
+        publisher_id: None,
+        developer_id: None,
+        release_date: String::new(),
+        game_serial: String::new(),
+        genre: String::new(),
+        players: String::new(),
+        rating: None,
+        description: String::new(),
+        screen_title: String::new(),
+        cover_title: String::new(),
+        screenscraper_id: None,
+        scraper_not_found: false,
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
+}
+
+/// A media entry with every unset field at its empty default.
+fn test_media(id: &str, release_id: &str) -> Media {
+    Media {
+        id: id.to_string(),
+        release_id: release_id.to_string(),
+        media_serial: String::new(),
+        disc_number: 0,
+        disc_label: String::new(),
+        revision: String::new(),
+        status: MediaStatus::Verified,
+        tag: None,
+        dat_name: String::new(),
+        dat_source: String::new(),
+        file_size: 0,
+        crc32: String::new(),
+        sha1: String::new(),
+        md5: String::new(),
+        created_at: String::new(),
+        updated_at: String::new(),
+    }
+}
+
+fn test_disagreement(entity_id: &str, field: &str, value_a: &str, value_b: &str) -> Disagreement {
+    Disagreement {
+        id: 0,
+        entity_type: "release".to_string(),
+        entity_id: entity_id.to_string(),
+        field: field.to_string(),
+        source_a: "no-intro".to_string(),
+        value_a: value_a.to_string(),
+        source_b: "screenscraper".to_string(),
+        value_b: value_b.to_string(),
+        resolved: false,
+        resolution: String::new(),
+        resolved_at: String::new(),
+        created_at: String::new(),
+    }
+}
+
 fn setup_db() -> rusqlite::Connection {
     let conn = open_memory().unwrap();
     // Insert a platform and some test data
-    let platform = CatalogPlatform {
-        id: "nes".to_string(),
-        display_name: "Nintendo Entertainment System".to_string(),
-        short_name: "NES".to_string(),
-        manufacturer: "Nintendo".to_string(),
-        generation: Some(3),
-        media_type: MediaType::Cartridge,
-        release_year: Some(1985),
-        description: None,
-        core_platform: Some("Nes".to_string()),
-        regions: vec![],
-        relationships: vec![],
-    };
+    let platform = test_platform("nes", "Nintendo Entertainment System", "NES", "Nintendo");
     upsert_platform(&conn, &platform).unwrap();
     insert_work(&conn, "smb1", "Super Mario Bros.").unwrap();
     insert_work(&conn, "zelda1", "The Legend of Zelda").unwrap();
 
-    let smb_release = Release {
-        id: "smb1-nes-usa".to_string(),
-        work_id: "smb1".to_string(),
-        platform_id: "nes".to_string(),
-        region: "usa".to_string(),
-        revision: String::new(),
-        variant: String::new(),
-        title: "Super Mario Bros.".to_string(),
-        alt_title: None,
-        publisher_id: None,
-        developer_id: None,
-        release_date: Some("1985-10-18".to_string()),
-        game_serial: None,
-        genre: None,
-        players: None,
-        rating: None,
-        description: None,
-        screen_title: None,
-        cover_title: None,
-        screenscraper_id: None,
-        scraper_not_found: false,
-        created_at: String::new(),
-        updated_at: String::new(),
-    };
+    let mut smb_release = test_release("smb1-nes-usa", "smb1", "nes", "Super Mario Bros.");
+    smb_release.release_date = "1985-10-18".to_string();
     upsert_release(&conn, &smb_release).unwrap();
 
-    let zelda_release = Release {
-        id: "zelda1-nes-usa".to_string(),
-        work_id: "zelda1".to_string(),
-        platform_id: "nes".to_string(),
-        region: "usa".to_string(),
-        revision: String::new(),
-        variant: String::new(),
-        title: "The Legend of Zelda".to_string(),
-        alt_title: None,
-        publisher_id: None,
-        developer_id: None,
-        release_date: Some("1987-08-22".to_string()),
-        game_serial: None,
-        genre: None,
-        players: None,
-        rating: None,
-        description: None,
-        screen_title: None,
-        cover_title: None,
-        screenscraper_id: None,
-        scraper_not_found: false,
-        created_at: String::new(),
-        updated_at: String::new(),
-    };
+    let mut zelda_release = test_release("zelda1-nes-usa", "zelda1", "nes", "The Legend of Zelda");
+    zelda_release.release_date = "1987-08-22".to_string();
     upsert_release(&conn, &zelda_release).unwrap();
 
-    let smb_media = Media {
-        id: "smb1-nes-usa-v1".to_string(),
-        release_id: "smb1-nes-usa".to_string(),
-        media_serial: None,
-        disc_number: None,
-        disc_label: None,
-        revision: None,
-        status: MediaStatus::Verified,
-        tag: None,
-        dat_name: Some("Super Mario Bros. (USA).nes".to_string()),
-        dat_source: Some("no-intro".to_string()),
-        file_size: Some(40976),
-        crc32: Some("d445f698".to_string()),
-        sha1: Some("ea343f4e445a9050d4b4fbac2c77d0693b1d0922".to_string()),
-        md5: None,
-        created_at: String::new(),
-        updated_at: String::new(),
-    };
+    let mut smb_media = test_media("smb1-nes-usa-v1", "smb1-nes-usa");
+    smb_media.dat_name = "Super Mario Bros. (USA).nes".to_string();
+    smb_media.dat_source = "no-intro".to_string();
+    smb_media.file_size = 40976;
+    smb_media.crc32 = "d445f698".to_string();
+    smb_media.sha1 = "ea343f4e445a9050d4b4fbac2c77d0693b1d0922".to_string();
     upsert_media(&conn, &smb_media).unwrap();
 
     conn
@@ -157,7 +177,7 @@ fn list_platforms_query() {
     let platforms = list_platforms(&conn).unwrap();
     assert_eq!(platforms.len(), 1);
     assert_eq!(platforms[0].id, "nes");
-    assert_eq!(platforms[0].core_platform.as_deref(), Some("Nes"));
+    assert_eq!(platforms[0].core_platform, "Nes");
 }
 
 #[test]
@@ -167,38 +187,17 @@ fn disagreement_filter_by_field() {
     // Insert two disagreements with different fields
     insert_disagreement(
         &conn,
-        &Disagreement {
-            id: 0,
-            entity_type: "release".to_string(),
-            entity_id: "smb1-nes-usa".to_string(),
-            field: "release_date".to_string(),
-            source_a: "no-intro".to_string(),
-            value_a: Some("1985-10-18".to_string()),
-            source_b: "screenscraper".to_string(),
-            value_b: Some("1985-09-13".to_string()),
-            resolved: false,
-            resolution: None,
-            resolved_at: None,
-            created_at: String::new(),
-        },
+        &test_disagreement("smb1-nes-usa", "release_date", "1985-10-18", "1985-09-13"),
     )
     .unwrap();
     insert_disagreement(
         &conn,
-        &Disagreement {
-            id: 0,
-            entity_type: "release".to_string(),
-            entity_id: "smb1-nes-usa".to_string(),
-            field: "title".to_string(),
-            source_a: "no-intro".to_string(),
-            value_a: Some("Super Mario Bros.".to_string()),
-            source_b: "screenscraper".to_string(),
-            value_b: Some("Super Mario Brothers".to_string()),
-            resolved: false,
-            resolution: None,
-            resolved_at: None,
-            created_at: String::new(),
-        },
+        &test_disagreement(
+            "smb1-nes-usa",
+            "title",
+            "Super Mario Bros.",
+            "Super Mario Brothers",
+        ),
     )
     .unwrap();
 
@@ -224,87 +223,26 @@ fn disagreement_filter_by_platform() {
     let conn = setup_db();
 
     // Add a PS1 platform with a release
-    let ps1 = CatalogPlatform {
-        id: "ps1".to_string(),
-        display_name: "PlayStation".to_string(),
-        short_name: "PS1".to_string(),
-        manufacturer: "Sony".to_string(),
-        generation: Some(5),
-        media_type: MediaType::Disc,
-        release_year: Some(1994),
-        description: None,
-        core_platform: Some("Ps1".to_string()),
-        regions: vec![],
-        relationships: vec![],
-    };
+    let ps1 = test_platform("ps1", "PlayStation", "PS1", "Sony");
     upsert_platform(&conn, &ps1).unwrap();
     insert_work(&conn, "ff7", "Final Fantasy VII").unwrap();
     upsert_release(
         &conn,
-        &Release {
-            id: "ff7-ps1-usa".to_string(),
-            work_id: "ff7".to_string(),
-            platform_id: "ps1".to_string(),
-            region: "usa".to_string(),
-            revision: String::new(),
-            variant: String::new(),
-            title: "Final Fantasy VII".to_string(),
-            alt_title: None,
-            publisher_id: None,
-            developer_id: None,
-            release_date: None,
-            game_serial: None,
-            genre: None,
-            players: None,
-            rating: None,
-            description: None,
-            screen_title: None,
-            cover_title: None,
-            screenscraper_id: None,
-            scraper_not_found: false,
-            created_at: String::new(),
-            updated_at: String::new(),
-        },
+        &test_release("ff7-ps1-usa", "ff7", "ps1", "Final Fantasy VII"),
     )
     .unwrap();
 
     // NES disagreement
     insert_disagreement(
         &conn,
-        &Disagreement {
-            id: 0,
-            entity_type: "release".to_string(),
-            entity_id: "smb1-nes-usa".to_string(),
-            field: "release_date".to_string(),
-            source_a: "a".to_string(),
-            value_a: Some("1985".to_string()),
-            source_b: "b".to_string(),
-            value_b: Some("1986".to_string()),
-            resolved: false,
-            resolution: None,
-            resolved_at: None,
-            created_at: String::new(),
-        },
+        &test_disagreement("smb1-nes-usa", "release_date", "1985", "1986"),
     )
     .unwrap();
 
     // PS1 disagreement
     insert_disagreement(
         &conn,
-        &Disagreement {
-            id: 0,
-            entity_type: "release".to_string(),
-            entity_id: "ff7-ps1-usa".to_string(),
-            field: "release_date".to_string(),
-            source_a: "a".to_string(),
-            value_a: Some("1997".to_string()),
-            source_b: "b".to_string(),
-            value_b: Some("1998".to_string()),
-            resolved: false,
-            resolution: None,
-            resolved_at: None,
-            created_at: String::new(),
-        },
+        &test_disagreement("ff7-ps1-usa", "release_date", "1997", "1998"),
     )
     .unwrap();
 
@@ -347,17 +285,16 @@ fn setup_db_with_assets() -> rusqlite::Connection {
         &conn,
         &Asset {
             id: 0,
-            release_id: Some("smb1-nes-usa".to_string()),
-            media_id: None,
+            owner: AssetOwner::Release("smb1-nes-usa".to_string()),
             asset_type: "box-front".to_string(),
-            region: Some("usa".to_string()),
+            region: "usa".to_string(),
             source: "screenscraper".to_string(),
-            file_path: Some("/assets/smb1/box-front.png".to_string()),
-            source_url: Some("https://example.com/box.png".to_string()),
+            file_path: "/assets/smb1/box-front.png".to_string(),
+            source_url: "https://example.com/box.png".to_string(),
             scraped: true,
-            file_hash: None,
-            width: Some(300),
-            height: Some(400),
+            file_hash: String::new(),
+            width: 300,
+            height: 400,
             created_at: String::new(),
         },
     )
@@ -367,17 +304,16 @@ fn setup_db_with_assets() -> rusqlite::Connection {
         &conn,
         &Asset {
             id: 0,
-            release_id: Some("smb1-nes-usa".to_string()),
-            media_id: None,
+            owner: AssetOwner::Release("smb1-nes-usa".to_string()),
             asset_type: "screenshot".to_string(),
-            region: None,
+            region: String::new(),
             source: "screenscraper".to_string(),
-            file_path: Some("/assets/smb1/screenshot.png".to_string()),
-            source_url: None,
+            file_path: "/assets/smb1/screenshot.png".to_string(),
+            source_url: String::new(),
             scraped: true,
-            file_hash: None,
-            width: Some(256),
-            height: Some(240),
+            file_hash: String::new(),
+            width: 256,
+            height: 240,
             created_at: String::new(),
         },
     )
@@ -395,6 +331,14 @@ fn assets_for_release_returns_all() {
     // Ordered by asset_type
     assert_eq!(assets[0].asset_type, "box-front");
     assert_eq!(assets[1].asset_type, "screenshot");
+    // Owner round-trips as a release owner
+    assert_eq!(
+        assets[0].owner,
+        AssetOwner::Release("smb1-nes-usa".to_string())
+    );
+    // Unset fields round-trip as empty defaults, not NULL
+    assert_eq!(assets[1].region, "");
+    assert_eq!(assets[1].source_url, "");
 
     // Empty for zelda (no assets)
     let empty = assets_for_release(&conn, "zelda1-nes-usa").unwrap();
@@ -456,11 +400,11 @@ fn asset_queries_with_collection_filter() {
             media_id: "smb1-nes-usa-v1".to_string(),
             user_id: "default".to_string(),
             owned: true,
-            condition: None,
-            notes: None,
-            date_acquired: None,
-            rom_path: None,
-            verified_at: None,
+            condition: String::new(),
+            notes: String::new(),
+            date_acquired: String::new(),
+            rom_path: String::new(),
+            verified_at: String::new(),
         },
     )
     .unwrap();
@@ -546,28 +490,14 @@ fn find_media_by_md5_no_match() {
 fn find_media_by_md5_with_match() {
     let conn = setup_db();
     // Insert a media entry with an MD5
-    upsert_media(
-        &conn,
-        &Media {
-            id: "zelda1-nes-usa-v1".to_string(),
-            release_id: "zelda1-nes-usa".to_string(),
-            media_serial: None,
-            disc_number: None,
-            disc_label: None,
-            revision: None,
-            status: MediaStatus::Verified,
-            tag: None,
-            dat_name: Some("The Legend of Zelda (USA).nes".to_string()),
-            dat_source: Some("no-intro".to_string()),
-            file_size: Some(131088),
-            crc32: Some("a12b1f68".to_string()),
-            sha1: Some("a1234567890abcdef1234567890abcdef12345678".to_string()),
-            md5: Some("abc123def456abc123def456abc123de".to_string()),
-            created_at: String::new(),
-            updated_at: String::new(),
-        },
-    )
-    .unwrap();
+    let mut zelda_media = test_media("zelda1-nes-usa-v1", "zelda1-nes-usa");
+    zelda_media.dat_name = "The Legend of Zelda (USA).nes".to_string();
+    zelda_media.dat_source = "no-intro".to_string();
+    zelda_media.file_size = 131088;
+    zelda_media.crc32 = "a12b1f68".to_string();
+    zelda_media.sha1 = "a1234567890abcdef1234567890abcdef12345678".to_string();
+    zelda_media.md5 = "abc123def456abc123def456abc123de".to_string();
+    upsert_media(&conn, &zelda_media).unwrap();
 
     let results = find_media_by_md5(&conn, "abc123def456abc123def456abc123de").unwrap();
     assert_eq!(results.len(), 1);
@@ -597,7 +527,7 @@ fn get_company_name_found() {
         &Company {
             id: "nintendo".to_string(),
             name: "Nintendo".to_string(),
-            country: Some("Japan".to_string()),
+            country: "Japan".to_string(),
             aliases: vec![],
         },
     )

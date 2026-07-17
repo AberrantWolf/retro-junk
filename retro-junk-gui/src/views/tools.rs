@@ -347,19 +347,11 @@ fn show_disagreement_table(ui: &mut egui::Ui, state: &ToolsState) -> Option<usiz
                     ui.label(&d.field);
                 });
                 row.col(|ui| {
-                    let label = format!(
-                        "{}: {}",
-                        &d.source_a,
-                        d.value_a.as_deref().unwrap_or("(empty)")
-                    );
+                    let label = format!("{}: {}", &d.source_a, value_or_empty(&d.value_a));
                     ui.label(truncate_str(&label, 50));
                 });
                 row.col(|ui| {
-                    let label = format!(
-                        "{}: {}",
-                        &d.source_b,
-                        d.value_b.as_deref().unwrap_or("(empty)")
-                    );
+                    let label = format!("{}: {}", &d.source_b, value_or_empty(&d.value_b));
                     ui.label(truncate_str(&label, 50));
                 });
             });
@@ -384,11 +376,10 @@ fn load_disagreement_context(state: &mut ToolsState, conn: &retro_junk_db::Conne
             if let Ok(Some(media)) = retro_junk_db::get_media_by_id(conn, &d.entity_id) {
                 if let Ok(Some(rel)) = retro_junk_db::get_release_by_id(conn, &media.release_id) {
                     (rel.title, rel.platform_id)
+                } else if media.dat_name.is_empty() {
+                    (d.entity_id.clone(), String::new())
                 } else {
-                    (
-                        media.dat_name.unwrap_or_else(|| d.entity_id.clone()),
-                        String::new(),
-                    )
+                    (media.dat_name, String::new())
                 }
             } else {
                 (d.entity_id.clone(), String::new())
@@ -454,14 +445,14 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 egui::Color32::from_rgb(100, 160, 255),
                 format!("{} (A):", &d.source_a),
             );
-            ui.label(d.value_a.as_deref().unwrap_or("(empty)"));
+            ui.label(value_or_empty(&d.value_a));
             ui.end_row();
 
             ui.colored_label(
                 egui::Color32::from_rgb(255, 200, 60),
                 format!("{} (B):", &d.source_b),
             );
-            ui.label(d.value_b.as_deref().unwrap_or("(empty)"));
+            ui.label(value_or_empty(&d.value_b));
             ui.end_row();
         });
 
@@ -482,10 +473,16 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
     ui.horizontal(|ui| {
         if ui.button(format!("Accept {}", source_a_label)).clicked() {
-            resolution = Some(("source_a", value_a.as_deref()));
+            resolution = Some((
+                "source_a",
+                (!value_a.is_empty()).then_some(value_a.as_str()),
+            ));
         }
         if ui.button(format!("Accept {}", source_b_label)).clicked() {
-            resolution = Some(("source_b", value_b.as_deref()));
+            resolution = Some((
+                "source_b",
+                (!value_b.is_empty()).then_some(value_b.as_str()),
+            ));
         }
         if ui.button("Skip").clicked() {
             // Advance to next without resolving
@@ -528,6 +525,11 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         // which now points to the next item since the resolved one is gone.
         app.tools_state.needs_refresh = true;
     }
+}
+
+/// Display an empty-string catalog value as "(empty)".
+fn value_or_empty(s: &str) -> &str {
+    if s.is_empty() { "(empty)" } else { s }
 }
 
 pub(crate) fn truncate_str(s: &str, max: usize) -> String {

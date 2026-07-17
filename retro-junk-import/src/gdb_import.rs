@@ -92,18 +92,17 @@ pub fn enrich_gdb(
         for media in &media_list {
             stats.media_checked += 1;
 
-            let sha1 = match media.sha1.as_deref() {
-                Some(h) if !h.is_empty() => h,
-                _ => {
-                    stats.skipped_no_hash += 1;
-                    continue;
-                }
-            };
+            if media.sha1.is_empty() {
+                stats.skipped_no_hash += 1;
+                continue;
+            }
 
             // Try SHA1 lookup, fall back to MD5
-            let gdb_game = index
-                .lookup_sha1(sha1)
-                .or_else(|| media.md5.as_deref().and_then(|md5| index.lookup_md5(md5)));
+            let gdb_game = index.lookup_sha1(&media.sha1).or_else(|| {
+                (!media.md5.is_empty())
+                    .then(|| index.lookup_md5(&media.md5))
+                    .flatten()
+            });
 
             let gdb_game = match gdb_game {
                 Some(g) => g,
@@ -126,6 +125,58 @@ pub fn enrich_gdb(
     Ok(stats)
 }
 
+/// Source label recorded for values already in the DB when GDB disagrees.
+const EXISTING_SOURCE: &str = "screenscraper";
+/// Source label for GDB-provided values.
+const GDB_SOURCE: &str = "gdb";
+
+/// Fill an empty release text column with a GDB value, or record a
+/// disagreement when both have data and differ. Returns true if updated.
+///
+/// `column` must be a compile-time column name (it is interpolated into SQL).
+fn fill_or_check(
+    conn: &Connection,
+    release_id: &str,
+    column: &'static str,
+    existing: &str,
+    new_value: &str,
+    stats: &mut GdbEnrichStats,
+) -> Result<bool, ImportError> {
+    if new_value.is_empty() {
+        return Ok(false);
+    }
+    if existing.is_empty() {
+        conn.execute(
+            &format!(
+                "UPDATE releases SET {column} = ?2, updated_at = datetime('now')
+                 WHERE id = ?1 AND {column} = ''"
+            ),
+            params![release_id, new_value],
+        )?;
+        return Ok(true);
+    }
+    let disagreed = merge::check_field(
+        conn,
+        &merge::FieldRef {
+            entity_type: "release",
+            entity_id: release_id,
+            field: column,
+        },
+        &merge::SourcedValue {
+            source: EXISTING_SOURCE,
+            value: existing,
+        },
+        &merge::SourcedValue {
+            source: GDB_SOURCE,
+            value: new_value,
+        },
+    )?;
+    if disagreed {
+        stats.disagreements += 1;
+    }
+    Ok(false)
+}
+
 /// Enrich a single release with GDB data. Returns true if any field was updated.
 fn enrich_release(
     conn: &Connection,
@@ -135,210 +186,140 @@ fn enrich_release(
     stats: &mut GdbEnrichStats,
 ) -> Result<bool, ImportError> {
     let mut updated = false;
-    let source = "gdb";
 
     // Extract native (Japanese) title from screen_title
     let (_, native_title) = gdb::split_title(&gdb_game.screen_title);
 
     // -- alt_title --
     if let Some(native) = native_title {
-        if release.alt_title.is_none() {
-            conn.execute(
-                "UPDATE releases SET alt_title = ?2, updated_at = datetime('now') WHERE id = ?1 AND alt_title IS NULL",
-                params![release_id, native],
-            )?;
-            updated = true;
-        } else {
-            // Check for disagreement with existing alt_title
-            let disagreed = merge::check_field(
-                conn,
-                "release",
-                release_id,
-                "alt_title",
-                "screenscraper",
-                release.alt_title.as_deref(),
-                source,
-                Some(native),
-            )?;
-            if disagreed {
-                stats.disagreements += 1;
+        updated |= fill_or_check(
+            conn,
+            release_id,
+            "alt_title",
+            &release.alt_title,
+            native,
+            stats,
+        )?;
+    }
+
+    // -- screen_title / cover_title (native/original language portion only) --
+    // Overwrite if unset or if existing value contains '@' (stale full-string format)
+    let title_columns = [
+        (
+            "screen_title",
+            &release.screen_title,
+            &gdb_game.screen_title,
+        ),
+        ("cover_title", &release.cover_title, &gdb_game.cover_title),
+    ];
+    for (column, existing, gdb_full) in title_columns {
+        let (_, native) = gdb::split_title(gdb_full);
+        if let Some(native) = native {
+            if existing.is_empty() || existing.contains('@') {
+                conn.execute(
+                    &format!(
+                        "UPDATE releases SET {column} = ?2, updated_at = datetime('now') WHERE id = ?1"
+                    ),
+                    params![release_id, native],
+                )?;
+                updated = true;
             }
         }
     }
 
-    // -- screen_title (native/original language portion only) --
-    // Overwrite if NULL or if existing value contains '@' (stale full-string format)
-    let (_, native_screen) = gdb::split_title(&gdb_game.screen_title);
-    if let Some(native) = native_screen {
-        let needs_update = release.screen_title.is_none()
-            || release
-                .screen_title
-                .as_deref()
-                .is_some_and(|s| s.contains('@'));
-        if needs_update {
-            conn.execute(
-                "UPDATE releases SET screen_title = ?2, updated_at = datetime('now') WHERE id = ?1",
-                params![release_id, native],
-            )?;
-            updated = true;
+    // -- developer / publisher (nullable company FKs) --
+    let company_columns = [
+        (
+            "developer",
+            "developer_id",
+            &release.developer_id,
+            &gdb_game.developer,
+        ),
+        (
+            "publisher",
+            "publisher_id",
+            &release.publisher_id,
+            &gdb_game.publisher,
+        ),
+    ];
+    for (field, column, existing_id, gdb_name) in company_columns {
+        if gdb_name.is_empty() {
+            continue;
         }
-    }
-
-    // -- cover_title (native/original language portion only) --
-    let (_, native_cover) = gdb::split_title(&gdb_game.cover_title);
-    if let Some(native) = native_cover {
-        let needs_update = release.cover_title.is_none()
-            || release
-                .cover_title
-                .as_deref()
-                .is_some_and(|s| s.contains('@'));
-        if needs_update {
-            conn.execute(
-                "UPDATE releases SET cover_title = ?2, updated_at = datetime('now') WHERE id = ?1",
-                params![release_id, native],
-            )?;
-            updated = true;
-        }
-    }
-
-    // -- developer --
-    if !gdb_game.developer.is_empty() {
-        let dev_id = find_or_create_company(conn, &gdb_game.developer, stats)?;
-        if release.developer_id.is_none() {
-            conn.execute(
-                "UPDATE releases SET developer_id = ?2, updated_at = datetime('now') WHERE id = ?1 AND developer_id IS NULL",
-                params![release_id, dev_id],
-            )?;
-            updated = true;
-        } else {
-            let existing_name = release
-                .developer_id
-                .as_deref()
-                .and_then(|id| queries::get_company_name(conn, id).ok().flatten());
-            let disagreed = merge::check_field(
-                conn,
-                "release",
-                release_id,
-                "developer",
-                "screenscraper",
-                existing_name.as_deref(),
-                source,
-                Some(&gdb_game.developer),
-            )?;
-            if disagreed {
-                stats.disagreements += 1;
+        let company_id = find_or_create_company(conn, gdb_name, stats)?;
+        match existing_id {
+            None => {
+                conn.execute(
+                    &format!(
+                        "UPDATE releases SET {column} = ?2, updated_at = datetime('now')
+                         WHERE id = ?1 AND {column} IS NULL"
+                    ),
+                    params![release_id, company_id],
+                )?;
+                updated = true;
             }
-        }
-    }
-
-    // -- publisher --
-    if !gdb_game.publisher.is_empty() {
-        let pub_id = find_or_create_company(conn, &gdb_game.publisher, stats)?;
-        if release.publisher_id.is_none() {
-            conn.execute(
-                "UPDATE releases SET publisher_id = ?2, updated_at = datetime('now') WHERE id = ?1 AND publisher_id IS NULL",
-                params![release_id, pub_id],
-            )?;
-            updated = true;
-        } else {
-            let existing_name = release
-                .publisher_id
-                .as_deref()
-                .and_then(|id| queries::get_company_name(conn, id).ok().flatten());
-            let disagreed = merge::check_field(
-                conn,
-                "release",
-                release_id,
-                "publisher",
-                "screenscraper",
-                existing_name.as_deref(),
-                source,
-                Some(&gdb_game.publisher),
-            )?;
-            if disagreed {
-                stats.disagreements += 1;
+            Some(existing_id) => {
+                let existing_name = queries::get_company_name(conn, existing_id)
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                let disagreed = merge::check_field(
+                    conn,
+                    &merge::FieldRef {
+                        entity_type: "release",
+                        entity_id: release_id,
+                        field,
+                    },
+                    &merge::SourcedValue {
+                        source: EXISTING_SOURCE,
+                        value: &existing_name,
+                    },
+                    &merge::SourcedValue {
+                        source: GDB_SOURCE,
+                        value: gdb_name,
+                    },
+                )?;
+                if disagreed {
+                    stats.disagreements += 1;
+                }
             }
         }
     }
 
     // -- release_date --
-    if !gdb_game.release_date.is_empty() {
-        if release.release_date.is_none() {
-            conn.execute(
-                "UPDATE releases SET release_date = ?2, updated_at = datetime('now') WHERE id = ?1 AND release_date IS NULL",
-                params![release_id, &gdb_game.release_date],
-            )?;
-            updated = true;
-        } else {
-            let disagreed = merge::check_field(
-                conn,
-                "release",
-                release_id,
-                "release_date",
-                "screenscraper",
-                release.release_date.as_deref(),
-                source,
-                Some(&gdb_game.release_date),
-            )?;
-            if disagreed {
-                stats.disagreements += 1;
-            }
-        }
-    }
+    updated |= fill_or_check(
+        conn,
+        release_id,
+        "release_date",
+        &release.release_date,
+        &gdb_game.release_date,
+        stats,
+    )?;
 
     // -- genre (from first genre tag path, joined with " > ") --
-    let genre_str = gdb_game.tags.genres.first().map(|path| path.join(" > "));
+    let genre = gdb_game
+        .tags
+        .genres
+        .first()
+        .map(|path| path.join(" > "))
+        .unwrap_or_default();
+    updated |= fill_or_check(conn, release_id, "genre", &release.genre, &genre, stats)?;
 
-    if let Some(ref genre) = genre_str {
-        if release.genre.is_none() {
-            conn.execute(
-                "UPDATE releases SET genre = ?2, updated_at = datetime('now') WHERE id = ?1 AND genre IS NULL",
-                params![release_id, genre],
-            )?;
-            updated = true;
-        } else {
-            let disagreed = merge::check_field(
-                conn,
-                "release",
-                release_id,
-                "genre",
-                "screenscraper",
-                release.genre.as_deref(),
-                source,
-                Some(genre),
-            )?;
-            if disagreed {
-                stats.disagreements += 1;
-            }
-        }
-    }
-
-    // -- players --
-    if let Some(ref players) = gdb_game.tags.players {
-        // Normalize: "2:coop" → "2", "2:vs" → "2"
-        let player_count = players.split(':').next().unwrap_or(players);
-        if release.players.is_none() {
-            conn.execute(
-                "UPDATE releases SET players = ?2, updated_at = datetime('now') WHERE id = ?1 AND players IS NULL",
-                params![release_id, player_count],
-            )?;
-            updated = true;
-        } else {
-            let disagreed = merge::check_field(
-                conn,
-                "release",
-                release_id,
-                "players",
-                "screenscraper",
-                release.players.as_deref(),
-                source,
-                Some(player_count),
-            )?;
-            if disagreed {
-                stats.disagreements += 1;
-            }
-        }
-    }
+    // -- players (normalize "2:coop" → "2") --
+    let players = gdb_game
+        .tags
+        .players
+        .as_deref()
+        .map(|p| p.split(':').next().unwrap_or(p))
+        .unwrap_or_default();
+    updated |= fill_or_check(
+        conn,
+        release_id,
+        "players",
+        &release.players,
+        players,
+        stats,
+    )?;
 
     Ok(updated)
 }
@@ -369,7 +350,7 @@ fn find_or_create_company(
     let company = Company {
         id: slug.clone(),
         name: name.to_string(),
-        country: None,
+        country: String::new(),
         aliases: vec![name.to_string()],
     };
     operations::upsert_company(conn, &company)?;

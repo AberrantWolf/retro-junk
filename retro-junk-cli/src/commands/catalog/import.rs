@@ -121,7 +121,7 @@ pub(crate) fn run_catalog_import(
             };
 
             // Log the import
-            if let Err(e) = log_import(&conn, source_str, &dat.name, Some(&dat.version), &stats) {
+            if let Err(e) = log_import(&conn, source_str, &dat.name, &dat.version, &stats) {
                 log::warn!("Failed to log import: {}", e);
             }
 

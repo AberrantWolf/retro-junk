@@ -42,3 +42,17 @@ pub(crate) fn truncate_str(s: &str, max: usize) -> String {
 pub(crate) fn format_file_size(bytes: i64) -> String {
     format_bytes(bytes as u64)
 }
+
+/// Substitute a placeholder for an empty catalog string (empty = absent).
+pub(crate) fn or_str<'a>(s: &'a str, placeholder: &'a str) -> &'a str {
+    if s.is_empty() { placeholder } else { s }
+}
+
+/// Format a file size, or a placeholder when unknown (0 = unknown).
+pub(crate) fn format_file_size_or(bytes: i64, placeholder: &str) -> String {
+    if bytes == 0 {
+        placeholder.to_string()
+    } else {
+        format_file_size(bytes)
+    }
+}

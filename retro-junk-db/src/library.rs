@@ -21,24 +21,29 @@ pub struct LibraryConsoleRow {
     pub folder_name: String,
     pub folder_path: String,
     pub fingerprint_hash: String,
-    pub dat_game_count: Option<i64>,
+    /// Number of games in the matched DAT. 0 = no DAT loaded.
+    pub dat_game_count: i64,
 }
 
+/// One library entry row. Text fields use `""` for "not set"; the `*_json`
+/// blob columns stay `Option` because NULL ("never computed") is distinct
+/// from a present-but-empty serialized list.
 pub struct LibraryEntryRow {
     pub display_name: String,
     pub game_entry_json: String,
     pub status: String,
-    pub tag: Option<String>,
-    pub crc32: Option<String>,
-    pub sha1: Option<String>,
-    pub md5: Option<String>,
-    pub data_size: Option<i64>,
-    pub dat_game_name: Option<String>,
-    pub dat_rom_name: Option<String>,
-    pub dat_match_method: Option<String>,
-    pub region_override: Option<String>,
-    pub cover_title: Option<String>,
-    pub screen_title: Option<String>,
+    pub tag: String,
+    pub crc32: String,
+    pub sha1: String,
+    pub md5: String,
+    /// Size in bytes. 0 = unknown.
+    pub data_size: i64,
+    pub dat_game_name: String,
+    pub dat_rom_name: String,
+    pub dat_match_method: String,
+    pub region_override: String,
+    pub cover_title: String,
+    pub screen_title: String,
     pub identification_json: Option<String>,
     pub disc_identifications_json: Option<String>,
     pub broken_references_json: Option<String>,
@@ -116,7 +121,7 @@ pub fn save_console_bulk(
     folder_name: &str,
     folder_path: &str,
     fingerprint_hash: &str,
-    dat_game_count: Option<i64>,
+    dat_game_count: i64,
     entries: &[LibraryEntryRow],
 ) -> Result<i64, LibraryError> {
     let tx = conn.unchecked_transaction()?;

@@ -330,10 +330,10 @@ fn show_releases_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                         ui.label(&r.region);
                     });
                     row.col(|ui| {
-                        ui.label(r.game_serial.as_deref().unwrap_or(""));
+                        ui.label(&r.game_serial);
                     });
                     row.col(|ui| {
-                        ui.label(r.release_date.as_deref().unwrap_or(""));
+                        ui.label(&r.release_date);
                     });
                 },
             );
@@ -378,20 +378,26 @@ fn show_media_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 |mut row| {
                     let m = &app.tools_state.browse.media_rows[row.index()];
                     row.col(|ui| {
-                        ui.label(truncate_str(
-                            m.dat_name.as_deref().unwrap_or("(unnamed)"),
-                            60,
-                        ));
+                        let name = if m.dat_name.is_empty() {
+                            "(unnamed)"
+                        } else {
+                            &m.dat_name
+                        };
+                        ui.label(truncate_str(name, 60));
                     });
                     row.col(|ui| {
-                        ui.label(m.dat_source.as_deref().unwrap_or(""));
+                        ui.label(&m.dat_source);
                     });
                     row.col(|ui| {
-                        let s = m.file_size.map(format_file_size).unwrap_or_default();
+                        let s = if m.file_size > 0 {
+                            format_file_size(m.file_size)
+                        } else {
+                            String::new()
+                        };
                         ui.label(s);
                     });
                     row.col(|ui| {
-                        ui.label(truncate_str(m.sha1.as_deref().unwrap_or(""), 16));
+                        ui.label(truncate_str(&m.sha1, 16));
                     });
                 },
             );
@@ -460,7 +466,7 @@ fn show_companies_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                         ui.label(truncate_str(&c.name, 60));
                     });
                     row.col(|ui| {
-                        ui.label(c.country.as_deref().unwrap_or(""));
+                        ui.label(&c.country);
                     });
                     row.col(|ui| {
                         ui.label(format_number(c.alias_count));
@@ -517,7 +523,7 @@ fn show_collection_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                         ui.label(&c.region);
                     });
                     row.col(|ui| {
-                        let label = if c.verified_at.is_some() { "Yes" } else { "" };
+                        let label = if c.verified_at.is_empty() { "" } else { "Yes" };
                         ui.label(label);
                     });
                 },

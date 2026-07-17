@@ -5,17 +5,17 @@ fn make_entry(name: &str, status: &str) -> LibraryEntryRow {
         display_name: name.to_string(),
         game_entry_json: format!(r#"{{"SingleFile":"/roms/{name}"}}"#),
         status: status.to_string(),
-        tag: None,
-        crc32: Some("aabbccdd".to_string()),
-        sha1: None,
-        md5: None,
-        data_size: Some(1024),
-        dat_game_name: None,
-        dat_rom_name: None,
-        dat_match_method: None,
-        region_override: None,
-        cover_title: None,
-        screen_title: None,
+        tag: String::new(),
+        crc32: "aabbccdd".to_string(),
+        sha1: String::new(),
+        md5: String::new(),
+        data_size: 1024,
+        dat_game_name: String::new(),
+        dat_rom_name: String::new(),
+        dat_match_method: String::new(),
+        region_override: String::new(),
+        cover_title: String::new(),
+        screen_title: String::new(),
         identification_json: None,
         disc_identifications_json: None,
         broken_references_json: None,
@@ -55,7 +55,7 @@ fn save_and_load_console_bulk() {
         "nes",
         "/roms/nes",
         "abc123",
-        Some(500),
+        500,
         &entries,
     )
     .unwrap();
@@ -65,7 +65,7 @@ fn save_and_load_console_bulk() {
     assert_eq!(consoles.len(), 1);
     assert_eq!(consoles[0].platform, "NES");
     assert_eq!(consoles[0].folder_name, "nes");
-    assert_eq!(consoles[0].dat_game_count, Some(500));
+    assert_eq!(consoles[0].dat_game_count, 500);
     assert_eq!(consoles[0].id, console_id);
 
     // Load entries
@@ -73,7 +73,11 @@ fn save_and_load_console_bulk() {
     assert_eq!(loaded.len(), 2);
     assert_eq!(loaded[0].display_name, "game1.nes");
     assert_eq!(loaded[0].status, "matched");
-    assert_eq!(loaded[0].crc32.as_deref(), Some("aabbccdd"));
+    assert_eq!(loaded[0].crc32, "aabbccdd");
+    // Unset text fields round-trip as empty strings; unset JSON blobs stay None.
+    assert_eq!(loaded[0].sha1, "");
+    assert_eq!(loaded[0].tag, "");
+    assert!(loaded[0].identification_json.is_none());
     assert_eq!(loaded[1].display_name, "game2.nes");
 }
 
@@ -90,7 +94,7 @@ fn save_console_bulk_replaces_entries() {
         "nes",
         "/roms/nes",
         "fp1",
-        None,
+        0,
         &entries_v1,
     )
     .unwrap();
@@ -107,7 +111,7 @@ fn save_console_bulk_replaces_entries() {
         "nes",
         "/roms/nes",
         "fp2",
-        Some(100),
+        100,
         &entries_v2,
     )
     .unwrap();
@@ -130,20 +134,20 @@ fn upsert_single_entry() {
         "nes",
         "/roms/nes",
         "fp",
-        None,
+        0,
         &[make_entry("game.nes", "unknown")],
     )
     .unwrap();
 
     // Upsert the same entry with updated status
     let mut updated = make_entry("game.nes", "matched");
-    updated.tag = Some("homebrew".to_string());
+    updated.tag = "homebrew".to_string();
     upsert_entry(&conn, console_id, &updated).unwrap();
 
     let loaded = load_entries_for_console(&conn, console_id).unwrap();
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].status, "matched");
-    assert_eq!(loaded[0].tag.as_deref(), Some("homebrew"));
+    assert_eq!(loaded[0].tag, "homebrew");
 }
 
 #[test]
@@ -157,7 +161,7 @@ fn upsert_entries_batch() {
         "nes",
         "/roms/nes",
         "fp",
-        None,
+        0,
         &[
             make_entry("game1.nes", "unknown"),
             make_entry("game2.nes", "unknown"),
@@ -187,7 +191,7 @@ fn delete_root_cascades() {
         "nes",
         "/roms/nes",
         "fp",
-        None,
+        0,
         &[make_entry("game.nes", "unknown")],
     )
     .unwrap();
@@ -212,7 +216,7 @@ fn multiple_roots_independent() {
         "nes",
         "/roms1/nes",
         "fp1",
-        None,
+        0,
         &[make_entry("game1.nes", "matched")],
     )
     .unwrap();
@@ -223,7 +227,7 @@ fn multiple_roots_independent() {
         "snes",
         "/roms2/snes",
         "fp2",
-        None,
+        0,
         &[make_entry("game2.sfc", "unknown")],
     )
     .unwrap();

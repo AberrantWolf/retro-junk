@@ -259,56 +259,63 @@ pub fn find_release(
     }
 }
 
+/// Fields scraped from ScreenScraper for one release. Empty strings mean the
+/// scraper had no value; `publisher_id`/`developer_id` are nullable FKs and
+/// `rating` has no empty sentinel, so those stay `Option`.
+pub struct ReleaseEnrichment<'a> {
+    pub screenscraper_id: &'a str,
+    pub title: &'a str,
+    pub release_date: &'a str,
+    pub genre: &'a str,
+    pub players: &'a str,
+    pub rating: Option<f64>,
+    pub description: &'a str,
+    pub publisher_id: Option<&'a str>,
+    pub developer_id: Option<&'a str>,
+}
+
 /// Update release fields from ScreenScraper enrichment.
 ///
-/// Only updates fields that are currently NULL in the database,
-/// preserving values already set by DAT import. The screenscraper_id
-/// is always set to mark this release as enriched.
-#[allow(clippy::too_many_arguments)]
+/// Only fills fields that are currently unset, preserving values already set
+/// by DAT import. The screenscraper_id is always set to mark this release as
+/// enriched.
 pub fn update_release_enrichment(
     conn: &Connection,
     release_id: &str,
-    screenscraper_id: &str,
-    title: Option<&str>,
-    release_date: Option<&str>,
-    genre: Option<&str>,
-    players: Option<&str>,
-    rating: Option<f64>,
-    description: Option<&str>,
-    publisher_id: Option<&str>,
-    developer_id: Option<&str>,
+    enrichment: &ReleaseEnrichment<'_>,
 ) -> Result<(), OperationError> {
     conn.execute(
         "UPDATE releases SET
              screenscraper_id = ?2,
              scraper_not_found = 0,
-             release_date = COALESCE(release_date, ?3),
-             genre = COALESCE(genre, ?4),
-             players = COALESCE(players, ?5),
+             release_date = CASE WHEN release_date = '' THEN ?3 ELSE release_date END,
+             genre = CASE WHEN genre = '' THEN ?4 ELSE genre END,
+             players = CASE WHEN players = '' THEN ?5 ELSE players END,
              rating = COALESCE(rating, ?6),
-             description = COALESCE(description, ?7),
+             description = CASE WHEN description = '' THEN ?7 ELSE description END,
              publisher_id = COALESCE(publisher_id, ?8),
              developer_id = COALESCE(developer_id, ?9),
              updated_at = datetime('now')
          WHERE id = ?1",
         params![
             release_id,
-            screenscraper_id,
-            release_date,
-            genre,
-            players,
-            rating,
-            description,
-            publisher_id,
-            developer_id,
+            enrichment.screenscraper_id,
+            enrichment.release_date,
+            enrichment.genre,
+            enrichment.players,
+            enrichment.rating,
+            enrichment.description,
+            enrichment.publisher_id,
+            enrichment.developer_id,
         ],
     )?;
-    // Title handled separately — only update if new value provided and existing matches DAT-imported title
-    if let Some(new_title) = title {
+    // Title handled separately — only record as alt_title when it differs from
+    // the DAT-imported title and no alt_title is set yet.
+    if !enrichment.title.is_empty() {
         conn.execute(
             "UPDATE releases SET alt_title = ?2, updated_at = datetime('now')
-             WHERE id = ?1 AND alt_title IS NULL AND title != ?2",
-            params![release_id, new_title],
+             WHERE id = ?1 AND alt_title = '' AND title != ?2",
+            params![release_id, enrichment.title],
         )?;
     }
     Ok(())
@@ -464,10 +471,11 @@ pub struct MediaTrack {
     pub media_id: String,
     pub track_number: i32,
     pub track_name: String,
-    pub file_size: Option<i64>,
-    pub crc32: Option<String>,
-    pub sha1: Option<String>,
-    pub md5: Option<String>,
+    /// Size in bytes. 0 = unknown.
+    pub file_size: i64,
+    pub crc32: String,
+    pub sha1: String,
+    pub md5: String,
 }
 
 /// Insert a media track entry.
@@ -649,12 +657,12 @@ pub fn create_modded_media(
     let media_id = format!("{release_id}:modded:{media_suffix}");
     let (crc32, sha1, md5, file_size) = match hashes {
         Some(h) => (
-            Some(h.crc32.clone()),
-            h.sha1.clone(),
-            h.md5.clone(),
-            Some(h.file_size as i64),
+            h.crc32.as_str(),
+            h.sha1.as_deref().unwrap_or(""),
+            h.md5.as_deref().unwrap_or(""),
+            h.file_size,
         ),
-        None => (None, None, None, None),
+        None => ("", "", "", 0),
     };
 
     conn.execute(
@@ -706,8 +714,8 @@ pub fn insert_asset(conn: &Connection, asset: &Asset) -> Result<i64, OperationEr
              file_path, source_url, scraped, file_hash, width, height)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
-            asset.release_id,
-            asset.media_id,
+            asset.owner.release_id(),
+            asset.owner.media_id(),
             asset.asset_type,
             asset.region,
             asset.source,
@@ -881,9 +889,7 @@ pub fn upsert_override(
         "INSERT INTO overrides (entity_type, entity_id, platform_id, dat_name_pattern,
              field, override_value, reason)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(entity_type, entity_id, field) DO UPDATE SET
-             platform_id = excluded.platform_id,
-             dat_name_pattern = excluded.dat_name_pattern,
+         ON CONFLICT(entity_type, entity_id, platform_id, dat_name_pattern, field) DO UPDATE SET
              override_value = excluded.override_value,
              reason = excluded.reason",
         params![

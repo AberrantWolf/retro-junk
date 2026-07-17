@@ -11,11 +11,11 @@ fn setup_db() -> rusqlite::Connection {
         display_name: "Nintendo Entertainment System".to_string(),
         short_name: "NES".to_string(),
         manufacturer: "Nintendo".to_string(),
-        generation: Some(3),
+        generation: 3,
         media_type: MediaType::Cartridge,
-        release_year: Some(1985),
-        description: None,
-        core_platform: Some("Nes".to_string()),
+        release_year: 1985,
+        description: String::new(),
+        core_platform: "Nes".to_string(),
         regions: vec![],
         relationships: vec![],
     };
@@ -135,12 +135,9 @@ fn import_media_has_correct_hashes() {
 
     let media = find_media_by_crc32(&conn, "d445f698").unwrap();
     assert_eq!(media.len(), 1);
-    assert_eq!(
-        media[0].sha1.as_deref(),
-        Some("ea343f4e445a9050d4b4fbac2c77d0693b1d0922")
-    );
-    assert_eq!(media[0].file_size, Some(40976));
-    assert_eq!(media[0].dat_source.as_deref(), Some("no-intro"));
+    assert_eq!(media[0].sha1, "ea343f4e445a9050d4b4fbac2c77d0693b1d0922");
+    assert_eq!(media[0].file_size, 40976);
+    assert_eq!(media[0].dat_source, "no-intro");
 }
 
 #[test]
@@ -156,8 +153,8 @@ fn import_revision_creates_separate_media() {
     assert_eq!(zelda_reva.len(), 1);
 
     // Rev A media should have revision set
-    assert_eq!(zelda_reva[0].revision.as_deref(), Some("Rev A"));
-    assert!(zelda_orig[0].revision.is_none());
+    assert_eq!(zelda_reva[0].revision, "Rev A");
+    assert!(zelda_orig[0].revision.is_empty());
 
     // Revisions now create separate releases
     assert_ne!(zelda_orig[0].release_id, zelda_reva[0].release_id);
@@ -195,14 +192,7 @@ fn log_import_records_stats() {
     let dat = sample_dat();
     let stats = import_dat(&conn, &dat, Platform::Nes, "no-intro", None).unwrap();
 
-    let log_id = log_import(
-        &conn,
-        "no-intro",
-        "Nintendo - NES",
-        Some("2024-01-15"),
-        &stats,
-    )
-    .unwrap();
+    let log_id = log_import(&conn, "no-intro", "Nintendo - NES", "2024-01-15", &stats).unwrap();
     assert!(log_id > 0);
 
     let logs = list_import_logs(&conn, None).unwrap();
@@ -282,11 +272,11 @@ fn disc_number_extracted() {
         display_name: "Sony PlayStation".to_string(),
         short_name: "PS1".to_string(),
         manufacturer: "Sony".to_string(),
-        generation: Some(5),
+        generation: 5,
         media_type: MediaType::Disc,
-        release_year: Some(1994),
-        description: None,
-        core_platform: Some("Ps1".to_string()),
+        release_year: 1994,
+        description: String::new(),
+        core_platform: "Ps1".to_string(),
         regions: vec![],
         relationships: vec![],
     };
@@ -334,10 +324,10 @@ fn disc_number_extracted() {
 
     let disc1 = find_media_by_crc32(&conn, "aabb0001").unwrap();
     let disc2 = find_media_by_crc32(&conn, "aabb0002").unwrap();
-    assert_eq!(disc1[0].disc_number, Some(1));
-    assert_eq!(disc2[0].disc_number, Some(2));
-    assert_eq!(disc1[0].media_serial.as_deref(), Some("SCUS-94163"));
-    assert_eq!(disc2[0].media_serial.as_deref(), Some("SCUS-94164"));
+    assert_eq!(disc1[0].disc_number, 1);
+    assert_eq!(disc2[0].disc_number, 2);
+    assert_eq!(disc1[0].media_serial, "SCUS-94163");
+    assert_eq!(disc2[0].media_serial, "SCUS-94164");
 
     // Both discs should share the same release
     assert_eq!(disc1[0].release_id, disc2[0].release_id);

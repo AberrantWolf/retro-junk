@@ -40,10 +40,10 @@ fn enrich_from_catalog(games: &mut [retro_junk_frontend::ScrapedGame]) {
                 .iter()
                 .find(|r| r.title == game.name)
                 .or(releases.first());
-            if let Some(release) = exact {
-                if let Some(ref ct) = release.cover_title {
-                    game.cover_title = Some(ct.clone());
-                }
+            if let Some(release) = exact
+                && !release.cover_title.is_empty()
+            {
+                game.cover_title = Some(release.cover_title.clone());
             }
         }
     }

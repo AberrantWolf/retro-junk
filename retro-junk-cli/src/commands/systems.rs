@@ -100,7 +100,7 @@ pub(crate) fn resolve_platform_ids(
             .map_err(|e| CliError::database(format!("Failed to list platforms: {}", e)))?;
         return Ok(platforms
             .into_iter()
-            .filter(|p| p.core_platform.is_some())
+            .filter(|p| !p.core_platform.is_empty())
             .map(|p| p.id)
             .collect());
     }

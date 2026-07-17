@@ -2,6 +2,15 @@
 //!
 //! These types represent the persistent catalog schema: platforms, companies,
 //! works, releases, media, assets, collections, and import tracking.
+//!
+//! # Absence conventions
+//!
+//! Text fields use the empty string for "not set" and numeric fields use `0`
+//! where that value cannot be legitimate (a generation, a year, a file size).
+//! `Option` is reserved for cases where absence is semantically distinct from
+//! empty: nullable foreign keys (`publisher_id`), enrichment sentinels
+//! (`screenscraper_id`, where SQL `IS NULL` drives query logic), values whose
+//! zero is meaningful (`rating`), and optional enums (`tag`).
 
 use serde::{Deserialize, Serialize};
 
@@ -14,16 +23,19 @@ pub struct CatalogPlatform {
     pub display_name: String,
     pub short_name: String,
     pub manufacturer: String,
+    /// Console generation (1-9). 0 = unknown.
     #[serde(default)]
-    pub generation: Option<u32>,
+    pub generation: u32,
     pub media_type: MediaType,
+    /// First release year. 0 = unknown.
     #[serde(default)]
-    pub release_year: Option<u32>,
+    pub release_year: u32,
     #[serde(default)]
-    pub description: Option<String>,
+    pub description: String,
     /// Links to retro-junk-core Platform enum variant name (e.g., "Nes", "Snes").
+    /// Empty when the platform has no analyzer support.
     #[serde(default)]
-    pub core_platform: Option<String>,
+    pub core_platform: String,
     #[serde(default)]
     pub regions: Vec<PlatformRegion>,
     #[serde(default)]
@@ -45,7 +57,7 @@ pub enum MediaType {
 pub struct PlatformRegion {
     pub region: String,
     #[serde(default)]
-    pub release_date: Option<String>,
+    pub release_date: String,
 }
 
 /// A relationship entry in platform YAML.
@@ -74,7 +86,7 @@ pub struct Company {
     pub id: String,
     pub name: String,
     #[serde(default)]
-    pub country: Option<String>,
+    pub country: String,
     #[serde(default)]
     pub aliases: Vec<String>,
 }
@@ -112,22 +124,26 @@ pub struct Release {
     pub work_id: String,
     pub platform_id: String,
     pub region: String,
-    /// Software revision identifier: "Rev A", "v1.0", etc. Empty string for original.
+    /// Software revision identifier: "Rev A", "v1.0", etc. Empty for original.
     pub revision: String,
-    /// Marketing/edition label: "Greatest Hits", "Player's Choice", etc. Empty string for standard.
+    /// Marketing/edition label: "Greatest Hits", "Player's Choice", etc. Empty for standard.
     pub variant: String,
     pub title: String,
-    pub alt_title: Option<String>,
+    pub alt_title: String,
+    /// Nullable foreign key into companies; empty string would violate the constraint.
     pub publisher_id: Option<String>,
+    /// Nullable foreign key into companies.
     pub developer_id: Option<String>,
-    pub release_date: Option<String>,
-    pub game_serial: Option<String>,
-    pub genre: Option<String>,
-    pub players: Option<String>,
+    pub release_date: String,
+    pub game_serial: String,
+    pub genre: String,
+    pub players: String,
+    /// `None` = never rated; `Some(0.0)` is a legitimate rating.
     pub rating: Option<f64>,
-    pub description: Option<String>,
-    pub screen_title: Option<String>,
-    pub cover_title: Option<String>,
+    pub description: String,
+    pub screen_title: String,
+    pub cover_title: String,
+    /// Enrichment sentinel: SQL `IS NULL` marks releases still needing enrichment.
     pub screenscraper_id: Option<String>,
     pub scraper_not_found: bool,
     pub created_at: String,
@@ -141,26 +157,27 @@ pub struct Release {
 pub struct Media {
     pub id: String,
     pub release_id: String,
-    pub media_serial: Option<String>,
-    pub disc_number: Option<i32>,
-    pub disc_label: Option<String>,
-    pub revision: Option<String>,
+    pub media_serial: String,
+    /// Disc number within a multi-disc set. 0 = not disc-numbered media.
+    pub disc_number: i32,
+    pub disc_label: String,
+    pub revision: String,
     pub status: MediaStatus,
     pub tag: Option<CatalogTag>,
-    pub dat_name: Option<String>,
-    pub dat_source: Option<String>,
-    pub file_size: Option<i64>,
-    pub crc32: Option<String>,
-    pub sha1: Option<String>,
-    pub md5: Option<String>,
+    pub dat_name: String,
+    pub dat_source: String,
+    /// Size in bytes. 0 = unknown (a real dump is never empty).
+    pub file_size: i64,
+    pub crc32: String,
+    pub sha1: String,
+    pub md5: String,
     pub created_at: String,
     pub updated_at: String,
 }
 
 /// Status of a media dump.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
-#[derive(Default)]
 pub enum MediaStatus {
     #[default]
     Verified,
@@ -169,6 +186,30 @@ pub enum MediaStatus {
     Prototype,
     Beta,
     Sample,
+}
+
+impl MediaStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Bad => "bad",
+            Self::Overdump => "overdump",
+            Self::Prototype => "prototype",
+            Self::Beta => "beta",
+            Self::Sample => "sample",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "bad" => Self::Bad,
+            "overdump" => Self::Overdump,
+            "prototype" | "proto" => Self::Prototype,
+            "beta" => Self::Beta,
+            "sample" => Self::Sample,
+            _ => Self::Verified,
+        }
+    }
 }
 
 /// A user-applied tag for homebrew or modded games.
@@ -196,47 +237,49 @@ impl CatalogTag {
     }
 }
 
-impl MediaStatus {
-    pub fn as_str(&self) -> &'static str {
+// ── Asset ────────────────────────────────────────────────────────────────────
+
+/// The entity an asset belongs to: a release (most art) or one specific
+/// media entry (e.g., a per-disc label scan).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssetOwner {
+    Release(String),
+    Media(String),
+}
+
+impl AssetOwner {
+    /// The `media_assets.release_id` column value.
+    pub fn release_id(&self) -> Option<&str> {
         match self {
-            Self::Verified => "verified",
-            Self::Bad => "bad",
-            Self::Overdump => "overdump",
-            Self::Prototype => "prototype",
-            Self::Beta => "beta",
-            Self::Sample => "sample",
+            Self::Release(id) => Some(id),
+            Self::Media(_) => None,
         }
     }
 
-    pub fn from_str_loose(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "bad" => Self::Bad,
-            "overdump" => Self::Overdump,
-            "prototype" | "proto" => Self::Prototype,
-            "beta" => Self::Beta,
-            "sample" => Self::Sample,
-            _ => Self::Verified,
+    /// The `media_assets.media_id` column value.
+    pub fn media_id(&self) -> Option<&str> {
+        match self {
+            Self::Release(_) => None,
+            Self::Media(id) => Some(id),
         }
     }
 }
-
-// ── Asset ────────────────────────────────────────────────────────────────────
 
 /// An art/media asset associated with a release or specific media.
 #[derive(Debug, Clone)]
 pub struct Asset {
     pub id: i64,
-    pub release_id: Option<String>,
-    pub media_id: Option<String>,
+    pub owner: AssetOwner,
     pub asset_type: String,
-    pub region: Option<String>,
+    pub region: String,
     pub source: String,
-    pub file_path: Option<String>,
-    pub source_url: Option<String>,
+    pub file_path: String,
+    pub source_url: String,
     pub scraped: bool,
-    pub file_hash: Option<String>,
-    pub width: Option<i32>,
-    pub height: Option<i32>,
+    pub file_hash: String,
+    /// Pixel dimensions. 0 = unknown.
+    pub width: i32,
+    pub height: i32,
     pub created_at: String,
 }
 
@@ -249,11 +292,12 @@ pub struct CollectionEntry {
     pub media_id: String,
     pub user_id: String,
     pub owned: bool,
-    pub condition: Option<String>,
-    pub notes: Option<String>,
-    pub date_acquired: Option<String>,
-    pub rom_path: Option<String>,
-    pub verified_at: Option<String>,
+    pub condition: String,
+    pub notes: String,
+    pub date_acquired: String,
+    pub rom_path: String,
+    /// Timestamp of last hash verification. Empty = never verified.
+    pub verified_at: String,
 }
 
 // ── Import Tracking ─────────────────────────────────────────────────────────
@@ -264,7 +308,7 @@ pub struct ImportLog {
     pub id: i64,
     pub source_type: String,
     pub source_name: String,
-    pub source_version: Option<String>,
+    pub source_version: String,
     pub imported_at: String,
     pub records_created: i64,
     pub records_updated: i64,
@@ -280,27 +324,30 @@ pub struct Disagreement {
     pub entity_id: String,
     pub field: String,
     pub source_a: String,
-    pub value_a: Option<String>,
+    pub value_a: String,
     pub source_b: String,
-    pub value_b: Option<String>,
+    pub value_b: String,
     pub resolved: bool,
-    pub resolution: Option<String>,
-    pub resolved_at: Option<String>,
+    pub resolution: String,
+    pub resolved_at: String,
     pub created_at: String,
 }
 
 // ── Overrides ───────────────────────────────────────────────────────────────
 
 /// A human-curated override for known data corrections, loaded from YAML.
+///
+/// Targeting is by exact entity id, by platform, and/or by DAT-name pattern;
+/// unused selectors stay empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Override {
     pub entity_type: String,
     #[serde(default)]
-    pub entity_id: Option<String>,
+    pub entity_id: String,
     #[serde(default)]
-    pub platform_id: Option<String>,
+    pub platform_id: String,
     #[serde(default)]
-    pub dat_name_pattern: Option<String>,
+    pub dat_name_pattern: String,
     pub field: String,
     pub override_value: String,
     pub reason: String,

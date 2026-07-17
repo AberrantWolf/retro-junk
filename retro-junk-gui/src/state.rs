@@ -665,8 +665,8 @@ fn try_catalog_enrich_by_serial(entry: &mut LibraryEntry, conn: &retro_junk_db::
             None => continue,
         };
         if let Ok(Some(release)) = retro_junk_db::get_release_by_id(conn, release_id) {
-            entry.cover_title = release.cover_title;
-            entry.screen_title = release.screen_title;
+            entry.cover_title = (!release.cover_title.is_empty()).then_some(release.cover_title);
+            entry.screen_title = (!release.screen_title.is_empty()).then_some(release.screen_title);
             return;
         }
     }
@@ -756,8 +756,8 @@ fn try_catalog_enrich(entry: &mut LibraryEntry, conn: &retro_junk_db::Connection
         None => return,
     };
     if let Ok(Some(release)) = retro_junk_db::get_release_by_id(conn, release_id) {
-        entry.cover_title = release.cover_title;
-        entry.screen_title = release.screen_title;
+        entry.cover_title = (!release.cover_title.is_empty()).then_some(release.cover_title);
+        entry.screen_title = (!release.screen_title.is_empty()).then_some(release.screen_title);
     }
 }
 

@@ -9,11 +9,11 @@ fn setup_db_with_release() -> (rusqlite::Connection, String) {
         display_name: "Nintendo Entertainment System".to_string(),
         short_name: "NES".to_string(),
         manufacturer: "Nintendo".to_string(),
-        generation: Some(3),
+        generation: 3,
         media_type: MediaType::Cartridge,
-        release_year: Some(1985),
-        description: None,
-        core_platform: Some("Nes".to_string()),
+        release_year: 1985,
+        description: String::new(),
+        core_platform: "Nes".to_string(),
         regions: vec![],
         relationships: vec![],
     };
@@ -28,17 +28,17 @@ fn setup_db_with_release() -> (rusqlite::Connection, String) {
         revision: String::new(),
         variant: String::new(),
         title: "Super Mario Bros.".to_string(),
-        alt_title: None,
+        alt_title: String::new(),
         publisher_id: None,
         developer_id: None,
-        release_date: Some("1985-10-18".to_string()),
-        game_serial: None,
-        genre: Some("Platform".to_string()),
-        players: None,
+        release_date: "1985-10-18".to_string(),
+        game_serial: String::new(),
+        genre: "Platform".to_string(),
+        players: String::new(),
         rating: None,
-        description: None,
-        screen_title: None,
-        cover_title: None,
+        description: String::new(),
+        screen_title: String::new(),
+        cover_title: String::new(),
         screenscraper_id: None,
         scraper_not_found: false,
         created_at: String::new(),
@@ -49,18 +49,26 @@ fn setup_db_with_release() -> (rusqlite::Connection, String) {
     (conn, "smb1-nes-usa".to_string())
 }
 
+fn field_ref<'a>(field: &'a str) -> FieldRef<'a> {
+    FieldRef {
+        entity_type: "release",
+        entity_id: "smb1-nes-usa",
+        field,
+    }
+}
+
+fn sourced<'a>(source: &'a str, value: &'a str) -> SourcedValue<'a> {
+    SourcedValue { source, value }
+}
+
 #[test]
 fn no_disagreement_when_values_match() {
     let (conn, _) = setup_db_with_release();
     let result = check_field(
         &conn,
-        "release",
-        "smb1-nes-usa",
-        "title",
-        "dat-import",
-        Some("Super Mario Bros."),
-        "screenscraper",
-        Some("Super Mario Bros."),
+        &field_ref("title"),
+        &sourced("dat-import", "Super Mario Bros."),
+        &sourced("screenscraper", "Super Mario Bros."),
     )
     .unwrap();
     assert!(!result);
@@ -71,13 +79,9 @@ fn no_disagreement_when_new_source_fills_empty() {
     let (conn, _) = setup_db_with_release();
     let result = check_field(
         &conn,
-        "release",
-        "smb1-nes-usa",
-        "description",
-        "dat-import",
-        None,
-        "screenscraper",
-        Some("A platforming game."),
+        &field_ref("description"),
+        &sourced("dat-import", ""),
+        &sourced("screenscraper", "A platforming game."),
     )
     .unwrap();
     assert!(!result);
@@ -88,13 +92,9 @@ fn disagreement_recorded_when_values_differ() {
     let (conn, _) = setup_db_with_release();
     let result = check_field(
         &conn,
-        "release",
-        "smb1-nes-usa",
-        "release_date",
-        "dat-import",
-        Some("1985-10-18"),
-        "screenscraper",
-        Some("1985-09-13"),
+        &field_ref("release_date"),
+        &sourced("dat-import", "1985-10-18"),
+        &sourced("screenscraper", "1985-09-13"),
     )
     .unwrap();
     assert!(result);
@@ -102,8 +102,8 @@ fn disagreement_recorded_when_values_differ() {
     let disagreements = list_unresolved_disagreements(&conn, &Default::default()).unwrap();
     assert_eq!(disagreements.len(), 1);
     assert_eq!(disagreements[0].field, "release_date");
-    assert_eq!(disagreements[0].value_a.as_deref(), Some("1985-10-18"));
-    assert_eq!(disagreements[0].value_b.as_deref(), Some("1985-09-13"));
+    assert_eq!(disagreements[0].value_a, "1985-10-18");
+    assert_eq!(disagreements[0].value_b, "1985-09-13");
 }
 
 #[test]
@@ -118,17 +118,19 @@ fn merge_release_counts_disagreements() {
         &release_id,
         &existing,
         "screenscraper",
-        Some("Super Mario Bros"), // slightly different title (no period)
-        Some("1985-09-13"),       // different date
-        Some("Platform"),         // same genre
-        Some("1-2"),              // new players field (was None)
-        None,                     // no description
+        &ReleaseFieldValues {
+            title: "Super Mario Bros",  // slightly different title (no period)
+            release_date: "1985-09-13", // different date
+            genre: "Platform",          // same genre
+            players: "1-2",             // new players field (was empty)
+            description: "",            // no description
+        },
     )
     .unwrap();
 
     // title differs, date differs = 2 disagreements
     // genre same = no disagreement
-    // players: existing None, new Some = no disagreement (auto-resolve)
+    // players: existing empty, new value = no disagreement (auto-resolve)
     assert_eq!(count, 2);
 }
 

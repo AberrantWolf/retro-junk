@@ -178,17 +178,17 @@ fn import_game(
             revision: revision.clone(),
             variant: variant.clone(),
             title: parsed.title.clone(),
-            alt_title: None,
+            alt_title: String::new(),
             publisher_id: None,
             developer_id: None,
-            release_date: None,
-            game_serial: None,
-            genre: None,
-            players: None,
+            release_date: String::new(),
+            game_serial: String::new(),
+            genre: String::new(),
+            players: String::new(),
             rating: None,
-            description: None,
-            screen_title: None,
-            cover_title: None,
+            description: String::new(),
+            screen_title: String::new(),
+            cover_title: String::new(),
             screenscraper_id: None,
             scraper_not_found: false,
             created_at: String::new(),
@@ -227,9 +227,9 @@ fn import_game(
     // Check if this media already exists
     let existing = operations::find_media_by_dat_name(conn, &game.name)?;
     if let Some(ref existing_media) = existing {
-        let same_hashes = existing_media.crc32.as_deref() == Some(&primary_rom.crc)
-            && existing_media.sha1.as_deref() == primary_rom.sha1.as_deref()
-            && existing_media.file_size == i64::try_from(primary_rom.size).ok();
+        let same_hashes = existing_media.crc32 == primary_rom.crc
+            && existing_media.sha1 == primary_rom.sha1.as_deref().unwrap_or("")
+            && existing_media.file_size == i64::try_from(primary_rom.size).unwrap_or(0);
         if same_hashes {
             stats.media_unchanged += 1;
             return Ok(());
@@ -239,23 +239,30 @@ fn import_game(
         stats.media_created += 1;
     }
 
-    let media_serial = game.serial.clone().or_else(|| primary_rom.serial.clone());
+    let media_serial = game
+        .serial
+        .clone()
+        .or_else(|| primary_rom.serial.clone())
+        .unwrap_or_default();
 
     let media = Media {
         id: media_id.clone(),
         release_id: effective_release_id.clone(),
         media_serial,
-        disc_number: parsed.disc_number.and_then(|n| i32::try_from(n).ok()),
-        disc_label: parsed.disc_label.clone(),
-        revision: parsed.revision.clone(),
+        disc_number: parsed
+            .disc_number
+            .and_then(|n| i32::try_from(n).ok())
+            .unwrap_or(0),
+        disc_label: parsed.disc_label.clone().unwrap_or_default(),
+        revision: parsed.revision.clone().unwrap_or_default(),
         status,
         tag: None,
-        dat_name: Some(game.name.clone()),
-        dat_source: Some(dat_source.to_string()),
-        file_size: i64::try_from(primary_rom.size).ok(),
-        crc32: Some(primary_rom.crc.clone()),
-        sha1: primary_rom.sha1.clone(),
-        md5: primary_rom.md5.clone(),
+        dat_name: game.name.clone(),
+        dat_source: dat_source.to_string(),
+        file_size: i64::try_from(primary_rom.size).unwrap_or(0),
+        crc32: primary_rom.crc.clone(),
+        sha1: primary_rom.sha1.clone().unwrap_or_default(),
+        md5: primary_rom.md5.clone().unwrap_or_default(),
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -268,10 +275,10 @@ fn import_game(
             media_id: media_id.clone(),
             track_number,
             track_name: rom.name.clone(),
-            file_size: i64::try_from(rom.size).ok(),
-            crc32: Some(rom.crc.clone()),
-            sha1: rom.sha1.clone(),
-            md5: rom.md5.clone(),
+            file_size: i64::try_from(rom.size).unwrap_or(0),
+            crc32: rom.crc.clone(),
+            sha1: rom.sha1.clone().unwrap_or_default(),
+            md5: rom.md5.clone().unwrap_or_default(),
         };
         operations::insert_media_track(conn, &track)?;
     }
@@ -284,7 +291,7 @@ pub fn log_import(
     conn: &Connection,
     source_type: &str,
     source_name: &str,
-    source_version: Option<&str>,
+    source_version: &str,
     stats: &ImportStats,
 ) -> Result<i64, ImportError> {
     let now = chrono::Utc::now().to_rfc3339();
@@ -292,7 +299,7 @@ pub fn log_import(
         id: 0,
         source_type: source_type.to_string(),
         source_name: source_name.to_string(),
-        source_version: source_version.map(|s| s.to_string()),
+        source_version: source_version.to_string(),
         imported_at: now,
         records_created: stats.media_created as i64,
         records_updated: stats.media_updated as i64,

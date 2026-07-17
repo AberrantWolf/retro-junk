@@ -6,7 +6,7 @@ use owo_colors::Stream::Stdout;
 
 use crate::CliError;
 
-use super::{default_catalog_db_path, format_file_size, truncate_str};
+use super::{default_catalog_db_path, format_file_size_or, or_str, truncate_str};
 
 /// Entity type prefixes for ID-based lookups.
 const PREFIX_PLATFORM: &str = "plt-";
@@ -258,7 +258,7 @@ fn lookup_by_serial(
         crate::log_blank();
         for r in &releases {
             let plat = platform_label(&r.platform_id);
-            let date_str = r.release_date.as_deref().unwrap_or("");
+            let date_str = &r.release_date;
             let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
             log::info!(
                 "  {:<40} {:<10} {:<7} {:<12} {}",
@@ -404,7 +404,7 @@ fn dispatch_search(
                 );
                 for r in &releases {
                     let plat = platform_label(&r.platform_id);
-                    let date_str = r.release_date.as_deref().unwrap_or("");
+                    let date_str = &r.release_date;
                     let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
                     log::info!(
                         "  {:<35} {:<8} {:<7} {:<12} {}",
@@ -424,8 +424,8 @@ fn dispatch_search(
                     format!("Media ({}):", media.len()).if_supports_color(Stdout, |t| t.bold()),
                 );
                 for m in &media {
-                    let name = m.dat_name.as_deref().unwrap_or(&m.id);
-                    let size_str = m.file_size.map(format_file_size).unwrap_or_default();
+                    let name = or_str(&m.dat_name, &m.id);
+                    let size_str = format_file_size_or(m.file_size, "");
                     let plat = resolve_media_platform(conn, &m.release_id, &platform_label);
                     let mid = format!("{}{}", PREFIX_MEDIA, &m.id);
                     log::info!(
@@ -578,7 +578,11 @@ fn print_platform_table_rows(
     media_counts: &HashMap<String, i64>,
 ) {
     for p in platforms {
-        let year_str = p.release_year.map(|y| y.to_string()).unwrap_or_default();
+        let year_str = if p.release_year == 0 {
+            String::new()
+        } else {
+            p.release_year.to_string()
+        };
         let rel_count = release_counts.get(&p.id).copied().unwrap_or(0);
         let med_count = media_counts.get(&p.id).copied().unwrap_or(0);
         log::info!(
@@ -664,14 +668,16 @@ fn list_media_for_platform(
 
 fn print_platform_detail(conn: &retro_junk_db::Connection, p: &retro_junk_db::PlatformRow) {
     let dash = "--";
-    let year_str = p
-        .release_year
-        .map(|y| y.to_string())
-        .unwrap_or_else(|| dash.to_string());
-    let gen_str = p
-        .generation
-        .map(|g| g.to_string())
-        .unwrap_or_else(|| dash.to_string());
+    let year_str = if p.release_year == 0 {
+        dash.to_string()
+    } else {
+        p.release_year.to_string()
+    };
+    let gen_str = if p.generation == 0 {
+        dash.to_string()
+    } else {
+        p.generation.to_string()
+    };
 
     let release_counts: HashMap<String, i64> = retro_junk_db::platform_release_counts(conn)
         .unwrap_or_default()
@@ -715,7 +721,7 @@ fn print_work_detail(
         log::info!("  Releases: {}", releases.len());
         for r in &releases {
             let plat = platform_label(&r.platform_id);
-            let date_str = r.release_date.as_deref().unwrap_or("");
+            let date_str = &r.release_date;
             let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
             log::info!(
                 "    {:<35} {:<8} {:<7} {:<12} {}",
@@ -746,7 +752,7 @@ fn print_release_detail(
             .if_supports_color(Stdout, |t| t.bold()),
     );
 
-    let serial_str = release.game_serial.as_deref().unwrap_or(dash);
+    let serial_str = or_str(&release.game_serial, dash);
     let publisher = release
         .publisher_id
         .as_deref()
@@ -757,23 +763,23 @@ fn print_release_detail(
         .as_deref()
         .map(company_label)
         .unwrap_or_else(|| dash.to_string());
-    let date_str = release.release_date.as_deref().unwrap_or(dash);
-    let genre_str = release.genre.as_deref().unwrap_or(dash);
-    let players_str = release.players.as_deref().unwrap_or(dash);
+    let date_str = or_str(&release.release_date, dash);
+    let genre_str = or_str(&release.genre, dash);
+    let players_str = or_str(&release.players, dash);
     let rating_str = release
         .rating
         .map(|r| format!("{:.1}", r))
         .unwrap_or_else(|| dash.to_string());
 
     log::info!("  ID:           {}{}", PREFIX_RELEASE, &release.id);
-    if let Some(ref alt) = release.alt_title {
-        log::info!("  Alt title:    {}", alt);
+    if !release.alt_title.is_empty() {
+        log::info!("  Alt title:    {}", release.alt_title);
     }
-    if let Some(ref st) = release.screen_title {
-        log::info!("  Screen title: {}", st);
+    if !release.screen_title.is_empty() {
+        log::info!("  Screen title: {}", release.screen_title);
     }
-    if let Some(ref ct) = release.cover_title {
-        log::info!("  Cover title:  {}", ct);
+    if !release.cover_title.is_empty() {
+        log::info!("  Cover title:  {}", release.cover_title);
     }
     log::info!("  Serial:       {}", serial_str);
     log::info!("  Publisher:    {}", publisher);
@@ -783,7 +789,8 @@ fn print_release_detail(
     log::info!("  Players:      {}", players_str);
     log::info!("  Rating:       {}", rating_str);
 
-    if let Some(ref desc) = release.description {
+    if !release.description.is_empty() {
+        let desc = &release.description;
         let short = if desc.len() > 200 {
             format!("{}...", &desc[..200])
         } else {
@@ -798,19 +805,16 @@ fn print_release_detail(
             crate::log_blank();
             log::info!("  {}", "Media:".if_supports_color(Stdout, |t| t.bold()),);
             for (i, m) in media.iter().enumerate() {
-                let name = m.dat_name.as_deref().unwrap_or(&m.id);
+                let name = or_str(&m.dat_name, &m.id);
                 log::info!("    {}. {}", i + 1, name,);
-                let crc = m.crc32.as_deref().unwrap_or(dash);
-                let sha1_val = m.sha1.as_deref().unwrap_or(dash);
+                let crc = or_str(&m.crc32, dash);
+                let sha1_val = or_str(&m.sha1, dash);
                 let sha1_short = if sha1_val.len() > 12 {
                     &sha1_val[..12]
                 } else {
                     sha1_val
                 };
-                let size_str = m
-                    .file_size
-                    .map(format_file_size)
-                    .unwrap_or_else(|| dash.to_string());
+                let size_str = format_file_size_or(m.file_size, dash);
                 log::info!(
                     "       CRC32: {}  SHA1: {}...  Size: {}",
                     crc,
@@ -819,18 +823,18 @@ fn print_release_detail(
                 );
 
                 let status = format!("{:?}", m.status).to_lowercase();
-                let source = m.dat_source.as_deref().unwrap_or(dash);
+                let source = or_str(&m.dat_source, dash);
                 log::info!("       Status: {}  Source: {}", status, source,);
 
                 // Check collection status
                 if let Ok(Some(entry)) =
                     retro_junk_db::find_collection_entry(conn, &m.id, "default")
                 {
-                    let verified = entry
-                        .verified_at
-                        .as_deref()
-                        .map(|v| format!("(verified {})", v))
-                        .unwrap_or_default();
+                    let verified = if entry.verified_at.is_empty() {
+                        String::new()
+                    } else {
+                        format!("(verified {})", entry.verified_at)
+                    };
                     let status = if entry.owned { "owned" } else { "not owned" };
                     log::info!(
                         "       Collection: {} {}",
@@ -872,7 +876,7 @@ fn print_media_detail(
     platform_label: &dyn Fn(&str) -> String,
 ) {
     let dash = "--";
-    let name = m.dat_name.as_deref().unwrap_or(&m.id);
+    let name = or_str(&m.dat_name, &m.id);
 
     log::info!("{}", name.if_supports_color(Stdout, |t| t.bold()),);
     log::info!("  ID:        {}{}", PREFIX_MEDIA, &m.id);
@@ -888,15 +892,12 @@ fn print_media_detail(
         log::info!("  Release:   {}{}", PREFIX_RELEASE, &m.release_id);
     }
 
-    let size_str = m
-        .file_size
-        .map(format_file_size)
-        .unwrap_or_else(|| dash.to_string());
-    let crc = m.crc32.as_deref().unwrap_or(dash);
-    let sha1_val = m.sha1.as_deref().unwrap_or(dash);
-    let md5_val = m.md5.as_deref().unwrap_or(dash);
+    let size_str = format_file_size_or(m.file_size, dash);
+    let crc = or_str(&m.crc32, dash);
+    let sha1_val = or_str(&m.sha1, dash);
+    let md5_val = or_str(&m.md5, dash);
     let status = format!("{:?}", m.status).to_lowercase();
-    let source = m.dat_source.as_deref().unwrap_or(dash);
+    let source = or_str(&m.dat_source, dash);
 
     log::info!("  Size:      {}", size_str);
     log::info!("  CRC32:     {}", crc);
@@ -907,11 +908,11 @@ fn print_media_detail(
 
     // Check collection status
     if let Ok(Some(entry)) = retro_junk_db::find_collection_entry(conn, &m.id, "default") {
-        let verified = entry
-            .verified_at
-            .as_deref()
-            .map(|v| format!("(verified {})", v))
-            .unwrap_or_default();
+        let verified = if entry.verified_at.is_empty() {
+            String::new()
+        } else {
+            format!("(verified {})", entry.verified_at)
+        };
         let coll_status = if entry.owned { "owned" } else { "not owned" };
         log::info!(
             "  Collection: {} {}",
@@ -946,8 +947,8 @@ fn print_releases_table(
 ) {
     for r in releases {
         let plat = platform_label(&r.platform_id);
-        let date_str = r.release_date.as_deref().unwrap_or("");
-        let serial_str = r.game_serial.as_deref().unwrap_or("");
+        let date_str = &r.release_date;
+        let serial_str = r.game_serial.as_str();
         let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
         log::info!(
             "  {:<35} {:<8} {:<7} {:<12} {:<14} {}",
@@ -980,8 +981,8 @@ fn print_media_table(
     limit: u32,
 ) {
     for m in media {
-        let name = m.dat_name.as_deref().unwrap_or(&m.id);
-        let size_str = m.file_size.map(format_file_size).unwrap_or_default();
+        let name = or_str(&m.dat_name, &m.id);
+        let size_str = format_file_size_or(m.file_size, "");
         let plat = resolve_media_platform(conn, &m.release_id, platform_label);
         let mid = format!("{}{}", PREFIX_MEDIA, &m.id);
         log::info!(

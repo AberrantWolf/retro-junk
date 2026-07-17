@@ -166,11 +166,12 @@ pub fn load_library(
         let current_fp = compute_fingerprint(&folder_path);
         let is_stale = current_fp.name_hash != cr.fingerprint_hash;
 
-        let dat_status = match cr.dat_game_count {
-            Some(gc) => DatStatus::Loaded {
-                game_count: gc as usize,
-            },
-            None => DatStatus::NotLoaded,
+        let dat_status = if cr.dat_game_count > 0 {
+            DatStatus::Loaded {
+                game_count: cr.dat_game_count as usize,
+            }
+        } else {
+            DatStatus::NotLoaded
         };
 
         if is_stale {
@@ -486,8 +487,8 @@ fn ensure_console_id(
         .map(|fp| fp.name_hash.clone())
         .unwrap_or_else(|| compute_fingerprint(&console.folder_path).name_hash);
     let dat_game_count = match &console.dat_status {
-        DatStatus::Loaded { game_count } => Some(*game_count as i64),
-        _ => None,
+        DatStatus::Loaded { game_count } => *game_count as i64,
+        _ => 0,
     };
     let entries: Vec<LibraryEntryRow> = console
         .entries
@@ -521,8 +522,8 @@ fn save_console_inner(
         .map(|fp| fp.name_hash.clone())
         .unwrap_or_else(|| compute_fingerprint(&console.folder_path).name_hash);
     let dat_game_count = match &console.dat_status {
-        DatStatus::Loaded { game_count } => Some(*game_count as i64),
-        _ => None,
+        DatStatus::Loaded { game_count } => *game_count as i64,
+        _ => 0,
     };
     let entries: Vec<LibraryEntryRow> = console
         .entries
@@ -553,24 +554,27 @@ fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Err
 
     let (crc32, sha1, md5, data_size) = match &entry.hashes {
         Some(h) => (
-            Some(h.crc32.clone()),
-            h.sha1.clone(),
-            h.md5.clone(),
-            Some(h.data_size as i64),
+            h.crc32.clone(),
+            h.sha1.clone().unwrap_or_default(),
+            h.md5.clone().unwrap_or_default(),
+            h.data_size as i64,
         ),
-        None => (None, None, None, None),
+        None => (String::new(), String::new(), String::new(), 0),
     };
 
     let (dat_game_name, dat_rom_name, dat_match_method) = match &entry.dat_match {
         Some(dm) => (
-            Some(dm.game_name.clone()),
-            Some(dm.rom_name.clone()),
-            Some(match_method_to_str(&dm.method).to_string()),
+            dm.game_name.clone(),
+            dm.rom_name.clone(),
+            match_method_to_str(&dm.method).to_string(),
         ),
-        None => (None, None, None),
+        None => (String::new(), String::new(), String::new()),
     };
 
-    let region_override = entry.region_override.map(|r| r.name().to_string());
+    let region_override = entry
+        .region_override
+        .map(|r| r.name().to_string())
+        .unwrap_or_default();
 
     let identification_json = entry
         .identification
@@ -606,7 +610,7 @@ fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Err
         display_name,
         game_entry_json,
         status: status_str.to_string(),
-        tag: tag_str.map(|s| s.to_string()),
+        tag: tag_str.unwrap_or("").to_string(),
         crc32,
         sha1,
         md5,
@@ -615,8 +619,8 @@ fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Err
         dat_rom_name,
         dat_match_method,
         region_override,
-        cover_title: entry.cover_title.clone(),
-        screen_title: entry.screen_title.clone(),
+        cover_title: entry.cover_title.clone().unwrap_or_default(),
+        screen_title: entry.screen_title.clone().unwrap_or_default(),
         identification_json,
         disc_identifications_json,
         broken_references_json,
@@ -629,32 +633,37 @@ fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
     let game_entry = serde_json::from_str(&row.game_entry_json).ok()?;
 
     let status = str_to_status(&row.status);
-    let tag = row.tag.as_deref().and_then(str_to_tag);
+    let tag = str_to_tag(&row.tag);
 
-    let hashes = row.crc32.map(|crc32| retro_junk_dat::FileHashes {
-        crc32,
-        sha1: row.sha1,
-        md5: row.md5,
-        data_size: row.data_size.unwrap_or(0) as u64,
-        warnings: vec![],
-    });
+    // Empty string in the row means "not set" — map back to the GUI's Option fields.
+    let hashes = if row.crc32.is_empty() {
+        None
+    } else {
+        Some(retro_junk_dat::FileHashes {
+            crc32: row.crc32,
+            sha1: (!row.sha1.is_empty()).then_some(row.sha1),
+            md5: (!row.md5.is_empty()).then_some(row.md5),
+            data_size: row.data_size as u64,
+            warnings: vec![],
+        })
+    };
 
-    let dat_match = row.dat_game_name.map(|game_name| DatMatchInfo {
-        game_name,
-        rom_name: row.dat_rom_name.unwrap_or_default(),
-        method: row
-            .dat_match_method
-            .as_deref()
-            .map(str_to_match_method)
-            .unwrap_or(MatchMethod::Crc32),
-        region: None,
-        cross_region: false,
-    });
+    let dat_match = if row.dat_game_name.is_empty() {
+        None
+    } else {
+        Some(DatMatchInfo {
+            game_name: row.dat_game_name,
+            rom_name: row.dat_rom_name,
+            method: str_to_match_method(&row.dat_match_method),
+            region: None,
+            cross_region: false,
+        })
+    };
 
-    let region_override = row
-        .region_override
-        .as_deref()
-        .and_then(|s| Region::ALL.iter().find(|r| r.name() == s).copied());
+    let region_override = Region::ALL
+        .iter()
+        .find(|r| r.name() == row.region_override)
+        .copied();
 
     let identification = row
         .identification_json
@@ -691,8 +700,8 @@ fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
         ambiguous_candidates,
         asset_paths: None, // re-discovered lazily
         region_override,
-        cover_title: row.cover_title,
-        screen_title: row.screen_title,
+        cover_title: (!row.cover_title.is_empty()).then_some(row.cover_title),
+        screen_title: (!row.screen_title.is_empty()).then_some(row.screen_title),
         disc_identifications,
         broken_references,
         cue_compat_issues,

@@ -5,7 +5,7 @@ use owo_colors::Stream::Stdout;
 
 use crate::CliError;
 
-use super::default_catalog_db_path;
+use super::{default_catalog_db_path, or_str};
 
 /// List unresolved disagreements between data sources.
 pub(crate) fn run_catalog_disagreements(
@@ -61,13 +61,13 @@ pub(crate) fn run_catalog_disagreements(
             "    {} {}: {}",
             "\u{25B6}".if_supports_color(Stdout, |t| t.blue()),
             d.source_a,
-            d.value_a.as_deref().unwrap_or("(empty)"),
+            or_str(&d.value_a, "(empty)"),
         );
         log::info!(
             "    {} {}: {}",
             "\u{25B6}".if_supports_color(Stdout, |t| t.yellow()),
             d.source_b,
-            d.value_b.as_deref().unwrap_or("(empty)"),
+            or_str(&d.value_b, "(empty)"),
         );
         crate::log_blank();
     }
@@ -106,7 +106,7 @@ pub(crate) fn run_catalog_resolve(
         log::warn!(
             "Disagreement #{} is already resolved (resolution: {}).",
             id,
-            disagreement.resolution.as_deref().unwrap_or("unknown"),
+            or_str(&disagreement.resolution, "unknown"),
         );
         return Ok(());
     }
@@ -117,7 +117,7 @@ pub(crate) fn run_catalog_resolve(
     } else if source_b {
         ("source_b".to_string(), disagreement.value_b.clone())
     } else if let Some(ref val) = custom {
-        (format!("custom: {val}"), Some(val.clone()))
+        (format!("custom: {val}"), val.clone())
     } else {
         return Err(CliError::other(
             "Must specify --source-a, --source-b, or --custom <value>.",
@@ -125,13 +125,13 @@ pub(crate) fn run_catalog_resolve(
     };
 
     // Apply the chosen value to the entity
-    if let Some(ref value) = chosen_value
+    if !chosen_value.is_empty()
         && let Err(e) = retro_junk_db::apply_disagreement_resolution(
             &conn,
             &disagreement.entity_type,
             &disagreement.entity_id,
             &disagreement.field,
-            value,
+            &chosen_value,
         )
     {
         return Err(CliError::database(format!(
@@ -154,7 +154,7 @@ pub(crate) fn run_catalog_resolve(
         disagreement.entity_type,
         disagreement.entity_id,
         disagreement.field,
-        chosen_value.as_deref().unwrap_or("(empty)"),
+        or_str(&chosen_value, "(empty)"),
     );
 
     Ok(())

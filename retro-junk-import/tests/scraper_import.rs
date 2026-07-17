@@ -1,4 +1,5 @@
 use retro_junk_catalog::types::{self, CatalogPlatform, MediaStatus, MediaType, Release};
+use retro_junk_db::operations::ReleaseEnrichment;
 use retro_junk_db::*;
 use retro_junk_import::scraper_import::*;
 use retro_junk_scraper::types::*;
@@ -13,11 +14,11 @@ fn setup_db() -> rusqlite::Connection {
         display_name: "Nintendo Entertainment System".to_string(),
         short_name: "NES".to_string(),
         manufacturer: "Nintendo".to_string(),
-        generation: Some(3),
+        generation: 3,
         media_type: MediaType::Cartridge,
-        release_year: Some(1985),
-        description: None,
-        core_platform: Some("Nes".to_string()),
+        release_year: 1985,
+        description: String::new(),
+        core_platform: "Nes".to_string(),
         regions: vec![],
         relationships: vec![],
     };
@@ -94,42 +95,42 @@ fn sample_game_info() -> GameInfo {
 fn map_game_info_extracts_us_name() {
     let game = sample_game_info();
     let mapped = map_game_info(&game, "usa", "en");
-    assert_eq!(mapped.title.as_deref(), Some("Super Mario Bros."));
+    assert_eq!(mapped.title, "Super Mario Bros.");
 }
 
 #[test]
 fn map_game_info_extracts_jp_name() {
     let game = sample_game_info();
     let mapped = map_game_info(&game, "japan", "ja");
-    assert_eq!(mapped.title.as_deref(), Some("Super Mario Brothers"));
+    assert_eq!(mapped.title, "Super Mario Brothers");
 }
 
 #[test]
 fn map_game_info_extracts_release_date() {
     let game = sample_game_info();
     let mapped = map_game_info(&game, "usa", "en");
-    assert_eq!(mapped.release_date.as_deref(), Some("1985-10-18"));
+    assert_eq!(mapped.release_date, "1985-10-18");
 }
 
 #[test]
 fn map_game_info_extracts_jp_release_date() {
     let game = sample_game_info();
     let mapped = map_game_info(&game, "japan", "en");
-    assert_eq!(mapped.release_date.as_deref(), Some("1985-09-13"));
+    assert_eq!(mapped.release_date, "1985-09-13");
 }
 
 #[test]
 fn map_game_info_extracts_genre() {
     let game = sample_game_info();
     let mapped = map_game_info(&game, "usa", "en");
-    assert_eq!(mapped.genre.as_deref(), Some("Platform"));
+    assert_eq!(mapped.genre, "Platform");
 }
 
 #[test]
 fn map_game_info_extracts_players() {
     let game = sample_game_info();
     let mapped = map_game_info(&game, "usa", "en");
-    assert_eq!(mapped.players.as_deref(), Some("1-2"));
+    assert_eq!(mapped.players, "1-2");
 }
 
 #[test]
@@ -146,21 +147,21 @@ fn map_game_info_normalizes_rating() {
 fn map_game_info_extracts_description() {
     let game = sample_game_info();
     let mapped = map_game_info(&game, "usa", "en");
-    assert_eq!(mapped.description.as_deref(), Some("A classic platformer."));
+    assert_eq!(mapped.description, "A classic platformer.");
 }
 
 #[test]
 fn map_game_info_extracts_publisher() {
     let game = sample_game_info();
     let mapped = map_game_info(&game, "usa", "en");
-    assert_eq!(mapped.publisher.as_deref(), Some("Nintendo"));
+    assert_eq!(mapped.publisher, "Nintendo");
 }
 
 #[test]
 fn map_game_info_extracts_developer() {
     let game = sample_game_info();
     let mapped = map_game_info(&game, "usa", "en");
-    assert_eq!(mapped.developer.as_deref(), Some("Nintendo EAD"));
+    assert_eq!(mapped.developer, "Nintendo EAD");
 }
 
 #[test]
@@ -180,14 +181,14 @@ fn map_game_info_handles_missing_fields() {
         systeme: None,
     };
     let mapped = map_game_info(&game, "usa", "en");
-    assert!(mapped.title.is_none());
-    assert!(mapped.release_date.is_none());
-    assert!(mapped.genre.is_none());
-    assert!(mapped.players.is_none());
+    assert!(mapped.title.is_empty());
+    assert!(mapped.release_date.is_empty());
+    assert!(mapped.genre.is_empty());
+    assert!(mapped.players.is_empty());
     assert!(mapped.rating.is_none());
-    assert!(mapped.description.is_none());
-    assert!(mapped.publisher.is_none());
-    assert!(mapped.developer.is_none());
+    assert!(mapped.description.is_empty());
+    assert!(mapped.publisher.is_empty());
+    assert!(mapped.developer.is_empty());
 }
 
 #[test]
@@ -242,17 +243,17 @@ fn enrichment_updates_release_fields() {
         revision: String::new(),
         variant: String::new(),
         title: "Super Mario Bros.".to_string(),
-        alt_title: None,
+        alt_title: String::new(),
         publisher_id: None,
         developer_id: None,
-        release_date: None,
-        game_serial: None,
-        genre: None,
-        players: None,
+        release_date: String::new(),
+        game_serial: String::new(),
+        genre: String::new(),
+        players: String::new(),
         rating: None,
-        description: None,
-        screen_title: None,
-        cover_title: None,
+        description: String::new(),
+        screen_title: String::new(),
+        cover_title: String::new(),
         screenscraper_id: None,
         scraper_not_found: false,
         created_at: String::new(),
@@ -267,7 +268,7 @@ fn enrichment_updates_release_fields() {
         &Company {
             id: "nintendo".to_string(),
             name: "Nintendo".to_string(),
-            country: Some("Japan".to_string()),
+            country: "Japan".to_string(),
             aliases: vec!["Nintendo".to_string()],
         },
     )
@@ -277,7 +278,7 @@ fn enrichment_updates_release_fields() {
         &Company {
             id: "nintendo-ead".to_string(),
             name: "Nintendo EAD".to_string(),
-            country: Some("Japan".to_string()),
+            country: "Japan".to_string(),
             aliases: vec!["Nintendo EAD".to_string()],
         },
     )
@@ -287,15 +288,17 @@ fn enrichment_updates_release_fields() {
     update_release_enrichment(
         &conn,
         "nes:super-mario-bros:nes:usa",
-        "12345",
-        Some("Super Mario Bros."),
-        Some("1985-10-18"),
-        Some("Platform"),
-        Some("1-2"),
-        Some(0.9),
-        Some("A classic platformer."),
-        Some("nintendo"),
-        Some("nintendo-ead"),
+        &ReleaseEnrichment {
+            screenscraper_id: "12345",
+            title: "Super Mario Bros.",
+            release_date: "1985-10-18",
+            genre: "Platform",
+            players: "1-2",
+            rating: Some(0.9),
+            description: "A classic platformer.",
+            publisher_id: Some("nintendo"),
+            developer_id: Some("nintendo-ead"),
+        },
     )
     .unwrap();
 
@@ -304,13 +307,10 @@ fn enrichment_updates_release_fields() {
         .unwrap()
         .unwrap();
     assert_eq!(updated.screenscraper_id.as_deref(), Some("12345"));
-    assert_eq!(updated.release_date.as_deref(), Some("1985-10-18"));
-    assert_eq!(updated.genre.as_deref(), Some("Platform"));
-    assert_eq!(updated.players.as_deref(), Some("1-2"));
-    assert_eq!(
-        updated.description.as_deref(),
-        Some("A classic platformer.")
-    );
+    assert_eq!(updated.release_date, "1985-10-18");
+    assert_eq!(updated.genre, "Platform");
+    assert_eq!(updated.players, "1-2");
+    assert_eq!(updated.description, "A classic platformer.");
     assert_eq!(updated.publisher_id.as_deref(), Some("nintendo"));
     assert_eq!(updated.developer_id.as_deref(), Some("nintendo-ead"));
 }
@@ -328,17 +328,17 @@ fn enrichment_preserves_existing_fields() {
         revision: String::new(),
         variant: String::new(),
         title: "The Legend of Zelda".to_string(),
-        alt_title: None,
+        alt_title: String::new(),
         publisher_id: None,
         developer_id: None,
-        release_date: Some("1987-08-22".to_string()), // Already set by DAT
-        game_serial: None,
-        genre: Some("Adventure".to_string()), // Already set
-        players: None,
+        release_date: "1987-08-22".to_string(), // Already set by DAT
+        game_serial: String::new(),
+        genre: "Adventure".to_string(), // Already set
+        players: String::new(),
         rating: None,
-        description: None,
-        screen_title: None,
-        cover_title: None,
+        description: String::new(),
+        screen_title: String::new(),
+        cover_title: String::new(),
         screenscraper_id: None,
         scraper_not_found: false,
         created_at: String::new(),
@@ -350,15 +350,17 @@ fn enrichment_preserves_existing_fields() {
     update_release_enrichment(
         &conn,
         "nes:zelda:nes:usa",
-        "67890",
-        Some("The Legend of Zelda"),
-        Some("1986-02-21"),       // Different date — should NOT overwrite
-        Some("Action-Adventure"), // Different genre — should NOT overwrite
-        Some("1"),
-        Some(0.95),
-        Some("An epic adventure."),
-        None,
-        None,
+        &ReleaseEnrichment {
+            screenscraper_id: "67890",
+            title: "The Legend of Zelda",
+            release_date: "1986-02-21", // Different date — should NOT overwrite
+            genre: "Action-Adventure",  // Different genre — should NOT overwrite
+            players: "1",
+            rating: Some(0.95),
+            description: "An epic adventure.",
+            publisher_id: None,
+            developer_id: None,
+        },
     )
     .unwrap();
 
@@ -367,12 +369,12 @@ fn enrichment_preserves_existing_fields() {
         .unwrap();
     // screenscraper_id is always updated
     assert_eq!(updated.screenscraper_id.as_deref(), Some("67890"));
-    // Existing fields should be preserved (COALESCE keeps existing non-NULL values)
-    assert_eq!(updated.release_date.as_deref(), Some("1987-08-22"));
-    assert_eq!(updated.genre.as_deref(), Some("Adventure"));
-    // NULL fields should be filled
-    assert_eq!(updated.players.as_deref(), Some("1"));
-    assert_eq!(updated.description.as_deref(), Some("An epic adventure."));
+    // Existing fields should be preserved (only empty fields are filled)
+    assert_eq!(updated.release_date, "1987-08-22");
+    assert_eq!(updated.genre, "Adventure");
+    // Empty fields should be filled
+    assert_eq!(updated.players, "1");
+    assert_eq!(updated.description, "An epic adventure.");
 }
 
 #[test]
@@ -390,17 +392,17 @@ fn releases_to_enrich_query() {
         revision: String::new(),
         variant: String::new(),
         title: "Super Mario Bros.".to_string(),
-        alt_title: None,
+        alt_title: String::new(),
         publisher_id: None,
         developer_id: None,
-        release_date: None,
-        game_serial: None,
-        genre: None,
-        players: None,
+        release_date: String::new(),
+        game_serial: String::new(),
+        genre: String::new(),
+        players: String::new(),
         rating: None,
-        description: None,
-        screen_title: None,
-        cover_title: None,
+        description: String::new(),
+        screen_title: String::new(),
+        cover_title: String::new(),
         screenscraper_id: None, // Not enriched
         scraper_not_found: false,
         created_at: String::new(),
@@ -416,17 +418,17 @@ fn releases_to_enrich_query() {
         revision: String::new(),
         variant: String::new(),
         title: "The Legend of Zelda".to_string(),
-        alt_title: None,
+        alt_title: String::new(),
         publisher_id: None,
         developer_id: None,
-        release_date: None,
-        game_serial: None,
-        genre: None,
-        players: None,
+        release_date: String::new(),
+        game_serial: String::new(),
+        genre: String::new(),
+        players: String::new(),
         rating: None,
-        description: None,
-        screen_title: None,
-        cover_title: None,
+        description: String::new(),
+        screen_title: String::new(),
+        cover_title: String::new(),
         screenscraper_id: Some("99999".to_string()), // Already enriched
         scraper_not_found: false,
         created_at: String::new(),
@@ -438,18 +440,18 @@ fn releases_to_enrich_query() {
     let media1 = CatalogMedia {
         id: "m1".to_string(),
         release_id: "nes:smb:nes:usa".to_string(),
-        media_serial: None,
-        disc_number: None,
-        disc_label: None,
-        revision: None,
+        media_serial: String::new(),
+        disc_number: 0,
+        disc_label: String::new(),
+        revision: String::new(),
         status: MediaStatus::Verified,
         tag: None,
-        dat_name: Some("Super Mario Bros. (USA).nes".to_string()),
-        dat_source: Some("no-intro".to_string()),
-        file_size: Some(40976),
-        crc32: Some("d445f698".to_string()),
-        sha1: None,
-        md5: None,
+        dat_name: "Super Mario Bros. (USA).nes".to_string(),
+        dat_source: "no-intro".to_string(),
+        file_size: 40976,
+        crc32: "d445f698".to_string(),
+        sha1: String::new(),
+        md5: String::new(),
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -458,18 +460,18 @@ fn releases_to_enrich_query() {
     let media2 = CatalogMedia {
         id: "m2".to_string(),
         release_id: "nes:zelda:nes:usa".to_string(),
-        media_serial: None,
-        disc_number: None,
-        disc_label: None,
-        revision: None,
+        media_serial: String::new(),
+        disc_number: 0,
+        disc_label: String::new(),
+        revision: String::new(),
         status: MediaStatus::Verified,
         tag: None,
-        dat_name: Some("Legend of Zelda, The (USA).nes".to_string()),
-        dat_source: Some("no-intro".to_string()),
-        file_size: Some(131088),
-        crc32: Some("a12d74c1".to_string()),
-        sha1: None,
-        md5: None,
+        dat_name: "Legend of Zelda, The (USA).nes".to_string(),
+        dat_source: "no-intro".to_string(),
+        file_size: 131088,
+        crc32: "a12d74c1".to_string(),
+        sha1: String::new(),
+        md5: String::new(),
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -502,17 +504,17 @@ fn media_for_release_query() {
         revision: String::new(),
         variant: String::new(),
         title: "Super Mario Bros.".to_string(),
-        alt_title: None,
+        alt_title: String::new(),
         publisher_id: None,
         developer_id: None,
-        release_date: None,
-        game_serial: None,
-        genre: None,
-        players: None,
+        release_date: String::new(),
+        game_serial: String::new(),
+        genre: String::new(),
+        players: String::new(),
         rating: None,
-        description: None,
-        screen_title: None,
-        cover_title: None,
+        description: String::new(),
+        screen_title: String::new(),
+        cover_title: String::new(),
         screenscraper_id: None,
         scraper_not_found: false,
         created_at: String::new(),
@@ -523,18 +525,18 @@ fn media_for_release_query() {
     let media1 = CatalogMedia {
         id: "m1".to_string(),
         release_id: "nes:smb:nes:usa".to_string(),
-        media_serial: None,
-        disc_number: None,
-        disc_label: None,
-        revision: None,
+        media_serial: String::new(),
+        disc_number: 0,
+        disc_label: String::new(),
+        revision: String::new(),
         status: MediaStatus::Verified,
         tag: None,
-        dat_name: Some("Super Mario Bros. (USA).nes".to_string()),
-        dat_source: Some("no-intro".to_string()),
-        file_size: Some(40976),
-        crc32: Some("d445f698".to_string()),
-        sha1: Some("ea343f4e445a9050d4b4fbac2c77d0693b1d0922".to_string()),
-        md5: None,
+        dat_name: "Super Mario Bros. (USA).nes".to_string(),
+        dat_source: "no-intro".to_string(),
+        file_size: 40976,
+        crc32: "d445f698".to_string(),
+        sha1: "ea343f4e445a9050d4b4fbac2c77d0693b1d0922".to_string(),
+        md5: String::new(),
         created_at: String::new(),
         updated_at: String::new(),
     };
@@ -542,5 +544,5 @@ fn media_for_release_query() {
 
     let results = media_for_release(&conn, "nes:smb:nes:usa").unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].crc32.as_deref(), Some("d445f698"));
+    assert_eq!(results[0].crc32, "d445f698");
 }

@@ -237,7 +237,7 @@ fn merge_work_into(
 fn pick_canonical_name(conn: &Connection, work_id: &str) -> Result<Option<String>, ReconcileError> {
     // Try USA alt_title first
     let result: Result<String, _> = conn.query_row(
-        "SELECT alt_title FROM releases WHERE work_id = ?1 AND alt_title IS NOT NULL AND region = 'USA' LIMIT 1",
+        "SELECT alt_title FROM releases WHERE work_id = ?1 AND alt_title != '' AND region = 'USA' LIMIT 1",
         rusqlite::params![work_id],
         |row| row.get(0),
     );
@@ -247,7 +247,7 @@ fn pick_canonical_name(conn: &Connection, work_id: &str) -> Result<Option<String
 
     // Fall back to any alt_title
     let result: Result<String, _> = conn.query_row(
-        "SELECT alt_title FROM releases WHERE work_id = ?1 AND alt_title IS NOT NULL LIMIT 1",
+        "SELECT alt_title FROM releases WHERE work_id = ?1 AND alt_title != '' LIMIT 1",
         rusqlite::params![work_id],
         |row| row.get(0),
     );

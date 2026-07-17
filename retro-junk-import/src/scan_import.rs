@@ -159,11 +159,11 @@ pub fn scan_folder(
                         media_id: media.id.clone(),
                         user_id: options.user_id.clone(),
                         owned: true,
-                        condition: None,
-                        notes: None,
-                        date_acquired: None,
-                        rom_path: Some(file_path.to_string_lossy().to_string()),
-                        verified_at: Some(now),
+                        condition: String::new(),
+                        notes: String::new(),
+                        date_acquired: String::new(),
+                        rom_path: file_path.to_string_lossy().to_string(),
+                        verified_at: now,
                     };
                     operations::upsert_collection_entry(conn, &entry)?;
                     stats.matched += 1;
@@ -212,13 +212,11 @@ pub fn verify_collection(
     let entries = queries::list_collection(conn, Some(platform.short_name()), None)?;
 
     for entry in &entries {
-        let rom_path = match &entry.rom_path {
-            Some(p) => PathBuf::from(p),
-            None => {
-                stats.no_path += 1;
-                continue;
-            }
-        };
+        if entry.rom_path.is_empty() {
+            stats.no_path += 1;
+            continue;
+        }
+        let rom_path = PathBuf::from(&entry.rom_path);
 
         stats.checked += 1;
 
@@ -235,9 +233,9 @@ pub fn verify_collection(
         // Re-hash and compare
         match hash_file(&rom_path, analyzer) {
             Ok(hashes) => {
-                let crc_match = entry.crc32.as_deref() == Some(&hashes.crc32);
-                let sha1_match = match (&entry.sha1, &hashes.sha1) {
-                    (Some(expected), Some(actual)) => expected == actual,
+                let crc_match = entry.crc32 == hashes.crc32;
+                let sha1_match = match (entry.sha1.as_str(), &hashes.sha1) {
+                    (expected, Some(actual)) if !expected.is_empty() => expected == actual,
                     _ => true, // If either is missing, don't fail on SHA1
                 };
 
@@ -319,8 +317,9 @@ fn find_matching_media(
         }
 
         // If we have SHA1, verify it matches
-        if let (Some(expected), Some(actual)) = (&media.sha1, &hashes.sha1)
-            && expected != actual
+        if let Some(actual) = &hashes.sha1
+            && !media.sha1.is_empty()
+            && &media.sha1 != actual
         {
             continue;
         }

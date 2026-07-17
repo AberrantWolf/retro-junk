@@ -10,48 +10,48 @@ use rusqlite::Connection;
 
 use crate::dat_import::ImportError;
 
-/// Compare two optional string values and record a disagreement if they differ.
+/// The entity field a comparison is about.
+pub struct FieldRef<'a> {
+    pub entity_type: &'a str,
+    pub entity_id: &'a str,
+    pub field: &'a str,
+}
+
+/// One side of a field comparison: a source name and the value it reports.
+/// An empty value means the source has no data for this field.
+pub struct SourcedValue<'a> {
+    pub source: &'a str,
+    pub value: &'a str,
+}
+
+/// Compare a field's value from two sources and record a disagreement if
+/// both have data and they differ. A side with no data (empty value) never
+/// conflicts.
 ///
 /// Returns `true` if a disagreement was recorded.
-#[allow(clippy::too_many_arguments)]
 pub fn check_field(
     conn: &Connection,
-    entity_type: &str,
-    entity_id: &str,
-    field: &str,
-    source_a: &str,
-    value_a: Option<&str>,
-    source_b: &str,
-    value_b: Option<&str>,
+    field: &FieldRef<'_>,
+    a: &SourcedValue<'_>,
+    b: &SourcedValue<'_>,
 ) -> Result<bool, ImportError> {
-    // No conflict if both are None
-    if value_a.is_none() && value_b.is_none() {
-        return Ok(false);
-    }
-
-    // No conflict if they're the same
-    if value_a == value_b {
-        return Ok(false);
-    }
-
-    // Auto-resolve: if one is None and the other has data, no real conflict
-    if value_a.is_none() || value_b.is_none() {
+    if a.value.is_empty() || b.value.is_empty() || a.value == b.value {
         return Ok(false);
     }
 
     // Real conflict — create a disagreement record
     let disagreement = Disagreement {
         id: 0,
-        entity_type: entity_type.to_string(),
-        entity_id: entity_id.to_string(),
-        field: field.to_string(),
-        source_a: source_a.to_string(),
-        value_a: value_a.map(|s| s.to_string()),
-        source_b: source_b.to_string(),
-        value_b: value_b.map(|s| s.to_string()),
+        entity_type: field.entity_type.to_string(),
+        entity_id: field.entity_id.to_string(),
+        field: field.field.to_string(),
+        source_a: a.source.to_string(),
+        value_a: a.value.to_string(),
+        source_b: b.source.to_string(),
+        value_b: b.value.to_string(),
         resolved: false,
-        resolution: None,
-        resolved_at: None,
+        resolution: String::new(),
+        resolved_at: String::new(),
         created_at: String::new(),
     };
     operations::insert_disagreement(conn, &disagreement)?;
@@ -59,87 +59,62 @@ pub fn check_field(
     Ok(true)
 }
 
+/// Release field values reported by an enrichment source. Empty = no data.
+pub struct ReleaseFieldValues<'a> {
+    pub title: &'a str,
+    pub release_date: &'a str,
+    pub genre: &'a str,
+    pub players: &'a str,
+    pub description: &'a str,
+}
+
 /// Compare release fields from a new source against existing DB values.
 ///
 /// Returns the number of disagreements found.
-#[allow(clippy::too_many_arguments)]
 pub fn merge_release_fields(
     conn: &Connection,
     release_id: &str,
     existing: &Release,
     source: &str,
-    new_title: Option<&str>,
-    new_release_date: Option<&str>,
-    new_genre: Option<&str>,
-    new_players: Option<&str>,
-    new_description: Option<&str>,
+    new: &ReleaseFieldValues<'_>,
 ) -> Result<u32, ImportError> {
     let existing_source = "dat-import";
+    let fields = [
+        ("title", existing.title.as_str(), new.title),
+        (
+            "release_date",
+            existing.release_date.as_str(),
+            new.release_date,
+        ),
+        ("genre", existing.genre.as_str(), new.genre),
+        ("players", existing.players.as_str(), new.players),
+        (
+            "description",
+            existing.description.as_str(),
+            new.description,
+        ),
+    ];
+
     let mut count = 0u32;
-
-    if check_field(
-        conn,
-        "release",
-        release_id,
-        "title",
-        existing_source,
-        Some(&existing.title),
-        source,
-        new_title,
-    )? {
-        count += 1;
-    }
-
-    if check_field(
-        conn,
-        "release",
-        release_id,
-        "release_date",
-        existing_source,
-        existing.release_date.as_deref(),
-        source,
-        new_release_date,
-    )? {
-        count += 1;
-    }
-
-    if check_field(
-        conn,
-        "release",
-        release_id,
-        "genre",
-        existing_source,
-        existing.genre.as_deref(),
-        source,
-        new_genre,
-    )? {
-        count += 1;
-    }
-
-    if check_field(
-        conn,
-        "release",
-        release_id,
-        "players",
-        existing_source,
-        existing.players.as_deref(),
-        source,
-        new_players,
-    )? {
-        count += 1;
-    }
-
-    if check_field(
-        conn,
-        "release",
-        release_id,
-        "description",
-        existing_source,
-        existing.description.as_deref(),
-        source,
-        new_description,
-    )? {
-        count += 1;
+    for (field, existing_value, new_value) in fields {
+        if check_field(
+            conn,
+            &FieldRef {
+                entity_type: "release",
+                entity_id: release_id,
+                field,
+            },
+            &SourcedValue {
+                source: existing_source,
+                value: existing_value,
+            },
+            &SourcedValue {
+                source,
+                value: new_value,
+            },
+        )? {
+            count += 1;
+        }
     }
 
     Ok(count)
@@ -154,17 +129,16 @@ pub fn apply_overrides(conn: &Connection, overrides: &[Override]) -> Result<u32,
 
     for ovr in overrides {
         // Pattern-based matching on dat_name
-        if let Some(ref pattern) = ovr.dat_name_pattern {
-            let sql_pattern = glob_to_sql_like(pattern);
+        if !ovr.dat_name_pattern.is_empty() {
+            let sql_pattern = glob_to_sql_like(&ovr.dat_name_pattern);
             let mut stmt = conn.prepare(
                 "SELECT m.id, r.id as release_id FROM media m
                  JOIN releases r ON m.release_id = r.id
                  WHERE m.dat_name LIKE ?1 AND r.platform_id = ?2",
             )?;
 
-            let platform_id = ovr.platform_id.as_deref().unwrap_or("");
             let matches: Vec<(String, String)> = stmt
-                .query_map(rusqlite::params![sql_pattern, platform_id], |row| {
+                .query_map(rusqlite::params![sql_pattern, ovr.platform_id], |row| {
                     Ok((row.get(0)?, row.get(1)?))
                 })?
                 .filter_map(|r| r.ok())
@@ -189,11 +163,11 @@ pub fn apply_overrides(conn: &Connection, overrides: &[Override]) -> Result<u32,
         }
 
         // Direct entity_id matching
-        if let Some(ref entity_id) = ovr.entity_id {
+        if !ovr.entity_id.is_empty() {
             apply_field_override(
                 conn,
                 &ovr.entity_type,
-                entity_id,
+                &ovr.entity_id,
                 &ovr.field,
                 &ovr.override_value,
             )?;

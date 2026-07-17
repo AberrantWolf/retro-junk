@@ -41,10 +41,12 @@ relationships:
     let nes = &platforms[0];
     assert_eq!(nes.id, "nes");
     assert_eq!(nes.display_name, "Nintendo Entertainment System");
-    assert_eq!(nes.generation, Some(3));
+    assert_eq!(nes.generation, 3);
     assert_eq!(nes.regions.len(), 2);
     assert_eq!(nes.relationships.len(), 1);
-    assert_eq!(nes.core_platform.as_deref(), Some("Nes"));
+    assert_eq!(nes.core_platform, "Nes");
+    // description is absent from the YAML — defaults to empty, not None
+    assert_eq!(nes.description, "");
 }
 
 #[test]
@@ -93,7 +95,9 @@ fn load_overrides_from_yaml() {
 
     let overrides = load_overrides(&overrides_dir).unwrap();
     assert_eq!(overrides.len(), 1);
-    assert_eq!(overrides[0].platform_id.as_deref(), Some("ps1"));
+    assert_eq!(overrides[0].platform_id, "ps1");
+    // entity_id is absent from the YAML — defaults to empty, not None
+    assert_eq!(overrides[0].entity_id, "");
 }
 
 #[test]

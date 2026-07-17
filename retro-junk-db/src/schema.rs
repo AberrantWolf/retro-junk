@@ -1,4 +1,8 @@
 //! SQLite schema creation and migration.
+//!
+//! Table definitions live in [`TABLES`] as `(name, body)` pairs so that fresh
+//! `CREATE TABLE` statements and migration table-rebuilds always share one
+//! canonical definition.
 
 use rusqlite::Connection;
 use thiserror::Error;
@@ -9,18 +13,351 @@ pub enum SchemaError {
     Sqlite(#[from] rusqlite::Error),
     #[error("Migration error: expected version {expected}, found {found}")]
     VersionMismatch { expected: i32, found: i32 },
+    #[error("Unknown table in migration: {0}")]
+    UnknownTable(&'static str),
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 8;
+pub const CURRENT_VERSION: i32 = 9;
+
+/// Canonical table definitions: `(name, column body)`.
+///
+/// Text columns default to `''` and numeric columns to `0` for "not set";
+/// a column is nullable only where NULL is load-bearing (FK targets,
+/// enrichment sentinels, optional tags, JSON blobs).
+const TABLES: &[(&str, &str)] = &[
+    (
+        "schema_version",
+        "(version INTEGER NOT NULL,
+          applied_at TEXT NOT NULL DEFAULT (datetime('now')))",
+    ),
+    (
+        "platforms",
+        "(id TEXT PRIMARY KEY,
+          display_name TEXT NOT NULL,
+          short_name TEXT NOT NULL,
+          manufacturer TEXT NOT NULL,
+          generation INTEGER NOT NULL DEFAULT 0,
+          media_type TEXT NOT NULL,
+          release_year INTEGER NOT NULL DEFAULT 0,
+          description TEXT NOT NULL DEFAULT '',
+          core_platform TEXT NOT NULL DEFAULT '')",
+    ),
+    (
+        "platform_regions",
+        "(platform_id TEXT NOT NULL REFERENCES platforms(id),
+          region TEXT NOT NULL,
+          release_date TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY (platform_id, region))",
+    ),
+    (
+        "platform_relationships",
+        "(platform_a TEXT NOT NULL REFERENCES platforms(id),
+          platform_b TEXT NOT NULL REFERENCES platforms(id),
+          relationship TEXT NOT NULL,
+          PRIMARY KEY (platform_a, platform_b, relationship))",
+    ),
+    (
+        "companies",
+        "(id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          country TEXT NOT NULL DEFAULT '')",
+    ),
+    (
+        "company_aliases",
+        "(company_id TEXT NOT NULL REFERENCES companies(id),
+          alias TEXT NOT NULL,
+          PRIMARY KEY (company_id, alias))",
+    ),
+    (
+        "works",
+        "(id TEXT PRIMARY KEY,
+          canonical_name TEXT NOT NULL,
+          tag TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+    ),
+    (
+        "work_relationships",
+        "(work_a TEXT NOT NULL REFERENCES works(id),
+          work_b TEXT NOT NULL REFERENCES works(id),
+          relationship TEXT NOT NULL,
+          PRIMARY KEY (work_a, work_b, relationship))",
+    ),
+    (
+        "releases",
+        "(id TEXT PRIMARY KEY,
+          work_id TEXT NOT NULL REFERENCES works(id),
+          platform_id TEXT NOT NULL REFERENCES platforms(id),
+          region TEXT NOT NULL,
+          revision TEXT NOT NULL DEFAULT '',
+          variant TEXT NOT NULL DEFAULT '',
+          title TEXT NOT NULL,
+          alt_title TEXT NOT NULL DEFAULT '',
+          publisher_id TEXT REFERENCES companies(id),
+          developer_id TEXT REFERENCES companies(id),
+          release_date TEXT NOT NULL DEFAULT '',
+          game_serial TEXT NOT NULL DEFAULT '',
+          genre TEXT NOT NULL DEFAULT '',
+          players TEXT NOT NULL DEFAULT '',
+          rating REAL,
+          description TEXT NOT NULL DEFAULT '',
+          screen_title TEXT NOT NULL DEFAULT '',
+          cover_title TEXT NOT NULL DEFAULT '',
+          screenscraper_id TEXT,
+          scraper_not_found BOOLEAN NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+    ),
+    (
+        "media",
+        "(id TEXT PRIMARY KEY,
+          release_id TEXT NOT NULL REFERENCES releases(id),
+          media_serial TEXT NOT NULL DEFAULT '',
+          disc_number INTEGER NOT NULL DEFAULT 0,
+          disc_label TEXT NOT NULL DEFAULT '',
+          revision TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'verified',
+          tag TEXT,
+          dat_name TEXT NOT NULL DEFAULT '',
+          dat_source TEXT NOT NULL DEFAULT '',
+          file_size INTEGER NOT NULL DEFAULT 0,
+          crc32 TEXT NOT NULL DEFAULT '',
+          sha1 TEXT NOT NULL DEFAULT '',
+          md5 TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+    ),
+    (
+        "media_assets",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          release_id TEXT REFERENCES releases(id),
+          media_id TEXT REFERENCES media(id),
+          asset_type TEXT NOT NULL,
+          region TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL,
+          file_path TEXT NOT NULL DEFAULT '',
+          source_url TEXT NOT NULL DEFAULT '',
+          scraped BOOLEAN NOT NULL DEFAULT 0,
+          file_hash TEXT NOT NULL DEFAULT '',
+          width INTEGER NOT NULL DEFAULT 0,
+          height INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          CHECK ((release_id IS NULL) != (media_id IS NULL)))",
+    ),
+    (
+        "collection",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          media_id TEXT NOT NULL REFERENCES media(id),
+          user_id TEXT NOT NULL DEFAULT 'default',
+          owned BOOLEAN NOT NULL DEFAULT 1,
+          condition TEXT NOT NULL DEFAULT '',
+          notes TEXT NOT NULL DEFAULT '',
+          date_acquired TEXT NOT NULL DEFAULT '',
+          rom_path TEXT NOT NULL DEFAULT '',
+          verified_at TEXT NOT NULL DEFAULT '',
+          UNIQUE(media_id, user_id))",
+    ),
+    (
+        "import_log",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_type TEXT NOT NULL,
+          source_name TEXT NOT NULL,
+          source_version TEXT NOT NULL DEFAULT '',
+          imported_at TEXT NOT NULL,
+          records_created INTEGER NOT NULL DEFAULT 0,
+          records_updated INTEGER NOT NULL DEFAULT 0,
+          records_unchanged INTEGER NOT NULL DEFAULT 0,
+          disagreements_found INTEGER NOT NULL DEFAULT 0)",
+    ),
+    (
+        "disagreements",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity_type TEXT NOT NULL,
+          entity_id TEXT NOT NULL,
+          field TEXT NOT NULL,
+          source_a TEXT NOT NULL,
+          value_a TEXT NOT NULL DEFAULT '',
+          source_b TEXT NOT NULL,
+          value_b TEXT NOT NULL DEFAULT '',
+          resolved BOOLEAN NOT NULL DEFAULT 0,
+          resolution TEXT NOT NULL DEFAULT '',
+          resolved_at TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))",
+    ),
+    (
+        "overrides",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          entity_type TEXT NOT NULL,
+          entity_id TEXT NOT NULL DEFAULT '',
+          platform_id TEXT NOT NULL DEFAULT '',
+          dat_name_pattern TEXT NOT NULL DEFAULT '',
+          field TEXT NOT NULL,
+          override_value TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(entity_type, entity_id, platform_id, dat_name_pattern, field))",
+    ),
+    (
+        "media_tracks",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+          track_number INTEGER NOT NULL,
+          track_name TEXT NOT NULL,
+          file_size INTEGER NOT NULL DEFAULT 0,
+          crc32 TEXT NOT NULL DEFAULT '',
+          sha1 TEXT NOT NULL DEFAULT '',
+          md5 TEXT NOT NULL DEFAULT '',
+          UNIQUE(media_id, track_number))",
+    ),
+    (
+        "library_roots",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          root_path TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')))",
+    ),
+    (
+        "library_consoles",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          root_id INTEGER NOT NULL REFERENCES library_roots(id) ON DELETE CASCADE,
+          platform TEXT NOT NULL,
+          folder_name TEXT NOT NULL,
+          folder_path TEXT NOT NULL,
+          fingerprint_hash TEXT NOT NULL,
+          dat_game_count INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(root_id, folder_name))",
+    ),
+    // The *_json columns hold serialized blobs where NULL = "never computed"
+    // and a present value = "computed" (possibly an empty list). That
+    // distinction is load-bearing in the GUI, so they stay nullable.
+    (
+        "library_entries",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          console_id INTEGER NOT NULL REFERENCES library_consoles(id) ON DELETE CASCADE,
+          display_name TEXT NOT NULL,
+          game_entry_json TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'unknown',
+          tag TEXT NOT NULL DEFAULT '',
+          crc32 TEXT NOT NULL DEFAULT '',
+          sha1 TEXT NOT NULL DEFAULT '',
+          md5 TEXT NOT NULL DEFAULT '',
+          data_size INTEGER NOT NULL DEFAULT 0,
+          dat_game_name TEXT NOT NULL DEFAULT '',
+          dat_rom_name TEXT NOT NULL DEFAULT '',
+          dat_match_method TEXT NOT NULL DEFAULT '',
+          region_override TEXT NOT NULL DEFAULT '',
+          cover_title TEXT NOT NULL DEFAULT '',
+          screen_title TEXT NOT NULL DEFAULT '',
+          identification_json TEXT,
+          disc_identifications_json TEXT,
+          broken_references_json TEXT,
+          ambiguous_candidates_json TEXT,
+          cue_compat_issues_json TEXT,
+          UNIQUE(console_id, display_name))",
+    ),
+];
+
+const INDEXES_SQL: &str = "
+CREATE UNIQUE INDEX IF NOT EXISTS idx_releases_natural ON releases(work_id, platform_id, region, revision, variant);
+CREATE INDEX IF NOT EXISTS idx_media_release ON media(release_id);
+CREATE INDEX IF NOT EXISTS idx_media_crc32 ON media(crc32);
+CREATE INDEX IF NOT EXISTS idx_media_sha1 ON media(sha1);
+CREATE INDEX IF NOT EXISTS idx_media_serial ON media(media_serial);
+CREATE INDEX IF NOT EXISTS idx_media_dat_name ON media(dat_name);
+CREATE INDEX IF NOT EXISTS idx_assets_release ON media_assets(release_id);
+CREATE INDEX IF NOT EXISTS idx_assets_type_region ON media_assets(asset_type, region);
+CREATE INDEX IF NOT EXISTS idx_disagreements_unresolved ON disagreements(resolved) WHERE resolved = 0;
+CREATE INDEX IF NOT EXISTS idx_media_tracks_crc32 ON media_tracks(crc32);
+CREATE INDEX IF NOT EXISTS idx_media_tracks_sha1 ON media_tracks(sha1);
+CREATE INDEX IF NOT EXISTS idx_library_entries_console ON library_entries(console_id);
+";
+
+/// Tables rebuilt by the v8 → v9 migration, with the SELECT expressions that
+/// map the old (nullable) layout onto the canonical one in [`TABLES`].
+const V9_REBUILDS: &[(&str, &str)] = &[
+    (
+        "platforms",
+        "id, display_name, short_name, manufacturer, COALESCE(generation, 0), media_type,
+         COALESCE(release_year, 0), COALESCE(description, ''), COALESCE(core_platform, '')",
+    ),
+    (
+        "platform_regions",
+        "platform_id, region, COALESCE(release_date, '')",
+    ),
+    ("companies", "id, name, COALESCE(country, '')"),
+    (
+        "releases",
+        "id, work_id, platform_id, region, revision, variant, title, COALESCE(alt_title, ''),
+         publisher_id, developer_id, COALESCE(release_date, ''), COALESCE(game_serial, ''),
+         COALESCE(genre, ''), COALESCE(players, ''), rating, COALESCE(description, ''),
+         COALESCE(screen_title, ''), COALESCE(cover_title, ''), screenscraper_id,
+         scraper_not_found, created_at, updated_at",
+    ),
+    (
+        "media",
+        "id, release_id, COALESCE(media_serial, ''), COALESCE(disc_number, 0),
+         COALESCE(disc_label, ''), COALESCE(revision, ''), status, tag,
+         COALESCE(dat_name, ''), COALESCE(dat_source, ''), COALESCE(file_size, 0),
+         COALESCE(crc32, ''), COALESCE(sha1, ''), COALESCE(md5, ''), created_at, updated_at",
+    ),
+    (
+        "media_assets",
+        "id, release_id, media_id, asset_type, COALESCE(region, ''), source,
+         COALESCE(file_path, ''), COALESCE(source_url, ''), scraped,
+         COALESCE(file_hash, ''), COALESCE(width, 0), COALESCE(height, 0), created_at",
+    ),
+    (
+        "collection",
+        "id, media_id, user_id, owned, COALESCE(condition, ''), COALESCE(notes, ''),
+         COALESCE(date_acquired, ''), COALESCE(rom_path, ''), COALESCE(verified_at, '')",
+    ),
+    (
+        "import_log",
+        "id, source_type, source_name, COALESCE(source_version, ''), imported_at,
+         COALESCE(records_created, 0), COALESCE(records_updated, 0),
+         COALESCE(records_unchanged, 0), COALESCE(disagreements_found, 0)",
+    ),
+    (
+        "disagreements",
+        "id, entity_type, entity_id, field, source_a, COALESCE(value_a, ''), source_b,
+         COALESCE(value_b, ''), resolved, COALESCE(resolution, ''),
+         COALESCE(resolved_at, ''), created_at",
+    ),
+    (
+        "overrides",
+        "id, entity_type, COALESCE(entity_id, ''), COALESCE(platform_id, ''),
+         COALESCE(dat_name_pattern, ''), field, override_value, reason, created_at",
+    ),
+    (
+        "media_tracks",
+        "id, media_id, track_number, track_name, COALESCE(file_size, 0),
+         COALESCE(crc32, ''), COALESCE(sha1, ''), COALESCE(md5, '')",
+    ),
+    (
+        "library_consoles",
+        "id, root_id, platform, folder_name, folder_path, fingerprint_hash,
+         COALESCE(dat_game_count, 0)",
+    ),
+    (
+        "library_entries",
+        "id, console_id, display_name, game_entry_json, status, COALESCE(tag, ''),
+         COALESCE(crc32, ''), COALESCE(sha1, ''), COALESCE(md5, ''), COALESCE(data_size, 0),
+         COALESCE(dat_game_name, ''), COALESCE(dat_rom_name, ''),
+         COALESCE(dat_match_method, ''), COALESCE(region_override, ''),
+         COALESCE(cover_title, ''), COALESCE(screen_title, ''), identification_json,
+         disc_identifications_json, broken_references_json, ambiguous_candidates_json,
+         cue_compat_issues_json",
+    ),
+];
 
 /// Create all tables and indexes if they don't exist.
 ///
 /// This is idempotent — safe to call on an existing database.
 pub fn create_schema(conn: &Connection) -> Result<(), SchemaError> {
-    conn.execute_batch(SCHEMA_SQL)?;
-    conn.execute_batch(LIBRARY_TABLES_SQL)?;
-    conn.execute_batch(MEDIA_TRACKS_SQL)?;
+    for (name, body) in TABLES {
+        conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {name} {body};"))?;
+    }
+    conn.execute_batch(INDEXES_SQL)?;
     set_schema_version(conn, CURRENT_VERSION)?;
     Ok(())
 }
@@ -78,6 +415,36 @@ fn set_schema_version(conn: &Connection, version: i32) -> Result<(), SchemaError
     Ok(())
 }
 
+/// The canonical column body for a table, from [`TABLES`].
+fn table_body(name: &'static str) -> Result<&'static str, SchemaError> {
+    TABLES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, body)| *body)
+        .ok_or(SchemaError::UnknownTable(name))
+}
+
+/// Rebuild `name` to its canonical [`TABLES`] definition, converting existing
+/// rows via `select_exprs` (SQLite has no `ALTER COLUMN`, so constraint
+/// changes require the create-copy-drop-rename dance).
+///
+/// Caller must have `PRAGMA foreign_keys=OFF` so the rename doesn't rewrite
+/// other tables' foreign-key references.
+fn rebuild_table(
+    conn: &Connection,
+    name: &'static str,
+    select_exprs: &str,
+) -> Result<(), SchemaError> {
+    let body = table_body(name)?;
+    conn.execute_batch(&format!(
+        "CREATE TABLE {name}_new {body};
+         INSERT INTO {name}_new SELECT {select_exprs} FROM {name};
+         DROP TABLE {name};
+         ALTER TABLE {name}_new RENAME TO {name};"
+    ))?;
+    Ok(())
+}
+
 /// Run migrations from `from_version` up to `CURRENT_VERSION`.
 fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
     if from_version > CURRENT_VERSION {
@@ -117,13 +484,19 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 )?;
             }
             5 => {
-                conn.execute_batch(LIBRARY_TABLES_SQL)?;
+                // Historical: created the library tables. Creating them at the
+                // canonical layout is fine — the v9 rebuild is a no-op for them.
+                for name in ["library_roots", "library_consoles", "library_entries"] {
+                    let body = table_body(name)?;
+                    conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {name} {body};"))?;
+                }
             }
             6 => {
-                conn.execute_batch(MEDIA_TRACKS_SQL)?;
+                let body = table_body("media_tracks")?;
+                conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS media_tracks {body};"))?;
             }
             7 => {
-                // Column may already exist if tables were created fresh by migration 5 (LIBRARY_TABLES_SQL)
+                // Column may already exist if tables were created fresh by migration 5
                 let has_column: bool = conn
                     .prepare("SELECT cue_compat_issues_json FROM library_entries LIMIT 0")
                     .is_ok();
@@ -133,6 +506,28 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                     )?;
                 }
             }
+            8 => {
+                // v9: NULL-able "maybe" columns become NOT NULL with ''/0
+                // defaults, and the overrides natural key widens to include
+                // its pattern selectors (NULL entity_ids were previously
+                // distinct under UNIQUE; empty strings are not).
+                conn.execute_batch("PRAGMA foreign_keys=OFF;")?;
+                let result = (|| -> Result<(), SchemaError> {
+                    conn.execute_batch("BEGIN;")?;
+                    for (name, select_exprs) in V9_REBUILDS {
+                        rebuild_table(conn, name, select_exprs)?;
+                    }
+                    conn.execute_batch(INDEXES_SQL)?;
+                    conn.execute_batch("COMMIT;")?;
+                    Ok(())
+                })();
+                if result.is_err() {
+                    let _ = conn.execute_batch("ROLLBACK;");
+                }
+                conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+                result?;
+                conn.execute_batch("PRAGMA foreign_key_check;")?;
+            }
             _ => {}
         }
         version += 1;
@@ -141,262 +536,3 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
 
     Ok(())
 }
-
-const LIBRARY_TABLES_SQL: &str = r#"
--- Library cache: one row per library root directory
-CREATE TABLE IF NOT EXISTS library_roots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    root_path TEXT NOT NULL UNIQUE,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Per-console folder within a root
-CREATE TABLE IF NOT EXISTS library_consoles (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    root_id INTEGER NOT NULL REFERENCES library_roots(id) ON DELETE CASCADE,
-    platform TEXT NOT NULL,
-    folder_name TEXT NOT NULL,
-    folder_path TEXT NOT NULL,
-    fingerprint_hash TEXT NOT NULL,
-    dat_game_count INTEGER,
-    UNIQUE(root_id, folder_name)
-);
-
--- Per-entry (ROM/disc) within a console
-CREATE TABLE IF NOT EXISTS library_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    console_id INTEGER NOT NULL REFERENCES library_consoles(id) ON DELETE CASCADE,
-    display_name TEXT NOT NULL,
-    game_entry_json TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'unknown',
-    tag TEXT,
-    crc32 TEXT,
-    sha1 TEXT,
-    md5 TEXT,
-    data_size INTEGER,
-    dat_game_name TEXT,
-    dat_rom_name TEXT,
-    dat_match_method TEXT,
-    region_override TEXT,
-    cover_title TEXT,
-    screen_title TEXT,
-    identification_json TEXT,
-    disc_identifications_json TEXT,
-    broken_references_json TEXT,
-    ambiguous_candidates_json TEXT,
-    cue_compat_issues_json TEXT,
-    UNIQUE(console_id, display_name)
-);
-CREATE INDEX IF NOT EXISTS idx_library_entries_console ON library_entries(console_id);
-"#;
-
-const SCHEMA_SQL: &str = r#"
--- Schema version tracking
-CREATE TABLE IF NOT EXISTS schema_version (
-    version INTEGER NOT NULL,
-    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Platforms/Consoles
-CREATE TABLE IF NOT EXISTS platforms (
-    id TEXT PRIMARY KEY,
-    display_name TEXT NOT NULL,
-    short_name TEXT NOT NULL,
-    manufacturer TEXT NOT NULL,
-    generation INTEGER,
-    media_type TEXT NOT NULL,
-    release_year INTEGER,
-    description TEXT,
-    core_platform TEXT
-);
-
-CREATE TABLE IF NOT EXISTS platform_regions (
-    platform_id TEXT NOT NULL REFERENCES platforms(id),
-    region TEXT NOT NULL,
-    release_date TEXT,
-    PRIMARY KEY (platform_id, region)
-);
-
-CREATE TABLE IF NOT EXISTS platform_relationships (
-    platform_a TEXT NOT NULL REFERENCES platforms(id),
-    platform_b TEXT NOT NULL REFERENCES platforms(id),
-    relationship TEXT NOT NULL,
-    PRIMARY KEY (platform_a, platform_b, relationship)
-);
-
--- Companies (publishers, developers)
-CREATE TABLE IF NOT EXISTS companies (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    country TEXT
-);
-
-CREATE TABLE IF NOT EXISTS company_aliases (
-    company_id TEXT NOT NULL REFERENCES companies(id),
-    alias TEXT NOT NULL,
-    PRIMARY KEY (company_id, alias)
-);
-
--- Abstract game concept
-CREATE TABLE IF NOT EXISTS works (
-    id TEXT PRIMARY KEY,
-    canonical_name TEXT NOT NULL,
-    tag TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Relationships between works
-CREATE TABLE IF NOT EXISTS work_relationships (
-    work_a TEXT NOT NULL REFERENCES works(id),
-    work_b TEXT NOT NULL REFERENCES works(id),
-    relationship TEXT NOT NULL,
-    PRIMARY KEY (work_a, work_b, relationship)
-);
-
--- Regional release of a work on a platform
-CREATE TABLE IF NOT EXISTS releases (
-    id TEXT PRIMARY KEY,
-    work_id TEXT NOT NULL REFERENCES works(id),
-    platform_id TEXT NOT NULL REFERENCES platforms(id),
-    region TEXT NOT NULL,
-    revision TEXT NOT NULL DEFAULT '',
-    variant TEXT NOT NULL DEFAULT '',
-    title TEXT NOT NULL,
-    alt_title TEXT,
-    publisher_id TEXT REFERENCES companies(id),
-    developer_id TEXT REFERENCES companies(id),
-    release_date TEXT,
-    game_serial TEXT,
-    genre TEXT,
-    players TEXT,
-    rating REAL,
-    description TEXT,
-    screen_title TEXT,
-    cover_title TEXT,
-    screenscraper_id TEXT,
-    scraper_not_found BOOLEAN NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_releases_natural ON releases(work_id, platform_id, region, revision, variant);
-
--- Physical/digital media artifact
-CREATE TABLE IF NOT EXISTS media (
-    id TEXT PRIMARY KEY,
-    release_id TEXT NOT NULL REFERENCES releases(id),
-    media_serial TEXT,
-    disc_number INTEGER,
-    disc_label TEXT,
-    revision TEXT,
-    status TEXT NOT NULL DEFAULT 'verified',
-    tag TEXT,
-    dat_name TEXT,
-    dat_source TEXT,
-    file_size INTEGER,
-    crc32 TEXT,
-    sha1 TEXT,
-    md5 TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_media_release ON media(release_id);
-CREATE INDEX IF NOT EXISTS idx_media_crc32 ON media(crc32);
-CREATE INDEX IF NOT EXISTS idx_media_sha1 ON media(sha1);
-CREATE INDEX IF NOT EXISTS idx_media_serial ON media(media_serial);
-CREATE INDEX IF NOT EXISTS idx_media_dat_name ON media(dat_name);
-
--- Art, screenshots, scans, etc.
-CREATE TABLE IF NOT EXISTS media_assets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    release_id TEXT REFERENCES releases(id),
-    media_id TEXT REFERENCES media(id),
-    asset_type TEXT NOT NULL,
-    region TEXT,
-    source TEXT NOT NULL,
-    file_path TEXT,
-    source_url TEXT,
-    scraped BOOLEAN NOT NULL DEFAULT 0,
-    file_hash TEXT,
-    width INTEGER,
-    height INTEGER,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_assets_release ON media_assets(release_id);
-CREATE INDEX IF NOT EXISTS idx_assets_type_region ON media_assets(asset_type, region);
-
--- Collection / ownership
-CREATE TABLE IF NOT EXISTS collection (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    media_id TEXT NOT NULL REFERENCES media(id),
-    user_id TEXT NOT NULL DEFAULT 'default',
-    owned BOOLEAN NOT NULL DEFAULT 1,
-    condition TEXT,
-    notes TEXT,
-    date_acquired TEXT,
-    rom_path TEXT,
-    verified_at TEXT,
-    UNIQUE(media_id, user_id)
-);
-
--- Import tracking
-CREATE TABLE IF NOT EXISTS import_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    source_type TEXT NOT NULL,
-    source_name TEXT NOT NULL,
-    source_version TEXT,
-    imported_at TEXT NOT NULL,
-    records_created INTEGER DEFAULT 0,
-    records_updated INTEGER DEFAULT 0,
-    records_unchanged INTEGER DEFAULT 0,
-    disagreements_found INTEGER DEFAULT 0
-);
-
--- Disagreements between data sources
-CREATE TABLE IF NOT EXISTS disagreements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL,
-    entity_id TEXT NOT NULL,
-    field TEXT NOT NULL,
-    source_a TEXT NOT NULL,
-    value_a TEXT,
-    source_b TEXT NOT NULL,
-    value_b TEXT,
-    resolved BOOLEAN NOT NULL DEFAULT 0,
-    resolution TEXT,
-    resolved_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_disagreements_unresolved ON disagreements(resolved) WHERE resolved = 0;
-
--- Overrides for known data corrections
-CREATE TABLE IF NOT EXISTS overrides (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL,
-    entity_id TEXT,
-    platform_id TEXT,
-    dat_name_pattern TEXT,
-    field TEXT NOT NULL,
-    override_value TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(entity_type, entity_id, field)
-);
-"#;
-
-const MEDIA_TRACKS_SQL: &str = r#"
--- Per-track breakdown for disc-based media (Redump DATs include every track)
-CREATE TABLE IF NOT EXISTS media_tracks (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    track_number INTEGER NOT NULL,
-    track_name TEXT NOT NULL,
-    file_size INTEGER,
-    crc32 TEXT,
-    sha1 TEXT,
-    md5 TEXT,
-    UNIQUE(media_id, track_number)
-);
-CREATE INDEX IF NOT EXISTS idx_media_tracks_crc32 ON media_tracks(crc32);
-CREATE INDEX IF NOT EXISTS idx_media_tracks_sha1 ON media_tracks(sha1);
-"#;

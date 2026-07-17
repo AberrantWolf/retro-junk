@@ -14,7 +14,9 @@ pub mod scraper_import;
 
 pub use dat_import::{ImportError, ImportStats, dat_source_str, import_dat, log_import};
 pub use gdb_import::{GdbEnrichOptions, GdbEnrichStats, enrich_gdb};
-pub use merge::{apply_overrides, check_field, merge_release_fields};
+pub use merge::{
+    FieldRef, ReleaseFieldValues, SourcedValue, apply_overrides, check_field, merge_release_fields,
+};
 pub use progress::{ImportProgress, LogProgress, SilentProgress};
 pub use reconcile::{
     ReconcileError, ReconcileOptions, ReconcileResult, ReconcileStats, reconcile_works,
