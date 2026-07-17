@@ -80,11 +80,9 @@ fn read_chd_sector_with_offset(
 }
 
 /// Read CHD header metadata for display purposes.
-#[allow(dead_code)]
 pub struct ChdInfo {
     pub version: u32,
     pub hunk_size: u32,
-    pub total_hunks: u32,
     pub logical_size: u64,
 }
 
@@ -100,7 +98,6 @@ pub fn read_chd_info(reader: &mut dyn retro_junk_core::ReadSeek) -> Result<ChdIn
     Ok(ChdInfo {
         version: header.version() as u32,
         hunk_size: header.hunk_size(),
-        total_hunks: header.hunk_count(),
         logical_size: header.logical_bytes(),
     })
 }

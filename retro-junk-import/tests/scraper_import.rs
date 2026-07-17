@@ -28,7 +28,6 @@ fn setup_db() -> rusqlite::Connection {
 fn sample_game_info() -> GameInfo {
     GameInfo {
         id: "12345".to_string(),
-        romid: Some("99999".to_string()),
         notgame: None,
         noms: vec![
             RegionText {
@@ -168,7 +167,6 @@ fn map_game_info_extracts_developer() {
 fn map_game_info_handles_missing_fields() {
     let game = GameInfo {
         id: "1".to_string(),
-        romid: None,
         notgame: None,
         noms: vec![],
         synopsis: vec![],

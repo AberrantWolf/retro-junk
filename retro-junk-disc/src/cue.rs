@@ -12,16 +12,13 @@ pub struct CueSheet {
 
 /// A FILE entry in a CUE sheet.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CueFile {
     pub filename: String,
-    pub file_type: String,
     pub tracks: Vec<CueTrack>,
 }
 
 /// A TRACK entry in a CUE sheet.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct CueTrack {
     pub number: u8,
     pub mode: String,
@@ -84,15 +81,9 @@ pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
                     files.push(f);
                 }
 
-                let is_datafile = keyword == "DATAFILE";
-                let (filename, file_type) = parse_cue_file_line_at(rest)?;
+                let (filename, _file_type) = parse_cue_file_line_at(rest)?;
                 let mut new_file = CueFile {
                     filename,
-                    file_type: if is_datafile {
-                        "BINARY".to_string()
-                    } else {
-                        file_type
-                    },
                     tracks: Vec::new(),
                 };
                 // Attach any pending tracks (CDRWin: TRACK before DATAFILE)

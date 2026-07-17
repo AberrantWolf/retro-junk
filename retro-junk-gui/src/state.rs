@@ -2752,8 +2752,6 @@ pub struct BrowseState {
     pub companies: Vec<retro_junk_db::CompanyRow>,
     pub collection: Vec<retro_junk_db::CollectionRow>,
     pub import_logs: Vec<retro_junk_catalog::types::ImportLog>,
-    /// Company name cache (for resolving publisher/developer IDs in release rows).
-    pub company_name_cache: HashMap<String, String>,
 }
 
 impl Default for BrowseState {
@@ -2767,7 +2765,6 @@ impl Default for BrowseState {
             companies: Vec::new(),
             collection: Vec::new(),
             import_logs: Vec::new(),
-            company_name_cache: HashMap::new(),
         }
     }
 }

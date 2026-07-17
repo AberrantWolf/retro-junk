@@ -321,7 +321,6 @@ fn test_cci_encryption_nocrypto() {
 fn test_origin_detection_card() {
     let ncsd = NcsdHeader {
         image_size_mu: 0x100,
-        media_id: 0x0004000000ABCDEF,
         partitions: [
             (0x20, 0x100),
             (0x120, 0x10),
@@ -348,7 +347,6 @@ fn test_origin_detection_card() {
 fn test_origin_detection_digital() {
     let ncsd = NcsdHeader {
         image_size_mu: 0x100,
-        media_id: 0x0004000000ABCDEF,
         partitions: [
             (0x20, 0x100),
             (0, 0),

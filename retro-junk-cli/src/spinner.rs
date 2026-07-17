@@ -9,8 +9,8 @@ use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 /// A pool of reusable spinner slots for displaying concurrent task progress.
 pub struct SpinnerPool {
-    #[allow(dead_code)]
-    mp: MultiProgress,
+    /// RAII keep-alive for the shared draw target; child bars are added via `mp.add()`.
+    _mp: MultiProgress,
     spinners: Vec<ProgressBar>,
     slot_assignments: HashMap<usize, usize>,
     free_slots: Vec<usize>,
@@ -48,7 +48,7 @@ impl SpinnerPool {
         let free_slots = (0..n).rev().collect();
 
         Self {
-            mp,
+            _mp: mp,
             spinners,
             slot_assignments: HashMap::new(),
             free_slots,

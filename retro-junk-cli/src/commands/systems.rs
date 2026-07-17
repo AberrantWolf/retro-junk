@@ -8,7 +8,6 @@ use crate::CliError;
 
 /// Capability filter for system resolution.
 pub(crate) enum SystemCapability {
-    Any,
     DatSupport,
     GdbSupport,
 }
@@ -24,14 +23,12 @@ pub(crate) fn resolve_systems<'a>(
 ) -> Result<Vec<&'a RegisteredConsole>, CliError> {
     let cap_filter = |c: &&RegisteredConsole| -> bool {
         match capability {
-            SystemCapability::Any => true,
             SystemCapability::DatSupport => c.analyzer.has_dat_support(),
             SystemCapability::GdbSupport => c.analyzer.has_gdb_support(),
         }
     };
 
     let cap_name = match capability {
-        SystemCapability::Any => None,
         SystemCapability::DatSupport => Some("DAT"),
         SystemCapability::GdbSupport => Some("GDB"),
     };

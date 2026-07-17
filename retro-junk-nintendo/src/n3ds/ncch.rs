@@ -11,12 +11,9 @@ use super::common::{read_ascii, read_u32_le, read_u64_le};
 // ---------------------------------------------------------------------------
 
 /// Parsed NCCH partition header fields.
-#[allow(dead_code)]
 pub(crate) struct NcchHeader {
     pub(crate) content_size_mu: u32,
-    pub(crate) partition_id: u64,
     pub(crate) maker_code: String,
-    pub(crate) ncch_version: u16,
     pub(crate) program_id: u64,
     pub(crate) product_code: String,
     pub(crate) exheader_hash: [u8; 32],
@@ -29,17 +26,12 @@ pub(crate) struct NcchHeader {
     pub(crate) content_type_flags: u8,
     /// NCCH flags[3]: crypto method.
     pub(crate) crypto_method: u8,
-    pub(crate) plain_region_offset_mu: u32,
-    pub(crate) plain_region_size_mu: u32,
-    pub(crate) logo_region_offset_mu: u32,
-    pub(crate) logo_region_size_mu: u32,
     pub(crate) exefs_offset_mu: u32,
     pub(crate) exefs_size_mu: u32,
     pub(crate) exefs_hash_region_size_mu: u32,
     pub(crate) romfs_offset_mu: u32,
     pub(crate) romfs_size_mu: u32,
     pub(crate) romfs_hash_region_size_mu: u32,
-    pub(crate) logo_hash: [u8; 32],
     pub(crate) exefs_superblock_hash: [u8; 32],
     pub(crate) romfs_superblock_hash: [u8; 32],
 }
@@ -68,9 +60,7 @@ pub(crate) fn parse_ncch_header(
 
     let trunc = || AnalysisError::corrupted_header("NCCH header data truncated");
     let content_size_mu = read_u32_le(&buf, 0x104).ok_or_else(trunc)?;
-    let partition_id = read_u64_le(&buf, 0x108).ok_or_else(trunc)?;
     let maker_code = read_ascii(&buf[0x110..0x112]);
-    let ncch_version = super::common::read_u16_le(&buf, 0x112).ok_or_else(trunc)?;
     let program_id = read_u64_le(&buf, 0x118).ok_or_else(trunc)?;
     let product_code = read_ascii(&buf[0x150..0x160]);
 
@@ -84,10 +74,6 @@ pub(crate) fn parse_ncch_header(
     let content_type_flags = flags[5];
     let no_crypto = flags[7] & 0x04 != 0;
 
-    let plain_region_offset_mu = read_u32_le(&buf, 0x190).ok_or_else(trunc)?;
-    let plain_region_size_mu = read_u32_le(&buf, 0x194).ok_or_else(trunc)?;
-    let logo_region_offset_mu = read_u32_le(&buf, 0x198).ok_or_else(trunc)?;
-    let logo_region_size_mu = read_u32_le(&buf, 0x19C).ok_or_else(trunc)?;
     let exefs_offset_mu = read_u32_le(&buf, 0x1A0).ok_or_else(trunc)?;
     let exefs_size_mu = read_u32_le(&buf, 0x1A4).ok_or_else(trunc)?;
     let exefs_hash_region_size_mu = read_u32_le(&buf, 0x1A8).ok_or_else(trunc)?;
@@ -95,8 +81,6 @@ pub(crate) fn parse_ncch_header(
     let romfs_size_mu = read_u32_le(&buf, 0x1B4).ok_or_else(trunc)?;
     let romfs_hash_region_size_mu = read_u32_le(&buf, 0x1B8).ok_or_else(trunc)?;
 
-    let mut logo_hash = [0u8; 32];
-    logo_hash.copy_from_slice(&buf[0x130..0x150]);
     let mut exefs_superblock_hash = [0u8; 32];
     exefs_superblock_hash.copy_from_slice(&buf[0x1C0..0x1E0]);
     let mut romfs_superblock_hash = [0u8; 32];
@@ -104,9 +88,7 @@ pub(crate) fn parse_ncch_header(
 
     Ok(NcchHeader {
         content_size_mu,
-        partition_id,
         maker_code,
-        ncch_version,
         program_id,
         product_code,
         exheader_hash,
@@ -115,17 +97,12 @@ pub(crate) fn parse_ncch_header(
         content_platform,
         content_type_flags,
         crypto_method,
-        plain_region_offset_mu,
-        plain_region_size_mu,
-        logo_region_offset_mu,
-        logo_region_size_mu,
         exefs_offset_mu,
         exefs_size_mu,
         exefs_hash_region_size_mu,
         romfs_offset_mu,
         romfs_size_mu,
         romfs_hash_region_size_mu,
-        logo_hash,
         exefs_superblock_hash,
         romfs_superblock_hash,
     })

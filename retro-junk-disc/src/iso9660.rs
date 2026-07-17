@@ -25,11 +25,9 @@ pub struct PrimaryVolumeDescriptor {
 
 /// A parsed ISO 9660 directory record.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct DirectoryRecord {
     pub extent_lba: u32,
     pub data_length: u32,
-    pub file_flags: u8,
     pub file_identifier: String,
 }
 
@@ -165,7 +163,6 @@ pub fn parse_directory_record(data: &[u8]) -> Option<DirectoryRecord> {
 
     let extent_lba = u32::from_le_bytes([data[2], data[3], data[4], data[5]]);
     let data_length = u32::from_le_bytes([data[10], data[11], data[12], data[13]]);
-    let file_flags = data[25];
     let id_len = data[32] as usize;
 
     if 33 + id_len > record_len {
@@ -183,7 +180,6 @@ pub fn parse_directory_record(data: &[u8]) -> Option<DirectoryRecord> {
     Some(DirectoryRecord {
         extent_lba,
         data_length,
-        file_flags,
         file_identifier,
     })
 }

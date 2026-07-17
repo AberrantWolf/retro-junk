@@ -104,8 +104,6 @@ struct N64Header {
     cic: CicVariant,
     clock_rate: u32,
     boot_address: u32,
-    #[allow(dead_code)]
-    libultra_version: u32,
     crc1: u32,
     crc2: u32,
     title: String,
@@ -152,7 +150,6 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<N64Header, AnalysisError> {
 
     let clock_rate = u32::from_be_bytes([buf[0x04], buf[0x05], buf[0x06], buf[0x07]]);
     let boot_address = u32::from_be_bytes([buf[0x08], buf[0x09], buf[0x0A], buf[0x0B]]);
-    let libultra_version = u32::from_be_bytes([buf[0x0C], buf[0x0D], buf[0x0E], buf[0x0F]]);
     let crc1 = u32::from_be_bytes([buf[0x10], buf[0x11], buf[0x12], buf[0x13]]);
     let crc2 = u32::from_be_bytes([buf[0x14], buf[0x15], buf[0x16], buf[0x17]]);
 
@@ -179,7 +176,6 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<N64Header, AnalysisError> {
         cic,
         clock_rate,
         boot_address,
-        libultra_version,
         crc1,
         crc2,
         title,

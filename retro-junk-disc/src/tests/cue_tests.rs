@@ -7,7 +7,6 @@ fn test_parse_cue_single_track() {
     let sheet = parse_cue(cue).unwrap();
     assert_eq!(sheet.files.len(), 1);
     assert_eq!(sheet.files[0].filename, "game.bin");
-    assert_eq!(sheet.files[0].file_type, "BINARY");
     assert_eq!(sheet.files[0].tracks.len(), 1);
     assert_eq!(sheet.files[0].tracks[0].number, 1);
     assert_eq!(sheet.files[0].tracks[0].mode, "MODE2/2352");
@@ -134,7 +133,6 @@ START 00:00:11
     // First file is from DATAFILE, with pending Track 1 attached.
     // Track 2 (AUDIO) also attaches here since it appears before the next FILE.
     assert_eq!(sheet.files[0].filename, "THEBLOCK.bin");
-    assert_eq!(sheet.files[0].file_type, "BINARY");
     assert_eq!(sheet.files[0].tracks.len(), 2);
     assert_eq!(sheet.files[0].tracks[0].number, 1);
     assert_eq!(sheet.files[0].tracks[0].mode, "MODE2_RAW");
@@ -159,7 +157,6 @@ fn test_parse_cue_cdrwin_track_before_datafile() {
     let sheet = parse_cue(cue).unwrap();
     assert_eq!(sheet.files.len(), 1);
     assert_eq!(sheet.files[0].filename, "game.bin");
-    assert_eq!(sheet.files[0].file_type, "BINARY");
     // Pending track was attached to the DATAFILE entry
     assert_eq!(sheet.files[0].tracks.len(), 1);
     assert_eq!(sheet.files[0].tracks[0].number, 1);
@@ -455,7 +452,6 @@ fn test_parse_cue_tab_separated_matches_space_separated() {
 
     assert_eq!(tab_sheet.files.len(), space_sheet.files.len());
     assert_eq!(tab_sheet.files[0].filename, space_sheet.files[0].filename);
-    assert_eq!(tab_sheet.files[0].file_type, space_sheet.files[0].file_type);
     assert_eq!(
         tab_sheet.files[0].tracks[0].mode,
         space_sheet.files[0].tracks[0].mode

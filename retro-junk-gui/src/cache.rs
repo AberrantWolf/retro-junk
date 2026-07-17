@@ -321,10 +321,6 @@ use serde::Deserialize;
 #[derive(Deserialize)]
 struct LegacyLibraryCache {
     version: u32,
-    #[allow(dead_code)]
-    root_path: PathBuf,
-    #[allow(dead_code)]
-    saved_at: String,
     consoles: Vec<LegacyCachedConsole>,
 }
 

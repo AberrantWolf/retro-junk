@@ -42,8 +42,6 @@ struct GbaHeader {
     game_code: String,
     maker_code: String,
     fixed_value: u8,
-    #[allow(dead_code)]
-    main_unit_code: u8,
     device_type: u8,
     software_version: u8,
     header_checksum: u8,
@@ -96,7 +94,6 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<GbaHeader, AnalysisError> {
         game_code,
         maker_code,
         fixed_value: buf[0xB2],
-        main_unit_code: buf[0xB3],
         device_type: buf[0xB4],
         software_version: buf[0xBC],
         header_checksum: buf[0xBD],

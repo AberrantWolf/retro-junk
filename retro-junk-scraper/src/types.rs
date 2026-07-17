@@ -18,8 +18,6 @@ pub struct JeuInfosData {
 pub struct GameInfo {
     pub id: String,
     #[serde(default)]
-    pub romid: Option<String>,
-    #[serde(default)]
     pub notgame: Option<String>,
     #[serde(default)]
     pub noms: Vec<RegionText>,
@@ -151,10 +149,6 @@ pub struct Media {
     pub region: String,
     #[serde(default)]
     pub format: String,
-    #[serde(default)]
-    pub crc: Option<String>,
-    #[serde(default)]
-    pub size: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

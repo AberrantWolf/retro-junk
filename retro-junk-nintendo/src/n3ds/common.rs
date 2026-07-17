@@ -233,7 +233,6 @@ pub(crate) fn detect_cci_origin(ncsd: &NcsdHeader) -> CciOrigin {
 // ---------------------------------------------------------------------------
 
 /// Result of a SHA-256 hash verification.
-#[allow(dead_code)]
 pub(crate) enum HashResult {
     /// Hash matches.
     Ok,
@@ -241,10 +240,6 @@ pub(crate) enum HashResult {
     Mismatch { expected: String, actual: String },
     /// Region is empty (size 0), hash not checked.
     Empty,
-    /// Content is encrypted, cannot verify.
-    Encrypted,
-    /// Skipped (quick mode or other reason).
-    Skipped,
 }
 
 /// Verify a SHA-256 hash by reading `size` bytes from `offset`.

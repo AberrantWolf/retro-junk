@@ -17,10 +17,8 @@ use super::{CARD_SEED_SIZE, MEDIA_UNIT, MIN_CCI_SIZE, NCSD_MAGIC};
 // ---------------------------------------------------------------------------
 
 /// Parsed NCSD header fields.
-#[allow(dead_code)]
 pub(crate) struct NcsdHeader {
     pub(crate) image_size_mu: u32,
-    pub(crate) media_id: u64,
     /// Partition table: (offset_mu, size_mu) for each of 8 partitions.
     pub(crate) partitions: [(u32, u32); 8],
     /// Partition flags byte 5: media type index.
@@ -67,7 +65,6 @@ pub(crate) fn parse_ncsd_header(reader: &mut dyn ReadSeek) -> Result<NcsdHeader,
 
     let trunc = || AnalysisError::corrupted_header("NCSD header data truncated");
     let image_size_mu = read_u32_le(&buf, 0x104).ok_or_else(trunc)?;
-    let media_id = read_u64_le(&buf, 0x108).ok_or_else(trunc)?;
 
     // Partition table at 0x120: 8 entries of (u32 offset, u32 size)
     let mut partitions = [(0u32, 0u32); 8];
@@ -106,7 +103,6 @@ pub(crate) fn parse_ncsd_header(reader: &mut dyn ReadSeek) -> Result<NcsdHeader,
 
     Ok(NcsdHeader {
         image_size_mu,
-        media_id,
         partitions,
         media_type,
         media_platform,

@@ -56,9 +56,6 @@ pub(crate) struct NintendoDiscHeader {
     pub version: u8,
     /// Audio streaming flag
     pub audio_streaming: bool,
-    /// Stream buffer size
-    #[allow(dead_code)]
-    pub stream_buffer_size: u8,
     /// Wii magic word at offset 0x0018
     pub wii_magic: u32,
     /// GameCube magic word at offset 0x001C
@@ -99,7 +96,6 @@ pub(crate) fn parse_disc_header(
     let disc_id = buf[0x0006];
     let version = buf[0x0007];
     let audio_streaming = buf[0x0008] != 0;
-    let stream_buffer_size = buf[0x0009];
 
     let wii_magic = u32::from_be_bytes([buf[0x0018], buf[0x0019], buf[0x001A], buf[0x001B]]);
     let gc_magic = u32::from_be_bytes([buf[0x001C], buf[0x001D], buf[0x001E], buf[0x001F]]);
@@ -124,7 +120,6 @@ pub(crate) fn parse_disc_header(
         disc_id,
         version,
         audio_streaming,
-        stream_buffer_size,
         wii_magic,
         gc_magic,
         game_name,
