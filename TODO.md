@@ -249,14 +249,18 @@ only the playable tree to frontends.
 
 - [ ] **Re-import after migration v4** — Schema is now at version 4 (`screen_title`, `cover_title` columns added in v3). Run `catalog import all` followed by `catalog enrich` on existing databases to populate `revision`, `variant`, `screen_title`, and `cover_title` fields. This is a one-time user/ops action, not a code gap.
 
-## Deferred from 2026-07-17 Option/clippy cleanup
+## Deferred module splits (readability, no behavior change)
 
-- [ ] **Split the two remaining god-files into submodules** — pure moves, no
-  behavior change: `retro-junk-gui/src/state.rs` (2,803 lines → `state/`
-  with library.rs / dialogs.rs / operations.rs / messages.rs / browse.rs)
-  and `retro-junk-lib/src/rename.rs` (2,591 lines → `rename/` with
-  types / serial / m3u / plan / execute / ref_files). Keep `mod.rs`
-  re-exports so consumers need no import changes.
+- [ ] **Finish splitting `retro-junk-lib/src/rename.rs`** — public types now
+  live in `rename/types.rs` (2026-07-18). Extract the remaining cohesive
+  areas into `serial`, `m3u`, `plan`, `execute`, and `ref_files`, then convert
+  the root to `rename/mod.rs` with re-exports so consumer imports stay stable.
+- [ ] **Split `retro-junk-db/src/queries.rs` by aggregate** — extract media,
+  release, work, collection, and search queries while preserving the existing
+  `retro_junk_db` facade.
+- [ ] **Split `retro-junk-gui/src/state.rs` by state ownership** — extract
+  library/cache, dialogs, operations/jobs, messages, and browse/selection
+  state into `state/` submodules; retain one public state facade.
 - [ ] **`Override` selector trio → enum** — `entity_id` / `platform_id` /
   `dat_name_pattern` are alternative targeting modes; an `OverrideTarget`
   enum would make illegal combinations unrepresentable (types.rs + YAML
