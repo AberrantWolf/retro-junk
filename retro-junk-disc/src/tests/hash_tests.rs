@@ -113,7 +113,7 @@ fn test_compute_track1_size_two_tracks() {
     let sheet = crate::cue::parse_cue(cue).unwrap();
     let bin_size = 615_612_480u64;
     let (size, warnings) = compute_track1_size_from_cue(&sheet, bin_size);
-    assert_eq!(size, Some(243352 * 2352));
+    assert_eq!(size, Some(243_352 * 2352));
     assert_eq!(size, Some(572_363_904));
     assert!(warnings.is_empty());
 }

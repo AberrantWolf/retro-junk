@@ -53,30 +53,28 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
         } = app.tag_dialog
         {
             let name = name.clone();
-            let console_idx = console_idx;
-            let entry_idx = entry_idx;
 
             // Create in DB if available
-            if let Some(ref conn) = app.catalog_db {
-                if let Some(console) = app.library.consoles.get(console_idx) {
-                    let platform_id = console.folder_name.as_str();
-                    let region = console
-                        .entries
-                        .get(entry_idx)
-                        .and_then(|e: &crate::state::LibraryEntry| {
-                            e.effective_regions().first().map(|r| r.code().to_string())
-                        })
-                        .unwrap_or_else(|| "unknown".to_string());
+            if let Some(ref conn) = app.catalog_db
+                && let Some(console) = app.library.consoles.get(console_idx)
+            {
+                let platform_id = console.folder_name.as_str();
+                let region = console
+                    .entries
+                    .get(entry_idx)
+                    .and_then(|e: &crate::state::LibraryEntry| {
+                        e.effective_regions().first().map(|r| r.code().to_string())
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
 
-                    if let Err(e) =
-                        retro_junk_db::create_homebrew_work(conn, &name, platform_id, &region)
-                    {
-                        log::error!("Failed to create homebrew work: {}", e);
-                        app.push_error(
-                            "Database Error",
-                            format!("Failed to create homebrew work: {}", e),
-                        );
-                    }
+                if let Err(e) =
+                    retro_junk_db::create_homebrew_work(conn, &name, platform_id, &region)
+                {
+                    log::error!("Failed to create homebrew work: {e}");
+                    app.push_error(
+                        "Database Error",
+                        format!("Failed to create homebrew work: {e}"),
+                    );
                 }
             }
 
@@ -178,60 +176,58 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
             entry_idx,
             ..
         } = app.tag_dialog
+            && let Some(work) = results.get(sel_idx)
         {
-            if let Some(work) = results.get(sel_idx) {
-                let work_id = work.id.clone();
-                let console_idx = console_idx;
-                let entry_idx = entry_idx;
+            let work_id = work.id.clone();
 
-                // Create in DB if available
-                if let Some(ref conn) = app.catalog_db {
-                    if let Some(console) = app.library.consoles.get(console_idx) {
-                        let platform_id = console.folder_name.as_str();
-                        let entry_ref = console.entries.get(entry_idx);
-                        let region = entry_ref
-                            .and_then(|e: &crate::state::LibraryEntry| {
-                                e.effective_regions().first().map(|r| r.code().to_string())
-                            })
-                            .unwrap_or_else(|| "unknown".to_string());
+            // Create in DB if available
+            if let Some(ref conn) = app.catalog_db
+                && let Some(console) = app.library.consoles.get(console_idx)
+            {
+                let platform_id = console.folder_name.as_str();
+                let entry_ref = console.entries.get(entry_idx);
+                let region = entry_ref
+                    .and_then(|e: &crate::state::LibraryEntry| {
+                        e.effective_regions().first().map(|r| r.code().to_string())
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
 
-                        // Convert hashes if available
-                        let hashes = entry_ref.and_then(|e| e.hashes.as_ref()).map(|h| {
-                            retro_junk_db::MediaHashes {
-                                crc32: h.crc32.clone(),
-                                sha1: h.sha1.clone(),
-                                md5: h.md5.clone(),
-                                file_size: h.data_size as i64,
-                            }
+                // Convert hashes if available
+                let hashes =
+                    entry_ref
+                        .and_then(|e| e.hashes.as_ref())
+                        .map(|h| retro_junk_db::MediaHashes {
+                            crc32: h.crc32.clone(),
+                            sha1: h.sha1.clone(),
+                            md5: h.md5.clone(),
+                            file_size: h.data_size as i64,
                         });
 
-                        if let Err(e) = retro_junk_db::create_modded_media(
-                            conn,
-                            &work_id,
-                            platform_id,
-                            &region,
-                            hashes.as_ref(),
-                        ) {
-                            log::error!("Failed to create modded media: {}", e);
-                            app.push_error(
-                                "Database Error",
-                                format!("Failed to create modded media: {}", e),
-                            );
-                        }
-                    }
+                if let Err(e) = retro_junk_db::create_modded_media(
+                    conn,
+                    &work_id,
+                    platform_id,
+                    &region,
+                    hashes.as_ref(),
+                ) {
+                    log::error!("Failed to create modded media: {e}");
+                    app.push_error(
+                        "Database Error",
+                        format!("Failed to create modded media: {e}"),
+                    );
                 }
-
-                // Set tag on the entry
-                if let Some(entry) = app
-                    .library
-                    .consoles
-                    .get_mut(console_idx)
-                    .and_then(|c| c.entries.get_mut(entry_idx))
-                {
-                    entry.tag = Some(CatalogTag::Modded);
-                }
-                app.save_entry_cache(console_idx, &[entry_idx]);
             }
+
+            // Set tag on the entry
+            if let Some(entry) = app
+                .library
+                .consoles
+                .get_mut(console_idx)
+                .and_then(|c| c.entries.get_mut(entry_idx))
+            {
+                entry.tag = Some(CatalogTag::Modded);
+            }
+            app.save_entry_cache(console_idx, &[entry_idx]);
         }
         app.tag_dialog = TagDialog::None;
     } else if cancelled {

@@ -28,6 +28,7 @@ pub struct BrokenReference {
 /// For `SingleFile` entries, checks the parent directory for CUE/M3U files.
 /// For `MultiDisc` entries, checks each disc file's parent directory.
 /// Returns an empty vec if no broken references are found.
+#[must_use]
 pub fn check_broken_references(entry: &GameEntry) -> Vec<BrokenReference> {
     let dirs: Vec<PathBuf> = match entry {
         GameEntry::SingleFile(path) => path
@@ -38,7 +39,7 @@ pub fn check_broken_references(entry: &GameEntry) -> Vec<BrokenReference> {
             let mut seen = std::collections::HashSet::new();
             files
                 .iter()
-                .filter_map(|p| p.parent().map(|d| d.to_path_buf()))
+                .filter_map(|p| p.parent().map(std::path::Path::to_path_buf))
                 .filter(|d| seen.insert(d.clone()))
                 .collect()
         }
@@ -48,9 +49,8 @@ pub fn check_broken_references(entry: &GameEntry) -> Vec<BrokenReference> {
     let formats: &[&dyn RefFileFormat] = &[&CueFormat, &M3uFormat];
 
     for dir in &dirs {
-        let entries = match fs::read_dir(dir) {
-            Ok(e) => e,
-            Err(_) => continue,
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
         };
 
         for dir_entry in entries.flatten() {
@@ -65,19 +65,18 @@ pub fn check_broken_references(entry: &GameEntry) -> Vec<BrokenReference> {
                     continue;
                 }
 
-                let content = match fs::read_to_string(&path) {
-                    Ok(c) => c,
-                    Err(_) => continue,
+                let Ok(content) = fs::read_to_string(&path) else {
+                    continue;
                 };
 
                 let missing: Vec<String> = content
                     .lines()
                     .filter_map(|line| {
                         let ref_line = fmt.extract_reference(line)?;
-                        if !dir.join(&ref_line.filename).exists() {
-                            Some(ref_line.filename)
-                        } else {
+                        if dir.join(&ref_line.filename).exists() {
                             None
+                        } else {
+                            Some(ref_line.filename)
                         }
                     })
                     .collect();
@@ -189,6 +188,10 @@ pub enum SetProblemKind {
     Unmatched { issues: Vec<String> },
 }
 
+/// Callback that, given a game's old-stem → new-stem map, returns full-file
+/// rewrites (path, new content) to include in the rename transaction.
+pub type GamelistRewriter<'a> = &'a dyn Fn(&HashMap<String, String>) -> Vec<(PathBuf, String)>;
+
 /// Context for executing renames: where companion data lives so it moves
 /// inside the same transaction as the game files.
 #[derive(Default)]
@@ -200,8 +203,7 @@ pub struct ExecutionContext<'a> {
     /// Given a game's old-stem → new-stem map, returns full-file rewrites
     /// (path, new content) to include in the transaction — used by callers
     /// to keep gamelist.xml in sync without this crate knowing the format.
-    #[allow(clippy::type_complexity)]
-    pub gamelist_rewriter: Option<&'a dyn Fn(&HashMap<String, String>) -> Vec<(PathBuf, String)>>,
+    pub gamelist_rewriter: Option<GamelistRewriter<'a>>,
 }
 
 /// CRC32 and size of hashed data, recorded when hashing was attempted.
@@ -266,6 +268,7 @@ pub enum SerialWarningKind {
 /// 1. `detected_extension` from analyzer (auto-corrects mismatched extensions)
 /// 2. Original file extension (preserves container format)
 /// 3. DAT rom name as-is (fallback when no extension info available)
+#[must_use]
 pub fn target_filename_for_rename(
     dat_rom_name: &str,
     source_path: &Path,
@@ -283,7 +286,7 @@ pub fn target_filename_for_rename(
     };
 
     match ext {
-        Some(e) => format!("{}.{}", dat_stem, e),
+        Some(e) => format!("{dat_stem}.{e}"),
         None => dat_rom_name.to_string(),
     }
 }
@@ -332,6 +335,7 @@ pub struct DiscMatchData {
 /// catalog DB has already resolved the canonical game name.
 ///
 /// Returns `None` if the folder and playlist are already correct.
+#[must_use]
 pub fn plan_m3u_action(
     source_folder: &Path,
     discs: &[DiscMatchData],
@@ -355,7 +359,7 @@ pub fn plan_m3u_action(
 
     // Target folder: parent / "{base_game_name}.m3u"
     let target_folder = match source_folder.parent() {
-        Some(p) => p.join(format!("{}.m3u", base_game_name)),
+        Some(p) => p.join(format!("{base_game_name}.m3u")),
         None => return None,
     };
 
@@ -382,11 +386,11 @@ pub fn plan_m3u_action(
             existing_lines
                 == playlist_entries
                     .iter()
-                    .map(|s| s.as_str())
+                    .map(std::string::String::as_str)
                     .collect::<Vec<_>>()
         } else {
             // Check for the expected .m3u file on disk
-            let expected_m3u_path = source_folder.join(format!("{}.m3u", base_game_name));
+            let expected_m3u_path = source_folder.join(format!("{base_game_name}.m3u"));
             if expected_m3u_path.exists() {
                 let contents = fs::read_to_string(&expected_m3u_path).unwrap_or_default();
                 let existing_lines: Vec<&str> =
@@ -394,7 +398,7 @@ pub fn plan_m3u_action(
                 existing_lines
                     == playlist_entries
                         .iter()
-                        .map(|s| s.as_str())
+                        .map(std::string::String::as_str)
                         .collect::<Vec<_>>()
             } else {
                 false
@@ -445,7 +449,7 @@ pub fn write_m3u_playlist(
         }
     }
 
-    let playlist_name = format!("{}.m3u", game_name);
+    let playlist_name = format!("{game_name}.m3u");
     let playlist_path = folder.join(&playlist_name);
     let contents = entries.join("\n") + "\n";
     fs::write(&playlist_path, contents)
@@ -454,7 +458,7 @@ pub fn write_m3u_playlist(
 /// Execute a single M3U action: write playlist file, rename folder.
 ///
 /// This does NOT rename individual disc files — the caller is responsible for that.
-/// Execution order: write playlist first (using source_folder path), then rename folder.
+/// Execution order: write playlist first (using `source_folder` path), then rename folder.
 fn execute_m3u_action(action: &M3uAction, errors: &mut Vec<String>) -> M3uExecutionResult {
     let mut result = M3uExecutionResult::default();
 
@@ -488,9 +492,17 @@ fn execute_m3u_action(action: &M3uAction, errors: &mut Vec<String>) -> M3uExecut
                 Ok(()) => result.folder_renamed = true,
                 Err(e) => {
                     errors.push(format!(
-                        "Failed to rename folder {:?} -> {:?}: {}",
-                        action.source_folder.file_name().unwrap_or_default(),
-                        action.target_folder.file_name().unwrap_or_default(),
+                        "Failed to rename folder {} -> {}: {}",
+                        action
+                            .source_folder
+                            .file_name()
+                            .unwrap_or_default()
+                            .display(),
+                        action
+                            .target_folder
+                            .file_name()
+                            .unwrap_or_default()
+                            .display(),
                         e,
                     ));
                 }
@@ -509,14 +521,14 @@ fn execute_m3u_action(action: &M3uAction, errors: &mut Vec<String>) -> M3uExecut
 pub struct M3uRenameJob {
     /// The .m3u folder containing disc files
     pub source_folder: PathBuf,
-    /// Per-disc rename data (file_path → game_name + target_filename).
+    /// Per-disc rename data (`file_path` → `game_name` + `target_filename`).
     /// Includes an entry for each disc set's cue (for playlist/folder
     /// naming); the actual file renames for those run via `disc_sets`.
     pub discs: Vec<DiscMatchData>,
     /// Verified cue/bin sets inside this folder, renamed transactionally
     /// (cue + tracks + FILE-line rewrite) before the plain disc renames.
     pub disc_sets: Vec<DiscSetPlan>,
-    /// Pre-resolved game name (from catalog DB); skips derive_base_game_name.
+    /// Pre-resolved game name (from catalog DB); skips `derive_base_game_name`.
     /// Empty means derive from per-disc DAT names.
     pub game_name_override: String,
 }
@@ -547,6 +559,9 @@ pub struct M3uRenameResult {
 /// 4. Plan M3U action (folder rename + playlist write)
 /// 5. Rename misnamed inner `.m3u` file (if playlist won't be rewritten)
 /// 6. Execute M3U action (write playlist, rename folder)
+#[must_use]
+// Sequential rename pipeline; each numbered step is short and splitting would obscure the flow.
+#[allow(clippy::too_many_lines)]
 pub fn execute_m3u_rename(job: &M3uRenameJob, exec: &ExecutionContext<'_>) -> M3uRenameResult {
     let mut result = M3uRenameResult {
         final_folder: job.source_folder.clone(),
@@ -640,7 +655,7 @@ pub fn execute_m3u_rename(job: &M3uRenameJob, exec: &ExecutionContext<'_>) -> M3
                     Err(e) => {
                         result
                             .errors
-                            .push(format!("Failed to rename inner playlist: {}", e));
+                            .push(format!("Failed to rename inner playlist: {e}"));
                     }
                 }
             }
@@ -651,7 +666,7 @@ pub fn execute_m3u_rename(job: &M3uRenameJob, exec: &ExecutionContext<'_>) -> M3
         result.playlist_written = m3u_exec.playlist_written;
         result.folder_renamed = m3u_exec.folder_renamed;
         if m3u_exec.folder_renamed {
-            result.final_folder = action.target_folder.clone();
+            result.final_folder.clone_from(&action.target_folder);
         }
 
         // Step 7: Move companion media/gamelist entries for the folder rename
@@ -702,6 +717,7 @@ pub struct DiscSetExecution {
 /// Execute one verified disc set as a single transaction: track renames,
 /// cue rename, cue FILE-line rewrite, plus companion media/gamelist moves.
 /// On any failure, all completed steps are rolled back.
+#[must_use]
 pub fn execute_disc_set(set: &DiscSetPlan, exec: &ExecutionContext<'_>) -> DiscSetExecution {
     let mut result = DiscSetExecution::default();
     let mut txn = set.build_transaction();
@@ -826,13 +842,14 @@ pub struct RenamePlan {
     /// M3U playlist files with broken entries in non-M3U dirs (pre-existing)
     pub broken_m3u_files: Vec<PathBuf>,
     /// Hash warnings (e.g., incomplete dumps with zero-padded audio tracks).
-    /// Each entry is (file_path, list_of_warnings).
+    /// Each entry is (`file_path`, `list_of_warnings`).
     pub hash_warnings: Vec<(PathBuf, Vec<String>)>,
 }
 
 impl RenamePlan {
     /// Total number of actual file rename operations (single files + disc
     /// sets + M3U disc renames; already-correct files excluded).
+    #[must_use]
     pub fn total_renames(&self) -> usize {
         self.renames.len()
             + self
@@ -862,11 +879,13 @@ impl RenamePlan {
     }
 
     /// Whether this plan has any work to do.
+    #[must_use]
     pub fn has_actions(&self) -> bool {
         !self.renames.is_empty() || !self.disc_sets.is_empty() || !self.m3u_jobs.is_empty()
     }
 
     /// Whether this plan has any problems (conflicts, unmatched, broken refs).
+    #[must_use]
     pub fn has_problems(&self) -> bool {
         !self.conflicts.is_empty()
             || !self.unmatched.is_empty()
@@ -880,6 +899,7 @@ use retro_junk_core::disc::{derive_base_game_name, extract_disc_number};
 
 /// Returns true for file extensions that are M3U entry points (playable disc images).
 /// Returns false for companion data files (.bin, .img) that shouldn't appear in playlists.
+#[must_use]
 pub fn is_m3u_entry_point(filename: &str) -> bool {
     let ext = Path::new(filename)
         .extension()
@@ -889,11 +909,24 @@ pub fn is_m3u_entry_point(filename: &str) -> bool {
     M3U_ENTRY_POINT_EXTENSIONS.iter().any(|&e| e == ext)
 }
 
+/// Who claims a rename target during conflict detection in [`plan_renames`].
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum Claimant {
+    Single(usize),
+    TopSet(usize),
+    M3uSet(PathBuf, usize),
+}
+
+/// Rename target -> claimants (source path + claimant kind).
+type Claims = HashMap<PathBuf, Vec<(PathBuf, Claimant)>>;
+
 /// Plan renames for a single console folder.
 ///
 /// Uses the analyzer to extract serial/name from each file, then matches
 /// against the DAT index. Falls back to hashing when serial/name matching
 /// fails (unless `hash_mode` is set, in which case all files are hashed).
+// Single planning pass over a folder; stages share loop-local state, so extraction adds noise.
+#[allow(clippy::too_many_lines)]
 pub fn plan_renames(
     folder: &Path,
     analyzer: &dyn RomAnalyzer,
@@ -943,7 +976,7 @@ pub fn plan_renames(
                     m3u_cue_map.push((folder.to_path_buf(), cues));
                 }
             }
-            _ => {}
+            GameEntry::SingleFile(_) => {}
         }
     }
 
@@ -966,7 +999,7 @@ pub fn plan_renames(
 
     let mut files: Vec<PathBuf> = game_entries
         .iter()
-        .flat_map(|entry| entry.all_files())
+        .flat_map(super::scanner::GameEntry::all_files)
         .filter(|p| !set_covered.contains(*p))
         .cloned()
         .collect();
@@ -1111,13 +1144,6 @@ pub fn plan_renames(
     // Detect conflicts: multiple files (single renames or set members)
     // mapping to the same target. Conflicting singles are dropped; a
     // conflicting set is dropped whole (sets never partially rename).
-    #[derive(Clone, PartialEq, Eq, Hash)]
-    enum Claimant {
-        Single(usize),
-        TopSet(usize),
-        M3uSet(PathBuf, usize),
-    }
-    type Claims = HashMap<PathBuf, Vec<(PathBuf, Claimant)>>;
     let mut claims: Claims = HashMap::new();
     for (i, rename) in renames.iter().enumerate() {
         claims
@@ -1154,8 +1180,8 @@ pub fn plan_renames(
             conflicts.push((
                 target.clone(),
                 format!(
-                    "Multiple files map to {:?}: {}",
-                    target.file_name().unwrap_or_default(),
+                    "Multiple files map to {}: {}",
+                    target.file_name().unwrap_or_default().display(),
                     claimants
                         .iter()
                         .map(|(source, _)| source
@@ -1195,7 +1221,7 @@ pub fn plan_renames(
         set_index += 1;
         keep
     });
-    for (folder, (sets, playlist_discs)) in m3u_folder_sets.iter_mut() {
+    for (folder, (sets, playlist_discs)) in &mut m3u_folder_sets {
         let mut si = 0usize;
         sets.retain(|set| {
             let keep = !drop_m3u_sets.contains(&(folder.clone(), si));
@@ -1433,13 +1459,11 @@ pub fn serial_lookup(
         detected_extension: String::new(),
     };
 
-    let mut file = match fs::File::open(file_path) {
-        Ok(f) => f,
-        Err(_) => return no_match,
+    let Ok(mut file) = fs::File::open(file_path) else {
+        return no_match;
     };
-    let info = match analyzer.analyze(&mut file, &analysis_options) {
-        Ok(i) => i,
-        Err(_) => return no_match,
+    let Ok(info) = analyzer.analyze(&mut file, &analysis_options) else {
+        return no_match;
     };
 
     let detected_extension = info
@@ -1548,6 +1572,9 @@ fn match_by_hash(
 /// 2. Disc-set renames (cue + tracks + FILE rewrite, one transaction each)
 /// 3. Fix CUE/M3U references in non-M3U directories
 /// 4. M3U jobs (set/disc renames + CUE/M3U fix + playlist + folder rename)
+#[must_use]
+// Ordered transaction executor; the numbered phases must stay together for rollback clarity.
+#[allow(clippy::too_many_lines)]
 pub fn execute_renames(plan: &RenamePlan, exec: &ExecutionContext<'_>) -> RenameSummary {
     let mut summary = RenameSummary {
         already_correct: plan.already_correct.len(),
@@ -1569,8 +1596,8 @@ pub fn execute_renames(plan: &RenamePlan, exec: &ExecutionContext<'_>) -> Rename
             }
             Err(e) => {
                 summary.errors.push(format!(
-                    "Failed to rename {:?}: {}",
-                    rename.source.file_name().unwrap_or_default(),
+                    "Failed to rename {}: {}",
+                    rename.source.file_name().unwrap_or_default().display(),
                     e,
                 ));
             }
@@ -1599,7 +1626,10 @@ pub fn execute_renames(plan: &RenamePlan, exec: &ExecutionContext<'_>) -> Rename
         .renames
         .iter()
         .map(|r| (r.source.clone(), r.target.clone()));
-    let set_renames = plan.disc_sets.iter().flat_map(|s| s.file_renames());
+    let set_renames = plan
+        .disc_sets
+        .iter()
+        .flat_map(super::disc_set::DiscSetPlan::file_renames);
     for (source, target) in single_renames.chain(set_renames) {
         if source == target {
             continue;
@@ -1689,6 +1719,7 @@ pub struct MediaRenamePlan {
 
 impl MediaRenamePlan {
     /// Whether this plan has any work to do.
+    #[must_use]
     pub fn has_actions(&self) -> bool {
         !self.renames.is_empty()
     }
@@ -1699,6 +1730,7 @@ impl MediaRenamePlan {
 /// Scans all subdirectories under `media_dir/console_folder` for files whose
 /// stems match old ROM stems, and plans renames to match the new stems.
 /// Also handles M3U folder stems (old folder name → new folder name).
+#[must_use]
 pub fn plan_media_renames(
     plan: &RenamePlan,
     media_dir: &Path,
@@ -1758,23 +1790,22 @@ pub fn plan_media_renames(
             &job.discs,
             None,
             &job.game_name_override,
-        ) {
-            if action.source_folder != action.target_folder {
-                let old_folder_stem = action
-                    .source_folder
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                let new_folder_stem = action
-                    .target_folder
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                if old_folder_stem != new_folder_stem {
-                    stem_map.insert(old_folder_stem, new_folder_stem);
-                }
+        ) && action.source_folder != action.target_folder
+        {
+            let old_folder_stem = action
+                .source_folder
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let new_folder_stem = action
+                .target_folder
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if old_folder_stem != new_folder_stem {
+                stem_map.insert(old_folder_stem, new_folder_stem);
             }
         }
     }
@@ -1790,8 +1821,9 @@ pub fn plan_media_renames(
 ///
 /// `stem_map` maps old file stems to new file stems (without extensions).
 /// Scans all subdirectories under `media_dir/console_folder` for matching files.
-pub fn plan_media_renames_from_stems(
-    stem_map: &HashMap<String, String>,
+#[must_use]
+pub fn plan_media_renames_from_stems<S: std::hash::BuildHasher>(
+    stem_map: &HashMap<String, String, S>,
     media_dir: &Path,
     console_folder: &str,
 ) -> MediaRenamePlan {
@@ -1803,9 +1835,8 @@ pub fn plan_media_renames_from_stems(
     }
 
     // Scan all subdirs of console_media_dir for matching files
-    let subdirs = match fs::read_dir(&console_media_dir) {
-        Ok(entries) => entries,
-        Err(_) => return result,
+    let Ok(subdirs) = fs::read_dir(&console_media_dir) else {
+        return result;
     };
 
     // Track targets to detect conflicts
@@ -1818,9 +1849,8 @@ pub fn plan_media_renames_from_stems(
         }
         let subdir_name = entry.file_name().to_string_lossy().to_string();
 
-        let files = match fs::read_dir(&subdir_path) {
-            Ok(entries) => entries,
-            Err(_) => continue,
+        let Ok(files) = fs::read_dir(&subdir_path) else {
+            continue;
         };
 
         for file_entry in files.flatten() {
@@ -1879,7 +1909,8 @@ pub fn plan_media_renames_from_stems(
     result
 }
 
-/// Format a MatchMethod for display.
+/// Format a `MatchMethod` for display.
+#[must_use]
 pub fn format_match_method(method: &MatchMethod) -> &'static str {
     match method {
         MatchMethod::Serial => "serial",
@@ -1974,7 +2005,7 @@ impl RefFileFormat for CueFormat {
             .unwrap_or_default();
         let trimmed = original_line.trim();
         let indent = &original_line[..original_line.len() - trimmed.len()];
-        format!("{}FILE \"{}\" {}", indent, new_filename, file_type)
+        format!("{indent}FILE \"{new_filename}\" {file_type}")
     }
 
     fn serialize(&self, original_content: &str, lines: &[String]) -> String {
@@ -2067,9 +2098,8 @@ fn detect_broken_ref_files(fmt: &dyn RefFileFormat, files: &[PathBuf]) -> Vec<Pa
             continue;
         }
 
-        let entries = match fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(_) => continue,
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
         };
 
         for entry in entries.flatten() {
@@ -2082,9 +2112,8 @@ fn detect_broken_ref_files(fmt: &dyn RefFileFormat, files: &[PathBuf]) -> Vec<Pa
                 continue;
             }
 
-            let content = match fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(_) => continue,
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
             };
 
             let has_broken = content.lines().any(|line| {
@@ -2113,9 +2142,8 @@ fn fix_references_in_dir(
     rename_map: &HashMap<String, String>,
     errors: &mut Vec<String>,
 ) -> usize {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return 0,
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
     };
 
     let mut updated = 0;
@@ -2154,26 +2182,25 @@ fn fix_single_ref_file(
     dir: &Path,
     rename_map: &HashMap<String, String>,
 ) -> Result<bool, String> {
-    let content = fs::read_to_string(ref_path).map_err(|e| format!("read error: {}", e))?;
+    let content = fs::read_to_string(ref_path).map_err(|e| format!("read error: {e}"))?;
 
     let mut output_lines = Vec::new();
     let mut changed = false;
     let mut unfixed = Vec::new();
 
     for line in content.lines() {
-        if let Some(ref_line) = fmt.extract_reference(line) {
-            if !dir.join(&ref_line.filename).exists() {
-                // Reference is broken — try to find the correct filename
-                if let Some(new_name) =
-                    fmt.find_correction(&ref_line.filename, ref_path, dir, rename_map)
-                {
-                    output_lines.push(fmt.rebuild_line(line, &new_name, &ref_line));
-                    changed = true;
-                    continue;
-                } else {
-                    unfixed.push(ref_line.filename.clone());
-                }
+        if let Some(ref_line) = fmt.extract_reference(line)
+            && !dir.join(&ref_line.filename).exists()
+        {
+            // Reference is broken — try to find the correct filename
+            if let Some(new_name) =
+                fmt.find_correction(&ref_line.filename, ref_path, dir, rename_map)
+            {
+                output_lines.push(fmt.rebuild_line(line, &new_name, &ref_line));
+                changed = true;
+                continue;
             }
+            unfixed.push(ref_line.filename.clone());
         }
 
         output_lines.push(line.to_string());
@@ -2190,7 +2217,7 @@ fn fix_single_ref_file(
             ref_kind,
             unfixed
                 .iter()
-                .map(|f| format!("\"{}\"", f))
+                .map(|f| format!("\"{f}\""))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -2198,7 +2225,7 @@ fn fix_single_ref_file(
 
     if changed {
         let new_content = fmt.serialize(&content, &output_lines);
-        fs::write(ref_path, &new_content).map_err(|e| format!("write error: {}", e))?;
+        fs::write(ref_path, &new_content).map_err(|e| format!("write error: {e}"))?;
     }
 
     Ok(changed)
@@ -2236,7 +2263,7 @@ pub(crate) fn fix_m3u_references_in_dir(
 
 // --- CUE-specific helpers (not duplicated, used only by CueFormat) ---
 
-/// Parse a CUE FILE directive, returning (filename, file_type).
+/// Parse a CUE FILE directive, returning (filename, `file_type`).
 ///
 /// Handles both quoted and unquoted filenames, case-insensitive keyword:
 ///   FILE "filename.bin" BINARY
@@ -2294,7 +2321,7 @@ fn find_correct_bin_filename(
         .unwrap_or("bin");
 
     // Strategy 2: CUE stem + referenced file extension
-    let stem_candidate = format!("{}.{}", cue_stem, ref_ext);
+    let stem_candidate = format!("{cue_stem}.{ref_ext}");
     if dir.join(&stem_candidate).exists() {
         return Some(stem_candidate);
     }
@@ -2358,7 +2385,7 @@ fn find_correct_m3u_entry(
         .and_then(|e| e.to_str())
         .unwrap_or("");
     if !original_ext.is_empty() {
-        let candidate = format!("{}.{}", old_stem, original_ext);
+        let candidate = format!("{old_stem}.{original_ext}");
         if dir.join(&candidate).exists() {
             return Some(candidate);
         }
@@ -2367,7 +2394,7 @@ fn find_correct_m3u_entry(
         if *ext == original_ext {
             continue; // already tried above
         }
-        let candidate = format!("{}.{}", old_stem, ext);
+        let candidate = format!("{old_stem}.{ext}");
         if dir.join(&candidate).exists() {
             return Some(candidate);
         }
@@ -2396,7 +2423,7 @@ fn collect_files_by_ext(dir: &Path, target_ext: &str) -> Vec<String> {
     fs::read_dir(dir)
         .ok()
         .into_iter()
-        .flat_map(|entries| entries.flatten())
+        .flat_map(std::iter::Iterator::flatten)
         .filter_map(|entry| {
             let path = entry.path();
             if !path.is_file() {
@@ -2408,7 +2435,7 @@ fn collect_files_by_ext(dir: &Path, target_ext: &str) -> Vec<String> {
             }
             path.file_name()
                 .and_then(|n| n.to_str())
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
         })
         .collect()
 }
@@ -2418,7 +2445,7 @@ fn collect_entry_point_files(dir: &Path) -> Vec<String> {
     fs::read_dir(dir)
         .ok()
         .into_iter()
-        .flat_map(|entries| entries.flatten())
+        .flat_map(std::iter::Iterator::flatten)
         .filter_map(|entry| {
             let path = entry.path();
             if !path.is_file() {
@@ -2494,7 +2521,7 @@ fn extract_ordinal_from_filename(filename: &str) -> Option<u32> {
         let digits: String = after
             .chars()
             .skip_while(|c| !c.is_ascii_digit())
-            .take_while(|c| c.is_ascii_digit())
+            .take_while(char::is_ascii_digit)
             .collect();
         if let Ok(n) = digits.parse::<u32>()
             && n > 0
@@ -2513,7 +2540,7 @@ fn extract_trailing_number(stem: &str) -> Option<u32> {
     let digits: String = stem
         .chars()
         .rev()
-        .take_while(|c| c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
         .collect::<String>()
         .chars()
         .rev()

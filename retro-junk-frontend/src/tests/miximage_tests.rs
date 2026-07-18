@@ -17,7 +17,7 @@ fn test_scale_to_fit_landscape() {
     assert!(h <= 800);
     // Aspect ratio preserved
     let ratio_orig = 1920.0 / 1080.0;
-    let ratio_new = w as f64 / h as f64;
+    let ratio_new = f64::from(w) / f64::from(h);
     assert!((ratio_orig - ratio_new).abs() < 0.02);
 }
 
@@ -61,7 +61,7 @@ fn test_fit_to_bounds_upscales() {
     assert!(w > 320);
     assert!(h > 240);
     // Aspect ratio preserved (4:3)
-    let ratio = w as f64 / h as f64;
+    let ratio = f64::from(w) / f64::from(h);
     assert!((ratio - 4.0 / 3.0).abs() < 0.02);
 }
 

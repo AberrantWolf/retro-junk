@@ -71,17 +71,20 @@ pub enum CueVerification {
 
 impl DiscSetPlan {
     /// Directory containing the set.
+    #[must_use]
     pub fn dir(&self) -> &Path {
         self.cue.parent().unwrap_or(Path::new("."))
     }
 
     /// Target path for the cue file.
+    #[must_use]
     pub fn cue_target(&self) -> PathBuf {
         self.dir().join(&self.cue_target_filename)
     }
 
     /// All (source, target) file renames in this set, cue included.
     /// No-op renames (source already correctly named) are excluded.
+    #[must_use]
     pub fn file_renames(&self) -> Vec<(PathBuf, PathBuf)> {
         let dir = self.dir();
         let mut renames = Vec::new();
@@ -99,11 +102,13 @@ impl DiscSetPlan {
     }
 
     /// Whether the set is already fully named and referenced correctly.
+    #[must_use]
     pub fn is_noop(&self) -> bool {
         self.file_renames().is_empty() && self.new_cue_content.is_none()
     }
 
     /// Old-stem → new-stem map for media/gamelist renaming.
+    #[must_use]
     pub fn stem_map(&self) -> HashMap<String, String> {
         let mut map = HashMap::new();
         for (source, target) in self.file_renames() {
@@ -126,6 +131,7 @@ impl DiscSetPlan {
 
     /// Build the filesystem transaction for this set: all file renames plus
     /// the cue content rewrite (written at the cue's final path).
+    #[must_use]
     pub fn build_transaction(&self) -> crate::fs_txn::FsTransaction {
         let mut txn = crate::fs_txn::FsTransaction::new();
         for (source, target) in self.file_renames() {
@@ -271,7 +277,7 @@ pub fn plan_disc_set_from_files(
     if let Some(gi) = serial_game {
         match assign_tracks(&index.games[gi], &files.tracks, &track_hashes) {
             Ok(assignment) => {
-                return build_plan(files, &index.games[gi], assignment, MatchMethod::Serial);
+                return build_plan(files, &index.games[gi], &assignment, MatchMethod::Serial);
             }
             Err(serial_issues) => {
                 // Serial game doesn't verify — a hash-identified game is
@@ -280,7 +286,7 @@ pub fn plan_disc_set_from_files(
                 if let Some((gi, assignment)) =
                     unique_full_hash_match(index, &files.tracks, &track_hashes)
                 {
-                    return build_plan(files, &index.games[gi], assignment, MatchMethod::Crc32);
+                    return build_plan(files, &index.games[gi], &assignment, MatchMethod::Crc32);
                 }
                 return DiscSetOutcome::NotVerified {
                     game_name: index.games[gi].name.clone(),
@@ -292,7 +298,7 @@ pub fn plan_disc_set_from_files(
 
     // Identification 2: track-hash intersection.
     if let Some((gi, assignment)) = unique_full_hash_match(index, &files.tracks, &track_hashes) {
-        return build_plan(files, &index.games[gi], assignment, MatchMethod::Crc32);
+        return build_plan(files, &index.games[gi], &assignment, MatchMethod::Crc32);
     }
 
     let mut issues = describe_track_matches(index, &files.tracks, &track_hashes);
@@ -407,7 +413,10 @@ fn unique_full_hash_match(
             Some(prev) => prev.intersection(&games).copied().collect(),
             None => games,
         });
-        if candidates.as_ref().is_some_and(|c| c.is_empty()) {
+        if candidates
+            .as_ref()
+            .is_some_and(std::collections::HashSet::is_empty)
+        {
             return None;
         }
     }
@@ -461,21 +470,20 @@ fn describe_track_matches(
 fn build_plan(
     files: &DiscSetFiles,
     game: &DatGame,
-    assignment: Vec<usize>,
+    assignment: &[usize],
     matched_by: MatchMethod,
 ) -> DiscSetOutcome {
     let cue_rom = game
         .roms
         .iter()
         .find(|r| r.name.to_lowercase().ends_with(".cue"));
-    let cue_target_filename = cue_rom
-        .map(|r| r.name.clone())
-        .unwrap_or_else(|| format!("{}.cue", game.name));
+    let cue_target_filename =
+        cue_rom.map_or_else(|| format!("{}.cue", game.name), |r| r.name.clone());
 
     let tracks: Vec<TrackRename> = files
         .tracks
         .iter()
-        .zip(&assignment)
+        .zip(assignment)
         .map(|(source, &ri)| TrackRename {
             source: source.clone(),
             target_filename: game.roms[ri].name.clone(),

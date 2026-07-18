@@ -2,7 +2,7 @@
 //!
 //! Surfaces the CLI's catalog-building pipeline in the GUI — fetch DAT/GDB
 //! reference data, import DATs into the catalog DB, and enrich releases from
-//! GameDataBase and ScreenScraper. All work is delegated to
+//! `GameDataBase` and `ScreenScraper`. All work is delegated to
 //! [`crate::backend::catalog_ops`]; this module is purely the UI.
 
 use retro_junk_core::util::format_bytes;
@@ -102,7 +102,7 @@ fn show_system_selector(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         format!("{} selected", selected.len())
     };
 
-    egui::CollapsingHeader::new(format!("Systems: {}", summary))
+    egui::CollapsingHeader::new(format!("Systems: {summary}"))
         .id_salt("data_system_selector")
         .show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -126,10 +126,7 @@ fn show_system_selector(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 .show(ui, |ui| {
                     for (i, (platform, short, name)) in consoles.iter().enumerate() {
                         let mut on = selected.contains(platform);
-                        if ui
-                            .checkbox(&mut on, format!("{} ({})", name, short))
-                            .changed()
-                        {
+                        if ui.checkbox(&mut on, format!("{name} ({short})")).changed() {
                             if on {
                                 selected.insert(*platform);
                             } else {

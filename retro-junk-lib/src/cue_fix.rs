@@ -36,6 +36,7 @@ pub struct CueFixPlan {
 
 impl CueFixPlan {
     /// Whether this plan has any fix actions to perform.
+    #[must_use]
     pub fn has_fixes(&self) -> bool {
         !self.fixable.is_empty()
     }
@@ -78,7 +79,7 @@ pub fn plan_cue_fixes(folder: &Path, progress: &dyn Fn(CueFixProgress)) -> CueFi
     // should be at the top level alongside their BIN files)
     let cue_files: Vec<PathBuf> = match fs::read_dir(folder) {
         Ok(entries) => entries
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.path())
             .filter(|p| {
                 p.extension()
@@ -154,6 +155,7 @@ pub fn plan_cue_fixes(folder: &Path, progress: &dyn Fn(CueFixProgress)) -> CueFi
 }
 
 /// Execute the planned CUE fixes, writing converted files to disk.
+#[must_use]
 pub fn execute_cue_fixes(plan: &CueFixPlan, create_backup: bool) -> CueFixSummary {
     let mut summary = CueFixSummary {
         fixed: 0,

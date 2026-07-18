@@ -20,6 +20,7 @@ pub enum ChecksumAlgorithm {
 }
 
 impl ChecksumAlgorithm {
+    #[must_use]
     pub fn name(&self) -> &str {
         match self {
             Self::Crc16 => "CRC-16",
@@ -46,6 +47,7 @@ pub struct ExpectedChecksum {
 }
 
 impl ExpectedChecksum {
+    #[must_use]
     pub fn new(algorithm: ChecksumAlgorithm, value: Vec<u8>) -> Self {
         Self {
             algorithm,
@@ -54,13 +56,19 @@ impl ExpectedChecksum {
         }
     }
 
+    #[must_use]
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
         self.description = desc.into();
         self
     }
 
     /// Returns the checksum value as a hex string.
+    #[must_use]
     pub fn hex_value(&self) -> String {
-        self.value.iter().map(|b| format!("{:02x}", b)).collect()
+        use std::fmt::Write;
+        self.value.iter().fold(String::new(), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
     }
 }

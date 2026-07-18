@@ -25,10 +25,10 @@ const HEADER_SIZE: u64 = 0x40;
 const BOOT_CODE_START: u64 = 0x40;
 const BOOT_CODE_END: u64 = 0x1000;
 const BOOT_CODE_SIZE: usize = (BOOT_CODE_END - BOOT_CODE_START) as usize; // 4032 bytes
-const MIN_CRC_SIZE: u64 = 0x101000;
+const MIN_CRC_SIZE: u64 = 0x0010_1000;
 
 const CRC_START: u64 = 0x1000;
-const CRC_END: u64 = 0x101000;
+const CRC_END: u64 = 0x0010_1000;
 
 // ---------------------------------------------------------------------------
 // CIC variant detection and seeds
@@ -49,11 +49,11 @@ enum CicVariant {
 impl CicVariant {
     fn seed(self) -> u32 {
         match self {
-            CicVariant::Cic6101 | CicVariant::Cic6102 => 0xF8CA4DDC,
-            CicVariant::Cic6103 => 0xA3886759,
-            CicVariant::Cic6105 => 0xDF26F436,
-            CicVariant::Cic6106 => 0x1FEA617A,
-            CicVariant::Unknown => 0xF8CA4DDC, // default to 6102
+            // Unknown defaults to the 6102 seed
+            CicVariant::Cic6101 | CicVariant::Cic6102 | CicVariant::Unknown => 0xF8CA_4DDC,
+            CicVariant::Cic6103 => 0xA388_6759,
+            CicVariant::Cic6105 => 0xDF26_F436,
+            CicVariant::Cic6106 => 0x1FEA_617A,
         }
     }
 
@@ -75,11 +75,11 @@ impl CicVariant {
 fn detect_cic(boot_code: &[u8]) -> CicVariant {
     let crc = crc32fast::hash(boot_code);
     match crc {
-        0x6170A4A1 => CicVariant::Cic6101,
-        0x90BB6CB5 => CicVariant::Cic6102,
-        0x0B050EE0 => CicVariant::Cic6103,
-        0x98BC2C86 => CicVariant::Cic6105,
-        0xACC8580A => CicVariant::Cic6106,
+        0x6170_A4A1 => CicVariant::Cic6101,
+        0x90BB_6CB5 => CicVariant::Cic6102,
+        0x0B05_0EE0 => CicVariant::Cic6103,
+        0x98BC_2C86 => CicVariant::Cic6105,
+        0xACC8_580A => CicVariant::Cic6106,
         _ => CicVariant::Unknown,
     }
 }
@@ -191,7 +191,7 @@ fn parse_header(reader: &mut dyn ReadSeek) -> Result<N64Header, AnalysisError> {
 // ---------------------------------------------------------------------------
 
 /// Compute the N64 CRC checksum pair using the correct algorithm for the
-/// detected CIC variant. The boot_code parameter is needed for CIC-6105
+/// detected CIC variant. The `boot_code` parameter is needed for CIC-6105
 /// which reads from it during computation.
 fn compute_n64_crc(
     reader: &mut dyn ReadSeek,
@@ -290,7 +290,7 @@ fn region_from_destination(code: u8) -> Region {
     }
 }
 
-fn region_suffix(region: &Region) -> &'static str {
+fn region_suffix(region: Region) -> &'static str {
     match region {
         Region::Usa => "USA",
         Region::Japan => "JPN",
@@ -304,7 +304,7 @@ fn region_suffix(region: &Region) -> &'static str {
     }
 }
 
-fn build_serial(header: &N64Header, region: &Region) -> Option<String> {
+fn build_serial(header: &N64Header, region: Region) -> Option<String> {
     let cat = header.category_code;
     let id0 = header.game_id[0];
     let id1 = header.game_id[1];
@@ -337,7 +337,7 @@ fn to_identification(
     let mut id = RomIdentification::new();
 
     if !header.title.is_empty() {
-        id.internal_name = header.title.clone();
+        id.internal_name.clone_from(&header.title);
     }
 
     let region = region_from_destination(header.destination_code);
@@ -345,7 +345,7 @@ fn to_identification(
         id.regions.push(region);
     }
 
-    if let Some(serial) = build_serial(header, &region) {
+    if let Some(serial) = build_serial(header, region) {
         id.serial_number = serial;
     }
 

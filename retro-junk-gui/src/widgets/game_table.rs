@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use egui_extras::{Column, TableBuilder};
@@ -13,9 +14,8 @@ use crate::widgets::status_badge;
 
 /// Render the sortable, filterable game table for the selected console.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
-    let console_idx = match app.selected_console {
-        Some(i) => i,
-        None => return,
+    let Some(console_idx) = app.selected_console else {
+        return;
     };
 
     let console = &app.library.consoles[console_idx];
@@ -154,11 +154,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     .map(|id| id.internal_name.clone())
                     .unwrap_or_default(),
                 regions: {
-                    let codes: Vec<&str> =
-                        entry.effective_regions().iter().map(|r| r.code()).collect();
+                    let codes: Vec<&str> = entry
+                        .effective_regions()
+                        .iter()
+                        .map(retro_junk_core::Region::code)
+                        .collect();
                     let text = codes.join(", ");
                     if entry.region_override.is_some() && !text.is_empty() {
-                        format!("{}*", text)
+                        format!("{text}*")
                     } else {
                         text
                     }
@@ -179,13 +182,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     ui.horizontal(|ui| {
         let mut summary = format!(
-            "{} entries | {} matched | {} ambiguous | {} unrecognized",
-            total, matched, ambiguous, unrecognized
+            "{total} entries | {matched} matched | {ambiguous} ambiguous | {unrecognized} unrecognized"
         );
         if tagged > 0 {
-            summary.push_str(&format!(" | {} tagged", tagged));
+            let _ = write!(summary, " | {tagged} tagged");
         }
-        summary.push_str(&format!(" | showing {}", showing));
+        let _ = write!(summary, " | showing {showing}");
         ui.label(summary);
     });
 
@@ -280,7 +282,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                                 AssetStatus::Unknown => {}
                                 AssetStatus::None => tip.push_str("\nNo scraped media"),
                                 AssetStatus::Partial { found, total } => {
-                                    tip.push_str(&format!("\nPartial media ({}/{})", found, total));
+                                    let _ = write!(tip, "\nPartial media ({found}/{total})");
                                 }
                                 AssetStatus::Complete => tip.push_str("\nMedia complete"),
                             }
@@ -444,13 +446,11 @@ fn show_row_context_menu(
             console
                 .entries
                 .get(i)
-                .is_some_and(|entry| entry.has_cue_compat_issues())
+                .is_some_and(super::super::state::LibraryEntry::has_cue_compat_issues)
         });
-        if has_cue_issues {
-            if ui.button("Fix CUE Sheet").clicked() {
-                backend::fix_cue::fix_cue_for_selection(app, console_idx, ctx);
-                ui.close();
-            }
+        if has_cue_issues && ui.button("Fix CUE Sheet").clicked() {
+            backend::fix_cue::fix_cue_for_selection(app, console_idx, ctx);
+            ui.close();
         }
     }
 
@@ -546,10 +546,10 @@ fn show_row_context_menu(
         .add_enabled(has_dat, egui::Button::new("Copy DAT Name"))
         .clicked()
     {
-        let dats = collect_selected_field(app, console_idx, |entry| {
+        let dat_names = collect_selected_field(app, console_idx, |entry| {
             entry.dat_match.as_ref().map(|dm| dm.game_name.clone())
         });
-        crate::util::copy_and_close(ui, dats);
+        crate::util::copy_and_close(ui, dat_names);
     }
 }
 
@@ -561,16 +561,15 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
     let console = &app.library.consoles[console_idx];
     let mut recommended: Option<HashSet<Region>> = None;
     for &i in &app.selected_entries {
-        if let Some(entry) = console.entries.get(i) {
-            if let Some(ref id) = entry.identification {
-                if !id.regions.is_empty() {
-                    let set: HashSet<Region> = id.regions.iter().copied().collect();
-                    recommended = Some(match recommended {
-                        Some(acc) => acc.intersection(&set).copied().collect(),
-                        None => set,
-                    });
-                }
-            }
+        if let Some(entry) = console.entries.get(i)
+            && let Some(ref id) = entry.identification
+            && !id.regions.is_empty()
+        {
+            let set: HashSet<Region> = id.regions.iter().copied().collect();
+            recommended = Some(match recommended {
+                Some(acc) => acc.intersection(&set).copied().collect(),
+                None => set,
+            });
         }
     }
     let recommended = recommended.unwrap_or_default();
@@ -684,9 +683,8 @@ fn handle_row_click(app: &mut RetroJunkApp, entry_idx: usize, modifiers: egui::M
             // it visually highlighted through the is_focused path.
             app.selected_entries.remove(&entry_idx);
             return;
-        } else {
-            app.selected_entries.insert(entry_idx);
         }
+        app.selected_entries.insert(entry_idx);
     } else if modifiers.shift {
         // Range select
         if let Some(focused) = app.focused_entry {
@@ -723,14 +721,13 @@ fn show_tag_menu_items(
     console_idx: usize,
     entry_idx: usize,
 ) {
-    let entry = match app
+    let Some(entry) = app
         .library
         .consoles
         .get(console_idx)
         .and_then(|c| c.entries.get(entry_idx))
-    {
-        Some(e) => e,
-        None => return,
+    else {
+        return;
     };
     let effective = entry.effective_status();
 

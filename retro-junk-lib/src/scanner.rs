@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::ffi::OsStr;
+use std::hash::BuildHasher;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
@@ -28,6 +29,7 @@ pub enum GameEntry {
 
 impl GameEntry {
     /// Sort key for ordering entries alphabetically.
+    #[must_use]
     pub fn sort_key(&self) -> &OsStr {
         match self {
             GameEntry::SingleFile(p) => p.file_name().unwrap_or_default(),
@@ -36,6 +38,7 @@ impl GameEntry {
     }
 
     /// The display name for this entry (filename or .m3u dir name).
+    #[must_use]
     pub fn display_name(&self) -> &str {
         match self {
             GameEntry::SingleFile(p) => p.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
@@ -46,6 +49,7 @@ impl GameEntry {
     /// Stem used for media file naming: filename stem for single files,
     /// full `.m3u` directory name for multi-disc (ES-DE matches media by
     /// the full entry name, e.g. `game.m3u.png` for `./game.m3u`).
+    #[must_use]
     pub fn rom_stem(&self) -> &str {
         match self {
             GameEntry::SingleFile(p) => p.file_stem().and_then(|n| n.to_str()).unwrap_or("?"),
@@ -57,6 +61,7 @@ impl GameEntry {
     ///
     /// For single files, returns that file. For multi-disc sets, returns
     /// the first `.cue` file (preferred) or the first matching file.
+    #[must_use]
     pub fn analysis_path(&self) -> &Path {
         match self {
             GameEntry::SingleFile(p) => p,
@@ -67,8 +72,7 @@ impl GameEntry {
                     .find(|p| {
                         p.extension()
                             .and_then(|e| e.to_str())
-                            .map(|e| e.eq_ignore_ascii_case("cue"))
-                            .unwrap_or(false)
+                            .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
                     })
                     .unwrap_or(&files[0])
             }
@@ -76,6 +80,7 @@ impl GameEntry {
     }
 
     /// All ROM file paths in this entry (1 for single, N for multi-disc).
+    #[must_use]
     pub fn all_files(&self) -> &[PathBuf] {
         match self {
             GameEntry::SingleFile(p) => std::slice::from_ref(p),
@@ -84,11 +89,12 @@ impl GameEntry {
     }
 
     /// All `.cue` file paths in this entry.
+    #[must_use]
     pub fn cue_files(&self) -> Vec<&Path> {
         self.all_files()
             .iter()
             .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cue")))
-            .map(|p| p.as_path())
+            .map(std::path::PathBuf::as_path)
             .collect()
     }
 }
@@ -99,13 +105,13 @@ impl GameEntry {
 /// - Top-level ROM files matching the given extensions
 /// - `.m3u` subdirectories containing disc images (ES-DE convention)
 /// - CUE/BIN deduplication (`.bin`/`.img`/`.iso` files paired with a `.cue` are filtered)
-pub fn scan_game_entries(
+pub fn scan_game_entries<S: BuildHasher>(
     folder: &Path,
-    extensions: &HashSet<String>,
+    extensions: &HashSet<String, S>,
 ) -> std::io::Result<Vec<GameEntry>> {
     let mut game_entries: Vec<GameEntry> = Vec::new();
     let mut dir_entries: Vec<std::fs::DirEntry> = std::fs::read_dir(folder)?.flatten().collect();
-    dir_entries.sort_by_key(|e| e.path());
+    dir_entries.sort_by_key(std::fs::DirEntry::path);
 
     for entry in &dir_entries {
         let path = entry.path();
@@ -115,7 +121,9 @@ pub fn scan_game_entries(
             }
         } else if path.is_dir()
             && let Some(name) = path.file_name().and_then(|n| n.to_str())
-            && name.ends_with(".m3u")
+            && Path::new(name)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("m3u"))
         {
             let disc_files = collect_m3u_disc_files(&path, extensions);
             if !disc_files.is_empty() {
@@ -132,7 +140,7 @@ pub fn scan_game_entries(
         .iter()
         .filter_map(|e| match e {
             GameEntry::SingleFile(p) => Some(p.clone()),
-            _ => None,
+            GameEntry::MultiDisc { .. } => None,
         })
         .collect();
     let cue_stems = collect_cue_stems(&root_files);
@@ -148,17 +156,17 @@ pub fn scan_game_entries(
     Ok(game_entries)
 }
 
-/// Build the extension set from an analyzer's file_extensions().
+/// Build the extension set from an analyzer's `file_extensions()`.
+#[must_use]
 pub fn extension_set(extensions: &[&str]) -> HashSet<String> {
     extensions.iter().map(|e| e.to_lowercase()).collect()
 }
 
 /// Check if a path has an extension in the allowed set.
-fn has_matching_extension(path: &Path, extensions: &HashSet<String>) -> bool {
+fn has_matching_extension<S: BuildHasher>(path: &Path, extensions: &HashSet<String, S>) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
-        .map(|e| extensions.contains(&e.to_lowercase()))
-        .unwrap_or(false)
+        .is_some_and(|e| extensions.contains(&e.to_lowercase()))
 }
 
 /// Collect disc files for a `.m3u` directory.
@@ -168,20 +176,24 @@ fn has_matching_extension(path: &Path, extensions: &HashSet<String>) -> bool {
 /// that are already pointed to by a `.cue` entry in the playlist.
 ///
 /// Falls back to extension-based scanning only if no `.m3u` playlist exists.
-pub fn collect_m3u_disc_files(dir: &Path, extensions: &HashSet<String>) -> Vec<PathBuf> {
+#[must_use]
+pub fn collect_m3u_disc_files<S: BuildHasher>(
+    dir: &Path,
+    extensions: &HashSet<String, S>,
+) -> Vec<PathBuf> {
     // Find the .m3u playlist file inside the directory
-    if let Some(playlist) = find_m3u_playlist(dir) {
-        if let Ok(contents) = std::fs::read_to_string(&playlist) {
-            let files: Vec<PathBuf> = contents
-                .lines()
-                .map(|line| line.trim())
-                .filter(|line| !line.is_empty() && !line.starts_with('#'))
-                .map(|line| dir.join(line))
-                .filter(|p| p.is_file())
-                .collect();
-            if !files.is_empty() {
-                return files;
-            }
+    if let Some(playlist) = find_m3u_playlist(dir)
+        && let Ok(contents) = std::fs::read_to_string(&playlist)
+    {
+        let files: Vec<PathBuf> = contents
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(|line| dir.join(line))
+            .filter(|p| p.is_file())
+            .collect();
+        if !files.is_empty() {
+            return files;
         }
     }
 
@@ -205,16 +217,17 @@ fn find_m3u_playlist(dir: &Path) -> Option<PathBuf> {
         p.is_file()
             && p.extension()
                 .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("m3u"))
-                .unwrap_or(false)
+                .is_some_and(|e| e.eq_ignore_ascii_case("m3u"))
     })
 }
 
 /// Collect all files with matching extensions from a directory (sorted).
-fn collect_all_matching_files(dir: &Path, extensions: &HashSet<String>) -> Vec<PathBuf> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
+fn collect_all_matching_files<S: BuildHasher>(
+    dir: &Path,
+    extensions: &HashSet<String, S>,
+) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
     };
 
     let mut files: Vec<PathBuf> = entries
@@ -240,13 +253,12 @@ fn collect_cue_stems(files: &[PathBuf]) -> HashSet<String> {
         .filter(|p| {
             p.extension()
                 .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("cue"))
-                .unwrap_or(false)
+                .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
         })
         .filter_map(|p| {
             p.file_stem()
                 .and_then(|s| s.to_str())
-                .map(|s| s.to_lowercase())
+                .map(str::to_lowercase)
         })
         .collect()
 }
@@ -261,7 +273,7 @@ fn is_data_file_covered_by_cue(path: &Path, cue_stems: &HashSet<String>) -> bool
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
+        .map(str::to_lowercase)
         .unwrap_or_default();
     if !matches!(ext.as_str(), "bin" | "img" | "iso" | "chd") {
         return false;
@@ -269,7 +281,7 @@ fn is_data_file_covered_by_cue(path: &Path, cue_stems: &HashSet<String>) -> bool
     let stem = path
         .file_stem()
         .and_then(|s| s.to_str())
-        .map(|s| s.to_lowercase())
+        .map(str::to_lowercase)
         .unwrap_or_default();
     cue_stems.contains(&stem)
 }

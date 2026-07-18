@@ -4,7 +4,7 @@
 //! and status. These are mapped to Work → Release → Media entities in the database.
 
 use retro_junk_catalog::name_parser::{self, DumpStatus};
-use retro_junk_catalog::types::*;
+use retro_junk_catalog::types::{ImportLog, Media, MediaStatus, Release};
 use retro_junk_core::Platform;
 use retro_junk_dat::DatFile;
 use retro_junk_db::operations::{self, OperationError};
@@ -72,7 +72,8 @@ pub fn import_dat(
     Ok(stats)
 }
 
-/// Import a single DatGame entry.
+/// Import a single `DatGame` entry.
+#[allow(clippy::too_many_lines)] // linear ETL mapping of one DAT entry; splitting would scatter tightly coupled locals
 fn import_game(
     conn: &Connection,
     game: &retro_junk_dat::DatGame,
@@ -90,7 +91,7 @@ fn import_game(
     }
 
     // Determine the status
-    let status = match parsed.status {
+    let media_status = match parsed.status {
         DumpStatus::Verified => {
             // Check flags for proto/beta/sample
             if parsed.flags.iter().any(|f| {
@@ -204,7 +205,7 @@ fn import_game(
     let (track_roms, non_track_roms): (Vec<_>, Vec<_>) = game
         .roms
         .iter()
-        .partition(|rom| is_multi_track_game(&game.roms) && !rom.name.ends_with(".cue"));
+        .partition(|rom| is_multi_track_game(&game.roms) && !is_cue(&rom.name));
 
     // For multi-track games, find the largest data track for the media entry's hashes
     let primary_rom = if !track_roms.is_empty() {
@@ -213,7 +214,7 @@ fn import_game(
         // Single-ROM game or CUE-only — use first non-CUE ROM
         non_track_roms
             .iter()
-            .find(|r| !r.name.ends_with(".cue"))
+            .find(|r| !is_cue(&r.name))
             .unwrap_or(&non_track_roms[0])
     } else {
         // Edge case: game with no ROMs
@@ -253,7 +254,7 @@ fn import_game(
             .unwrap_or(0),
         disc_label: parsed.disc_label.clone().unwrap_or_default(),
         revision: parsed.revision.clone().unwrap_or_default(),
-        status,
+        status: media_status,
         tag: None,
         dat_name: game.name.clone(),
         dat_source: dat_source.to_string(),
@@ -284,7 +285,7 @@ fn import_game(
     Ok(())
 }
 
-/// Log an import run in the import_log table.
+/// Log an import run in the `import_log` table.
 pub fn log_import(
     conn: &Connection,
     source_type: &str,
@@ -370,6 +371,7 @@ fn make_media_id(release_id: &str, rom_name: &str) -> String {
 }
 
 /// Map a `DatSource` to the string used in the catalog.
+#[must_use]
 pub fn dat_source_str(source: &retro_junk_core::DatSource) -> &'static str {
     match source {
         retro_junk_core::DatSource::NoIntro => "no-intro",
@@ -377,10 +379,17 @@ pub fn dat_source_str(source: &retro_junk_core::DatSource) -> &'static str {
     }
 }
 
+/// Check if a ROM name has a `.cue` extension (case-insensitive).
+fn is_cue(name: &str) -> bool {
+    std::path::Path::new(name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("cue"))
+}
+
 /// Check if a game has multiple non-CUE ROMs (typical of full Redump DATs
 /// which include CUE + per-track BIN entries).
 fn is_multi_track_game(roms: &[retro_junk_dat::DatRom]) -> bool {
-    let non_cue_count = roms.iter().filter(|r| !r.name.ends_with(".cue")).count();
+    let non_cue_count = roms.iter().filter(|r| !is_cue(&r.name)).count();
     non_cue_count > 1
 }
 
@@ -390,10 +399,10 @@ fn extract_track_number(name: &str) -> i32 {
     // Look for "(Track NN)" pattern
     if let Some(start) = name.find("(Track ") {
         let after = &name[start + 7..];
-        if let Some(end) = after.find(')') {
-            if let Ok(n) = after[..end].trim().parse::<i32>() {
-                return n;
-            }
+        if let Some(end) = after.find(')')
+            && let Ok(n) = after[..end].trim().parse::<i32>()
+        {
+            return n;
         }
     }
     // Fallback: try to extract from ".bin" suffix pattern

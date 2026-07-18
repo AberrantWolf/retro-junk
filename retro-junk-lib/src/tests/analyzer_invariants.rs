@@ -42,7 +42,7 @@ fn chd_convertible_analyzers_declare_chd_extension() {
                 .any(|(_, role)| matches!(role, ChdExtensionRole::Source(_)))
         })
         .filter(|analyzer| !analyzer.file_extensions().contains(&"chd"))
-        .map(|analyzer| analyzer.platform_name())
+        .map(retro_junk_core::RomAnalyzer::platform_name)
         .collect();
 
     assert!(
@@ -86,7 +86,7 @@ fn chd_capable_analyzers_override_compute_container_hashes() {
             );
             matches!(result, Ok(None))
         })
-        .map(|analyzer| analyzer.platform_name())
+        .map(retro_junk_core::RomAnalyzer::platform_name)
         .collect();
 
     assert!(

@@ -23,7 +23,7 @@ use crate::sector::{CD_SYNC_PATTERN, RAW_SECTOR_SIZE, SECTOR_USER_DATA_START};
 pub enum SectorMode {
     /// Mode 1 sectors (Saturn, Sega CD). User data at offset 16.
     Mode1,
-    /// Mode 2 Form 1 sectors (PlayStation). User data at offset 24.
+    /// Mode 2 Form 1 sectors (`PlayStation`). User data at offset 24.
     Mode2Form1,
 }
 
@@ -46,7 +46,7 @@ pub fn hash_disc_container(
 
     match format {
         DiscFormat::Chd => {
-            log::info!("{} compute_container_hashes: CHD detected", platform_name);
+            log::info!("{platform_name} compute_container_hashes: CHD detected");
             let hashes = hash_chd_raw_sectors(reader, algorithms, on_progress)?;
             log::info!(
                 "{} compute_container_hashes: done, crc32={}, data_size={}",
@@ -87,14 +87,13 @@ pub fn hash_disc_container(
                 Ok(Some(hashes))
             } else {
                 log::warn!(
-                    "{} compute_container_hashes: CUE without file_path, cannot resolve BIN",
-                    platform_name
+                    "{platform_name} compute_container_hashes: CUE without file_path, cannot resolve BIN"
                 );
                 Ok(None)
             }
         }
         // ISOs: let the standard hasher handle them
-        _ => Ok(None),
+        DiscFormat::Iso2048 => Ok(None),
     }
 }
 
@@ -125,9 +124,9 @@ pub fn hash_chd_raw_sectors(
     reader.seek(SeekFrom::Start(0))?;
 
     let mut chd = chd::Chd::open(reader, None)
-        .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {}", e)))?;
+        .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {e}")))?;
 
-    if (chd.header().unit_bytes() as u64) < RAW_SECTOR_SIZE {
+    if u64::from(chd.header().unit_bytes()) < RAW_SECTOR_SIZE {
         log::info!(
             "CHD hashing: unit_bytes={} < raw CD sector size, treating as DVD-media CHD",
             chd.header().unit_bytes()
@@ -150,12 +149,9 @@ pub fn hash_chd_raw_sectors(
         } else {
             // No track metadata — fall back to all sectors from sector 0
             let logical_bytes = chd.header().logical_bytes();
-            let unit_bytes = chd.header().unit_bytes() as u64;
+            let unit_bytes = u64::from(chd.header().unit_bytes());
             let total = (logical_bytes / unit_bytes) as usize;
-            log::warn!(
-                "CHD: no track metadata found, hashing all {} sectors from sector 0",
-                total
-            );
+            log::warn!("CHD: no track metadata found, hashing all {total} sectors from sector 0");
             (0, total)
         };
 
@@ -166,11 +162,7 @@ pub fn hash_chd_raw_sectors(
     let data_size = sectors_to_hash as u64 * RAW_SECTOR_SIZE;
 
     log::info!(
-        "CHD hashing: {} sectors ({} bytes) starting at sector {}, unit_bytes={}",
-        sectors_to_hash,
-        data_size,
-        start_sector,
-        unit_bytes
+        "CHD hashing: {sectors_to_hash} sectors ({data_size} bytes) starting at sector {start_sector}, unit_bytes={unit_bytes}"
     );
 
     let mut hasher = MultiHasher::new(algorithms, data_size, on_progress);
@@ -195,13 +187,13 @@ pub fn hash_chd_raw_sectors(
             continue;
         }
 
-        let mut hunk = chd.hunk(hunk_num).map_err(|e| {
-            AnalysisError::other(format!("Failed to get CHD hunk {}: {}", hunk_num, e))
-        })?;
+        let mut hunk = chd
+            .hunk(hunk_num)
+            .map_err(|e| AnalysisError::other(format!("Failed to get CHD hunk {hunk_num}: {e}")))?;
 
         hunk.read_hunk_in(&mut cmp_buf, &mut hunk_buf)
             .map_err(|e| {
-                AnalysisError::other(format!("Failed to decompress CHD hunk {}: {}", hunk_num, e))
+                AnalysisError::other(format!("Failed to decompress CHD hunk {hunk_num}: {e}"))
             })?;
 
         for s in 0..sectors_per_hunk {
@@ -256,13 +248,13 @@ fn hash_chd_whole_stream<F: Read + Seek>(
             break;
         }
 
-        let mut hunk = chd.hunk(hunk_num).map_err(|e| {
-            AnalysisError::other(format!("Failed to get CHD hunk {}: {}", hunk_num, e))
-        })?;
+        let mut hunk = chd
+            .hunk(hunk_num)
+            .map_err(|e| AnalysisError::other(format!("Failed to get CHD hunk {hunk_num}: {e}")))?;
 
         hunk.read_hunk_in(&mut cmp_buf, &mut hunk_buf)
             .map_err(|e| {
-                AnalysisError::other(format!("Failed to decompress CHD hunk {}: {}", hunk_num, e))
+                AnalysisError::other(format!("Failed to decompress CHD hunk {hunk_num}: {e}"))
             })?;
 
         let take = (hunk_buf.len() as u64).min(remaining) as usize;
@@ -305,7 +297,7 @@ pub fn find_raw_bin_data_track_size(
     let mut hi = total_sectors - 1;
 
     while lo < hi {
-        let mid = lo + (hi - lo + 1) / 2;
+        let mid = lo + (hi - lo).div_ceil(2);
         if is_data_sector(reader, mid)? {
             lo = mid;
         } else {
@@ -351,12 +343,13 @@ fn is_real_data_sector(
     reader: &mut dyn retro_junk_core::ReadSeek,
     sector_index: u64,
 ) -> Result<bool, AnalysisError> {
-    let offset = sector_index * RAW_SECTOR_SIZE;
-    reader.seek(SeekFrom::Start(offset))?;
-
     // Read sync pattern + header + subheader + start of user data
     // We check 64 bytes of user data to distinguish real content from zeros.
     const CHECK_SIZE: usize = SECTOR_USER_DATA_START + 64;
+
+    let offset = sector_index * RAW_SECTOR_SIZE;
+    reader.seek(SeekFrom::Start(offset))?;
+
     let mut buf = [0u8; CHECK_SIZE];
     let n = reader.read(&mut buf)?;
     if n < CHECK_SIZE {
@@ -409,7 +402,7 @@ pub fn find_zero_padded_track_boundary(
     let mut hi = total_sectors - 1;
 
     while lo < hi {
-        let mid = lo + (hi - lo + 1) / 2;
+        let mid = lo + (hi - lo).div_ceil(2);
         if is_real_data_sector(reader, mid)? {
             lo = mid;
         } else {
@@ -458,6 +451,7 @@ pub fn detect_data_track_size(
 /// `sector_size` is derived from the tracks' declared mode (see
 /// [`crate::cue::sector_size_for_mode`]) rather than assumed to be raw
 /// 2352-byte sectors. Returns `None` if the information is insufficient.
+#[must_use]
 pub fn compute_track1_size_from_cue(
     sheet: &crate::cue::CueSheet,
     bin_size: u64,
@@ -498,8 +492,7 @@ pub fn compute_track1_size_from_cue(
                 return (Some(track1_size), warnings);
             }
             warnings.push(format!(
-                "Track 2 INDEX 01 gives size {} but BIN is {} bytes",
-                track1_size, bin_size
+                "Track 2 INDEX 01 gives size {track1_size} but BIN is {bin_size} bytes"
             ));
         } else {
             warnings.push("CUE has multiple tracks but Track 2 has no INDEX 01 entry".to_string());
@@ -541,23 +534,21 @@ pub fn hash_cue_track1(
 
     let mut warnings = Vec::new();
 
-    let data_file = match first_data_file {
-        Some(f) => f,
-        None => {
-            let f = sheet
-                .files
-                .first()
-                .ok_or_else(|| AnalysisError::invalid_format("CUE has no files"))?;
-            warnings.push(
-                "CUE has no track metadata — hashing entire BIN. Dump may be incomplete."
-                    .to_string(),
-            );
-            log::warn!(
-                "CUE has no track metadata, falling back to first file: {}",
-                f.filename
-            );
-            f
-        }
+    let data_file = if let Some(f) = first_data_file {
+        f
+    } else {
+        let f = sheet
+            .files
+            .first()
+            .ok_or_else(|| AnalysisError::invalid_format("CUE has no files"))?;
+        warnings.push(
+            "CUE has no track metadata — hashing entire BIN. Dump may be incomplete.".to_string(),
+        );
+        log::warn!(
+            "CUE has no track metadata, falling back to first file: {}",
+            f.filename
+        );
+        f
     };
 
     let bin_path = parent.join(&data_file.filename);
@@ -601,9 +592,7 @@ pub fn hash_cue_track1(
 
     if let Some(track1_size) = index_size {
         log::info!(
-            "CUE hash: Track 1 size from INDEX = {} bytes (BIN = {} bytes)",
-            track1_size,
-            bin_size
+            "CUE hash: Track 1 size from INDEX = {track1_size} bytes (BIN = {bin_size} bytes)"
         );
         let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, track1_size, on_progress)?;
         hashes.warnings = warnings;
@@ -634,10 +623,7 @@ pub fn hash_cue_track1(
     if sheet.files[0].tracks.len() > 1 {
         warnings.push("Could not determine Track 1 boundary — hashed entire BIN".to_string());
     }
-    log::info!(
-        "CUE hash: no boundary detected, hashing entire BIN ({} bytes)",
-        bin_size
-    );
+    log::info!("CUE hash: no boundary detected, hashing entire BIN ({bin_size} bytes)");
     let mut hashes = hash_raw_bin_track1(&mut bin_file, algorithms, bin_size, on_progress)?;
     hashes.warnings = warnings;
     Ok(hashes)
@@ -645,7 +631,7 @@ pub fn hash_cue_track1(
 
 /// Find the first existing BIN file referenced by any FILE entry in the CUE sheet.
 ///
-/// Used as a fallback when a CDRWin DATAFILE references a virtual filename
+/// Used as a fallback when a `CDRWin` DATAFILE references a virtual filename
 /// that doesn't exist on disk — the actual data is in the combined BIN.
 fn find_existing_bin_in_cue(
     sheet: &crate::cue::CueSheet,
@@ -669,7 +655,7 @@ pub fn hash_raw_bin_track1(
     reader.seek(SeekFrom::Start(0))?;
 
     let mut hasher = MultiHasher::new(algorithms, data_size, on_progress);
-    let mut buf = [0u8; 64 * 1024];
+    let mut buf = vec![0u8; 64 * 1024];
     let mut remaining = data_size;
 
     while remaining > 0 {

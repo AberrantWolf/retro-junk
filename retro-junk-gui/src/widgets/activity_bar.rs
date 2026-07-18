@@ -4,7 +4,7 @@ use retro_junk_lib::util::format_bytes_approx;
 
 use crate::state::{BackgroundOperation, ProgressDisplay};
 
-/// Format a `BackgroundOperation`'s progress_current/progress_total pair per
+/// Format a `BackgroundOperation`'s `progress_current/progress_total` pair per
 /// its `ProgressDisplay` (D7).
 fn format_progress(op: &BackgroundOperation) -> String {
     match op.display {

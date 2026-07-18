@@ -62,7 +62,7 @@ fn make_saturn_iso(serial: &str, region: &str, game_name: &str) -> Vec<u8> {
     // Sector 0: IP.BIN
     data.extend_from_slice(&ip_bin);
     // Sectors 1-15: empty
-    data.extend_from_slice(&[0u8; 15 * 2048]);
+    data.extend_from_slice(&vec![0u8; 15 * 2048]);
     // Sector 16: PVD
     data.extend_from_slice(&pvd);
     data
@@ -183,14 +183,22 @@ fn test_analyze_saturn_iso() {
     assert_eq!(id.serial_number, "MK-81009");
     assert_eq!(id.internal_name, "NiGHTS into Dreams...");
     assert_eq!(id.regions, vec![Region::Japan, Region::Usa, Region::Europe]);
-    assert_eq!(id.extra.get("format").map(|s| s.as_str()), Some("ISO 9660"));
     assert_eq!(
-        id.extra.get("maker_id").map(|s| s.as_str()),
+        id.extra.get("format").map(std::string::String::as_str),
+        Some("ISO 9660")
+    );
+    assert_eq!(
+        id.extra.get("maker_id").map(std::string::String::as_str),
         Some("SEGA ENTERPRISES")
     );
-    assert_eq!(id.extra.get("version").map(|s| s.as_str()), Some("V1.000"));
     assert_eq!(
-        id.extra.get("release_date").map(|s| s.as_str()),
+        id.extra.get("version").map(std::string::String::as_str),
+        Some("V1.000")
+    );
+    assert_eq!(
+        id.extra
+            .get("release_date")
+            .map(std::string::String::as_str),
         Some("19961122")
     );
 }

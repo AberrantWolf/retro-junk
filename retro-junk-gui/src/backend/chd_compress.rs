@@ -55,10 +55,7 @@ pub fn open_compress_dialog(app: &mut RetroJunkApp, console_idx: usize, entry_in
     // planning pass (or a plan while a compression is running) for the same
     // console folder.
     if app.chd_compress_busy(&folder_name) {
-        log::info!(
-            "Compress to CHD: a compression is already running for {}, ignoring",
-            folder_name
-        );
+        log::info!("Compress to CHD: a compression is already running for {folder_name}, ignoring");
         return;
     }
 
@@ -79,7 +76,7 @@ pub fn open_compress_dialog(app: &mut RetroJunkApp, console_idx: usize, entry_in
 
     let context = app.context.clone();
     let chdman_setting = app.settings.general.chdman_path.clone();
-    let description = format!("Preparing CHD compression for {}", folder_name);
+    let description = format!("Preparing CHD compression for {folder_name}");
     let scope = folder_name.clone();
 
     spawn_background_op(
@@ -178,10 +175,7 @@ pub fn start_compression(app: &mut RetroJunkApp, ctx: &egui::Context) {
     // advisory half). Belt-and-suspenders against a race between opening the
     // dialog and confirming it.
     if app.chd_compress_busy(&folder_name) {
-        log::info!(
-            "Compress to CHD: a compression is already running for {}, ignoring",
-            folder_name
-        );
+        log::info!("Compress to CHD: a compression is already running for {folder_name}, ignoring");
         return;
     }
 

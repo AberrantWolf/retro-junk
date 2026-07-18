@@ -1,4 +1,4 @@
-use retro_junk_catalog::types::{self, CatalogPlatform, MediaStatus, MediaType, Release};
+use retro_junk_catalog::types::{self, CatalogPlatform, Company, MediaStatus, MediaType, Release};
 use retro_junk_db::operations::ReleaseEnrichment;
 use retro_junk_db::*;
 use retro_junk_import::scraper_import::*;
@@ -262,7 +262,6 @@ fn enrichment_updates_release_fields() {
     upsert_release(&conn, &release).unwrap();
 
     // Create companies first (FK constraint requires them)
-    use retro_junk_catalog::types::Company;
     upsert_company(
         &conn,
         &Company {
@@ -468,7 +467,7 @@ fn releases_to_enrich_query() {
         tag: None,
         dat_name: "Legend of Zelda, The (USA).nes".to_string(),
         dat_source: "no-intro".to_string(),
-        file_size: 131088,
+        file_size: 131_088,
         crc32: "a12d74c1".to_string(),
         sha1: String::new(),
         md5: String::new(),

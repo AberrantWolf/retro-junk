@@ -1,9 +1,10 @@
 use retro_junk_core::{Platform, Region};
 
-/// Map a `Platform` to its ScreenScraper system ID.
+/// Map a `Platform` to its `ScreenScraper` system ID.
 ///
 /// System IDs are ScreenScraper-specific and live here rather than on
 /// the `RomAnalyzer` trait, as they're a third-party API detail.
+#[must_use]
 pub fn screenscraper_system_id(platform: Platform) -> Option<u32> {
     match platform {
         // Nintendo
@@ -41,13 +42,14 @@ pub fn screenscraper_system_id(platform: Platform) -> Option<u32> {
     }
 }
 
-/// Additional ScreenScraper system IDs that should be accepted as valid
+/// Additional `ScreenScraper` system IDs that should be accepted as valid
 /// when looking up games for a given platform.
 ///
-/// Some platforms span multiple ScreenScraper system IDs. For example, our
+/// Some platforms span multiple `ScreenScraper` system IDs. For example, our
 /// `GameBoy` analyzer handles both GB (system 9) and GBC (system 10) ROMs.
-/// When we send system ID 9, ScreenScraper may return a GBC-only game as
+/// When we send system ID 9, `ScreenScraper` may return a GBC-only game as
 /// system 10 — that's a valid match, not a platform mismatch.
+#[must_use]
 pub fn acceptable_system_ids(platform: Platform) -> &'static [u32] {
     match platform {
         // Game Boy analyzer handles both GB (9) and GBC (10)
@@ -61,6 +63,7 @@ pub fn acceptable_system_ids(platform: Platform) -> &'static [u32] {
 /// Consoles that return true are expected to have serials extractable
 /// from ROM headers. If analysis fails to find a serial for these,
 /// it's worth logging an error rather than silently falling back.
+#[must_use]
 pub fn expects_serial(platform: Platform) -> bool {
     matches!(
         platform,
@@ -85,49 +88,51 @@ pub fn expects_serial(platform: Platform) -> bool {
     )
 }
 
-/// Map a ScreenScraper region code to a preferred region for name/media lookup.
+/// Map a `ScreenScraper` region code to a preferred region for name/media lookup.
+#[must_use]
 pub fn preferred_ss_region(region: &str) -> &str {
     match region.to_lowercase().as_str() {
-        "us" | "usa" | "united states" => "us",
         "eu" | "europe" => "eu",
         "jp" | "japan" => "jp",
         "wor" | "world" => "wor",
+        // "us"/"usa"/"united states", plus anything unrecognized
         _ => "us",
     }
 }
 
-/// Map a ROM-detected `Region` to the corresponding ScreenScraper region code.
+/// Map a ROM-detected `Region` to the corresponding `ScreenScraper` region code.
+#[must_use]
 pub fn region_to_ss_code(region: &Region) -> &'static str {
     match region {
         Region::Japan => "jp",
-        Region::Usa => "us",
+        // Unknown defaults to the US catalog
+        Region::Usa | Region::Unknown => "us",
         Region::Europe => "eu",
         Region::Australia => "au",
         Region::Korea => "kr",
         Region::China => "cn",
         Region::Taiwan => "tw",
         Region::Asia => "asi",
-        Region::Brazil => "br",
-        Region::LatinAmerica => "br", // closest ScreenScraper code
+        // "br" is the closest ScreenScraper code for Latin America
+        Region::Brazil | Region::LatinAmerica => "br",
         Region::World => "wor",
-        Region::Unknown => "us",
     }
 }
 
 /// Map a ROM-detected `Region` to a likely description language code.
+#[must_use]
 pub fn region_to_language(region: &Region) -> &'static str {
     match region {
         Region::Japan => "ja",
-        Region::Usa => "en",
-        Region::Europe => "en",
-        Region::Australia => "en",
         Region::Korea => "ko",
-        Region::China => "zh",
-        Region::Taiwan => "zh",
-        Region::Asia => "en",
+        Region::China | Region::Taiwan => "zh",
         Region::Brazil => "pt",
         Region::LatinAmerica => "es",
-        Region::World => "en",
-        Region::Unknown => "en",
+        Region::Usa
+        | Region::Europe
+        | Region::Australia
+        | Region::Asia
+        | Region::World
+        | Region::Unknown => "en",
     }
 }

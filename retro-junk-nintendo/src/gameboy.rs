@@ -194,8 +194,7 @@ fn rom_size(code: u8) -> Option<u64> {
 /// Derive RAM size in bytes from the size code at 0x0149.
 fn ram_size(code: u8) -> Option<u64> {
     match code {
-        0x00 => Some(0),
-        0x01 => Some(0), // Listed in header but unused
+        0x00 | 0x01 => Some(0), // Listed in header but unused
         0x02 => Some(8 * 1024),
         0x03 => Some(32 * 1024),
         0x04 => Some(128 * 1024),
@@ -237,7 +236,7 @@ fn compute_global_checksum(reader: &mut dyn ReadSeek) -> Result<u16, AnalysisErr
             if file_pos == 0x014E || file_pos == 0x014F {
                 continue;
             }
-            sum = sum.wrapping_add(byte as u16);
+            sum = sum.wrapping_add(u16::from(byte));
         }
         pos += n as u64;
     }
@@ -249,7 +248,7 @@ fn compute_global_checksum(reader: &mut dyn ReadSeek) -> Result<u16, AnalysisErr
 // Identification
 // ---------------------------------------------------------------------------
 
-/// Convert a parsed GB header into a RomIdentification.
+/// Convert a parsed GB header into a `RomIdentification`.
 fn to_identification(
     header: &GbHeader,
     file_size: u64,
@@ -272,7 +271,7 @@ fn to_identification(
 
     // Internal name
     if !header.title.is_empty() {
-        id.internal_name = header.title.clone();
+        id.internal_name.clone_from(&header.title);
     }
 
     // Version

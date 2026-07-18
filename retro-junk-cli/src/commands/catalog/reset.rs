@@ -27,7 +27,7 @@ pub(crate) fn run_catalog_reset(db_path: Option<PathBuf>, confirm: bool) -> Resu
         return Ok(());
     }
 
-    let file_size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+    let file_size = std::fs::metadata(&db_path).map_or(0, |m| m.len());
 
     std::fs::remove_file(&db_path)
         .map_err(|e| CliError::other(format!("Failed to delete {}: {}", db_path.display(), e)))?;
@@ -38,7 +38,7 @@ pub(crate) fn run_catalog_reset(db_path: Option<PathBuf>, confirm: bool) -> Resu
         "Catalog database deleted.".if_supports_color(Stdout, |t| t.bold()),
     );
     log::info!("  Path: {}", db_path.display());
-    log::info!("  Freed: {:.1} MB", size_mb);
+    log::info!("  Freed: {size_mb:.1} MB");
     crate::log_blank();
     log::info!("Run 'retro-junk catalog import all' to rebuild.");
 

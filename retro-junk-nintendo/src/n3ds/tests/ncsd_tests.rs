@@ -5,12 +5,12 @@ use std::io::Cursor;
 use super::super::{NCCH_MAGIC, NCSD_MAGIC};
 
 /// Build a minimal synthetic CCI (NCSD + NCCH partition 0).
-/// The NCCH at partition 0 is marked NoCrypto with a valid ExHeader region
+/// The NCCH at partition 0 is marked `NoCrypto` with a valid `ExHeader` region
 /// whose SHA-256 hash can be verified.
 fn make_cci() -> Vec<u8> {
     let partition0_offset: u64 = 0x4000;
     let ncch_content_size_mu: u32 = 0x100; // 128 KB of NCCH content
-    let total_size = partition0_offset + ncch_content_size_mu as u64 * MEDIA_UNIT;
+    let total_size = partition0_offset + u64::from(ncch_content_size_mu) * MEDIA_UNIT;
     let mut rom = vec![0u8; total_size as usize];
 
     // -- NCSD header --
@@ -27,7 +27,7 @@ fn make_cci() -> Vec<u8> {
     rom[0x104..0x108].copy_from_slice(&image_size_mu.to_le_bytes());
 
     // Media ID
-    rom[0x108..0x110].copy_from_slice(&0x0004000000ABCDEF_u64.to_le_bytes());
+    rom[0x108..0x110].copy_from_slice(&0x0004_0000_00AB_CDEF_u64.to_le_bytes());
 
     // Partition 0: offset=0x20 MU (0x4000 bytes), size=0x100 MU
     let p0_offset_mu = (partition0_offset / MEDIA_UNIT) as u32;
@@ -39,11 +39,11 @@ fn make_cci() -> Vec<u8> {
     rom[0x188 + 5] = 1; // media type = Card1
 
     // Card info: writable address = 0xFFFFFFFF (Card1)
-    rom[0x200..0x204].copy_from_slice(&0xFFFFFFFF_u32.to_le_bytes());
+    rom[0x200..0x204].copy_from_slice(&0xFFFF_FFFF_u32.to_le_bytes());
 
     // Filled size at 0x300: less than total (simulates content that doesn't
     // fill the entire card image — typical for real game cards).
-    let filled = (partition0_offset + ncch_content_size_mu as u64 * MEDIA_UNIT / 2) as u32;
+    let filled = (partition0_offset + u64::from(ncch_content_size_mu) * MEDIA_UNIT / 2) as u32;
     rom[0x300..0x304].copy_from_slice(&filled.to_le_bytes());
 
     // Title version at 0x310
@@ -63,7 +63,7 @@ fn make_cci() -> Vec<u8> {
     rom[p0 + 0x104..p0 + 0x108].copy_from_slice(&ncch_content_size_mu.to_le_bytes());
 
     // Partition ID
-    rom[p0 + 0x108..p0 + 0x110].copy_from_slice(&0x0004000000ABCDEF_u64.to_le_bytes());
+    rom[p0 + 0x108..p0 + 0x110].copy_from_slice(&0x0004_0000_00AB_CDEF_u64.to_le_bytes());
 
     // Maker code "31" (Nintendo)
     rom[p0 + 0x110..p0 + 0x112].copy_from_slice(b"31");
@@ -72,7 +72,7 @@ fn make_cci() -> Vec<u8> {
     rom[p0 + 0x112..p0 + 0x114].copy_from_slice(&2u16.to_le_bytes());
 
     // Program ID
-    rom[p0 + 0x118..p0 + 0x120].copy_from_slice(&0x0004000000ABCDEF_u64.to_le_bytes());
+    rom[p0 + 0x118..p0 + 0x120].copy_from_slice(&0x0004_0000_00AB_CDEF_u64.to_le_bytes());
 
     // Product code: "CTR-P-ABCE" (USA)
     let product = b"CTR-P-ABCE\0\0\0\0\0\0";
@@ -226,8 +226,7 @@ fn test_cci_exheader_hash_mismatch() {
         .unwrap();
     assert!(
         status.starts_with("MISMATCH"),
-        "Expected MISMATCH, got: {}",
-        status
+        "Expected MISMATCH, got: {status}"
     );
 }
 
@@ -258,16 +257,14 @@ fn test_cci_quick_mode_skips_hashes() {
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
     assert!(
-        result
+        !result
             .extra
-            .get("checksum_status:ExHeader SHA-256")
-            .is_none()
+            .contains_key("checksum_status:ExHeader SHA-256")
     );
     assert!(
-        result
+        !result
             .extra
-            .get("checksum_status:ExeFS Superblock SHA-256")
-            .is_none()
+            .contains_key("checksum_status:ExeFS Superblock SHA-256")
     );
 }
 
@@ -332,7 +329,7 @@ fn test_origin_detection_card() {
         ],
         media_type: 1, // Card1
         media_platform: 1,
-        writable_address: 0xFFFFFFFF,
+        writable_address: 0xFFFF_FFFF,
         title_version: 0,
         card_revision: 0,
         signature_is_zero: false,
@@ -453,6 +450,6 @@ fn test_cci_genuinely_truncated() {
     let result = analyze_cci(&mut Cursor::new(rom), file_size, &options).unwrap();
 
     assert_eq!(result.file_size, file_size);
-    assert_eq!(result.expected_size, filled as u64); // genuinely truncated
-    assert!(result.extra.get("dump_status").is_none()); // no status for truncated
+    assert_eq!(result.expected_size, u64::from(filled)); // genuinely truncated
+    assert!(!result.extra.contains_key("dump_status")); // no status for truncated
 }

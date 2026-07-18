@@ -22,8 +22,10 @@ struct BoxPlacement {
 ///
 /// Returns `Ok(true)` if the miximage was generated, `Ok(false)` if the
 /// screenshot was missing (the only required component).
-pub fn generate_miximage(
-    media: &HashMap<AssetType, PathBuf>,
+// Linear compositing pipeline (load, scale, frame, place each element); splitting obscures order.
+#[allow(clippy::too_many_lines)]
+pub fn generate_miximage<S: std::hash::BuildHasher>(
+    media: &HashMap<AssetType, PathBuf, S>,
     output_path: &Path,
     layout: &MiximageLayout,
 ) -> Result<bool, FrontendError> {
@@ -63,18 +65,24 @@ pub fn generate_miximage(
 
     // Draw screenshot with frame and rounded corners
     let frame_w = layout.screenshot.frame_width;
-    let framed_w = ss_w + frame_w * 2;
-    let framed_h = ss_h + frame_w * 2;
-    let mut framed = RgbaImage::from_pixel(framed_w, framed_h, frame_color);
-    imageops::overlay(&mut framed, &screenshot, frame_w as i64, frame_w as i64);
+    let outer_w = ss_w + frame_w * 2;
+    let outer_h = ss_h + frame_w * 2;
+    let mut framed = RgbaImage::from_pixel(outer_w, outer_h, frame_color);
+    imageops::overlay(
+        &mut framed,
+        &screenshot,
+        i64::from(frame_w),
+        i64::from(frame_w),
+    );
 
     if layout.screenshot.corner_radius > 0 {
         apply_rounded_corners(&mut framed, layout.screenshot.corner_radius);
     }
 
     // Center with x_offset
-    let ss_x = (canvas_w as i64 - framed_w as i64) / 2 + layout.screenshot.x_offset as i64;
-    let ss_y = (canvas_h as i64 - framed_h as i64) / 2;
+    let ss_x =
+        (i64::from(canvas_w) - i64::from(outer_w)) / 2 + i64::from(layout.screenshot.x_offset);
+    let ss_y = (i64::from(canvas_h) - i64::from(outer_h)) / 2;
     imageops::overlay(&mut canvas, &framed, ss_x, ss_y);
 
     // Track box art placement for physical media positioning
@@ -111,14 +119,14 @@ pub fn generate_miximage(
 
         if layout.box_art.shadow.enabled {
             let shadow = generate_drop_shadow(&box_img, &layout.box_art.shadow);
-            let shadow_offset = layout.box_art.shadow.offset as i64;
+            let shadow_offset = i64::from(layout.box_art.shadow.offset);
             imageops::overlay(&mut canvas, &shadow, bx + shadow_offset, by + shadow_offset);
         }
 
         imageops::overlay(&mut canvas, &box_img, bx, by);
         box_placement = Some(BoxPlacement {
-            bottom_right: (bx + bw as i64, by + bh as i64),
-            bottom_y: by + bh as i64,
+            bottom_right: (bx + i64::from(bw), by + i64::from(bh)),
+            bottom_y: by + i64::from(bh),
         });
     }
 
@@ -144,7 +152,7 @@ pub fn generate_miximage(
 
         if layout.marquee.shadow.enabled {
             let shadow = generate_drop_shadow(&marquee_img, &layout.marquee.shadow);
-            let shadow_offset = layout.marquee.shadow.offset as i64;
+            let shadow_offset = i64::from(layout.marquee.shadow.offset);
             imageops::overlay(&mut canvas, &shadow, mx + shadow_offset, my + shadow_offset);
         }
 
@@ -164,10 +172,12 @@ pub fn generate_miximage(
 
         let (px, py) = physical_media_position(
             layout.physical_media.position,
-            pw,
-            ph,
-            canvas_w,
-            canvas_h,
+            &ElementGeometry {
+                elem_w: pw,
+                elem_h: ph,
+                canvas_w,
+                canvas_h,
+            },
             layout.physical_media.gap,
             box_placement.as_ref(),
             &layout.physical_media.shadow,
@@ -175,7 +185,7 @@ pub fn generate_miximage(
 
         if layout.physical_media.shadow.enabled {
             let shadow = generate_drop_shadow(&phys_img, &layout.physical_media.shadow);
-            let shadow_offset = layout.physical_media.shadow.offset as i64;
+            let shadow_offset = i64::from(layout.physical_media.shadow.offset);
             imageops::overlay(&mut canvas, &shadow, px + shadow_offset, py + shadow_offset);
         }
 
@@ -202,12 +212,12 @@ pub(crate) fn scale_to_fit(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (u
         return (src_w, src_h);
     }
 
-    let scale_w = max_w as f64 / src_w as f64;
-    let scale_h = max_h as f64 / src_h as f64;
+    let scale_w = f64::from(max_w) / f64::from(src_w);
+    let scale_h = f64::from(max_h) / f64::from(src_h);
     let scale = scale_w.min(scale_h);
 
-    let new_w = (src_w as f64 * scale).round() as u32;
-    let new_h = (src_h as f64 * scale).round() as u32;
+    let new_w = (f64::from(src_w) * scale).round() as u32;
+    let new_h = (f64::from(src_h) * scale).round() as u32;
 
     (new_w.max(1), new_h.max(1))
 }
@@ -220,12 +230,12 @@ pub(crate) fn fit_to_bounds(src_w: u32, src_h: u32, max_w: u32, max_h: u32) -> (
         return (0, 0);
     }
 
-    let scale_w = max_w as f64 / src_w as f64;
-    let scale_h = max_h as f64 / src_h as f64;
+    let scale_w = f64::from(max_w) / f64::from(src_w);
+    let scale_h = f64::from(max_h) / f64::from(src_h);
     let scale = scale_w.min(scale_h);
 
-    let new_w = (src_w as f64 * scale).round() as u32;
-    let new_h = (src_h as f64 * scale).round() as u32;
+    let new_w = (f64::from(src_w) * scale).round() as u32;
+    let new_h = (f64::from(src_h) * scale).round() as u32;
 
     (new_w.max(1), new_h.max(1))
 }
@@ -245,16 +255,16 @@ pub(crate) fn sample_edge_color(img: &RgbaImage) -> Rgba<u8> {
     // Top and bottom rows
     for x in 0..w {
         let p = img.get_pixel(x, 0);
-        r_sum += p[0] as u64;
-        g_sum += p[1] as u64;
-        b_sum += p[2] as u64;
+        r_sum += u64::from(p[0]);
+        g_sum += u64::from(p[1]);
+        b_sum += u64::from(p[2]);
         count += 1;
 
         if h > 1 {
             let p = img.get_pixel(x, h - 1);
-            r_sum += p[0] as u64;
-            g_sum += p[1] as u64;
-            b_sum += p[2] as u64;
+            r_sum += u64::from(p[0]);
+            g_sum += u64::from(p[1]);
+            b_sum += u64::from(p[2]);
             count += 1;
         }
     }
@@ -262,16 +272,16 @@ pub(crate) fn sample_edge_color(img: &RgbaImage) -> Rgba<u8> {
     // Left and right columns (excluding corners already counted)
     for y in 1..h.saturating_sub(1) {
         let p = img.get_pixel(0, y);
-        r_sum += p[0] as u64;
-        g_sum += p[1] as u64;
-        b_sum += p[2] as u64;
+        r_sum += u64::from(p[0]);
+        g_sum += u64::from(p[1]);
+        b_sum += u64::from(p[2]);
         count += 1;
 
         if w > 1 {
             let p = img.get_pixel(w - 1, y);
-            r_sum += p[0] as u64;
-            g_sum += p[1] as u64;
-            b_sum += p[2] as u64;
+            r_sum += u64::from(p[0]);
+            g_sum += u64::from(p[1]);
+            b_sum += u64::from(p[2]);
             count += 1;
         }
     }
@@ -300,7 +310,7 @@ pub(crate) fn generate_drop_shadow(img: &RgbaImage, config: &ShadowConfig) -> Rg
         for x in 0..w {
             let src_alpha = img.get_pixel(x, y)[3];
             if src_alpha > 0 {
-                let shadow_alpha = ((src_alpha as u16 * opacity as u16) / 255) as u8;
+                let shadow_alpha = ((u16::from(src_alpha) * u16::from(opacity)) / 255) as u8;
                 shadow.put_pixel(x, y, Rgba([0, 0, 0, shadow_alpha]));
             }
         }
@@ -338,25 +348,16 @@ pub(crate) fn box_blur(img: &RgbaImage, radius: u32) -> RgbaImage {
                 let sx = x as i32 + dx;
                 if sx >= 0 && sx < w as i32 {
                     let p = img.get_pixel(sx as u32, y);
-                    ra += p[0] as u32;
-                    ga += p[1] as u32;
-                    ba += p[2] as u32;
-                    aa += p[3] as u32;
+                    ra += u32::from(p[0]);
+                    ga += u32::from(p[1]);
+                    ba += u32::from(p[2]);
+                    aa += u32::from(p[3]);
                     count += 1;
                 }
             }
 
-            if count > 0 {
-                horiz.put_pixel(
-                    x,
-                    y,
-                    Rgba([
-                        (ra / count) as u8,
-                        (ga / count) as u8,
-                        (ba / count) as u8,
-                        (aa / count) as u8,
-                    ]),
-                );
+            if let Some(pixel) = averaged_pixel([ra, ga, ba, aa], count) {
+                horiz.put_pixel(x, y, pixel);
             }
         }
     }
@@ -375,31 +376,34 @@ pub(crate) fn box_blur(img: &RgbaImage, radius: u32) -> RgbaImage {
                 let sy = y as i32 + dy;
                 if sy >= 0 && sy < h as i32 {
                     let p = horiz.get_pixel(x, sy as u32);
-                    ra += p[0] as u32;
-                    ga += p[1] as u32;
-                    ba += p[2] as u32;
-                    aa += p[3] as u32;
+                    ra += u32::from(p[0]);
+                    ga += u32::from(p[1]);
+                    ba += u32::from(p[2]);
+                    aa += u32::from(p[3]);
                     count += 1;
                 }
             }
 
-            if count > 0 {
-                result.put_pixel(
-                    x,
-                    y,
-                    Rgba([
-                        (ra / count) as u8,
-                        (ga / count) as u8,
-                        (ba / count) as u8,
-                        (aa / count) as u8,
-                    ]),
-                );
+            if let Some(pixel) = averaged_pixel([ra, ga, ba, aa], count) {
+                result.put_pixel(x, y, pixel);
             }
         }
     }
 
     let _ = kernel_size; // used conceptually; actual kernel is 2*r+1
     result
+}
+
+/// Average accumulated RGBA channel sums over `count` samples.
+/// Returns `None` when no samples were taken (`count == 0`).
+fn averaged_pixel(sums: [u32; 4], count: u32) -> Option<Rgba<u8>> {
+    let avg = |sum: u32| sum.checked_div(count).map(|v| v as u8);
+    Some(Rgba([
+        avg(sums[0])?,
+        avg(sums[1])?,
+        avg(sums[2])?,
+        avg(sums[3])?,
+    ]))
 }
 
 /// Apply rounded corners by zeroing alpha outside the rounded rectangle.
@@ -411,7 +415,7 @@ pub(crate) fn apply_rounded_corners(img: &mut RgbaImage, radius: u32) {
         return;
     }
 
-    let r_sq = (r * r) as i64;
+    let r_sq = i64::from(r * r);
 
     for y in 0..h {
         for x in 0..w {
@@ -419,12 +423,12 @@ pub(crate) fn apply_rounded_corners(img: &mut RgbaImage, radius: u32) {
             if let Some(dist_sq) = in_corner {
                 if dist_sq > r_sq {
                     img.put_pixel(x, y, Rgba([0, 0, 0, 0]));
-                } else if dist_sq > (r as i64 - 2) * (r as i64 - 2) {
+                } else if dist_sq > (i64::from(r) - 2) * (i64::from(r) - 2) {
                     // Anti-alias the edge
                     let p = img.get_pixel(x, y);
                     let dist = (dist_sq as f64).sqrt();
-                    let alpha_factor = (r as f64 - dist).clamp(0.0, 1.0);
-                    let new_alpha = (p[3] as f64 * alpha_factor) as u8;
+                    let alpha_factor = (f64::from(r) - dist).clamp(0.0, 1.0);
+                    let new_alpha = (f64::from(p[3]) * alpha_factor) as u8;
                     img.put_pixel(x, y, Rgba([p[0], p[1], p[2], new_alpha]));
                 }
             }
@@ -434,25 +438,25 @@ pub(crate) fn apply_rounded_corners(img: &mut RgbaImage, radius: u32) {
 
 /// If (x,y) is in a corner region, return squared distance from the corner's circle center.
 /// Returns None if the pixel is not in any corner region.
-fn corner_distance_sq(x: u32, y: u32, w: u32, h: u32, r: u32) -> Option<i64> {
-    let (cx, cy) = if x < r && y < r {
+fn corner_distance_sq(px: u32, py: u32, width: u32, height: u32, radius: u32) -> Option<i64> {
+    let (cx, cy) = if px < radius && py < radius {
         // Top-left
-        (r, r)
-    } else if x >= w - r && y < r {
+        (radius, radius)
+    } else if px >= width - radius && py < radius {
         // Top-right
-        (w - r - 1, r)
-    } else if x < r && y >= h - r {
+        (width - radius - 1, radius)
+    } else if px < radius && py >= height - radius {
         // Bottom-left
-        (r, h - r - 1)
-    } else if x >= w - r && y >= h - r {
+        (radius, height - radius - 1)
+    } else if px >= width - radius && py >= height - radius {
         // Bottom-right
-        (w - r - 1, h - r - 1)
+        (width - radius - 1, height - radius - 1)
     } else {
         return None;
     };
 
-    let dx = x as i64 - cx as i64;
-    let dy = y as i64 - cy as i64;
+    let dx = i64::from(px) - i64::from(cx);
+    let dy = i64::from(py) - i64::from(cy);
     Some(dx * dx + dy * dy)
 }
 
@@ -466,57 +470,63 @@ fn anchor_position(
     shadow: &ShadowConfig,
 ) -> (i64, i64) {
     let margin = if shadow.enabled {
-        shadow.offset as i64
+        i64::from(shadow.offset)
     } else {
         8
     };
 
     match position {
         AnchorPosition::TopLeft => (margin, margin),
-        AnchorPosition::TopRight => (canvas_w as i64 - elem_w as i64 - margin, margin),
-        AnchorPosition::BottomLeft => (margin, canvas_h as i64 - elem_h as i64 - margin),
+        AnchorPosition::TopRight => (i64::from(canvas_w) - i64::from(elem_w) - margin, margin),
+        AnchorPosition::BottomLeft => (margin, i64::from(canvas_h) - i64::from(elem_h) - margin),
         AnchorPosition::BottomRight => (
-            canvas_w as i64 - elem_w as i64 - margin,
-            canvas_h as i64 - elem_h as i64 - margin,
+            i64::from(canvas_w) - i64::from(elem_w) - margin,
+            i64::from(canvas_h) - i64::from(elem_h) - margin,
         ),
     }
 }
 
-/// Compute position for physical media relative to the box art.
-#[allow(clippy::too_many_arguments)]
-fn physical_media_position(
-    position: PhysMediaPosition,
+/// Pixel dimensions involved in placing an element on the canvas.
+struct ElementGeometry {
     elem_w: u32,
     elem_h: u32,
     canvas_w: u32,
     canvas_h: u32,
+}
+
+/// Compute position for physical media relative to the box art.
+fn physical_media_position(
+    position: PhysMediaPosition,
+    geometry: &ElementGeometry,
     gap: u32,
     box_placement: Option<&BoxPlacement>,
     shadow: &ShadowConfig,
 ) -> (i64, i64) {
     let margin = if shadow.enabled {
-        shadow.offset as i64
+        i64::from(shadow.offset)
     } else {
         8
     };
+    let elem_w = i64::from(geometry.elem_w);
+    let elem_h = i64::from(geometry.elem_h);
 
     match (position, box_placement) {
         (PhysMediaPosition::RightOfBox, Some(placement)) => {
-            let x = placement.bottom_right.0 + gap as i64;
-            let y = placement.bottom_y - elem_h as i64 - margin;
+            let x = placement.bottom_right.0 + i64::from(gap);
+            let y = placement.bottom_y - elem_h - margin;
             (x, y)
         }
         (PhysMediaPosition::LeftOfBox, Some(placement)) => {
             // bottom_right.0 is the right edge; for LeftOfBox we'd need the left edge
             // For now, just place it to the left of the box's right edge
-            let x = placement.bottom_right.0 - elem_w as i64 - gap as i64;
-            let y = placement.bottom_y - elem_h as i64 - margin;
+            let x = placement.bottom_right.0 - elem_w - i64::from(gap);
+            let y = placement.bottom_y - elem_h - margin;
             (x, y)
         }
         // No box art present — place at bottom-center
         _ => {
-            let x = (canvas_w as i64 - elem_w as i64) / 2;
-            let y = canvas_h as i64 - elem_h as i64 - margin;
+            let x = (i64::from(geometry.canvas_w) - elem_w) / 2;
+            let y = i64::from(geometry.canvas_h) - elem_h - margin;
             (x, y)
         }
     }

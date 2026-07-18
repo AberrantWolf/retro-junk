@@ -8,3 +8,6 @@ retro-junk-core.workspace = true
 retro-junk-disc.workspace = true
 thiserror.workspace = true
 log.workspace = true
+
+[lints]
+workspace = true

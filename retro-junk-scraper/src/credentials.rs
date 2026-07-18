@@ -28,19 +28,20 @@ fn embedded_dev_password() -> Option<String> {
 }
 
 /// Returns true if dev credentials were embedded at compile time.
+#[must_use]
 pub fn has_embedded_dev_credentials() -> bool {
     EMBEDDED_DEV_ID.is_some() && EMBEDDED_DEV_PASSWORD.is_some()
 }
 
-/// Credentials for authenticating with the ScreenScraper API.
+/// Credentials for authenticating with the `ScreenScraper` API.
 #[derive(Debug, Clone)]
 pub struct Credentials {
     pub dev_id: String,
     pub dev_password: String,
     pub soft_name: String,
-    /// Personal ScreenScraper account username (empty = anonymous API access).
+    /// Personal `ScreenScraper` account username (empty = anonymous API access).
     pub user_id: String,
-    /// Personal ScreenScraper account password (empty = anonymous API access).
+    /// Personal `ScreenScraper` account password (empty = anonymous API access).
     pub user_password: String,
 }
 
@@ -62,7 +63,7 @@ pub enum CredentialSource {
 impl std::fmt::Display for CredentialSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::EnvVar(var) => write!(f, "env ${}", var),
+            Self::EnvVar(var) => write!(f, "env ${var}"),
             Self::ConfigFile => write!(f, "config file"),
             Self::Embedded => write!(f, "embedded"),
             Self::Default => write!(f, "default"),
@@ -98,8 +99,8 @@ struct ScreenScraperConfig {
 
 /// Treat blank (empty or whitespace-only) values as unset, wherever they came
 /// from — a `user_id = ""` line in the config file, an env var set to "".
-/// A blank user_id must mean "use the anonymous API", not "log in with an
-/// empty username", and a blank dev_id must fall through to the embedded
+/// A blank `user_id` must mean "use the anonymous API", not "log in with an
+/// empty username", and a blank `dev_id` must fall through to the embedded
 /// credentials instead of masking them.
 fn non_blank(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.trim().is_empty())
@@ -132,8 +133,8 @@ impl Credentials {
     ///
     /// Priority: env vars > config file > embedded (compile-time).
     /// Blank values are treated as unset at every level.
-    /// Required: dev_id, dev_password, soft_name.
-    /// Optional: user_id, user_password.
+    /// Required: `dev_id`, `dev_password`, `soft_name`.
+    /// Optional: `user_id`, `user_password`.
     pub fn load() -> Result<Self, ScrapeError> {
         // Try config file first as base values
         let config = load_config_file();
@@ -189,6 +190,7 @@ impl Credentials {
     }
 
     /// Create credentials with explicit values (e.g., from CLI args).
+    #[must_use]
     pub fn with_overrides(
         mut self,
         dev_id: Option<String>,
@@ -230,7 +232,7 @@ pub struct CredentialFieldMeta {
     pub how_to_obtain: &'static str,
 }
 
-/// All ScreenScraper credential fields, in display order.
+/// All `ScreenScraper` credential fields, in display order.
 pub static CREDENTIAL_FIELDS: [CredentialFieldMeta; 5] = [
     CredentialFieldMeta {
         key: "dev_id",
@@ -287,6 +289,7 @@ pub static CREDENTIAL_FIELDS: [CredentialFieldMeta; 5] = [
 
 impl CredentialSources {
     /// Look up a field's provenance by its canonical key.
+    #[must_use]
     pub fn by_key(&self, key: &str) -> Option<&CredentialSource> {
         match key {
             "dev_id" => Some(&self.dev_id),
@@ -343,6 +346,7 @@ pub fn ensure_config_file() -> Result<(PathBuf, bool), ScrapeError> {
 }
 
 /// Return the path to the credentials config file.
+#[must_use]
 pub fn config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|d| d.join("retro-junk").join("credentials.toml"))
 }
@@ -390,7 +394,7 @@ pub fn save_to_file(creds: &Credentials) -> Result<PathBuf, ScrapeError> {
     };
 
     let toml_str = toml::to_string_pretty(&config)
-        .map_err(|e| ScrapeError::Config(format!("Failed to serialize config: {}", e)))?;
+        .map_err(|e| ScrapeError::Config(format!("Failed to serialize config: {e}")))?;
 
     std::fs::write(&path, toml_str)?;
     Ok(path)
@@ -400,6 +404,7 @@ pub fn save_to_file(creds: &Credentials) -> Result<PathBuf, ScrapeError> {
 ///
 /// Uses the same blank-means-unset rules as [`Credentials::load`], so the
 /// reported source always matches what `load()` would actually use.
+#[must_use]
 pub fn credential_sources() -> CredentialSources {
     let config = load_config_file();
 

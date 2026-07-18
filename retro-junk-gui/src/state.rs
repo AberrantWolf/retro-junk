@@ -27,7 +27,7 @@ pub const SCRAPEABLE_ASSET_TYPES: &[AssetType] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetStatus {
-    /// asset_paths is None — not yet discovered
+    /// `asset_paths` is None — not yet discovered
     Unknown,
     /// Discovered, no scrapeable assets found
     None,
@@ -66,7 +66,7 @@ pub struct Library {
 }
 
 impl Library {
-    /// Find a console by folder_name. Returns the index.
+    /// Find a console by `folder_name`. Returns the index.
     pub fn find_by_folder(&self, folder_name: &str) -> Option<usize> {
         self.consoles
             .iter()
@@ -146,11 +146,7 @@ pub fn asset_dir_for_console(
         // Legacy default: {root}-media sibling
         let parent = root_path.parent()?;
         let root_name = root_path.file_name()?.to_str()?;
-        Some(
-            parent
-                .join(format!("{}-media", root_name))
-                .join(folder_name),
-        )
+        Some(parent.join(format!("{root_name}-media")).join(folder_name))
     } else {
         Some(resolve_dir(root_path, setting).join(folder_name))
     }
@@ -160,12 +156,8 @@ pub fn asset_dir_for_console(
 ///
 /// The setting is treated as a path (absolute or relative to `root_path`).
 /// Default setting `"."` places metadata inline with ROMs (ES-DE legacy mode).
-pub fn metadata_dir_for_console(
-    root_path: &Path,
-    folder_name: &str,
-    setting: &str,
-) -> Option<PathBuf> {
-    Some(resolve_dir(root_path, setting).join(folder_name))
+pub fn metadata_dir_for_console(root_path: &Path, folder_name: &str, setting: &str) -> PathBuf {
+    resolve_dir(root_path, setting).join(folder_name)
 }
 
 /// Resolve a directory setting to an absolute path.
@@ -220,7 +212,7 @@ pub fn collect_existing_assets(media_dir: &Path, rom_stem: &str) -> HashMap<Asse
         let subdir = media_dir.join(asset_subdir(mt));
         // Check all plausible extensions — ScreenScraper may return JPG instead of PNG.
         for ext in mt.discovery_extensions() {
-            let path = subdir.join(format!("{}.{}", rom_stem, ext));
+            let path = subdir.join(format!("{rom_stem}.{ext}"));
             if path.exists() {
                 found.insert(mt, path);
                 break;
@@ -302,9 +294,8 @@ impl LibraryEntry {
 
     /// Compute the media status by checking `asset_paths` against the scrapeable types.
     pub fn asset_status(&self) -> AssetStatus {
-        let media = match self.asset_paths.as_ref() {
-            Some(m) => m,
-            None => return AssetStatus::Unknown,
+        let Some(media) = self.asset_paths.as_ref() else {
+            return AssetStatus::Unknown;
         };
         let total = SCRAPEABLE_ASSET_TYPES.len() as u8;
         let found = SCRAPEABLE_ASSET_TYPES
@@ -384,7 +375,7 @@ pub enum EntryStatus {
 }
 
 impl EntryStatus {
-    pub fn color(&self) -> egui::Color32 {
+    pub fn color(self) -> egui::Color32 {
         match self {
             EntryStatus::Unknown => egui::Color32::GRAY,
             EntryStatus::Unrecognized => crate::theme::STATUS_ERR,
@@ -395,7 +386,7 @@ impl EntryStatus {
     }
 
     /// Human-readable tooltip explaining this status.
-    pub fn tooltip(&self) -> &'static str {
+    pub fn tooltip(self) -> &'static str {
         match self {
             EntryStatus::Unknown => "Not yet analyzed",
             EntryStatus::Unrecognized => "Not recognized \u{2013} no serial or hash match found",
@@ -407,7 +398,7 @@ impl EntryStatus {
     }
 
     /// Severity ranking (higher = worse). Used to find the worst status in a folder.
-    pub fn severity(&self) -> u8 {
+    pub fn severity(self) -> u8 {
         match self {
             EntryStatus::Matched | EntryStatus::Tagged(_) => 0,
             EntryStatus::Ambiguous => 1,
@@ -431,7 +422,9 @@ pub struct FragileMountPrompt {
 // -- Tag dialog --
 
 /// State for the homebrew/modded tagging dialogs.
+#[derive(Default)]
 pub enum TagDialog {
+    #[default]
     None,
     Homebrew {
         name: String,
@@ -445,12 +438,6 @@ pub enum TagDialog {
         console_idx: usize,
         entry_idx: usize,
     },
-}
-
-impl Default for TagDialog {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 // -- Rename results --
@@ -575,7 +562,7 @@ pub enum OperationKind {
     Other,
 }
 
-/// How a `BackgroundOperation`'s progress_current/progress_total pair should
+/// How a `BackgroundOperation`'s `progress_current/progress_total` pair should
 /// be rendered. Replaces two mutually-exclusive bools with a type that makes
 /// the "count vs. bytes vs. percent" choice unrepresentable as invalid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -585,7 +572,7 @@ pub enum ProgressDisplay {
     Count,
     /// "234.5 MB / 4.7 GB"
     Bytes,
-    /// "42%" (progress_current/progress_total is an abstract unit scale)
+    /// "42%" (`progress_current/progress_total` is an abstract unit scale)
     Percent,
 }
 
@@ -595,7 +582,7 @@ pub struct BackgroundOperation {
     pub progress_current: u64,
     pub progress_total: u64,
     pub cancel_token: Arc<AtomicBool>,
-    /// How to render progress_current/progress_total.
+    /// How to render `progress_current/progress_total`.
     pub display: ProgressDisplay,
     /// What kind of work this operation represents.
     pub kind: OperationKind,
@@ -650,7 +637,7 @@ fn describe_m3u_format(files: &[PathBuf]) -> String {
     }
     let parts: Vec<String> = ext_counts
         .iter()
-        .map(|(ext, count)| format!("{}x {}", count, ext))
+        .map(|(ext, count)| format!("{count}x {ext}"))
         .collect();
     format!("M3U folder ({})", parts.join(", "))
 }
@@ -672,9 +659,8 @@ fn try_catalog_enrich_by_serial(entry: &mut LibraryEntry, conn: &retro_junk_db::
         if serial.is_empty() {
             continue;
         }
-        let media_list = match retro_junk_db::find_media_by_serial(conn, serial) {
-            Ok(m) => m,
-            Err(_) => continue,
+        let Ok(media_list) = retro_junk_db::find_media_by_serial(conn, serial) else {
+            continue;
         };
         let release_id = match media_list.first() {
             Some(m) => &m.release_id,
@@ -718,9 +704,8 @@ fn try_catalog_game_name(
                     .and_then(|v| if v.is_empty() { None } else { Some(v) })
             });
 
-        let media_list = match media {
-            Some(m) => m,
-            None => continue,
+        let Some(media_list) = media else {
+            continue;
         };
 
         let first = &media_list[0];
@@ -752,19 +737,17 @@ fn try_catalog_game_name(
 
 /// Try to enrich a library entry with cover/screen titles from the catalog DB.
 ///
-/// Skips if the entry already has a cover_title or has no SHA1 hash.
-/// SQLite indexed lookups are sub-millisecond, safe for the main thread.
+/// Skips if the entry already has a `cover_title` or has no SHA1 hash.
+/// `SQLite` indexed lookups are sub-millisecond, safe for the main thread.
 fn try_catalog_enrich(entry: &mut LibraryEntry, conn: &retro_junk_db::Connection) {
     if !entry.cover_title.is_empty() {
         return;
     }
-    let sha1 = match entry.hashes.as_ref().and_then(|h| h.sha1.as_deref()) {
-        Some(s) => s,
-        None => return,
+    let Some(sha1) = entry.hashes.as_ref().and_then(|h| h.sha1.as_deref()) else {
+        return;
     };
-    let media_list = match retro_junk_db::find_media_by_sha1(conn, sha1) {
-        Ok(m) => m,
-        Err(_) => return,
+    let Ok(media_list) = retro_junk_db::find_media_by_sha1(conn, sha1) else {
+        return;
     };
     let release_id = match media_list.first() {
         Some(m) => &m.release_id,
@@ -1057,7 +1040,7 @@ fn recheck_invalidated_entries(
     }
 }
 
-/// Re-enumerate a MultiDisc entry's folder after its files changed on disk
+/// Re-enumerate a `MultiDisc` entry's folder after its files changed on disk
 /// (rename, CHD compression): refreshes the entry's `files` list and remaps
 /// `disc_identifications` paths to the new files (matching by filename stem,
 /// then by extension). No-op for single-file entries.
@@ -1147,7 +1130,7 @@ fn build_dat_match_info(
 /// DAT region matches the file's detected regions.
 fn pick_best_hash_match(
     dat_index: &DatIndex,
-    matches: Vec<retro_junk_dat::MatchResult>,
+    matches: &[retro_junk_dat::MatchResult],
     detected_regions: &[Region],
 ) -> Option<DatMatchInfo> {
     if matches.is_empty() {
@@ -1155,18 +1138,18 @@ fn pick_best_hash_match(
     }
     // If we have detected regions and multiple matches, prefer region-matching entry
     if !detected_regions.is_empty() && matches.len() > 1 {
-        for m in &matches {
+        for m in matches {
             let game = &dat_index.games[m.game_index];
-            if let Some(ref dat_region) = game.region {
-                if regions_match_dat(detected_regions, dat_region) {
-                    return Some(build_dat_match_info(
-                        dat_index,
-                        m.game_index,
-                        m.rom_index,
-                        m.method.clone(),
-                        detected_regions,
-                    ));
-                }
+            if let Some(ref dat_region) = game.region
+                && regions_match_dat(detected_regions, dat_region)
+            {
+                return Some(build_dat_match_info(
+                    dat_index,
+                    m.game_index,
+                    m.rom_index,
+                    m.method.clone(),
+                    detected_regions,
+                ));
             }
         }
     }
@@ -1352,7 +1335,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     if let Some(ref id) = entry.identification
                         && !id.serial_number.is_empty()
                         && let Some(p) = platform
-                        && let Some(ref registered) = context.get_by_platform(p)
+                        && let Some(registered) = context.get_by_platform(p)
                     {
                         let serial = &id.serial_number;
                         let game_code = registered.analyzer.extract_dat_game_code(serial);
@@ -1390,7 +1373,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             .as_ref()
                             .map(|id| id.regions.as_slice())
                             .unwrap_or_default();
-                        if let Some(dm) = pick_best_hash_match(dat, matches, detected) {
+                        if let Some(dm) = pick_best_hash_match(dat, &matches, detected) {
                             entry.dat_match = Some(dm);
                             entry.status = EntryStatus::Matched;
                             entry.ambiguous_candidates.clear();
@@ -1444,7 +1427,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     match result {
                         Ok(_) => log::debug!("MultiDiscAnalyzed: disc {} => Ok", path.display()),
                         Err(e) => {
-                            log::warn!("MultiDiscAnalyzed: disc {} => Err({})", path.display(), e)
+                            log::warn!("MultiDiscAnalyzed: disc {} => Err({})", path.display(), e);
                         }
                     }
                 }
@@ -1508,7 +1491,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 // multi-disc serial matching immediately to restore Matched status.
                 if let Some(ref dat) = dat_index
                     && let Some(p) = console_platform
-                    && let Some(ref registered) = context.get_by_platform(p)
+                    && let Some(registered) = context.get_by_platform(p)
                 {
                     let mut matched_names: Vec<String> = Vec::new();
                     let mut first_rom_name = String::new();
@@ -1526,7 +1509,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                         let rom_name =
                                             dat.games[m.game_index].roms[m.rom_index].name.clone();
                                         if first_rom_name.is_empty() {
-                                            first_rom_name = rom_name.clone();
+                                            first_rom_name.clone_from(&rom_name);
                                         }
                                         disc.dat_match = Some(DatMatchInfo {
                                             game_name: name.clone(),
@@ -1562,8 +1545,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                     .and_then(|discs| try_catalog_game_name(discs, conn))
                             })
                             .unwrap_or_else(|| {
-                                let name_refs: Vec<&str> =
-                                    matched_names.iter().map(|s| s.as_str()).collect();
+                                let name_refs: Vec<&str> = matched_names
+                                    .iter()
+                                    .map(std::string::String::as_str)
+                                    .collect();
                                 retro_junk_core::disc::derive_base_game_name(&name_refs)
                             });
                         entry.dat_match = Some(DatMatchInfo {
@@ -1657,43 +1642,39 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             app.operations.retain(|op| {
                 // Match operations like "Scanning Super Nintendo..."
                 !(op.description.starts_with(&desc_match))
-                    || !app
-                        .library
-                        .find_by_folder(&folder_name)
-                        .map(|ci| {
-                            op.description
-                                .contains(app.library.consoles[ci].platform_name)
-                        })
-                        .unwrap_or(false)
+                    || !app.library.find_by_folder(&folder_name).is_some_and(|ci| {
+                        op.description
+                            .contains(app.library.consoles[ci].platform_name)
+                    })
             });
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 app.save_console_cache(ci);
             }
 
             // Discover media for newly scanned entries so the table shows media indicators.
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                if let Some(ref root) = app.root_path.clone() {
-                    let entries: Vec<(String, String)> = app.library.consoles[ci]
-                        .entries
-                        .iter()
-                        .filter(|e| e.asset_paths.is_none())
-                        .map(|e| {
-                            (
-                                e.game_entry.display_name().to_string(),
-                                e.game_entry.rom_stem().to_string(),
-                            )
-                        })
-                        .collect();
-                    if !entries.is_empty() {
-                        crate::backend::assets::discover_assets_for_console(
-                            app.message_tx.clone(),
-                            ctx.clone(),
-                            root.clone(),
-                            folder_name.clone(),
-                            app.settings.general.assets_dir.clone(),
-                            entries,
-                        );
-                    }
+            if let Some(ci) = app.library.find_by_folder(&folder_name)
+                && let Some(ref root) = app.root_path.clone()
+            {
+                let entries: Vec<(String, String)> = app.library.consoles[ci]
+                    .entries
+                    .iter()
+                    .filter(|e| e.asset_paths.is_none())
+                    .map(|e| {
+                        (
+                            e.game_entry.display_name().to_string(),
+                            e.game_entry.rom_stem().to_string(),
+                        )
+                    })
+                    .collect();
+                if !entries.is_empty() {
+                    crate::backend::assets::discover_assets_for_console(
+                        app.message_tx.clone(),
+                        ctx.clone(),
+                        root.clone(),
+                        folder_name.clone(),
+                        app.settings.general.assets_dir.clone(),
+                        entries,
+                    );
                 }
             }
 
@@ -1724,7 +1705,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 let context = app.context.clone();
                 if let Some(registered) = context.get_by_platform(platform) {
                     // Single-entry serial matching (skip multi-disc entries)
-                    for entry in app.library.consoles[ci].entries.iter_mut() {
+                    for entry in &mut app.library.consoles[ci].entries {
                         if entry.disc_identifications.is_some() {
                             continue;
                         }
@@ -1760,7 +1741,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     }
 
                     // Multi-disc serial+hash matching: resolve each disc, derive game name
-                    for entry in app.library.consoles[ci].entries.iter_mut() {
+                    for entry in &mut app.library.consoles[ci].entries {
                         let discs = match entry.disc_identifications.as_mut() {
                             Some(d) if !d.is_empty() => d,
                             _ => continue,
@@ -1785,7 +1766,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                             .name
                                             .clone();
                                         if first_rom_name.is_empty() {
-                                            first_rom_name = rom_name.clone();
+                                            first_rom_name.clone_from(&rom_name);
                                         }
                                         // Cache per-disc DAT match for rename
                                         disc.dat_match = Some(DatMatchInfo {
@@ -1814,9 +1795,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             if let Some(ref hashes) = disc.hashes {
                                 let matches = index.match_by_hash(hashes.data_size, hashes);
                                 let detected = disc.identification.regions.as_slice();
-                                if let Some(dm) = pick_best_hash_match(&index, matches, detected) {
+                                if let Some(dm) = pick_best_hash_match(&index, &matches, detected) {
                                     if first_rom_name.is_empty() {
-                                        first_rom_name = dm.rom_name.clone();
+                                        first_rom_name.clone_from(&dm.rom_name);
                                     }
                                     matched_names.push(dm.game_name.clone());
                                     disc.dat_match = Some(dm);
@@ -1839,8 +1820,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                         .and_then(|discs| try_catalog_game_name(discs, conn))
                                 })
                                 .unwrap_or_else(|| {
-                                    let name_refs: Vec<&str> =
-                                        matched_names.iter().map(|s| s.as_str()).collect();
+                                    let name_refs: Vec<&str> = matched_names
+                                        .iter()
+                                        .map(std::string::String::as_str)
+                                        .collect();
                                     retro_junk_core::disc::derive_base_game_name(&name_refs)
                                 });
                             // Cross-region if any disc has a cross-region hash match
@@ -1903,7 +1886,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 // Re-check hash matches for entries that have cached hashes
                 // but weren't resolved by serial alone (e.g. Ambiguous or Unrecognized).
                 // Skip multi-disc entries — their game-level match is handled above.
-                for entry in app.library.consoles[ci].entries.iter_mut() {
+                for entry in &mut app.library.consoles[ci].entries {
                     if entry.disc_identifications.is_some() {
                         continue;
                     }
@@ -1916,7 +1899,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             .as_ref()
                             .map(|id| id.regions.as_slice())
                             .unwrap_or_default();
-                        if let Some(dm) = pick_best_hash_match(&index, matches, detected) {
+                        if let Some(dm) = pick_best_hash_match(&index, &matches, detected) {
                             entry.dat_match = Some(dm);
                             entry.status = EntryStatus::Matched;
                             entry.ambiguous_candidates.clear();
@@ -1926,7 +1909,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
                 // Enrich entries with catalog titles
                 if let Some(ref conn) = app.catalog_db {
-                    for entry in app.library.consoles[ci].entries.iter_mut() {
+                    for entry in &mut app.library.consoles[ci].entries {
                         if entry.hashes.is_some() {
                             try_catalog_enrich(entry, conn);
                         }
@@ -1946,7 +1929,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         }
 
         AppMessage::DatLoadFailed { folder_name, error } => {
-            app.push_error("DAT Load Failed", format!("{}: {}", folder_name, error));
+            app.push_error("DAT Load Failed", format!("{folder_name}: {error}"));
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 app.library.consoles[ci].dat_status = DatStatus::Unavailable { reason: error };
             }
@@ -1974,7 +1957,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         .as_ref()
                         .map(|id| id.regions.as_slice())
                         .unwrap_or_default();
-                    if let Some(dm) = pick_best_hash_match(dat_index, matches, detected) {
+                    if let Some(dm) = pick_best_hash_match(dat_index, &matches, detected) {
                         entry.dat_match = Some(dm);
                         entry.status = EntryStatus::Matched;
                         entry.ambiguous_candidates.clear();
@@ -2009,7 +1992,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     if let Some(dat_index) = app.dat_indices.get(&folder_name) {
                         let matches = dat_index.match_by_hash(hashes.data_size, &hashes);
                         let detected = disc.identification.regions.as_slice();
-                        if let Some(dm) = pick_best_hash_match(dat_index, matches, detected) {
+                        if let Some(dm) = pick_best_hash_match(dat_index, &matches, detected) {
                             log::info!(
                                 "Disc hash match: {} -> {} ({})",
                                 disc_path.display(),
@@ -2043,9 +2026,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     let first_rom_name = first_match
                         .map(|dm| dm.rom_name.clone())
                         .unwrap_or_default();
-                    let method = first_match
-                        .map(|dm| dm.method.clone())
-                        .unwrap_or(MatchMethod::Crc32);
+                    let method = first_match.map_or(MatchMethod::Crc32, |dm| dm.method.clone());
                     let region = first_match.map(|dm| dm.region.clone()).unwrap_or_default();
                     // Cross-region if any disc has a cross-region match
                     let cross_region = discs
@@ -2078,15 +2059,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_name,
             error,
         } => {
-            log::warn!(
-                "Hash failed for {} entry {}: {}",
-                folder_name,
-                entry_name,
-                error
-            );
+            log::warn!("Hash failed for {folder_name} entry {entry_name}: {error}");
             app.push_error(
                 "Hash Failed",
-                format!("{} ({}): {}", entry_name, folder_name, error),
+                format!("{entry_name} ({folder_name}): {error}"),
             );
         }
 
@@ -2117,15 +2093,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_name,
             error,
         } => {
-            log::warn!(
-                "Scrape failed for {} entry {}: {}",
-                folder_name,
-                entry_name,
-                error
-            );
+            log::warn!("Scrape failed for {folder_name} entry {entry_name}: {error}");
             app.push_error(
                 "Scrape Failed",
-                format!("{} ({}): {}", entry_name, folder_name, error),
+                format!("{entry_name} ({folder_name}): {error}"),
             );
             if let Some(ci) = app.library.find_by_folder(&folder_name)
                 && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
@@ -2141,7 +2112,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         }
 
         AppMessage::ScrapeFatalError { message, op_id } => {
-            log::error!("Scrape fatal error: {}", message);
+            log::error!("Scrape fatal error: {message}");
             app.push_error("Scrape Failed", &message);
             app.operations.retain(|op| op.id != op_id);
         }
@@ -2259,11 +2230,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             result,
         } => match result {
             Ok(path) => {
-                log::info!("Exported gamelist.xml for {}: {}", folder_name, path);
+                log::info!("Exported gamelist.xml for {folder_name}: {path}");
             }
             Err(error) => {
-                log::warn!("Export failed for {}: {}", folder_name, error);
-                app.push_error("Export Failed", format!("{}: {}", folder_name, error));
+                log::warn!("Export failed for {folder_name}: {error}");
+                app.push_error("Export Failed", format!("{folder_name}: {error}"));
             }
         },
 
@@ -2340,20 +2311,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
             }
             log::info!(
-                "Rename {}: {} renamed, {} already correct, {} failed",
-                folder_name,
-                renamed,
-                already,
-                failed
+                "Rename {folder_name}: {renamed} renamed, {already} already correct, {failed} failed"
             );
             app.results_dialog = crate::app::ResultsDialog::Rename(results);
 
             // Invalidate fingerprint so the next save recomputes it from the
             // actual (post-rename) file names on disk.
-            if renamed > 0 {
-                if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                    app.library.consoles[ci].fingerprint = None;
-                }
+            if renamed > 0
+                && let Some(ci) = app.library.find_by_folder(&folder_name)
+            {
+                app.library.consoles[ci].fingerprint = None;
             }
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 app.save_console_cache(ci);
@@ -2382,10 +2349,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         } => {
             if jobs_executed > 0 {
                 log::info!(
-                    "Organized {}: created {} folders, moved {} files",
-                    folder_name,
-                    jobs_executed,
-                    files_moved,
+                    "Organized {folder_name}: created {jobs_executed} folders, moved {files_moved} files",
                 );
                 // Trigger rescan since folder structure changed
                 if let Some(ci) = app.library.find_by_folder(&folder_name) {
@@ -2396,14 +2360,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
             }
             if unmatched > 0 {
-                log::warn!(
-                    "{} files could not be matched in {}",
-                    unmatched,
-                    folder_name
-                );
+                log::warn!("{unmatched} files could not be matched in {folder_name}");
             }
             for err in &errors {
-                log::error!("Organize error: {}", err);
+                log::error!("Organize error: {err}");
             }
         }
 
@@ -2429,42 +2389,37 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 })
                 .count();
             log::info!(
-                "CUE fix {}: {} fixed, {} already standard, {} failed",
-                folder_name,
-                fixed,
-                already,
-                failed
+                "CUE fix {folder_name}: {fixed} fixed, {already} already standard, {failed} failed"
             );
             // Invalidate cached checks on affected entries and re-check
-            if fixed > 0 {
-                if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                    let fixed_files: std::collections::HashSet<&str> = results
-                        .iter()
-                        .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
-                        .map(|r| r.file_name.as_str())
-                        .collect();
-                    for entry in &mut app.library.consoles[ci].entries {
-                        let dominated =
-                            entry.cue_compat_issues.as_ref().is_some_and(|issues| {
-                                issues
-                                    .iter()
-                                    .any(|i| fixed_files.contains(i.file_name.as_str()))
-                            }) || entry.broken_references.as_ref().is_some_and(|refs| {
-                                refs.iter().any(|r| {
-                                    r.ref_file
-                                        .file_name()
-                                        .and_then(|n| n.to_str())
-                                        .is_some_and(|n| fixed_files.contains(n))
-                                })
-                            });
-                        if dominated {
-                            entry.broken_references = None;
-                            entry.cue_compat_issues = None;
-                        }
+            if fixed > 0
+                && let Some(ci) = app.library.find_by_folder(&folder_name)
+            {
+                let fixed_files: std::collections::HashSet<&str> = results
+                    .iter()
+                    .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
+                    .map(|r| r.file_name.as_str())
+                    .collect();
+                for entry in &mut app.library.consoles[ci].entries {
+                    let dominated = entry.cue_compat_issues.as_ref().is_some_and(|issues| {
+                        issues
+                            .iter()
+                            .any(|i| fixed_files.contains(i.file_name.as_str()))
+                    }) || entry.broken_references.as_ref().is_some_and(|refs| {
+                        refs.iter().any(|r| {
+                            r.ref_file
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| fixed_files.contains(n))
+                        })
+                    });
+                    if dominated {
+                        entry.broken_references = None;
+                        entry.cue_compat_issues = None;
                     }
-                    app.save_console_cache(ci);
-                    recheck_invalidated_entries(app, ci, &folder_name, ctx);
                 }
+                app.save_console_cache(ci);
+                recheck_invalidated_entries(app, ci, &folder_name, ctx);
             }
             app.results_dialog = crate::app::ResultsDialog::CueFix(results);
         }
@@ -2479,10 +2434,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 .count();
             let failed = results.len() - compressed;
             log::info!(
-                "CHD compression {}: {} compressed, {} failed/skipped",
-                folder_name,
-                compressed,
-                failed
+                "CHD compression {folder_name}: {compressed} compressed, {failed} failed/skipped"
             );
 
             // Extension set for the console's platform, used by
@@ -2536,7 +2488,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         deleted_files.extend(r.job.source_files.iter().cloned());
                         match entry.game_entry {
                             retro_junk_lib::scanner::GameEntry::SingleFile(ref mut path) => {
-                                *path = r.job.output.clone();
+                                path.clone_from(&r.job.output);
                             }
                             retro_junk_lib::scanner::GameEntry::MultiDisc { .. } => {
                                 if let Some(folder) = r.job.output.parent() {
@@ -2755,6 +2707,7 @@ impl TableViewState {
 }
 
 /// State for the database browser in the Browse tab.
+#[derive(Default)]
 pub struct BrowseState {
     pub active_table: BrowseTable,
     pub table_state: TableViewState,
@@ -2765,21 +2718,6 @@ pub struct BrowseState {
     pub companies: Vec<retro_junk_db::CompanyRow>,
     pub collection: Vec<retro_junk_db::CollectionRow>,
     pub import_logs: Vec<retro_junk_catalog::types::ImportLog>,
-}
-
-impl Default for BrowseState {
-    fn default() -> Self {
-        Self {
-            active_table: BrowseTable::default(),
-            table_state: TableViewState::default(),
-            releases: Vec::new(),
-            media_rows: Vec::new(),
-            works: Vec::new(),
-            companies: Vec::new(),
-            collection: Vec::new(),
-            import_logs: Vec::new(),
-        }
-    }
 }
 
 /// Transient UI state for the Tools (catalog) view.
@@ -2820,6 +2758,8 @@ impl Default for ToolsState {
 /// The system selection is a set of `Platform`s; an empty set means "all
 /// capable systems" (mirroring the CLI's `all` keyword). Per-operation option
 /// fields hold text/bool inputs bound to the UI widgets.
+// The bools are independent checkbox/guard flags bound to UI widgets, not an encoded state machine.
+#[allow(clippy::struct_excessive_bools)]
 pub struct DataToolsState {
     /// Selected systems to operate on. Empty = all capable systems.
     pub selected_systems: std::collections::HashSet<Platform>,
@@ -2828,7 +2768,7 @@ pub struct DataToolsState {
     pub op_in_flight: bool,
     /// GDB enrichment: max releases per system (text input; empty = no limit).
     pub gdb_limit: String,
-    /// ScreenScraper enrichment options.
+    /// `ScreenScraper` enrichment options.
     pub ss_force: bool,
     pub ss_download_assets: bool,
     pub ss_region: String,

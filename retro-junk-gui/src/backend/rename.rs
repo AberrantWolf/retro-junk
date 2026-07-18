@@ -31,14 +31,14 @@ struct M3uJob {
     entry_name: String,
     /// All disc files in this multi-disc set (from the playlist)
     files: Vec<PathBuf>,
-    /// Already-resolved non-cue disc data — target_filename holds raw DAT
-    /// rom_name, corrected on the background thread before execution.
+    /// Already-resolved non-cue disc data — `target_filename` holds raw DAT
+    /// `rom_name`, corrected on the background thread before execution.
     resolved_discs: Vec<DiscMatchData>,
     /// Non-cue file paths that still need hash-based resolution
     unresolved_files: Vec<PathBuf>,
     /// Cue files inside the folder — each becomes a verified disc set
     cue_files: Vec<PathBuf>,
-    /// Pre-resolved game name from catalog DB (skips derive_base_game_name).
+    /// Pre-resolved game name from catalog DB (skips `derive_base_game_name`).
     /// Empty = derive from per-disc DAT names.
     game_name_override: String,
 }
@@ -79,9 +79,8 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let mut dir_membership: HashMap<PathBuf, HashMap<PathBuf, PathBuf>> = HashMap::new();
 
     for &i in &app.selected_entries {
-        let entry = match console.entries.get(i) {
-            Some(e) => e,
-            None => continue,
+        let Some(entry) = console.entries.get(i) else {
+            continue;
         };
 
         let entry_name = entry.game_entry.display_name().to_string();
@@ -246,7 +245,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let dat_index_arc = dat_index.cloned();
     let context = app.context.clone();
     let platform = console.platform;
-    let description = format!("Renaming {} entries", total_work);
+    let description = format!("Renaming {total_work} entries");
 
     // Resolve companion locations for this console: media directory and
     // gamelist.xml. Both move inside each game's rename transaction.
@@ -260,10 +259,10 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let gamelist_path = app
         .root_path
         .as_ref()
-        .and_then(|rp| {
+        .map(|rp| {
             state::metadata_dir_for_console(rp, &folder_name, &app.settings.general.metadata_dir)
+                .join("gamelist.xml")
         })
-        .map(|d| d.join("gamelist.xml"))
         .filter(|p| p.is_file());
 
     let scope = folder_name.clone();
@@ -298,7 +297,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
             };
 
             // Step 1: Execute single-file renames (one transaction each)
-            for job in jobs.iter() {
+            for job in &jobs {
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
@@ -354,13 +353,13 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
             }
 
             // Step 2: Plan and execute cue/bin disc sets (one transaction each)
-            for job in cue_jobs.iter() {
+            for job in &cue_jobs {
                 if cancel.load(std::sync::atomic::Ordering::Relaxed) {
                     break;
                 }
                 send_progress(&mut file_num);
 
-                let outcome = plan_cue_set(&job.cue, &dat_index_arc, &context, platform);
+                let outcome = plan_cue_set(&job.cue, dat_index_arc.as_ref(), &context, platform);
                 results.push(RenameResult {
                     entry_name: job.entry_name.clone(),
                     outcome: execute_cue_set_outcome(outcome, &job.cue, &exec),
@@ -409,7 +408,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 let mut disc_sets = Vec::new();
                 let mut set_errors = Vec::new();
                 for cue in &m3u_job.cue_files {
-                    match plan_cue_set(cue, &dat_index_arc, &context, platform) {
+                    match plan_cue_set(cue, dat_index_arc.as_ref(), &context, platform) {
                         Some(DiscSetOutcome::Planned(plan)) => {
                             all_discs.push(DiscMatchData {
                                 file_path: cue.clone(),
@@ -540,11 +539,11 @@ fn is_cue(path: &Path) -> bool {
 /// Returns `None` when no DAT index or analyzer is available.
 fn plan_cue_set(
     cue: &Path,
-    dat_index: &Option<Arc<DatIndex>>,
+    dat_index: Option<&Arc<DatIndex>>,
     context: &Arc<AnalysisContext>,
     platform: retro_junk_lib::Platform,
 ) -> Option<DiscSetOutcome> {
-    let di = dat_index.as_ref()?;
+    let di = dat_index?;
     let registered = context.get_by_platform(platform)?;
     Some(retro_junk_lib::disc_set::plan_disc_set(
         cue,
@@ -554,7 +553,7 @@ fn plan_cue_set(
     ))
 }
 
-/// Execute a planned cue-set outcome and convert it to a RenameOutcome.
+/// Execute a planned cue-set outcome and convert it to a `RenameOutcome`.
 fn execute_cue_set_outcome(
     outcome: Option<DiscSetOutcome>,
     cue: &Path,
@@ -611,7 +610,7 @@ fn describe_set_failure(cue: &Path, outcome: &DiscSetOutcome) -> String {
     }
 }
 
-/// Resolve a single disc file by hashing it and matching against the DatIndex.
+/// Resolve a single disc file by hashing it and matching against the `DatIndex`.
 /// Runs on the background thread, so it can sniff the format extension directly.
 fn resolve_disc_file(
     file_path: &PathBuf,
@@ -658,22 +657,22 @@ fn get_target_rom_name(
     entry: &crate::state::LibraryEntry,
 ) -> Option<String> {
     // 1. Use cached rom_name from dat_match if available (skip cross-region matches)
-    if let Some(ref dm) = entry.dat_match {
-        if !dm.rom_name.is_empty() && !dm.cross_region {
-            return Some(dm.rom_name.clone());
-        }
+    if let Some(ref dm) = entry.dat_match
+        && !dm.rom_name.is_empty()
+        && !dm.cross_region
+    {
+        return Some(dm.rom_name.clone());
     }
 
     // 2. Try hash lookup
     let dat_index = app.dat_indices.get(folder_name)?;
-    if let Some(ref hashes) = entry.hashes {
-        if let Some(m) = dat_index
+    if let Some(ref hashes) = entry.hashes
+        && let Some(m) = dat_index
             .match_by_hash(hashes.data_size, hashes)
             .into_iter()
             .next()
-        {
-            return Some(dat_index.games[m.game_index].roms[m.rom_index].name.clone());
-        }
+    {
+        return Some(dat_index.games[m.game_index].roms[m.rom_index].name.clone());
     }
 
     // 3. Try serial lookup

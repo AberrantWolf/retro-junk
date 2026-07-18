@@ -75,7 +75,7 @@ fn recompute_header_checksum(rom: &mut [u8]) {
 }
 
 /// Set up an encrypted secure area with a valid CRC at 0x06C.
-fn setup_encrypted_secure_area(rom: &mut Vec<u8>) {
+fn setup_encrypted_secure_area(rom: &mut [u8]) {
     if rom.len() >= 0x8000 {
         // Write non-magic bytes at 0x4000 so it looks encrypted
         rom[0x4000..0x4008].copy_from_slice(&[0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE, 0xF0]);
@@ -164,8 +164,7 @@ fn test_checksums_ok() {
         .unwrap();
     assert!(
         sa_status.starts_with("OK"),
-        "Expected OK for decrypted dump, got: {}",
-        sa_status
+        "Expected OK for decrypted dump, got: {sa_status}"
     );
     assert_eq!(result.extra.get("secure_area").unwrap(), "Decrypted");
 }
@@ -206,8 +205,7 @@ fn test_encrypted_secure_area_crc_mismatch() {
         .unwrap();
     assert!(
         status.starts_with("MISMATCH"),
-        "Expected MISMATCH, got: {}",
-        status
+        "Expected MISMATCH, got: {status}"
     );
 }
 
@@ -224,8 +222,7 @@ fn test_header_checksum_mismatch() {
     let status = result.extra.get("checksum_status:Header CRC-16").unwrap();
     assert!(
         status.starts_with("MISMATCH"),
-        "Expected MISMATCH, got: {}",
-        status
+        "Expected MISMATCH, got: {status}"
     );
 }
 
@@ -240,7 +237,7 @@ fn test_quick_mode_skips_secure_area() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     // Quick mode doesn't detect secure area state
-    assert!(result.extra.get("secure_area").is_none());
+    assert!(!result.extra.contains_key("secure_area"));
 }
 
 #[test]
@@ -255,7 +252,10 @@ fn test_dsi_enhanced() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     assert_eq!(
-        result.extra.get("platform_variant").map(|s| s.as_str()),
+        result
+            .extra
+            .get("platform_variant")
+            .map(std::string::String::as_str),
         Some("Nintendo DS (DSi Enhanced)")
     );
     assert_eq!(result.extra.get("unit_code").unwrap(), "NDS+DSi");
@@ -275,7 +275,10 @@ fn test_dsi_only() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     assert_eq!(
-        result.extra.get("platform_variant").map(|s| s.as_str()),
+        result
+            .extra
+            .get("platform_variant")
+            .map(std::string::String::as_str),
         Some("Nintendo DSi")
     );
     assert_eq!(result.extra.get("unit_code").unwrap(), "DSi");
@@ -530,7 +533,7 @@ fn test_no_secure_area_for_small_file() {
     let analyzer = DsAnalyzer;
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert!(result.extra.get("secure_area").is_none());
+    assert!(!result.extra.contains_key("secure_area"));
 }
 
 #[test]

@@ -45,6 +45,7 @@ impl AnalysisError {
         Self::CorruptedHeader(msg.into())
     }
 
+    #[must_use]
     pub fn too_small(expected: u64, actual: u64) -> Self {
         Self::TooSmall { expected, actual }
     }

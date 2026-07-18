@@ -32,7 +32,7 @@ pub fn test_entry(game_entry: GameEntry) -> LibraryEntry {
     }
 }
 
-/// Build a minimal PlayStation `ConsoleState` holding the given entries.
+/// Build a minimal `PlayStation` `ConsoleState` holding the given entries.
 pub fn test_console(folder_name: &str, entries: Vec<LibraryEntry>) -> ConsoleState {
     ConsoleState {
         platform: Platform::Ps1,

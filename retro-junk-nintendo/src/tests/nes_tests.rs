@@ -87,7 +87,7 @@ fn test_parse_ines_mapper4_vertical_battery() {
     assert_eq!(result.extra.get("prg_rom_size").unwrap(), "256 KB");
     assert_eq!(result.extra.get("chr_rom_size").unwrap(), "128 KB");
     // Expected: 16 + 256KB + 128KB = 393232
-    assert_eq!(result.expected_size, 16 + 262144 + 131072);
+    assert_eq!(result.expected_size, 16 + 262_144 + 131_072);
 }
 
 #[test]

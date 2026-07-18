@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use retro_junk_import::scan_import::{ScanOptions, ScanProgress, ScanStats};
 use retro_junk_lib::AnalysisContext;
 
 use crate::CliError;
@@ -10,17 +11,71 @@ use crate::commands::systems::resolve_single_system;
 
 use super::default_catalog_db_path;
 
+/// Progress reporter that logs scan events to the CLI.
+struct CliScanProgress {
+    quiet: bool,
+}
+
+impl ScanProgress for CliScanProgress {
+    fn on_file(&self, current: usize, total: usize, filename: &str) {
+        if !self.quiet {
+            log::debug!("  [{current}/{total}] {filename}");
+        }
+    }
+
+    fn on_match(&self, filename: &str, title: &str) {
+        log::info!(
+            "  {} {} -> {}",
+            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+            filename,
+            title.if_supports_color(Stdout, |t| t.bold()),
+        );
+    }
+
+    fn on_no_match(&self, filename: &str) {
+        if !self.quiet {
+            log::info!(
+                "  {} {}",
+                "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                filename.if_supports_color(Stdout, |t| t.dimmed()),
+            );
+        }
+    }
+
+    fn on_error(&self, filename: &str, error: &str) {
+        log::warn!(
+            "  {} {}: {}",
+            "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+            filename,
+            error,
+        );
+    }
+
+    fn on_complete(&self, stats: &ScanStats) {
+        crate::log_blank();
+        log::info!(
+            "{}",
+            "Scan complete".if_supports_color(Stdout, |t| t.bold()),
+        );
+        log::info!("  Files scanned: {:>6}", stats.files_scanned);
+        log::info!("  Matched:       {:>6}", stats.matched);
+        log::info!("  Already owned: {:>6}", stats.already_owned);
+        log::info!("  Unmatched:     {:>6}", stats.unmatched);
+        if stats.errors > 0 {
+            log::info!("  Errors:        {:>6}", stats.errors);
+        }
+    }
+}
+
 /// Scan a ROM folder and add matched files to the collection.
 pub(crate) fn run_catalog_scan(
     ctx: &AnalysisContext,
-    system: String,
-    folder: PathBuf,
+    system: &str,
+    folder: &Path,
     db_path: Option<PathBuf>,
     user_id: String,
     quiet: bool,
 ) -> Result<(), CliError> {
-    use retro_junk_import::scan_import::{ScanOptions, ScanProgress, ScanStats};
-
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
 
     if !db_path.exists() {
@@ -36,67 +91,12 @@ pub(crate) fn run_catalog_scan(
         )));
     }
 
-    let console = resolve_single_system(ctx, &system)?;
+    let console = resolve_single_system(ctx, system)?;
 
     let conn = retro_junk_db::open_database(&db_path)
-        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {e}")))?;
 
     let options = ScanOptions { user_id };
-
-    struct CliScanProgress {
-        quiet: bool,
-    }
-
-    impl ScanProgress for CliScanProgress {
-        fn on_file(&self, current: usize, total: usize, filename: &str) {
-            if !self.quiet {
-                log::debug!("  [{}/{}] {}", current, total, filename);
-            }
-        }
-
-        fn on_match(&self, filename: &str, title: &str) {
-            log::info!(
-                "  {} {} -> {}",
-                "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                filename,
-                title.if_supports_color(Stdout, |t| t.bold()),
-            );
-        }
-
-        fn on_no_match(&self, filename: &str) {
-            if !self.quiet {
-                log::info!(
-                    "  {} {}",
-                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                    filename.if_supports_color(Stdout, |t| t.dimmed()),
-                );
-            }
-        }
-
-        fn on_error(&self, filename: &str, error: &str) {
-            log::warn!(
-                "  {} {}: {}",
-                "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                filename,
-                error,
-            );
-        }
-
-        fn on_complete(&self, stats: &ScanStats) {
-            crate::log_blank();
-            log::info!(
-                "{}",
-                "Scan complete".if_supports_color(Stdout, |t| t.bold()),
-            );
-            log::info!("  Files scanned: {:>6}", stats.files_scanned);
-            log::info!("  Matched:       {:>6}", stats.matched);
-            log::info!("  Already owned: {:>6}", stats.already_owned);
-            log::info!("  Unmatched:     {:>6}", stats.unmatched);
-            if stats.errors > 0 {
-                log::info!("  Errors:        {:>6}", stats.errors);
-            }
-        }
-    }
 
     log::info!(
         "{}",
@@ -112,13 +112,13 @@ pub(crate) fn run_catalog_scan(
 
     let result = retro_junk_import::scan_folder(
         &conn,
-        &folder,
+        folder,
         console.analyzer.as_ref(),
         console.metadata.platform,
         &options,
         &progress,
     )
-    .map_err(|e| CliError::other(format!("Scan failed: {}", e)))?;
+    .map_err(|e| CliError::other(format!("Scan failed: {e}")))?;
 
     if !result.unmatched.is_empty() && !quiet {
         crate::log_blank();

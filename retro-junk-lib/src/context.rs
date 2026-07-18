@@ -67,6 +67,7 @@ impl Default for AnalysisContext {
 
 impl AnalysisContext {
     /// Create a new empty context.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             consoles: Vec::new(),
@@ -85,6 +86,7 @@ impl AnalysisContext {
     }
 
     /// Get a console by its `Platform` enum variant.
+    #[must_use]
     pub fn get_by_platform(&self, platform: Platform) -> Option<&RegisteredConsole> {
         self.consoles
             .iter()
@@ -92,6 +94,7 @@ impl AnalysisContext {
     }
 
     /// Get a console by short name or alias.
+    #[must_use]
     pub fn get_by_short_name(&self, short_name: &str) -> Option<&RegisteredConsole> {
         if let Ok(platform) = short_name.parse::<Platform>() {
             self.get_by_platform(platform)
@@ -101,6 +104,7 @@ impl AnalysisContext {
     }
 
     /// Find consoles that match a folder name.
+    #[must_use]
     pub fn find_by_folder(&self, folder_name: &str) -> Vec<&RegisteredConsole> {
         self.consoles
             .iter()
@@ -109,6 +113,7 @@ impl AnalysisContext {
     }
 
     /// List all short names.
+    #[must_use]
     pub fn short_names(&self) -> Vec<&'static str> {
         self.consoles
             .iter()
@@ -117,6 +122,7 @@ impl AnalysisContext {
     }
 
     /// Check if a folder name matches any registered console.
+    #[must_use]
     pub fn matches_any_console(&self, folder_name: &str) -> bool {
         self.consoles
             .iter()
@@ -136,7 +142,7 @@ impl AnalysisContext {
         let mut unrecognized = Vec::new();
 
         let mut dir_entries: Vec<std::fs::DirEntry> = std::fs::read_dir(root)?.flatten().collect();
-        dir_entries.sort_by_key(|e| e.path());
+        dir_entries.sort_by_key(std::fs::DirEntry::path);
 
         for entry in dir_entries {
             let path = entry.path();

@@ -1,7 +1,7 @@
-//! SQLite persistence layer for the game catalog.
+//! `SQLite` persistence layer for the game catalog.
 //!
 //! Provides schema creation, CRUD operations, and query APIs
-//! backed by SQLite (via rusqlite with bundled feature).
+//! backed by `SQLite` (via rusqlite with bundled feature).
 
 pub mod library;
 pub mod operations;
@@ -9,9 +9,9 @@ pub mod queries;
 pub mod schema;
 
 pub use library::{
-    LibraryConsoleRow, LibraryEntryRow, LibraryError, delete_library_root, get_library_root_id,
-    load_consoles_for_root, load_entries_for_console, save_console_bulk, upsert_entries,
-    upsert_entry, upsert_library_root,
+    ConsoleRecord, LibraryConsoleRow, LibraryEntryRow, LibraryError, delete_library_root,
+    get_library_root_id, load_consoles_for_root, load_entries_for_console, save_console_bulk,
+    upsert_entries, upsert_entry, upsert_library_root,
 };
 pub use operations::{
     MediaHashes, MediaTrack, OperationError, SeedStats, apply_disagreement_resolution,

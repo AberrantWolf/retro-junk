@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::{AssetType, Frontend, FrontendError, ScrapedGame};
 
-/// ES-DE (EmulationStation Desktop Edition) frontend.
+/// ES-DE (`EmulationStation` Desktop Edition) frontend.
 #[derive(Default)]
 pub struct EsDeFrontend;
 
@@ -13,6 +13,8 @@ impl Frontend for EsDeFrontend {
         "ES-DE"
     }
 
+    // Linear XML emission, one short block per optional tag; splitting adds no clarity.
+    #[allow(clippy::too_many_lines)]
     fn write_metadata(
         &self,
         games: &[ScrapedGame],
@@ -56,7 +58,7 @@ impl Frontend for EsDeFrontend {
                 write_tag(&mut xml, "players", &game.players);
             }
             if let Some(rating) = game.rating {
-                write_tag(&mut xml, "rating", &format!("{:.1}", rating));
+                write_tag(&mut xml, "rating", &format!("{rating:.1}"));
             }
             if !game.release_date.is_empty() {
                 // Convert YYYY-MM-DD or YYYYMMDD to YYYYMMDDTHHMMSS
@@ -223,9 +225,10 @@ const PATH_TAGS: &[&str] = &[
 /// Read a gamelist.xml and compute its content after applying a stem rename
 /// map. Returns `(path, new_content)` for a transactional write, or `None`
 /// when the file doesn't exist or nothing changes.
-pub fn plan_gamelist_rewrite(
+#[must_use]
+pub fn plan_gamelist_rewrite<S: std::hash::BuildHasher>(
     gamelist_path: &Path,
-    stem_map: &std::collections::HashMap<String, String>,
+    stem_map: &std::collections::HashMap<String, String, S>,
 ) -> Option<(std::path::PathBuf, String)> {
     let content = fs::read_to_string(gamelist_path).ok()?;
     rewrite_gamelist_stems(&content, stem_map).map(|c| (gamelist_path.to_path_buf(), c))
@@ -238,9 +241,10 @@ pub fn plan_gamelist_rewrite(
 ///
 /// Operates line-by-line on the simple one-tag-per-line XML this crate
 /// generates; `<name>` and other metadata tags are left untouched.
-pub fn rewrite_gamelist_stems(
+#[must_use]
+pub fn rewrite_gamelist_stems<S: std::hash::BuildHasher>(
     content: &str,
-    stem_map: &std::collections::HashMap<String, String>,
+    stem_map: &std::collections::HashMap<String, String, S>,
 ) -> Option<String> {
     if stem_map.is_empty() {
         return None;
@@ -270,9 +274,9 @@ pub fn rewrite_gamelist_stems(
 
 /// Rewrite a single gamelist line if it is a path tag whose value's final
 /// component matches the stem map. Returns `None` when the line is unchanged.
-fn rewrite_gamelist_line(
+fn rewrite_gamelist_line<S: std::hash::BuildHasher>(
     line: &str,
-    stem_map: &std::collections::HashMap<String, String>,
+    stem_map: &std::collections::HashMap<String, String, S>,
 ) -> Option<String> {
     let trimmed = line.trim_start();
     let tag = PATH_TAGS
@@ -314,7 +318,7 @@ fn format_esde_date(date: &str) -> String {
     if cleaned.len() >= 8 {
         format!("{}T000000", &cleaned[..8])
     } else {
-        format!("{}T000000", cleaned)
+        format!("{cleaned}T000000")
     }
 }
 

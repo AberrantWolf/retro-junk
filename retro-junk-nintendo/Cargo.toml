@@ -12,3 +12,6 @@ md5.workspace = true
 crc32fast.workspace = true
 log.workspace = true
 nod.workspace = true
+
+[lints]
+workspace = true

@@ -139,6 +139,7 @@ impl Default for MiximageLayout {
 
 impl MiximageLayout {
     /// Config file path: `~/.config/retro-junk/miximage-layout.yaml`
+    #[must_use]
     pub fn config_path() -> Option<PathBuf> {
         dirs::config_dir().map(|d| d.join("retro-junk").join("miximage-layout.yaml"))
     }
@@ -162,7 +163,7 @@ impl MiximageLayout {
     pub fn load_from(path: &Path) -> Result<Self, FrontendError> {
         let contents = std::fs::read_to_string(path)?;
         serde_yml::from_str(&contents).map_err(|e| {
-            FrontendError::InvalidMetadata(format!("Invalid miximage layout YAML: {}", e))
+            FrontendError::InvalidMetadata(format!("Invalid miximage layout YAML: {e}"))
         })
     }
 
@@ -172,7 +173,7 @@ impl MiximageLayout {
             std::fs::create_dir_all(parent)?;
         }
         let yaml = serde_yml::to_string(self).map_err(|e| {
-            FrontendError::InvalidMetadata(format!("Failed to serialize layout: {}", e))
+            FrontendError::InvalidMetadata(format!("Failed to serialize layout: {e}"))
         })?;
         std::fs::write(path, yaml)?;
         Ok(())

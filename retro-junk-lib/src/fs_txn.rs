@@ -87,6 +87,7 @@ pub struct FsTransaction {
 }
 
 impl FsTransaction {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -108,10 +109,12 @@ impl FsTransaction {
         });
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.ops.is_empty()
     }
 
+    #[must_use]
     pub fn ops(&self) -> &[FsOp] {
         &self.ops
     }
@@ -131,7 +134,7 @@ impl FsTransaction {
             .iter()
             .filter_map(|op| match op {
                 FsOp::Rename { source, .. } => Some(source.as_path()),
-                _ => None,
+                FsOp::WriteFile { .. } => None,
             })
             .collect();
 
@@ -190,12 +193,12 @@ impl FsTransaction {
             .iter()
             .filter_map(|op| match op {
                 FsOp::Rename { source, .. } => Some(source.clone()),
-                _ => None,
+                FsOp::WriteFile { .. } => None,
             })
             .collect();
         let two_phase = renames.iter().any(|op| match op {
             FsOp::Rename { target, .. } => sources.contains(target),
-            _ => false,
+            FsOp::WriteFile { .. } => false,
         });
 
         let mut journal: Vec<UndoStep> = Vec::new();

@@ -31,12 +31,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.heading("Details");
     ui.separator();
 
-    let (console_idx, entry_idx) = match (app.selected_console, app.focused_entry) {
-        (Some(ci), Some(ei)) => (ci, ei),
-        _ => {
-            ui.label("Select an entry to view details.");
-            return;
-        }
+    let (Some(console_idx), Some(entry_idx)) = (app.selected_console, app.focused_entry) else {
+        ui.label("Select an entry to view details.");
+        return;
     };
 
     if app
@@ -110,7 +107,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             for candidate in &entry.ambiguous_candidates {
                 ui.horizontal_top(|ui| {
                     ui.add_space(8.0);
-                    copyable_label(ui, &format!("- {}", candidate));
+                    copyable_label(ui, &format!("- {candidate}"));
                 });
             }
             ui.add_space(2.0);
@@ -131,11 +128,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 if !unresolved.is_empty() {
                     let disc_list = unresolved
                         .iter()
-                        .map(|n| n.to_string())
+                        .map(std::string::ToString::to_string)
                         .collect::<Vec<_>>()
                         .join(", ");
                     ui.label(
-                        egui::RichText::new(format!("Disc {} not matched in database.", disc_list))
+                        egui::RichText::new(format!("Disc {disc_list} not matched in database."))
                             .weak(),
                     );
                 }
@@ -167,14 +164,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             if detected_regions.is_empty() {
                 "Unknown".to_string()
             } else {
-                let names: Vec<&str> = detected_regions.iter().map(|r| r.name()).collect();
+                let names: Vec<&str> = detected_regions
+                    .iter()
+                    .map(retro_junk_core::Region::name)
+                    .collect();
                 format!("Auto-detect ({})", names.join(", "))
             }
         } else {
             effective
                 .first()
-                .map(|r| r.name().to_string())
-                .unwrap_or_else(|| "Unknown".to_string())
+                .map_or_else(|| "Unknown".to_string(), |r| r.name().to_string())
         };
 
         let mut new_override = current_override;
@@ -193,7 +192,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     let auto_label = if detected_regions.is_empty() {
                         "Auto-detect".to_string()
                     } else {
-                        let names: Vec<&str> = detected_regions.iter().map(|r| r.name()).collect();
+                        let names: Vec<&str> = detected_regions
+                            .iter()
+                            .map(retro_junk_core::Region::name)
+                            .collect();
                         format!("Auto-detect ({})", names.join(", "))
                     };
                     if ui
@@ -251,14 +253,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         if app.settings.general.warn_on_region_override
             && let Some(overridden) = new_override
         {
-            let should_warn = if detected_regions.len() == 1 {
+            let should_warn = match detected_regions.as_slice() {
+                // No detection: nothing to contradict
+                [] => false,
                 // Specific detection: warn if override differs
-                detected_regions[0] != overridden
-            } else if detected_regions.len() > 1 {
+                [only] => *only != overridden,
                 // Ambiguous: warn if override not in detected set
-                !detected_regions.contains(&overridden)
-            } else {
-                false
+                _ => !detected_regions.contains(&overridden),
             };
 
             if should_warn {
@@ -269,7 +270,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                         "Overriding detected region ({})",
                         detected_regions
                             .iter()
-                            .map(|r| r.name())
+                            .map(retro_junk_core::Region::name)
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
@@ -285,16 +286,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         field_row(ui, "Folder", &console.folder_name);
 
         // File info
-        let file_name = match &entry.game_entry {
-            retro_junk_lib::scanner::GameEntry::MultiDisc { name, .. } => name.clone(),
-            _ => {
+        let file_name =
+            if let retro_junk_lib::scanner::GameEntry::MultiDisc { name, .. } = &entry.game_entry {
+                name.clone()
+            } else {
                 let path = entry.game_entry.analysis_path();
                 path.file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("?")
                     .to_string()
-            }
-        };
+            };
         field_row(ui, "File", &file_name);
 
         if let Some(ref id) = entry.identification
@@ -327,7 +328,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 detail_row(ui, "Version", &id.version);
             }
             if !id.regions.is_empty() {
-                let regions: Vec<&str> = id.regions.iter().map(|r| r.name()).collect();
+                let regions: Vec<&str> = id
+                    .regions
+                    .iter()
+                    .map(retro_junk_core::Region::name)
+                    .collect();
                 detail_row(ui, "Region", &regions.join(", "));
             }
 
@@ -354,12 +359,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.add_space(2.0);
 
             for (i, disc) in discs.iter().enumerate() {
-                let filename = disc
+                let disc_file = disc
                     .path
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("?");
-                detail_row(ui, &format!("Disc {}", i + 1), filename);
+                detail_row(ui, &format!("Disc {}", i + 1), disc_file);
                 if !disc.identification.serial_number.is_empty() {
                     nested_detail_row(ui, "Serial", &disc.identification.serial_number);
                 }
@@ -417,7 +422,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     note(
                         ui,
                         NESTED_INDENT,
-                        egui::RichText::new(format!("Missing: {}", target)).color(STATUS_ERR),
+                        egui::RichText::new(format!("Missing: {target}")).color(STATUS_ERR),
                     );
                 }
             }
@@ -500,23 +505,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 } else {
                     &dm.region
                 };
-                let detected = entry
-                    .identification
-                    .as_ref()
-                    .map(|id| {
+                let detected = entry.identification.as_ref().map_or_else(
+                    || "unknown".to_string(),
+                    |id| {
                         id.regions
                             .iter()
-                            .map(|r| r.name())
+                            .map(retro_junk_core::Region::name)
                             .collect::<Vec<_>>()
                             .join(", ")
-                    })
-                    .unwrap_or_else(|| "unknown".to_string());
+                    },
+                );
                 warning_note(
                     ui,
                     0.0,
                     &format!(
-                        "Hash matches {} release \u{2014} detected region is {}",
-                        dat_region, detected
+                        "Hash matches {dat_region} release \u{2014} detected region is {detected}"
                     ),
                 );
             }

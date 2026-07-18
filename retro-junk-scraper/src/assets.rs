@@ -30,6 +30,7 @@ impl Default for AssetSelection {
 }
 
 impl AssetSelection {
+    #[must_use]
     pub fn all() -> Self {
         Self {
             types: vec![
@@ -46,6 +47,7 @@ impl AssetSelection {
     }
 
     /// Parse from a comma-separated list (e.g., "covers,screenshots,videos").
+    #[must_use]
     pub fn from_names(names: &[String]) -> Self {
         let types = names
             .iter()
@@ -65,7 +67,7 @@ impl AssetSelection {
     }
 }
 
-/// Map an AssetType to the ScreenScraper media type string.
+/// Map an `AssetType` to the `ScreenScraper` media type string.
 fn ss_asset_type(at: AssetType) -> &'static str {
     match at {
         AssetType::Screenshot => "ss",
@@ -80,7 +82,7 @@ fn ss_asset_type(at: AssetType) -> &'static str {
     }
 }
 
-/// Fallback ScreenScraper media type if the primary isn't found.
+/// Fallback `ScreenScraper` media type if the primary isn't found.
 fn ss_asset_type_fallback(at: AssetType) -> Option<&'static str> {
     match at {
         AssetType::Marquee => Some("wheel"),
@@ -90,6 +92,7 @@ fn ss_asset_type_fallback(at: AssetType) -> Option<&'static str> {
 }
 
 /// Subdirectory name for an asset type (matches ES-DE layout).
+#[must_use]
 pub fn asset_subdir(at: AssetType) -> &'static str {
     match at {
         AssetType::Cover => "covers",
@@ -106,9 +109,10 @@ pub fn asset_subdir(at: AssetType) -> &'static str {
 
 /// Collect paths for asset files that already exist on disk for a given ROM.
 ///
-/// Returns a map of AssetType -> path for every selected asset type that has
+/// Returns a map of `AssetType` -> path for every selected asset type that has
 /// an existing file in the expected location. Miximage is excluded from the
 /// returned map (it's checked separately).
+#[must_use]
 pub fn collect_existing_assets(
     selection: &AssetSelection,
     media_dir: &Path,
@@ -123,7 +127,7 @@ pub fn collect_existing_assets(
         let subdir = media_dir.join(asset_subdir(at));
         // Check all plausible extensions — ScreenScraper may return JPG instead of PNG.
         for ext in at.discovery_extensions() {
-            let path = subdir.join(format!("{}.{}", rom_stem, ext));
+            let path = subdir.join(format!("{rom_stem}.{ext}"));
             if path.exists() {
                 found.insert(at, path);
                 break;
@@ -134,36 +138,53 @@ pub fn collect_existing_assets(
     found
 }
 
+/// Everything needed to download one game's assets, besides the client.
+///
+/// Groups the per-game parameters so [`download_game_assets`] doesn't need a
+/// long positional argument list.
+pub struct AssetDownloadRequest<'a> {
+    /// Game whose media URLs to download.
+    pub game: &'a GameInfo,
+    /// Which asset types to download.
+    pub selection: &'a AssetSelection,
+    /// System media directory (asset subdirs are created beneath it).
+    pub media_dir: &'a Path,
+    /// ROM stem used to name downloaded files.
+    pub rom_stem: &'a str,
+    /// Preferred region for media selection (e.g., "us").
+    pub preferred_region: &'a str,
+    /// Redownload even if the file already exists.
+    pub force_redownload: bool,
+    /// Game index for progress events.
+    pub index: usize,
+    /// Display filename for progress events.
+    pub filename: &'a str,
+    /// Progress event sink.
+    pub events: &'a mpsc::UnboundedSender<ScrapeEvent>,
+}
+
 /// Download all selected assets for a game.
 ///
-/// Returns a map of AssetType -> downloaded file path.
-#[allow(clippy::too_many_arguments)]
+/// Returns a map of `AssetType` -> downloaded file path.
 pub async fn download_game_assets(
     client: &ScreenScraperClient,
-    game: &GameInfo,
-    selection: &AssetSelection,
-    media_dir: &Path,
-    rom_stem: &str,
-    preferred_region: &str,
-    force_redownload: bool,
-    index: usize,
-    filename: &str,
-    events: &mpsc::UnboundedSender<ScrapeEvent>,
+    request: &AssetDownloadRequest<'_>,
 ) -> Result<std::collections::HashMap<AssetType, PathBuf>, ScrapeError> {
     let mut results = std::collections::HashMap::new();
     let mut downloads = Vec::new();
 
-    for &at in &selection.types {
+    for &at in &request.selection.types {
         // Miximage is generated locally, never downloaded
         if at == AssetType::Miximage {
             continue;
         }
         let ss_type = ss_asset_type(at);
-        let media = game
-            .media_for_region(ss_type, preferred_region)
+        let media = request
+            .game
+            .media_for_region(ss_type, request.preferred_region)
             .or_else(|| {
                 ss_asset_type_fallback(at)
-                    .and_then(|fb| game.media_for_region(fb, preferred_region))
+                    .and_then(|fb| request.game.media_for_region(fb, request.preferred_region))
             });
 
         if let Some(media) = media {
@@ -172,11 +193,11 @@ pub async fn download_game_assets(
             } else {
                 &media.format
             };
-            let subdir = media_dir.join(asset_subdir(at));
-            let dest = subdir.join(format!("{}.{}", rom_stem, ext));
+            let subdir = request.media_dir.join(asset_subdir(at));
+            let dest = subdir.join(format!("{}.{ext}", request.rom_stem));
 
             // Skip if file already exists (unless force redownload)
-            if !force_redownload && dest.exists() {
+            if !request.force_redownload && dest.exists() {
                 results.insert(at, dest);
                 continue;
             }
@@ -203,9 +224,9 @@ pub async fn download_game_assets(
 
     // Run sequentially per game, emitting an event before each download
     for (at, fut) in handles {
-        let _ = events.send(ScrapeEvent::GameDownloadingMedia {
-            index,
-            file: filename.to_string(),
+        let _ = request.events.send(ScrapeEvent::GameDownloadingMedia {
+            index: request.index,
+            file: request.filename.to_string(),
             media_type: at.to_string(),
         });
         match fut.await {
@@ -214,7 +235,7 @@ pub async fn download_game_assets(
             }
             Err(e) => {
                 // Log but don't fail the whole scrape for a single asset download failure
-                log::debug!("Failed to download asset: {}", e);
+                log::debug!("Failed to download asset: {e}");
             }
         }
     }

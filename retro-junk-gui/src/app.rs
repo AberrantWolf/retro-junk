@@ -70,8 +70,8 @@ pub struct RetroJunkApp {
     /// ROM library state.
     pub library: Library,
 
-    /// Loaded DAT indices, keyed by folder_name.
-    /// Stored separately from ConsoleState because hash matching needs
+    /// Loaded DAT indices, keyed by `folder_name`.
+    /// Stored separately from `ConsoleState` because hash matching needs
     /// immutable access to the index while mutating entries.
     pub dat_indices: HashMap<String, Arc<DatIndex>>,
 
@@ -127,7 +127,7 @@ pub struct RetroJunkApp {
     /// Re-probed when the configured chdman path changes.
     pub chdman_probe: ChdmanProbe,
 
-    /// Cached ScreenScraper credential provenance for the Settings view,
+    /// Cached `ScreenScraper` credential provenance for the Settings view,
     /// with the time it was computed. Re-read after a short TTL so edits
     /// made in an external editor show up without a manual refresh.
     pub credential_status: Option<(std::time::Instant, retro_junk_scraper::CredentialSources)>,
@@ -173,7 +173,7 @@ pub struct RetroJunkApp {
     /// one console is being read at a time.
     pub pending_auto_scans: std::collections::VecDeque<String>,
 
-    /// The folder_name of the auto-scan currently in flight, if any.
+    /// The `folder_name` of the auto-scan currently in flight, if any.
     /// Used to advance the queue only when the queued scan finishes (not when
     /// the user kicks off a manual scan in parallel).
     pub auto_scan_in_flight: Option<String>,
@@ -370,7 +370,7 @@ impl RetroJunkApp {
             && let Some(ref conn) = self.catalog_db
             && let Err(e) = crate::cache::save_library(conn, root, &self.library)
         {
-            log::warn!("Failed to save library cache: {}", e);
+            log::warn!("Failed to save library cache: {e}");
         }
     }
 
@@ -381,7 +381,7 @@ impl RetroJunkApp {
             && let Some(console) = self.library.consoles.get(console_idx)
             && let Err(e) = crate::cache::save_console(conn, root, console)
         {
-            log::warn!("Failed to save console cache: {}", e);
+            log::warn!("Failed to save console cache: {e}");
         }
     }
 
@@ -392,7 +392,7 @@ impl RetroJunkApp {
             && let Some(console) = self.library.consoles.get(console_idx)
             && let Err(e) = crate::cache::save_entries(conn, root, console, entry_indices)
         {
-            log::warn!("Failed to save entry cache: {}", e);
+            log::warn!("Failed to save entry cache: {e}");
         }
     }
 
@@ -542,7 +542,7 @@ impl eframe::App for RetroJunkApp {
         // Save settings
         self.settings.library.current_root = self.root_path.clone();
         if let Err(e) = crate::settings::save_settings(&self.settings) {
-            log::warn!("Failed to save settings on exit: {}", e);
+            log::warn!("Failed to save settings on exit: {e}");
         }
     }
 }
@@ -613,12 +613,12 @@ fn rename_results_row(ui: &mut egui::Ui, item: &RenameResult) {
                 .unwrap_or_default()
                 .to_string_lossy();
             let mut parts = Vec::new();
-            parts.push(format!("{} discs", discs_renamed));
+            parts.push(format!("{discs_renamed} discs"));
             if *playlist_written {
                 parts.push("playlist written".to_string());
             }
             if *folder_renamed {
-                parts.push(format!("folder -> {}", folder_name));
+                parts.push(format!("folder -> {folder_name}"));
             }
             if !errors.is_empty() {
                 parts.push(format!("{} errors", errors.len()));
@@ -653,13 +653,12 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
         .default_width(550.0)
         .show(ctx, |ui| {
             ui.label(format!(
-                "{} folders to create ({} files to move)",
-                job_count, total_files
+                "{job_count} folders to create ({total_files} files to move)"
             ));
             if unmatched_count > 0 {
                 ui.colored_label(
                     crate::theme::STATUS_WARN,
-                    format!("{} files could not be matched", unmatched_count),
+                    format!("{unmatched_count} files could not be matched"),
                 );
             }
             if plan.skipped_single_disc > 0 {
@@ -796,7 +795,8 @@ fn chd_compress_results_summary(items: &[crate::state::ChdCompressResult]) -> St
 
     let mut summary = format!("{compressed} compressed, {failed} failed");
     if cancelled > 0 {
-        summary.push_str(&format!(", {cancelled} cancelled"));
+        use std::fmt::Write;
+        let _ = write!(summary, ", {cancelled} cancelled");
     }
     summary
 }

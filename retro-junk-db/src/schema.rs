@@ -1,4 +1,4 @@
-//! SQLite schema creation and migration.
+//! `SQLite` schema creation and migration.
 //!
 //! Table definitions live in [`TABLES`] as `(name, body)` pairs so that fresh
 //! `CREATE TABLE` statements and migration table-rebuilds always share one
@@ -425,7 +425,7 @@ fn table_body(name: &'static str) -> Result<&'static str, SchemaError> {
 }
 
 /// Rebuild `name` to its canonical [`TABLES`] definition, converting existing
-/// rows via `select_exprs` (SQLite has no `ALTER COLUMN`, so constraint
+/// rows via `select_exprs` (`SQLite` has no `ALTER COLUMN`, so constraint
 /// changes require the create-copy-drop-rename dance).
 ///
 /// Caller must have `PRAGMA foreign_keys=OFF` so the rename doesn't rewrite

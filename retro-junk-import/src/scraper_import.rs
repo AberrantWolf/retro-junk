@@ -1,6 +1,6 @@
-//! Import metadata from ScreenScraper into the catalog database.
+//! Import metadata from `ScreenScraper` into the catalog database.
 //!
-//! For each release in the database, looks up the game on ScreenScraper
+//! For each release in the database, looks up the game on `ScreenScraper`
 //! using media hashes/serials/filenames, then enriches the release with
 //! metadata (title, dates, genre, description, publisher, developer, rating)
 //! and optionally downloads media assets.
@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use futures::stream::{self, StreamExt};
-use retro_junk_catalog::types::*;
+use retro_junk_catalog::types::{Asset, AssetOwner, Company, Media, Release};
 use retro_junk_core::Platform;
 use retro_junk_db::{operations, queries};
 use retro_junk_scraper::client::ScreenScraperClient;
@@ -23,19 +23,25 @@ use tokio::time::{Duration, Instant};
 
 /// Per-item timeout wrapping each lookup future.
 /// Covers the entire lookup (serial + filename + hash tiers).
-/// Should be above LOOKUP_TIMEOUT in the scraper crate (60s).
+/// Should be above `LOOKUP_TIMEOUT` in the scraper crate (60s).
 const ITEM_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Timeout for downloading and cataloging all assets for a single release.
 /// Each individual download has a 120s timeout, but the full batch (~7 assets)
 /// should not exceed this.
-const ASSET_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+const ASSET_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Watchdog timeout for the Phase 3 event loop.
 /// If no worker result arrives within this duration, all workers are likely stuck
 /// (e.g., after a laptop sleep killed connections). The loop breaks and returns
 /// partial progress so the user can re-run.
-const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(180);
+const WATCHDOG_TIMEOUT: Duration = Duration::from_mins(3);
+
+/// Number of releases fetched from the DB per enrichment batch.
+const BATCH_SIZE: u32 = 500;
+
+/// Consecutive-error count that trips the circuit breaker and cancels the platform.
+const CIRCUIT_BREAKER_THRESHOLD: u32 = 15;
 
 use crate::slugify;
 use rusqlite::Connection;
@@ -68,7 +74,7 @@ pub struct EnrichOptions {
     pub platform_ids: Vec<String>,
     /// Maximum releases to process per platform.
     pub limit: Option<u32>,
-    /// Skip releases that already have a screenscraper_id.
+    /// Skip releases that already have a `screenscraper_id`.
     pub skip_existing: bool,
     /// Whether to download media assets.
     pub download_assets: bool,
@@ -164,7 +170,7 @@ enum LookupOutcome {
         result: Box<LookupResult>,
         mapped: Box<MappedGameInfo>,
     },
-    /// ScreenScraper confirmed the game doesn't exist.
+    /// `ScreenScraper` confirmed the game doesn't exist.
     NotFound { index: usize, release: Box<Release> },
     /// Release had no media entries or was otherwise skippable.
     Skipped { index: usize },
@@ -178,7 +184,7 @@ enum LookupOutcome {
     Fatal { error: EnrichError },
 }
 
-/// Enrich releases in the database with ScreenScraper metadata.
+/// Enrich releases in the database with `ScreenScraper` metadata.
 ///
 /// Uses a three-phase batch model per platform to enable parallel API lookups
 /// while keeping all DB access on the main thread (since `Connection` is `!Send`):
@@ -186,6 +192,7 @@ enum LookupOutcome {
 /// 1. **Phase 1 (DB Read):** Pre-fetch all releases + media entries (sequential)
 /// 2. **Phase 2 (API Lookups):** Dispatch lookups via a worker pool (N persistent tasks)
 /// 3. **Phase 3 (DB Write):** Apply results sequentially as they arrive
+#[allow(clippy::too_many_lines)] // three-phase batch orchestration (DB read / parallel lookups / DB write) with watchdog + circuit-breaker state that cannot be split without scattering tightly coupled locals
 pub async fn enrich_releases(
     client: Arc<ScreenScraperClient>,
     conn: &Connection,
@@ -194,8 +201,6 @@ pub async fn enrich_releases(
     events: Sender<EnrichEvent>,
 ) -> Result<EnrichStats, EnrichError> {
     let mut stats = EnrichStats::default();
-
-    const BATCH_SIZE: u32 = 500;
 
     // Query platforms once — build a lookup map
     let all_platforms = queries::list_platforms(conn)?;
@@ -213,46 +218,34 @@ pub async fn enrich_releases(
 
     for platform_id in &platform_ids {
         // Resolve platform to core Platform enum and ScreenScraper system ID
-        let platform_row = match platform_map.get(platform_id) {
-            Some(p) => p,
-            None => {
-                log::warn!("Platform '{}' not found in database, skipping", platform_id);
-                continue;
-            }
+        let Some(platform_row) = platform_map.get(platform_id) else {
+            log::warn!("Platform '{platform_id}' not found in database, skipping");
+            continue;
         };
 
         if platform_row.core_platform.is_empty() {
-            log::debug!("No core_platform for {}, skipping enrichment", platform_id);
+            log::debug!("No core_platform for {platform_id}, skipping enrichment");
             continue;
         }
-        let core_platform = match platform_row.core_platform.parse::<Platform>() {
-            Ok(p) => p,
-            Err(_) => {
-                log::warn!(
-                    "Unknown core_platform '{}' for {}, skipping",
-                    platform_row.core_platform,
-                    platform_id
-                );
-                continue;
-            }
+        let Ok(core_platform) = platform_row.core_platform.parse::<Platform>() else {
+            log::warn!(
+                "Unknown core_platform '{}' for {}, skipping",
+                platform_row.core_platform,
+                platform_id
+            );
+            continue;
         };
 
-        let system_id = match systems::screenscraper_system_id(core_platform) {
-            Some(id) => id,
-            None => {
-                log::warn!(
-                    "No ScreenScraper system ID for {:?}, skipping",
-                    core_platform
-                );
-                continue;
-            }
+        let Some(system_id) = systems::screenscraper_system_id(core_platform) else {
+            log::warn!("No ScreenScraper system ID for {core_platform:?}, skipping");
+            continue;
         };
 
         // If --force, clear not-found flags so they get re-queried
         if !options.skip_existing {
             let cleared = operations::clear_not_found_flags(conn, platform_id)?;
             if cleared > 0 {
-                log::info!("Cleared {} not-found flags for {}", cleared, platform_id);
+                log::info!("Cleared {cleared} not-found flags for {platform_id}");
             }
         }
 
@@ -261,7 +254,7 @@ pub async fn enrich_releases(
             queries::count_releases_to_enrich(conn, platform_id, options.skip_existing)?;
 
         if total_to_enrich == 0 {
-            log::debug!("No releases to enrich for {}", platform_id);
+            log::debug!("No releases to enrich for {platform_id}");
             continue;
         }
 
@@ -276,7 +269,7 @@ pub async fn enrich_releases(
             platform_name: platform_row.display_name.clone(),
             total: reported_total as usize,
         }) {
-            log::debug!("Event channel full/closed on PlatformStarted: {}", e);
+            log::debug!("Event channel full/closed on PlatformStarted: {e}");
         }
 
         // Track how many we've processed for this platform to honor the limit
@@ -365,10 +358,8 @@ pub async fn enrich_releases(
                     let idle = now.saturating_sub(last);
                     if idle > threshold {
                         log::warn!(
-                            "Wall-clock watchdog: {}s since last activity (threshold {}s). \
+                            "Wall-clock watchdog: {idle}s since last activity (threshold {threshold}s). \
                              Machine likely slept. Signaling cancel.",
-                            idle,
-                            threshold,
                         );
                         wd_cancel.store(true, Ordering::Release);
                         // Wake the Phase 3 loop — it may be stuck on
@@ -377,9 +368,7 @@ pub async fn enrich_releases(
                         break;
                     } else if idle > 60 {
                         log::info!(
-                            "Wall-clock watchdog: {}s since last activity (threshold {}s)",
-                            idle,
-                            threshold,
+                            "Wall-clock watchdog: {idle}s since last activity (threshold {threshold}s)",
                         );
                     }
                 }
@@ -404,7 +393,7 @@ pub async fn enrich_releases(
                     // (and spawns) a new item when a JoinHandle resolves.
                     tokio::spawn(async move {
                         let title = item.release.title.clone();
-                        log::debug!("[worker:{}] starting lookup for '{}'", item.index, title,);
+                        log::debug!("[worker:{}] starting lookup for '{}'", item.index, title);
                         let worker_start = Instant::now();
 
                         if cancel.load(Ordering::Acquire) {
@@ -462,8 +451,10 @@ pub async fn enrich_releases(
                                     release: Box::new(item.release),
                                 }
                             }
-                            Ok(Err(e @ ScrapeError::QuotaExceeded { .. }))
-                            | Ok(Err(e @ ScrapeError::ServerClosed(_))) => {
+                            Ok(Err(
+                                e @ (ScrapeError::QuotaExceeded { .. }
+                                | ScrapeError::ServerClosed(_)),
+                            )) => {
                                 log::warn!(
                                     "[worker:{}] FATAL error for '{}': {} ({}ms)",
                                     item.index,
@@ -516,7 +507,6 @@ pub async fn enrich_releases(
             let mut fatal_error = None;
             let mut consecutive_errors: u32 = 0;
             let mut results_received: u32 = 0;
-            const CIRCUIT_BREAKER_THRESHOLD: u32 = 15;
 
             log::debug!(
                 "Phase 3: waiting for results from {} work items (watchdog: {}s)",
@@ -537,7 +527,7 @@ pub async fn enrich_releases(
                 let stream_result = tokio::select! {
                     biased; // check watchdog notification first
 
-                    _ = wd_notify.notified() => {
+                    () = wd_notify.notified() => {
                         // Wall-clock watchdog fired — cancel already set by the thread.
                         let msg = format!(
                             "Wall-clock watchdog triggered ({}/{} received, batch running {}s), stopping.",
@@ -548,7 +538,7 @@ pub async fn enrich_releases(
                         let _ = events.try_send(EnrichEvent::FatalError {
                             message: msg.clone(),
                         });
-                        log::warn!("{}", msg);
+                        log::warn!("{msg}");
                         break;
                     }
 
@@ -574,10 +564,7 @@ pub async fn enrich_releases(
                         // Spawned task panicked — log and continue
                         results_received += 1;
                         log::error!(
-                            "Phase 3: lookup task panicked ({}/{}): {}",
-                            results_received,
-                            total,
-                            join_err,
+                            "Phase 3: lookup task panicked ({results_received}/{total}): {join_err}",
                         );
                         consecutive_errors += 1;
                         stats.releases_processed += 1;
@@ -604,7 +591,7 @@ pub async fn enrich_releases(
                         let _ = events.try_send(EnrichEvent::FatalError {
                             message: msg.clone(),
                         });
-                        log::warn!("{}", msg);
+                        log::warn!("{msg}");
                         break;
                     }
                 };
@@ -735,7 +722,7 @@ pub async fn enrich_releases(
 
                         match tx_result {
                             Ok(disagreement_count) => {
-                                stats.disagreements_found += disagreement_count as u64;
+                                stats.disagreements_found += u64::from(disagreement_count);
                                 stats.assets_downloaded += downloaded_assets.len() as u64;
                                 stats.releases_enriched += 1;
 
@@ -802,20 +789,19 @@ pub async fn enrich_releases(
                         if consecutive_errors >= CIRCUIT_BREAKER_THRESHOLD {
                             cancel.store(true, Ordering::Release);
                             let msg = format!(
-                                "Circuit breaker: {} consecutive errors, stopping platform",
-                                consecutive_errors,
+                                "Circuit breaker: {consecutive_errors} consecutive errors, stopping platform",
                             );
                             let _ = events.try_send(EnrichEvent::FatalError {
                                 message: msg.clone(),
                             });
-                            log::warn!("{}", msg);
+                            log::warn!("{msg}");
                         }
                     }
                     LookupOutcome::Fatal { error } => {
                         let _ = events.try_send(EnrichEvent::FatalError {
                             message: error.to_string(),
                         });
-                        log::warn!("Fatal error during enrichment: {}", error);
+                        log::warn!("Fatal error during enrichment: {error}");
                         fatal_error = Some(error);
                         break;
                     }
@@ -830,11 +816,7 @@ pub async fn enrich_releases(
                 // Log the fatal error details
                 match &err {
                     EnrichError::Scraper(ScrapeError::QuotaExceeded { used, max }) => {
-                        log::warn!(
-                            "ScreenScraper daily quota exceeded ({}/{}), stopping",
-                            used,
-                            max
-                        );
+                        log::warn!("ScreenScraper daily quota exceeded ({used}/{max}), stopping");
                     }
                     EnrichError::Scraper(ScrapeError::ServerClosed(_)) => {
                         log::warn!("ScreenScraper API is closed, stopping");
@@ -854,7 +836,7 @@ pub async fn enrich_releases(
             // Remaining spawned tasks (if any) are detached and will short-circuit
             // on their own cancel check.
             if cancel.load(Ordering::Acquire) {
-                log::warn!("Stopping platform {} due to cancel signal", platform_id);
+                log::warn!("Stopping platform {platform_id} due to cancel signal");
                 break;
             }
 
@@ -887,8 +869,8 @@ pub async fn enrich_releases(
 
 // ── Mapping Functions ───────────────────────────────────────────────────────
 
-/// Fields extracted from a GameInfo response. This is the boundary where the
-/// ScreenScraper wire format's nullability ends: text fields are empty when
+/// Fields extracted from a `GameInfo` response. This is the boundary where the
+/// `ScreenScraper` wire format's nullability ends: text fields are empty when
 /// the response had no data. `rating` stays `Option` — 0.0 is a real rating.
 pub struct MappedGameInfo {
     pub title: String,
@@ -901,7 +883,8 @@ pub struct MappedGameInfo {
     pub developer: String,
 }
 
-/// Extract release-relevant fields from a ScreenScraper GameInfo response.
+/// Extract release-relevant fields from a `ScreenScraper` `GameInfo` response.
+#[must_use]
 pub fn map_game_info(game: &GameInfo, region: &str, language: &str) -> MappedGameInfo {
     let ss_region = catalog_region_to_ss(region);
 
@@ -920,7 +903,7 @@ pub fn map_game_info(game: &GameInfo, region: &str, language: &str) -> MappedGam
             .as_ref()
             .map(|j| j.text.clone())
             .unwrap_or_default(),
-        rating: game.rating_normalized().map(|r| r as f64),
+        rating: game.rating_normalized().map(f64::from),
         description: game
             .synopsis_for_language(language)
             .unwrap_or_default()
@@ -938,7 +921,7 @@ pub fn map_game_info(game: &GameInfo, region: &str, language: &str) -> MappedGam
     }
 }
 
-/// Pick the best media entry for looking up a game on ScreenScraper.
+/// Pick the best media entry for looking up a game on `ScreenScraper`.
 ///
 /// Prefers entries with SHA1 hashes, then CRC32, then serial, then any.
 fn pick_best_media_for_lookup(media: &[Media]) -> &Media {
@@ -958,7 +941,7 @@ fn pick_best_media_for_lookup(media: &[Media]) -> &Media {
     &media[0]
 }
 
-/// Build a RomInfo struct from catalog Media data.
+/// Build a `RomInfo` struct from catalog Media data.
 fn build_rom_info(media: &Media, platform: Platform) -> RomInfo {
     // Hash lookup needs all three hashes; catalog media from DAT import
     // either has them all or none.
@@ -1014,7 +997,7 @@ fn find_or_create_company(
     };
     operations::upsert_company(conn, &company)?;
     stats.companies_created += 1;
-    log::debug!("Created new company: {} ({})", name, slug);
+    log::debug!("Created new company: {name} ({slug})");
 
     Ok(slug)
 }
@@ -1079,7 +1062,7 @@ async fn download_assets_only(
         let release_dir = asset_dir.join(release_id);
         std::fs::create_dir_all(&release_dir)?;
 
-        let file_name = format!("{}.{}", asset_type, extension);
+        let file_name = format!("{asset_type}.{extension}");
         let file_path = release_dir.join(&file_name);
 
         // Skip if already downloaded
@@ -1099,12 +1082,7 @@ async fn download_assets_only(
                 });
             }
             Err(e) => {
-                log::debug!(
-                    "Failed to download {} for {}: {}",
-                    asset_type,
-                    release_id,
-                    e
-                );
+                log::debug!("Failed to download {asset_type} for {release_id}: {e}");
             }
         }
     }
@@ -1126,10 +1104,10 @@ fn epoch_secs() -> u64 {
         .as_secs()
 }
 
-/// Map catalog region slug to ScreenScraper region code.
+/// Map catalog region slug to `ScreenScraper` region code.
+#[must_use]
 pub fn catalog_region_to_ss(region: &str) -> &str {
     match region {
-        "usa" | "us" => "us",
         "europe" | "eu" => "eu",
         "japan" | "jp" => "jp",
         "australia" | "au" => "au",
@@ -1142,7 +1120,8 @@ pub fn catalog_region_to_ss(region: &str) -> &str {
     }
 }
 
-/// Map ScreenScraper region code back to catalog region slug.
+/// Map `ScreenScraper` region code back to catalog region slug.
+#[must_use]
 pub fn ss_region_to_catalog(ss_region: &str) -> &str {
     match ss_region {
         "us" => "usa",
@@ -1158,7 +1137,8 @@ pub fn ss_region_to_catalog(ss_region: &str) -> &str {
     }
 }
 
-/// Map ScreenScraper media type to our asset_type string.
+/// Map `ScreenScraper` media type to our `asset_type` string.
+#[must_use]
 pub fn ss_media_type_to_asset_type(ss_type: &str) -> Option<&'static str> {
     match ss_type {
         "box-2D" => Some("box-front"),

@@ -1,8 +1,8 @@
-//! Work reconciliation by ScreenScraper ID.
+//! Work reconciliation by `ScreenScraper` ID.
 //!
 //! During DAT import, work IDs are generated as `{platform_id}:{slugified_title}`.
 //! When the same game has different regional DAT titles, separate works get created.
-//! After ScreenScraper enrichment, both releases receive the same `screenscraper_id`,
+//! After `ScreenScraper` enrichment, both releases receive the same `screenscraper_id`,
 //! proving they're the same game. This module detects shared IDs and merges the
 //! duplicate works into one canonical work.
 
@@ -60,7 +60,7 @@ struct WorkCandidate {
     created_at: String,
 }
 
-/// Run work reconciliation, merging duplicate works that share a ScreenScraper ID.
+/// Run work reconciliation, merging duplicate works that share a `ScreenScraper` ID.
 ///
 /// Returns statistics and per-group details for CLI display.
 pub fn reconcile_works(
@@ -176,7 +176,7 @@ fn reconcile_groups(
 
         // Try to update canonical name from ScreenScraper alt_title
         if !options.dry_run
-            && let Some(name) = pick_canonical_name(conn, &surviving.id)?
+            && let Some(name) = pick_canonical_name(conn, &surviving.id)
         {
             operations::update_work_name(conn, &surviving.id, &name)?;
             detail.surviving_name = name;
@@ -232,9 +232,9 @@ fn merge_work_into(
 
 /// Pick the best canonical name from the surviving work's releases.
 ///
-/// Prefers `alt_title` (set by ScreenScraper) from a USA release, falling back
-/// to any release with an alt_title, then the existing title.
-fn pick_canonical_name(conn: &Connection, work_id: &str) -> Result<Option<String>, ReconcileError> {
+/// Prefers `alt_title` (set by `ScreenScraper`) from a USA release, falling back
+/// to any release with an `alt_title`, then the existing title.
+fn pick_canonical_name(conn: &Connection, work_id: &str) -> Option<String> {
     // Try USA alt_title first
     let result: Result<String, _> = conn.query_row(
         "SELECT alt_title FROM releases WHERE work_id = ?1 AND alt_title != '' AND region = 'USA' LIMIT 1",
@@ -242,7 +242,7 @@ fn pick_canonical_name(conn: &Connection, work_id: &str) -> Result<Option<String
         |row| row.get(0),
     );
     if let Ok(name) = result {
-        return Ok(Some(name));
+        return Some(name);
     }
 
     // Fall back to any alt_title
@@ -252,8 +252,8 @@ fn pick_canonical_name(conn: &Connection, work_id: &str) -> Result<Option<String
         |row| row.get(0),
     );
     if let Ok(name) = result {
-        return Ok(Some(name));
+        return Some(name);
     }
 
-    Ok(None)
+    None
 }

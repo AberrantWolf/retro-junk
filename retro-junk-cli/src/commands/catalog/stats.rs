@@ -17,10 +17,10 @@ pub(crate) fn run_catalog_stats(db_path: Option<PathBuf>) -> Result<(), CliError
     }
 
     let conn = retro_junk_db::open_database(&db_path)
-        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {e}")))?;
 
     let stats = retro_junk_db::catalog_stats(&conn)
-        .map_err(|e| CliError::database(format!("Failed to query catalog stats: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to query catalog stats: {e}")))?;
 
     log::info!(
         "{}",

@@ -74,7 +74,7 @@ fn test_analyze_iso_basic() {
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(result.internal_name, "TEST_VOLUME");
     assert_eq!(
-        result.extra.get("format").map(|s| s.as_str()),
+        result.extra.get("format").map(std::string::String::as_str),
         Some("ISO 9660")
     );
 }
@@ -89,7 +89,10 @@ fn test_analyze_iso_with_serial() {
     assert_eq!(result.serial_number, "SLUS-20062");
     assert_eq!(result.regions, vec![retro_junk_core::Region::Usa]);
     assert!(result.extra.contains_key("boot_path"));
-    assert_eq!(result.extra.get("vmode").map(|s| s.as_str()), Some("NTSC"));
+    assert_eq!(
+        result.extra.get("vmode").map(std::string::String::as_str),
+        Some("NTSC")
+    );
 }
 
 #[test]
@@ -154,11 +157,14 @@ fn test_analyze_cue_basic() {
     let options = AnalysisOptions::new().quick(true);
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(
-        result.extra.get("format").map(|s| s.as_str()),
+        result.extra.get("format").map(std::string::String::as_str),
         Some("CUE Sheet")
     );
     assert_eq!(
-        result.extra.get("total_tracks").map(|s| s.as_str()),
+        result
+            .extra
+            .get("total_tracks")
+            .map(std::string::String::as_str),
         Some("1")
     );
 }
@@ -197,7 +203,10 @@ fn test_dvd_layer_detection_dvd5() {
     let options = AnalysisOptions::default();
     let result = analyzer.analyze(&mut cursor, &options).unwrap();
     assert_eq!(
-        result.extra.get("dvd_layer").map(|s| s.as_str()),
+        result
+            .extra
+            .get("dvd_layer")
+            .map(std::string::String::as_str),
         Some("DVD-5")
     );
 }

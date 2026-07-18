@@ -5,7 +5,7 @@ use quick_xml::reader::Reader;
 
 use crate::error::DatError;
 
-/// A parsed NoIntro DAT file (supports both Logiqx XML and ClrMamePro formats).
+/// A parsed `NoIntro` DAT file (supports both Logiqx XML and `ClrMamePro` formats).
 #[derive(Debug, Clone)]
 pub struct DatFile {
     pub name: String,
@@ -18,7 +18,7 @@ pub struct DatFile {
 #[derive(Debug, Clone)]
 pub struct DatGame {
     pub name: String,
-    /// Region string (e.g., "USA", "Japan"), if present (LibRetro enhanced DATs).
+    /// Region string (e.g., "USA", "Japan"), if present (`LibRetro` enhanced DATs).
     pub region: Option<String>,
     pub roms: Vec<DatRom>,
     /// Game-level serial number (e.g., "SCUS-94163"), from Redump DATs.
@@ -44,7 +44,7 @@ pub struct DatRom {
     pub serial: Option<String>,
 }
 
-/// Parse a DAT file, auto-detecting format (XML or ClrMamePro).
+/// Parse a DAT file, auto-detecting format (XML or `ClrMamePro`).
 pub fn parse_dat<R: BufRead>(mut reader: R) -> Result<DatFile, DatError> {
     // Peek at the first non-whitespace content to detect format
     let mut first_bytes = Vec::new();
@@ -82,6 +82,25 @@ pub fn parse_dat_file(path: &std::path::Path) -> Result<DatFile, DatError> {
 // Logiqx XML parser
 // ---------------------------------------------------------------------------
 
+/// Build a fresh [`DatGame`] from a `<game>` start tag's attributes.
+fn parse_xml_game_start(e: &quick_xml::events::BytesStart) -> Result<DatGame, DatError> {
+    let mut name = String::new();
+    for attr in e.attributes() {
+        let attr = attr?;
+        if attr.key.as_ref() == b"name" {
+            name = String::from_utf8_lossy(&attr.value).to_string();
+        }
+    }
+    Ok(DatGame {
+        name,
+        region: None,
+        roms: Vec::new(),
+        serial: None,
+        version: None,
+        category: None,
+    })
+}
+
 fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
     let mut xml = Reader::from_reader(reader);
     xml.config_mut().trim_text(true);
@@ -108,21 +127,7 @@ fn parse_xml<R: BufRead>(reader: R) -> Result<DatFile, DatError> {
                 match tag_name.as_str() {
                     "header" => in_header = true,
                     "game" => {
-                        let mut name = String::new();
-                        for attr in e.attributes() {
-                            let attr = attr?;
-                            if attr.key.as_ref() == b"name" {
-                                name = String::from_utf8_lossy(&attr.value).to_string();
-                            }
-                        }
-                        current_game = Some(DatGame {
-                            name,
-                            region: None,
-                            roms: Vec::new(),
-                            serial: None,
-                            version: None,
-                            category: None,
-                        });
+                        current_game = Some(parse_xml_game_start(e)?);
                         game_serial = None;
                         game_version = None;
                         game_category = None;
@@ -231,7 +236,7 @@ fn parse_xml_rom_attributes(e: &quick_xml::events::BytesStart<'_>) -> Result<Dat
 // ClrMamePro DAT parser
 // ---------------------------------------------------------------------------
 
-/// Parse a ClrMamePro format DAT file.
+/// Parse a `ClrMamePro` format DAT file.
 ///
 /// Format:
 /// ```text
@@ -416,21 +421,20 @@ fn parse_clr_rom_inline(inner: &str) -> Option<DatRom> {
             "name" => {
                 i += 1;
                 if i < tokens.len() {
-                    rom.name = tokens[i].clone();
+                    rom.name.clone_from(&tokens[i]);
                 }
             }
             "size" => {
                 i += 1;
                 if i < tokens.len() {
-                    match tokens[i].parse() {
-                        Ok(s) => rom.size = s,
-                        Err(_) => {
-                            log::warn!(
-                                "Invalid ROM size '{}' in ClrMamePro DAT, skipping entry",
-                                tokens[i]
-                            );
-                            return None;
-                        }
+                    if let Ok(s) = tokens[i].parse() {
+                        rom.size = s;
+                    } else {
+                        log::warn!(
+                            "Invalid ROM size '{}' in ClrMamePro DAT, skipping entry",
+                            tokens[i]
+                        );
+                        return None;
                     }
                 }
             }
@@ -470,14 +474,14 @@ fn parse_clr_rom_inline(inner: &str) -> Option<DatRom> {
 }
 
 /// Tokenize a ROM line, respecting quoted strings.
-/// `name "Game (Region).ext" size 12345 crc AB` → ["name", "Game (Region).ext", "size", "12345", "crc", "AB"]
+/// `name "Game (Region).ext" size 12345 crc AB` → `["name", "Game (Region).ext", "size", "12345", "crc", "AB"]`
 fn tokenize_rom_line(input: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut chars = input.chars().peekable();
 
     loop {
         // Skip whitespace
-        while chars.peek().is_some_and(|c| c.is_ascii_whitespace()) {
+        while chars.peek().is_some_and(char::is_ascii_whitespace) {
             chars.next();
         }
 

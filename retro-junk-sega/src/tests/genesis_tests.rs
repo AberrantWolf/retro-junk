@@ -35,8 +35,8 @@ fn make_genesis_rom(
     write_field(&mut rom, 0x1F0, 3, region_codes);
 
     // Fill ROM data area (0x0200..0x0400) with some data
-    for i in 0x200..0x400 {
-        rom[i] = (i & 0xFF) as u8;
+    for (i, byte) in rom[0x200..0x400].iter_mut().enumerate() {
+        *byte = (i & 0xFF) as u8;
     }
 
     // Compute and write checksum

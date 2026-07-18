@@ -43,10 +43,12 @@ pub enum AnalysisProgress {
 }
 
 impl AnalysisProgress {
+    #[must_use]
     pub fn started(total_bytes: Option<u64>) -> Self {
         Self::Started { total_bytes }
     }
 
+    #[must_use]
     pub fn reading(bytes_read: u64, total_bytes: Option<u64>) -> Self {
         Self::Reading {
             bytes_read,
@@ -81,6 +83,7 @@ impl AnalysisProgress {
     }
 
     /// Returns the progress percentage (0.0 to 1.0) if calculable.
+    #[must_use]
     pub fn percentage(&self) -> Option<f64> {
         match self {
             Self::Reading {

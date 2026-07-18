@@ -25,6 +25,21 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/AberrantWolf/retro-junk"
 
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Numeric-cast pedantry is allowed: sizes in this domain are ROM/disc sizes
+# (far below 2^52) on 64-bit targets, and GUI math is bounded; converting
+# every cast to try_from would add error paths that cannot fire.
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+# Error/panic conditions are documented on the thiserror enums themselves;
+# repeating a "# Errors" section on every Result-returning function in an
+# internal workspace adds noise, not information.
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
 [workspace.dependencies]
 retro-junk-core = { path = "retro-junk-core" }
 retro-junk-lib = { path = "retro-junk-lib" }

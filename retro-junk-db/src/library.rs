@@ -1,6 +1,6 @@
 //! CRUD operations for the GUI library cache tables.
 //!
-//! Stores per-root, per-console, per-entry library state in SQLite
+//! Stores per-root, per-console, per-entry library state in `SQLite`
 //! instead of JSON files. Row types use plain Strings at the DB boundary;
 //! the GUI layer handles domain ↔ row conversion.
 
@@ -110,18 +110,24 @@ pub fn load_consoles_for_root(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// The console-level columns written by [`save_console_bulk`].
+pub struct ConsoleRecord<'a> {
+    pub root_id: i64,
+    pub platform: &'a str,
+    pub folder_name: &'a str,
+    pub folder_path: &'a str,
+    pub fingerprint_hash: &'a str,
+    /// Number of games in the matched DAT. 0 = no DAT loaded.
+    pub dat_game_count: i64,
+}
+
 /// Save a console and all its entries in a single transaction.
 ///
 /// Upserts the console row, deletes all existing entries for it, then
 /// inserts all new entries. Returns the console id.
 pub fn save_console_bulk(
     conn: &Connection,
-    root_id: i64,
-    platform: &str,
-    folder_name: &str,
-    folder_path: &str,
-    fingerprint_hash: &str,
-    dat_game_count: i64,
+    console: &ConsoleRecord<'_>,
     entries: &[LibraryEntryRow],
 ) -> Result<i64, LibraryError> {
     let tx = conn.unchecked_transaction()?;
@@ -135,12 +141,19 @@ pub fn save_console_bulk(
              folder_path = excluded.folder_path,
              fingerprint_hash = excluded.fingerprint_hash,
              dat_game_count = excluded.dat_game_count",
-        params![root_id, platform, folder_name, folder_path, fingerprint_hash, dat_game_count],
+        params![
+            console.root_id,
+            console.platform,
+            console.folder_name,
+            console.folder_path,
+            console.fingerprint_hash,
+            console.dat_game_count
+        ],
     )?;
 
     let console_id: i64 = tx.query_row(
         "SELECT id FROM library_consoles WHERE root_id = ?1 AND folder_name = ?2",
-        params![root_id, folder_name],
+        params![console.root_id, console.folder_name],
         |row| row.get(0),
     )?;
 
@@ -158,7 +171,7 @@ pub fn save_console_bulk(
 
 // ── Entry Operations ────────────────────────────────────────────────────────
 
-/// Upsert a single entry by (console_id, display_name).
+/// Upsert a single entry by (`console_id`, `display_name`).
 pub fn upsert_entry(
     conn: &Connection,
     console_id: i64,

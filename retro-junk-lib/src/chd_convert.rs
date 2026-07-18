@@ -42,6 +42,7 @@ pub struct ChdmanUnavailable {
 impl ChdmanUnavailable {
     /// Platform-appropriate installation instructions, shown to users so
     /// they know why disc rips can't be compressed and how to fix it.
+    #[must_use]
     pub fn install_hint() -> &'static str {
         if cfg!(target_os = "macos") {
             "chdman is part of MAME's ROM tools. Install with Homebrew: `brew install rom-tools`."
@@ -121,7 +122,7 @@ fn parse_chdman_version(banner: &str) -> String {
         .lines()
         .find(|l| l.contains("manager"))
         .and_then(|line| line.split("manager").nth(1))
-        .and_then(|after| after.trim().split_whitespace().next())
+        .and_then(|after| after.split_whitespace().next())
         .filter(|version| version.starts_with(|c: char| c.is_ascii_digit()))
         .unwrap_or_default()
         .to_string()
@@ -143,7 +144,7 @@ pub enum SourceSkipClass {
 }
 
 impl SourceSkipClass {
-    fn hint(&self) -> &'static str {
+    fn hint(self) -> &'static str {
         match self {
             SourceSkipClass::AlreadyChd => " (already a CHD)",
             SourceSkipClass::CompanionData => {
@@ -406,6 +407,7 @@ pub type ChdProgressFn<'a> = &'a dyn Fn(ChdPhase, f64);
 ///
 /// Compression dominates wall time; extraction and hashing are lighter.
 /// Shared by every frontend so job progress bars behave identically.
+#[must_use]
 pub fn job_fraction(phase: ChdPhase, fraction: f64) -> f64 {
     let fraction = fraction.clamp(0.0, 1.0);
     match phase {
@@ -436,6 +438,7 @@ pub struct CompressionOutcome {
 
 impl CompressionOutcome {
     /// True when the CHD exists and round-trip verification passed.
+    #[must_use]
     pub fn is_verified(&self) -> bool {
         matches!(self.verification, VerificationOutcome::Verified { .. })
     }
@@ -535,6 +538,7 @@ pub fn compress_to_chd(
 /// [`CompressionOutcome::is_verified`] returns true and the user opted in.
 ///
 /// Returns the files that could not be deleted, with reasons.
+#[must_use]
 pub fn delete_job_sources(job: &CompressionJob) -> Vec<(PathBuf, String)> {
     let mut failures = Vec::new();
     for f in &job.source_files {
@@ -560,6 +564,7 @@ pub fn delete_job_sources(job: &CompressionJob) -> Vec<(PathBuf, String)> {
 /// case-**sensitive** filesystems, a playlist entry whose case differs from
 /// the actual file still misses, because the fallback lookup does not probe
 /// the directory case-insensitively.
+#[must_use]
 pub fn update_m3u_references(job: &CompressionJob) -> (usize, Vec<String>) {
     let dir = job.input.parent().unwrap_or(Path::new("."));
     let (Some(old_name), Some(new_name)) = (
@@ -588,6 +593,7 @@ pub struct FinalizeReport {
 /// sibling .m3u playlists at the new .chd. The single implementation shared
 /// by every frontend so "verified success" always means the same sequence
 /// of side effects.
+#[must_use]
 pub fn finalize_verified(job: &CompressionJob, delete_sources: bool) -> FinalizeReport {
     if !delete_sources {
         return FinalizeReport {
@@ -801,12 +807,13 @@ fn spans_equal(
     on_progress: ChdProgressFn<'_>,
     cancel: &AtomicBool,
 ) -> Result<bool, ChdConvertError> {
+    const CHUNK: usize = 1 << 20;
+
     let mut file_a = fs::File::open(&a.file)?;
     file_a.seek(SeekFrom::Start(a.byte_offset))?;
     let mut file_b = fs::File::open(&b.file)?;
     file_b.seek(SeekFrom::Start(b.byte_offset))?;
 
-    const CHUNK: usize = 1 << 20;
     let mut buf_a = vec![0u8; CHUNK];
     let mut buf_b = vec![0u8; CHUNK];
     let mut remaining = a.byte_len;
@@ -905,7 +912,7 @@ fn run_chdman(
                     }
                 }
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }

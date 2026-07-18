@@ -43,7 +43,7 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
                     }
                 }
                 Err(e) => {
-                    log::warn!("Failed to scan root folder: {}", e);
+                    log::warn!("Failed to scan root folder: {e}");
                 }
             }
             let _ = tx.send(AppMessage::FolderScanComplete);
@@ -70,7 +70,7 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
     let ctx = ctx.clone();
 
     let platform_name = console.platform_name.to_string();
-    let description = format!("Scanning {} ({})", platform_name, folder_name);
+    let description = format!("Scanning {platform_name} ({folder_name})");
     let scope = folder_name.clone();
 
     spawn_background_op(
@@ -80,17 +80,14 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
         scope,
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
-            let registered = match context.get_by_platform(platform) {
-                Some(r) => r,
-                None => {
-                    let fingerprint = crate::cache::compute_fingerprint(&folder_path);
-                    let _ = tx.send(AppMessage::ConsoleScanDone {
-                        folder_name,
-                        fingerprint,
-                    });
-                    ctx.request_repaint();
-                    return;
-                }
+            let Some(registered) = context.get_by_platform(platform) else {
+                let fingerprint = crate::cache::compute_fingerprint(&folder_path);
+                let _ = tx.send(AppMessage::ConsoleScanDone {
+                    folder_name,
+                    fingerprint,
+                });
+                ctx.request_repaint();
+                return;
             };
 
             let extensions = scanner::extension_set(registered.analyzer.file_extensions());
@@ -177,7 +174,7 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
     let count = selected.len();
     let noun = if count == 1 { "entry" } else { "entries" };
-    let description = format!("Rescanning {} {}", count, noun);
+    let description = format!("Rescanning {count} {noun}");
     let scope = folder_name.clone();
 
     spawn_background_op(
@@ -187,13 +184,10 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
         scope,
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
-            let registered = match context.get_by_platform(platform) {
-                Some(r) => r,
-                None => {
-                    let _ = tx.send(AppMessage::OperationComplete { op_id });
-                    ctx.request_repaint();
-                    return;
-                }
+            let Some(registered) = context.get_by_platform(platform) else {
+                let _ = tx.send(AppMessage::OperationComplete { op_id });
+                ctx.request_repaint();
+                return;
             };
 
             let refs: Vec<&scanner::GameEntry> = selected.iter().collect();
@@ -296,7 +290,7 @@ fn analyze_entries(
                         let result = match std::fs::File::open(path) {
                             Ok(mut file) => {
                                 let file_options = AnalysisOptions {
-                                    file_path: Some(path.to_path_buf()),
+                                    file_path: Some(path.clone()),
                                     ..options.clone()
                                 };
                                 analyzer.analyze(&mut file, &file_options)
@@ -349,9 +343,8 @@ fn analyze_entries(
 fn check_cue_compat_for_entry(entry: &scanner::GameEntry) -> Vec<CueCompatIssue> {
     let mut issues = Vec::new();
     for path in entry.cue_files() {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
         };
         let report = check_cue_compat(&content);
         if !report.is_standard() {

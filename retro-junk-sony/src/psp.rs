@@ -1,4 +1,4 @@
-//! PlayStation Portable (PSP) disc/ROM analyzer.
+//! `PlayStation` Portable (PSP) disc/ROM analyzer.
 //!
 //! Supports:
 //! - ISO images
@@ -14,7 +14,7 @@ use retro_junk_core::{
 };
 use retro_junk_disc::hash::hash_disc_container;
 
-/// Analyzer for PlayStation Portable disc images.
+/// Analyzer for `PlayStation` Portable disc images.
 #[derive(Debug, Default)]
 pub struct PspAnalyzer;
 

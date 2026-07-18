@@ -57,14 +57,14 @@ pub fn load_overrides(dir: &Path) -> Result<Vec<Override>, YamlError> {
             path: dir.display().to_string(),
             source: e,
         })?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.path()
                 .extension()
                 .is_some_and(|ext| ext == "yaml" || ext == "yml")
         })
         .collect();
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
         let path = entry.path();
@@ -122,14 +122,14 @@ fn load_yaml_dir<T: serde::de::DeserializeOwned>(dir: &Path) -> Result<Vec<T>, Y
             path: dir.display().to_string(),
             source: e,
         })?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.path()
                 .extension()
                 .is_some_and(|ext| ext == "yaml" || ext == "yml")
         })
         .collect();
-    entries.sort_by_key(|e| e.file_name());
+    entries.sort_by_key(std::fs::DirEntry::file_name);
 
     for entry in entries {
         let path = entry.path();

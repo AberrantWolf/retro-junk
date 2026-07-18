@@ -13,7 +13,7 @@ pub struct JeuInfosData {
     pub jeu: GameInfo,
 }
 
-/// Game info from ScreenScraper. Fields use nested arrays with typed objects.
+/// Game info from `ScreenScraper`. Fields use nested arrays with typed objects.
 #[derive(Debug, Deserialize, Clone)]
 pub struct GameInfo {
     pub id: String,
@@ -43,6 +43,7 @@ pub struct GameInfo {
 
 impl GameInfo {
     /// Get the game name for a preferred region, falling back to the first available.
+    #[must_use]
     pub fn name_for_region(&self, preferred: &str) -> Option<&str> {
         self.noms
             .iter()
@@ -53,6 +54,7 @@ impl GameInfo {
     }
 
     /// Get the synopsis for a preferred language (exact match only).
+    #[must_use]
     pub fn synopsis_for_language(&self, preferred: &str) -> Option<&str> {
         self.synopsis
             .iter()
@@ -61,6 +63,7 @@ impl GameInfo {
     }
 
     /// Get the release date for a preferred region.
+    #[must_use]
     pub fn date_for_region(&self, preferred: &str) -> Option<&str> {
         self.dates
             .iter()
@@ -70,6 +73,7 @@ impl GameInfo {
     }
 
     /// Get all media of a given type (e.g., "ss", "box-2D", "wheel").
+    #[must_use]
     pub fn media_by_type(&self, media_type: &str) -> Vec<&Media> {
         self.medias
             .iter()
@@ -78,6 +82,7 @@ impl GameInfo {
     }
 
     /// Get a single media of a given type, preferring a specific region.
+    #[must_use]
     pub fn media_for_region(&self, media_type: &str, preferred_region: &str) -> Option<&Media> {
         let matches: Vec<_> = self.media_by_type(media_type);
         matches
@@ -91,6 +96,7 @@ impl GameInfo {
     }
 
     /// Get the genre name for a preferred language (exact match only).
+    #[must_use]
     pub fn genre_for_language(&self, preferred: &str) -> Option<String> {
         let genres: Vec<String> = self
             .genres
@@ -110,7 +116,8 @@ impl GameInfo {
         }
     }
 
-    /// Get the rating as a 0.0-1.0 float (ScreenScraper uses 0-20 scale).
+    /// Get the rating as a 0.0-1.0 float (`ScreenScraper` uses 0-20 scale).
+    #[must_use]
     pub fn rating_normalized(&self) -> Option<f32> {
         self.note.as_ref().and_then(|n| {
             n.text
@@ -188,6 +195,7 @@ pub struct UserInfo {
 }
 
 impl UserInfo {
+    #[must_use]
     pub fn requests_today(&self) -> u32 {
         self.requeststoday
             .as_ref()
@@ -195,6 +203,7 @@ impl UserInfo {
             .unwrap_or(0)
     }
 
+    #[must_use]
     pub fn max_requests_per_day(&self) -> u32 {
         self.maxrequestsperday
             .as_ref()
@@ -202,6 +211,7 @@ impl UserInfo {
             .unwrap_or(20000)
     }
 
+    #[must_use]
     pub fn max_threads(&self) -> u32 {
         self.maxthreads
             .as_ref()
@@ -220,6 +230,7 @@ pub struct UserQuota {
 }
 
 impl UserQuota {
+    #[must_use]
     pub fn requests_today(&self) -> u32 {
         self.requeststoday
             .as_ref()
@@ -227,6 +238,7 @@ impl UserQuota {
             .unwrap_or(0)
     }
 
+    #[must_use]
     pub fn max_requests_per_day(&self) -> u32 {
         self.maxrequestsperday
             .as_ref()

@@ -7,6 +7,10 @@ pub use retro_junk_dat::matcher::FileHashes;
 
 const CHUNK_SIZE: usize = 64 * 1024; // 64 KB
 
+/// In-place chunk normalizer returned by [`RomAnalyzer::dat_chunk_normalizer`]
+/// (e.g. byte-swapping N64 ROMs to the DAT's canonical byte order).
+type ChunkNormalizer = Box<dyn FnMut(&mut [u8])>;
+
 /// Try container hashes first; if the analyzer handles the format internally,
 /// return the precomputed hashes. Otherwise return None and caller proceeds
 /// with streaming.
@@ -23,11 +27,11 @@ fn try_container_hashes(
 }
 
 /// Set up the reader for streaming: determine skip bytes, create normalizer,
-/// seek past header. Returns (data_size, normalizer).
+/// seek past header. Returns (`data_size`, normalizer).
 fn setup_stream(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
-) -> Result<(u64, Option<Box<dyn FnMut(&mut [u8])>>), DatError> {
+) -> Result<(u64, Option<ChunkNormalizer>), DatError> {
     let file_size = reader.seek(SeekFrom::End(0))?;
     let skip = analyzer
         .dat_header_size(reader, file_size)
@@ -42,7 +46,7 @@ fn setup_stream(
 /// Read chunks from the reader, normalizing each, and pass to the callback.
 fn stream_chunks(
     reader: &mut dyn ReadSeek,
-    normalizer: &mut Option<Box<dyn FnMut(&mut [u8])>>,
+    normalizer: &mut Option<ChunkNormalizer>,
     mut on_chunk: impl FnMut(&[u8]),
 ) -> Result<(), DatError> {
     let mut buf = vec![0u8; CHUNK_SIZE];
@@ -112,7 +116,7 @@ pub fn compute_crc32_sha1(
 }
 
 /// Compute CRC32 and SHA1 with a progress callback.
-/// The callback receives (bytes_processed, total_bytes).
+/// The callback receives (`bytes_processed`, `total_bytes`).
 pub fn compute_crc32_sha1_with_progress(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
@@ -129,7 +133,7 @@ pub fn compute_crc32_sha1_with_progress(
 }
 
 /// Compute CRC32, MD5, and SHA1 of a file in a single pass.
-/// Used by the scraper for ScreenScraper API lookups.
+/// Used by the scraper for `ScreenScraper` API lookups.
 pub fn compute_all_hashes(
     reader: &mut dyn ReadSeek,
     analyzer: &dyn RomAnalyzer,
@@ -184,7 +188,7 @@ pub fn compute_crc32_sha1_with_padding(
     Ok(hasher.finalize())
 }
 
-/// Stream `size` bytes of `fill_byte` in CHUNK_SIZE blocks to the callback.
+/// Stream `size` bytes of `fill_byte` in `CHUNK_SIZE` blocks to the callback.
 fn stream_padding(size: u64, fill_byte: u8, mut on_chunk: impl FnMut(&[u8])) {
     if size == 0 {
         return;

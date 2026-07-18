@@ -109,8 +109,7 @@ fn show_toolbar(ui: &mut egui::Ui, app: &mut RetroJunkApp) -> bool {
                     .platforms
                     .iter()
                     .find(|p| p.id == *pid)
-                    .map(|p| p.short_name.as_str())
-                    .unwrap_or("???"),
+                    .map_or("???", |p| p.short_name.as_str()),
                 None => "All",
             };
             egui::ComboBox::from_id_salt("browse_platform_filter")
@@ -196,7 +195,7 @@ fn show_pagination(ui: &mut egui::Ui, state: &mut TableViewState) -> bool {
             }
         }
 
-        ui.label(format!("/ {}", total_pages));
+        ui.label(format!("/ {total_pages}"));
 
         // Next button
         if ui
@@ -597,7 +596,7 @@ fn show_import_log_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
 fn format_file_size(bytes: i64) -> String {
     if bytes < 1024 {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     } else if bytes < 1024 * 1024 {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else if bytes < 1024 * 1024 * 1024 {

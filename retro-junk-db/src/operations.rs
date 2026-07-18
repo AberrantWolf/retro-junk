@@ -1,6 +1,9 @@
 //! CRUD operations for all catalog entity types.
 
-use retro_junk_catalog::types::*;
+use retro_junk_catalog::types::{
+    Asset, CatalogPlatform, CatalogTag, CollectionEntry, Company, Disagreement, ImportLog, Media,
+    MediaStatus, MediaType, PlatformRelationship, Release,
+};
 use rusqlite::{Connection, params};
 use thiserror::Error;
 
@@ -39,7 +42,7 @@ pub fn upsert_platform(
             platform.short_name,
             platform.manufacturer,
             platform.generation,
-            media_type_str(&platform.media_type),
+            media_type_str(platform.media_type),
             platform.release_year,
             platform.description,
             platform.core_platform,
@@ -259,7 +262,7 @@ pub fn find_release(
     }
 }
 
-/// Fields scraped from ScreenScraper for one release. Empty strings mean the
+/// Fields scraped from `ScreenScraper` for one release. Empty strings mean the
 /// scraper had no value; `publisher_id`/`developer_id` are nullable FKs and
 /// `rating` has no empty sentinel, so those stay `Option`.
 pub struct ReleaseEnrichment<'a> {
@@ -274,10 +277,10 @@ pub struct ReleaseEnrichment<'a> {
     pub developer_id: Option<&'a str>,
 }
 
-/// Update release fields from ScreenScraper enrichment.
+/// Update release fields from `ScreenScraper` enrichment.
 ///
 /// Only fills fields that are currently unset, preserving values already set
-/// by DAT import. The screenscraper_id is always set to mark this release as
+/// by DAT import. The `screenscraper_id` is always set to mark this release as
 /// enriched.
 pub fn update_release_enrichment(
     conn: &Connection,
@@ -321,7 +324,7 @@ pub fn update_release_enrichment(
     Ok(())
 }
 
-/// Mark a release as not found on ScreenScraper.
+/// Mark a release as not found on `ScreenScraper`.
 pub fn mark_release_not_found(conn: &Connection, release_id: &str) -> Result<(), OperationError> {
     conn.execute(
         "UPDATE releases SET scraper_not_found = 1, updated_at = datetime('now') WHERE id = ?1",
@@ -340,7 +343,7 @@ pub fn clear_not_found_flags(conn: &Connection, platform_id: &str) -> Result<u64
     Ok(changed as u64)
 }
 
-/// Clear enrichment status (screenscraper_id and scraper_not_found) for releases.
+/// Clear enrichment status (`screenscraper_id` and `scraper_not_found`) for releases.
 ///
 /// If `after_title` is provided, only affects releases whose title sorts at or after
 /// that value (case-insensitive). Returns the number of releases updated.
@@ -621,28 +624,27 @@ pub fn create_modded_media(
     hashes: Option<&MediaHashes>,
 ) -> Result<String, OperationError> {
     // Find an existing release or create one
-    let release_id = match find_release(conn, work_id, platform_id, region, "", "")? {
-        Some(r) => r.id,
-        None => {
-            let rid = format!("{work_id}:{platform_id}:{region}:modded");
-            // Get work name for the release title
-            let work_name: String = conn
-                .query_row(
-                    "SELECT canonical_name FROM works WHERE id = ?1",
-                    params![work_id],
-                    |row| row.get(0),
-                )
-                .map_err(|_| OperationError::NotFound {
-                    entity_type: "work".to_string(),
-                    id: work_id.to_string(),
-                })?;
-            conn.execute(
-                "INSERT INTO releases (id, work_id, platform_id, region, title)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![rid, work_id, platform_id, region, work_name],
-            )?;
-            rid
-        }
+    let release_id = if let Some(r) = find_release(conn, work_id, platform_id, region, "", "")? {
+        r.id
+    } else {
+        let rid = format!("{work_id}:{platform_id}:{region}:modded");
+        // Get work name for the release title
+        let work_name: String = conn
+            .query_row(
+                "SELECT canonical_name FROM works WHERE id = ?1",
+                params![work_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| OperationError::NotFound {
+                entity_type: "work".to_string(),
+                id: work_id.to_string(),
+            })?;
+        conn.execute(
+            "INSERT INTO releases (id, work_id, platform_id, region, title)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![rid, work_id, platform_id, region, work_name],
+        )?;
+        rid
     };
 
     // Use hash or system time for uniqueness
@@ -849,8 +851,7 @@ pub fn apply_disagreement_resolution(
 
     if !safe_fields.contains(&field) {
         return Err(OperationError::InvalidField(format!(
-            "Field '{}' cannot be updated via resolution",
-            field
+            "Field '{field}' cannot be updated via resolution"
         )));
     }
 
@@ -859,8 +860,7 @@ pub fn apply_disagreement_resolution(
         "media" => "media",
         _ => {
             return Err(OperationError::InvalidField(format!(
-                "Unknown entity type '{}'",
-                entity_type
+                "Unknown entity type '{entity_type}'"
             )));
         }
     };
@@ -910,7 +910,7 @@ pub fn upsert_override(
 /// Load all YAML catalog data into the database.
 ///
 /// This loads platforms, companies, and overrides from the catalog directory
-/// into the SQLite database. Safe to call repeatedly (uses upsert).
+/// into the `SQLite` database. Safe to call repeatedly (uses upsert).
 pub fn seed_from_catalog(
     conn: &Connection,
     catalog_dir: &std::path::Path,
@@ -936,7 +936,7 @@ pub fn seed_from_catalog(
                 params![
                     platform.id,
                     rel.platform,
-                    relationship_str(&rel.relationship_type),
+                    relationship_str(rel.relationship_type),
                 ],
             )?;
         }
@@ -1053,7 +1053,7 @@ fn slugify(s: &str) -> String {
     result
 }
 
-fn media_type_str(mt: &MediaType) -> &'static str {
+fn media_type_str(mt: MediaType) -> &'static str {
     match mt {
         MediaType::Cartridge => "cartridge",
         MediaType::Disc => "disc",
@@ -1062,7 +1062,7 @@ fn media_type_str(mt: &MediaType) -> &'static str {
     }
 }
 
-fn relationship_str(r: &PlatformRelationship) -> &'static str {
+fn relationship_str(r: PlatformRelationship) -> &'static str {
     match r {
         PlatformRelationship::RegionalVariant => "regional_variant",
         PlatformRelationship::Successor => "successor",

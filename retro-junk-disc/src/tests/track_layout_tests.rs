@@ -10,7 +10,7 @@ fn write_file(dir: &Path, name: &str, len: usize) {
 }
 
 /// A5: assert spans exactly tile every file they reference — the sum of
-/// byte_len per file equals that file's actual size on disk, with no gaps
+/// `byte_len` per file equals that file's actual size on disk, with no gaps
 /// or overlaps.
 fn assert_spans_tile_files(spans: &[TrackSpan]) {
     let mut totals: HashMap<&Path, u64> = HashMap::new();

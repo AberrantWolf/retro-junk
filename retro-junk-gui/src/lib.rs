@@ -3,6 +3,11 @@
 //! Desktop application for scanning, viewing, and managing a retro game ROM library.
 //! Uses egui/eframe for the UI and background threads for all I/O operations.
 
+// Immediate-mode egui draw functions and the app message dispatcher are single
+// linear sequences of UI/match arms; splitting them into single-caller helpers
+// with long parameter lists would hurt readability, not help it.
+#![allow(clippy::too_many_lines)]
+
 mod app;
 mod backend;
 mod cache;

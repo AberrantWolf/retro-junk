@@ -27,6 +27,7 @@ pub enum SizeVerdict {
 
 impl SizeVerdict {
     /// Plain-text description of the verdict (no ANSI colors).
+    #[must_use]
     pub fn description(&self) -> String {
         match self {
             SizeVerdict::Ok => "OK".into(),
@@ -47,12 +48,14 @@ impl SizeVerdict {
     }
 
     /// Whether this verdict represents a problem (not OK).
+    #[must_use]
     pub fn is_problem(&self) -> bool {
         !matches!(self, SizeVerdict::Ok)
     }
 
     /// Whether this verdict is a warning (trimmed, copier header, oversized)
     /// rather than an error (truncated).
+    #[must_use]
     pub fn is_warning(&self) -> bool {
         matches!(
             self,
@@ -61,16 +64,18 @@ impl SizeVerdict {
     }
 
     /// Whether this verdict is an error (truncated — data missing).
+    #[must_use]
     pub fn is_error(&self) -> bool {
         matches!(self, SizeVerdict::Truncated { .. })
     }
 }
 
 fn is_power_of_two(n: u64) -> bool {
-    n > 0 && (n & (n - 1)) == 0
+    n > 0 && n.is_power_of_two()
 }
 
 /// Compare actual vs expected file size and return a verdict.
+#[must_use]
 pub fn compute_size_verdict(file_size: u64, expected_size: u64) -> SizeVerdict {
     if file_size == expected_size {
         return SizeVerdict::Ok;
@@ -110,9 +115,10 @@ pub const ACRONYMS: &[&str] = &[
     "PRG", "CHR", "RAM", "ROM", "SRAM", "NVRAM", "SGB", "CGB", "TV", "ID",
 ];
 
-/// Convert a snake_case key to Title Case, keeping known acronyms uppercase.
+/// Convert a `snake_case` key to Title Case, keeping known acronyms uppercase.
 ///
 /// Examples: `prg_rom_size` → `PRG ROM Size`, `tv_system` → `TV System`.
+#[must_use]
 pub fn prettify_key(key: &str) -> String {
     key.split('_')
         .filter(|s| !s.is_empty())

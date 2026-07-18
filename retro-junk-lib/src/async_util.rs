@@ -20,21 +20,20 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 /// Allows `run_with_events` to work with both `mpsc::Receiver` (bounded,
 /// used by the enrich path) and `mpsc::UnboundedReceiver` (used by the
 /// scrape path).
-#[allow(async_fn_in_trait)]
 pub trait EventReceiver<E> {
     /// Receive the next event, returning `None` when the channel is closed.
-    async fn recv(&mut self) -> Option<E>;
+    fn recv(&mut self) -> impl Future<Output = Option<E>> + '_;
 }
 
 impl<E> EventReceiver<E> for mpsc::Receiver<E> {
-    async fn recv(&mut self) -> Option<E> {
-        mpsc::Receiver::recv(self).await
+    fn recv(&mut self) -> impl Future<Output = Option<E>> + '_ {
+        mpsc::Receiver::recv(self)
     }
 }
 
 impl<E> EventReceiver<E> for mpsc::UnboundedReceiver<E> {
-    async fn recv(&mut self) -> Option<E> {
-        mpsc::UnboundedReceiver::recv(self).await
+    fn recv(&mut self) -> impl Future<Output = Option<E>> + '_ {
+        mpsc::UnboundedReceiver::recv(self)
     }
 }
 
@@ -52,7 +51,7 @@ pub async fn wait_for_cancel(cancel: &AtomicBool) {
 pub async fn cancellable<F: Future>(future: F, cancel: &AtomicBool) -> Option<F::Output> {
     tokio::select! {
         result = future => Some(result),
-        _ = wait_for_cancel(cancel) => None,
+        () = wait_for_cancel(cancel) => None,
     }
 }
 
@@ -81,27 +80,22 @@ where
         tokio::select! {
             r = &mut task, if result.is_none() => {
                 log::debug!(
-                    "run_with_events: task completed ({} events received so far)",
-                    event_count,
+                    "run_with_events: task completed ({event_count} events received so far)",
                 );
                 result = Some(r);
                 // Task done — break to drain phase
                 break;
             }
             event = event_rx.recv() => {
-                match event {
-                    Some(e) => {
-                        event_count += 1;
-                        on_event(e);
-                    }
+                if let Some(e) = event {
+                    event_count += 1;
+                    on_event(e);
+                } else {
                     // Channel closed before task finished (unusual but safe)
-                    None => {
-                        log::debug!(
-                            "run_with_events: channel closed before task finished ({} events)",
-                            event_count,
-                        );
-                        break;
-                    }
+                    log::debug!(
+                        "run_with_events: channel closed before task finished ({event_count} events)",
+                    );
+                    break;
                 }
             }
         }
@@ -142,11 +136,10 @@ where
     }
 
     // If channel closed before task completed, await the task directly
-    match result {
-        Some(r) => r,
-        None => {
-            log::debug!("run_with_events: awaiting task (channel closed first)");
-            task.await
-        }
+    if let Some(r) = result {
+        r
+    } else {
+        log::debug!("run_with_events: awaiting task (channel closed first)");
+        task.await
     }
 }

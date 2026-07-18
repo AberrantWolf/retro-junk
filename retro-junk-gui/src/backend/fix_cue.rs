@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use retro_junk_disc::cue::{check_cue_compat, convert_cue_to_standard};
 
@@ -9,7 +9,7 @@ use crate::state::{AppMessage, CueFixOutcome, CueFixResult, OperationKind, Progr
 /// Fix CUE sheets for the selected entries in a console.
 ///
 /// For each selected entry whose analysis path is a `.cue` file, checks for
-/// CDRWin compatibility issues and converts to standard CUE format.
+/// `CDRWin` compatibility issues and converts to standard CUE format.
 pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
     let console = &app.library.consoles[console_idx];
     let folder_name = console.folder_name.clone();
@@ -17,9 +17,8 @@ pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &e
     // Collect CUE file paths from selected entries
     let mut cue_files: Vec<(String, PathBuf)> = Vec::new();
     for &i in &app.selected_entries {
-        let entry = match console.entries.get(i) {
-            Some(e) => e,
-            None => continue,
+        let Some(entry) = console.entries.get(i) else {
+            continue;
         };
         let entry_name = entry.game_entry.display_name().to_string();
         for path in entry.game_entry.cue_files() {
@@ -33,7 +32,7 @@ pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &e
 
     let ctx = ctx.clone();
     let total = cue_files.len();
-    let description = format!("Fixing {} CUE file(s)", total);
+    let description = format!("Fixing {total} CUE file(s)");
     let scope = folder_name.clone();
 
     spawn_background_op(
@@ -59,89 +58,13 @@ pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &e
                 let file_name = cue_path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or(&entry_name)
+                    .unwrap_or(entry_name)
                     .to_string();
 
-                // Read CUE content
-                let content = match std::fs::read_to_string(&cue_path) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        results.push(CueFixResult {
-                            file_name,
-                            outcome: CueFixOutcome::Error {
-                                message: format!("Cannot read: {e}"),
-                            },
-                        });
-                        continue;
-                    }
-                };
-
-                // Check compatibility
-                let report = check_cue_compat(&content);
-
-                if report.is_standard() {
-                    results.push(CueFixResult {
-                        file_name,
-                        outcome: CueFixOutcome::AlreadyStandard,
-                    });
-                    continue;
-                }
-
-                if let Some(reason) = report.blocked_reason() {
-                    results.push(CueFixResult {
-                        file_name,
-                        outcome: CueFixOutcome::Unfixable {
-                            reason: reason.to_string(),
-                        },
-                    });
-                    continue;
-                }
-
-                let summary = report.summary();
-                let cue_dir = cue_path.parent().unwrap_or(cue_path.as_path());
-
-                // Convert
-                match convert_cue_to_standard(&content, cue_dir) {
-                    Ok(converted) => {
-                        // Create backup
-                        let backup_path = cue_path.with_extension("cue.bak");
-                        if let Err(e) = std::fs::copy(&cue_path, &backup_path) {
-                            results.push(CueFixResult {
-                                file_name,
-                                outcome: CueFixOutcome::Error {
-                                    message: format!("Backup failed: {e}"),
-                                },
-                            });
-                            continue;
-                        }
-
-                        // Write converted
-                        match std::fs::write(&cue_path, &converted) {
-                            Ok(()) => {
-                                results.push(CueFixResult {
-                                    file_name,
-                                    outcome: CueFixOutcome::Fixed { summary },
-                                });
-                            }
-                            Err(e) => {
-                                results.push(CueFixResult {
-                                    file_name,
-                                    outcome: CueFixOutcome::Error {
-                                        message: format!("Write failed: {e}"),
-                                    },
-                                });
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        results.push(CueFixResult {
-                            file_name,
-                            outcome: CueFixOutcome::Error {
-                                message: format!("Conversion failed: {e}"),
-                            },
-                        });
-                    }
-                }
+                results.push(CueFixResult {
+                    file_name,
+                    outcome: fix_one_cue(cue_path),
+                });
             }
 
             let _ = tx.send(AppMessage::CueFixComplete {
@@ -152,4 +75,60 @@ pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &e
             ctx.request_repaint();
         },
     );
+}
+
+/// Check one CUE file and, when fixable, back it up and rewrite it in
+/// standard format. Returns the outcome for the results dialog.
+fn fix_one_cue(cue_path: &Path) -> CueFixOutcome {
+    // Read CUE content
+    let content = match std::fs::read_to_string(cue_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return CueFixOutcome::Error {
+                message: format!("Cannot read: {e}"),
+            };
+        }
+    };
+
+    // Check compatibility
+    let report = check_cue_compat(&content);
+
+    if report.is_standard() {
+        return CueFixOutcome::AlreadyStandard;
+    }
+
+    if let Some(reason) = report.blocked_reason() {
+        return CueFixOutcome::Unfixable {
+            reason: reason.to_string(),
+        };
+    }
+
+    let summary = report.summary();
+    let cue_dir = cue_path.parent().unwrap_or(cue_path);
+
+    // Convert
+    let converted = match convert_cue_to_standard(&content, cue_dir) {
+        Ok(c) => c,
+        Err(e) => {
+            return CueFixOutcome::Error {
+                message: format!("Conversion failed: {e}"),
+            };
+        }
+    };
+
+    // Create backup
+    let backup_path = cue_path.with_extension("cue.bak");
+    if let Err(e) = std::fs::copy(cue_path, &backup_path) {
+        return CueFixOutcome::Error {
+            message: format!("Backup failed: {e}"),
+        };
+    }
+
+    // Write converted
+    match std::fs::write(cue_path, &converted) {
+        Ok(()) => CueFixOutcome::Fixed { summary },
+        Err(e) => CueFixOutcome::Error {
+            message: format!("Write failed: {e}"),
+        },
+    }
 }

@@ -43,7 +43,7 @@ pub enum OrganizeProgress {
 /// A single file group to be organized into an .m3u folder.
 #[derive(Debug, Clone)]
 pub struct OrganizeJob {
-    /// Target .m3u folder path (parent_dir / "{game_name}.m3u").
+    /// Target .m3u folder path (`parent_dir` / "{`game_name}.m3u`").
     pub target_folder: PathBuf,
     /// Canonical base game name (disc tag stripped).
     pub game_name: String,
@@ -84,6 +84,7 @@ pub struct OrganizePlan {
 
 impl OrganizePlan {
     /// Whether there are any jobs to execute.
+    #[must_use]
     pub fn has_actions(&self) -> bool {
         !self.jobs.is_empty()
     }
@@ -104,14 +105,12 @@ pub struct OrganizeResult {
 /// Parses the CUE file's FILE directives and resolves them relative to the CUE's
 /// parent directory. Returns only files that exist on disk.
 pub(crate) fn collect_cue_companions(cue_path: &Path) -> Vec<PathBuf> {
-    let parent = match cue_path.parent() {
-        Some(p) => p,
-        None => return Vec::new(),
+    let Some(parent) = cue_path.parent() else {
+        return Vec::new();
     };
 
-    let contents = match fs::read_to_string(cue_path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
+    let Ok(contents) = fs::read_to_string(cue_path) else {
+        return Vec::new();
     };
 
     let mut companions = Vec::new();
@@ -130,10 +129,10 @@ pub(crate) fn collect_cue_companions(cue_path: &Path) -> Vec<PathBuf> {
 ///
 /// Returns paths of files at the top level (not inside .m3u subdirectories)
 /// that have disc entry-point extensions (.cue, .chd, .iso, .gdi, etc.).
+#[must_use]
 pub fn find_loose_disc_files(folder: &Path) -> Vec<PathBuf> {
-    let entries = match fs::read_dir(folder) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
     };
 
     let mut loose = Vec::new();
@@ -155,6 +154,8 @@ pub fn find_loose_disc_files(folder: &Path) -> Vec<PathBuf> {
 /// Scans for loose entry-point files, extracts serials from disc data via
 /// quick analysis, looks up game names in the Redump DAT, groups multi-disc
 /// games, and builds an organize plan.
+// Single planning pass over a folder; stages share loop-local state, so extraction adds noise.
+#[allow(clippy::too_many_lines)]
 pub fn plan_organize(
     folder: &Path,
     analyzer: &dyn RomAnalyzer,
@@ -226,7 +227,6 @@ pub fn plan_organize(
 
         if let Some(result) = serial_outcome.result {
             let game = &index.games[result.game_index];
-            let _rom = &game.roms[result.rom_index];
             matched.push(MatchedDiscFile {
                 source_path: file_path.clone(),
                 dat_game_name: game.name.clone(),
@@ -236,16 +236,16 @@ pub fn plan_organize(
         }
 
         // Hash fallback if enabled
-        if options.hash_fallback {
-            if let Some(match_result) = try_hash_fallback(file_path, analyzer, &index, &progress) {
-                let game = &index.games[match_result.game_index];
-                matched.push(MatchedDiscFile {
-                    source_path: file_path.clone(),
-                    dat_game_name: game.name.clone(),
-                    original_filename: file_name,
-                });
-                continue;
-            }
+        if options.hash_fallback
+            && let Some(match_result) = try_hash_fallback(file_path, analyzer, &index, &progress)
+        {
+            let game = &index.games[match_result.game_index];
+            matched.push(MatchedDiscFile {
+                source_path: file_path.clone(),
+                dat_game_name: game.name.clone(),
+                original_filename: file_name,
+            });
+            continue;
         }
 
         // Unmatched
@@ -285,7 +285,7 @@ pub fn plan_organize(
             continue;
         }
 
-        let target_folder = folder.join(format!("{}.m3u", base_name));
+        let target_folder = folder.join(format!("{base_name}.m3u"));
 
         // Skip if target folder already exists
         if target_folder.exists() {
@@ -321,8 +321,7 @@ pub fn plan_organize(
                 .source_path
                 .extension()
                 .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("cue"))
-                .unwrap_or(false)
+                .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
             {
                 companion_files.extend(collect_cue_companions(&entry.source_path));
             }
@@ -350,6 +349,7 @@ pub fn plan_organize(
 }
 
 /// Execute a single organize job: create .m3u folder, move files, write playlist.
+#[must_use]
 pub fn execute_organize_job(job: &OrganizeJob) -> OrganizeResult {
     let mut result = OrganizeResult {
         folder_created: false,
@@ -394,7 +394,7 @@ pub fn execute_organize_job(job: &OrganizeJob) -> OrganizeResult {
             Err(e) => {
                 result
                     .errors
-                    .push(format!("Failed to move {}: {}", companion.display(), e,));
+                    .push(format!("Failed to move {}: {}", companion.display(), e));
             }
         }
     }
@@ -409,9 +409,7 @@ pub fn execute_organize_job(job: &OrganizeJob) -> OrganizeResult {
     match write_m3u_playlist(&job.target_folder, &job.game_name, &playlist_entries) {
         Ok(()) => result.playlist_written = true,
         Err(e) => {
-            result
-                .errors
-                .push(format!("Failed to write playlist: {}", e));
+            result.errors.push(format!("Failed to write playlist: {e}"));
         }
     }
 

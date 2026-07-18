@@ -1,30 +1,34 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::Path;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use log::Level;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use retro_junk_lib::AnalysisContext;
 use retro_junk_lib::repair::{
     RepairOptions, RepairPlan, RepairProgress, execute_repairs, plan_repairs,
 };
-use retro_junk_lib::{AnalysisContext, Platform};
 
 use crate::CliError;
+use crate::cli_types::{ConsoleFilterArgs, DatDirArg, RepairArgs};
 
 /// Run the repair command.
-#[allow(clippy::too_many_arguments)]
+// Linear per-console repair orchestration (plan, report, execute, summarize).
+#[allow(clippy::too_many_lines)]
 pub(crate) fn run_repair(
     ctx: &AnalysisContext,
-    dry_run: bool,
-    no_backup: bool,
-    consoles: Option<Vec<Platform>>,
-    limit: Option<usize>,
-    library_path: PathBuf,
-    dat_dir: Option<PathBuf>,
+    args: RepairArgs,
+    library_path: &Path,
     quiet: bool,
 ) -> Result<(), CliError> {
+    let RepairArgs {
+        dry_run,
+        no_backup,
+        roms: ConsoleFilterArgs { consoles, limit },
+        dat: DatDirArg { dat_dir },
+    } = args;
     let root_path = library_path;
 
     let repair_options = RepairOptions {
@@ -58,14 +62,13 @@ pub(crate) fn run_repair(
     if let Some(n) = limit {
         log::info!(
             "{}",
-            format!("Limit: {} ROMs per console", n).if_supports_color(Stdout, |t| t.dimmed()),
+            format!("Limit: {n} ROMs per console").if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
     crate::log_blank();
 
-    let scan = match crate::scan_folders(ctx, &root_path, &consoles) {
-        Some(s) => s,
-        None => return Ok(()),
+    let Some(scan) = crate::scan_folders(ctx, root_path, consoles.as_deref()) else {
+        return Ok(());
     };
 
     let mut total_repaired = 0usize;
@@ -124,7 +127,7 @@ pub(crate) fn run_repair(
                 ref file_name,
                 ref strategy_desc,
             } => {
-                pb.set_message(format!("{}: {}", file_name, strategy_desc));
+                pb.set_message(format!("{file_name}: {strategy_desc}"));
                 pb.tick();
             }
             RepairProgress::Done => {
@@ -156,7 +159,7 @@ pub(crate) fn run_repair(
                 print_repair_plan(&plan);
 
                 if !dry_run && !plan.repairable.is_empty() {
-                    print!("\n  Proceed with {} repairs? [y/N] ", plan.repairable.len(),);
+                    print!("\n  Proceed with {} repairs? [y/N] ", plan.repairable.len());
                     std::io::stdout().flush()?;
 
                     let mut input = String::new();

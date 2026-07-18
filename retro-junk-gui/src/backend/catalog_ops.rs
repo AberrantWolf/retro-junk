@@ -44,7 +44,7 @@ enum Cap {
     Gdb,
 }
 
-/// Options for a ScreenScraper enrichment run, collected from the UI widgets.
+/// Options for a `ScreenScraper` enrichment run, collected from the UI widgets.
 pub struct SsEnrichOptions {
     pub force: bool,
     pub download_assets: bool,
@@ -83,6 +83,38 @@ fn targets<'a>(
         .collect()
 }
 
+/// Shared plumbing handed to every background worker: the operation id, the
+/// cancellation flag, the message channel back to the UI thread, and the egui
+/// context for repaint requests.
+struct WorkerCtx<'a> {
+    op_id: u64,
+    cancel: &'a AtomicBool,
+    tx: &'a mpsc::Sender<AppMessage>,
+    ctx: &'a egui::Context,
+}
+
+impl WorkerCtx<'_> {
+    fn cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Relaxed)
+    }
+
+    /// Send a progress tick for this operation and request a repaint.
+    fn progress(&self, current: u64, total: u64) {
+        let _ = self.tx.send(AppMessage::OperationProgress {
+            op_id: self.op_id,
+            current,
+            total,
+        });
+        self.ctx.request_repaint();
+    }
+
+    /// Send the terminal message pair: remove the progress bar, then signal
+    /// that catalog data changed (refresh + clear the in-flight guard).
+    fn finish(&self) {
+        finish(self.tx, self.op_id, self.ctx);
+    }
+}
+
 /// Send the terminal message pair: remove the progress bar, then signal that
 /// catalog data changed (refresh + clear the in-flight guard).
 fn finish(tx: &mpsc::Sender<AppMessage>, op_id: u64, ctx: &egui::Context) {
@@ -115,11 +147,11 @@ impl retro_junk_import::ImportProgress for GuiImportProgress {
     }
 
     fn on_phase(&self, message: &str) {
-        log::info!("{}", message);
+        log::info!("{message}");
     }
 
     fn on_complete(&self, message: &str) {
-        log::info!("{}", message);
+        log::info!("{message}");
     }
 }
 
@@ -143,38 +175,31 @@ pub fn run_import(app: &mut RetroJunkApp, ctx: &egui::Context) {
         String::new(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
-            import_worker(
+            let w = WorkerCtx {
                 op_id,
-                &cancel,
-                &tx,
-                &context,
-                &selected,
-                &db_path,
-                &catalog_dir,
-                &egui_ctx,
-            );
-            finish(&tx, op_id, &egui_ctx);
+                cancel: cancel.as_ref(),
+                tx: &tx,
+                ctx: &egui_ctx,
+            };
+            import_worker(&w, &context, &selected, &db_path, &catalog_dir);
+            w.finish();
         },
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn import_worker(
-    op_id: u64,
-    cancel: &AtomicBool,
-    tx: &mpsc::Sender<AppMessage>,
+    w: &WorkerCtx<'_>,
     context: &AnalysisContext,
     selected: &HashSet<Platform>,
     db_path: &Path,
     catalog_dir: &Path,
-    ctx: &egui::Context,
 ) {
     use retro_junk_import::{ImportStats, dat_source_str, import_dat, log_import};
 
     let conn = match retro_junk_db::open_database(db_path) {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Failed to open catalog database: {}", e);
+            log::error!("Failed to open catalog database: {e}");
             return;
         }
     };
@@ -189,7 +214,7 @@ fn import_worker(
                 stats.overrides,
                 catalog_dir.display(),
             ),
-            Err(e) => log::warn!("Failed to seed from catalog YAML: {}", e),
+            Err(e) => log::warn!("Failed to seed from catalog YAML: {e}"),
         }
     } else {
         log::warn!(
@@ -208,7 +233,7 @@ fn import_worker(
 
     let mut total = ImportStats::default();
     for console in &to_import {
-        if cancel.load(Ordering::Relaxed) {
+        if w.cancelled() {
             log::info!("Import cancelled");
             break;
         }
@@ -226,24 +251,24 @@ fn import_worker(
         ) {
             Ok(d) => d,
             Err(e) => {
-                log::warn!("{}: {}", short_name, e);
+                log::warn!("{short_name}: {e}");
                 continue;
             }
         };
 
         for dat in &dats {
-            if cancel.load(Ordering::Relaxed) {
+            if w.cancelled() {
                 break;
             }
             let progress = GuiImportProgress {
-                op_id,
-                tx: tx.clone(),
-                ctx: ctx.clone(),
+                op_id: w.op_id,
+                tx: w.tx.clone(),
+                ctx: w.ctx.clone(),
             };
             match import_dat(&conn, dat, console.metadata.platform, source_str, &progress) {
                 Ok(stats) => {
                     if let Err(e) = log_import(&conn, source_str, &dat.name, &dat.version, &stats) {
-                        log::warn!("Failed to log import: {}", e);
+                        log::warn!("Failed to log import: {e}");
                     }
                     log::info!(
                         "\u{2714} {} — {} games: {} works, {} releases, {} media ({} new)",
@@ -260,7 +285,7 @@ fn import_worker(
                     total.total_games += stats.total_games;
                     total.disagreements_found += stats.disagreements_found;
                 }
-                Err(e) => log::warn!("\u{2718} {}: import failed: {}", short_name, e),
+                Err(e) => log::warn!("\u{2718} {short_name}: import failed: {e}"),
             }
         }
     }
@@ -270,13 +295,13 @@ fn import_worker(
         match retro_junk_catalog::yaml::load_overrides(&catalog_dir.join("overrides")) {
             Ok(overrides) if !overrides.is_empty() => {
                 match retro_junk_import::apply_overrides(&conn, &overrides) {
-                    Ok(count) if count > 0 => log::info!("\u{2714} Applied {} override(s)", count),
+                    Ok(count) if count > 0 => log::info!("\u{2714} Applied {count} override(s)"),
                     Ok(_) => {}
-                    Err(e) => log::warn!("Failed to apply overrides: {}", e),
+                    Err(e) => log::warn!("Failed to apply overrides: {e}"),
                 }
             }
             Ok(_) => {}
-            Err(e) => log::warn!("Failed to load overrides: {}", e),
+            Err(e) => log::warn!("Failed to load overrides: {e}"),
         }
     }
 
@@ -291,7 +316,7 @@ fn import_worker(
 
 // ── GDB enrichment ──────────────────────────────────────────────────────────
 
-/// Enrich catalog releases from GameDataBase CSVs for the selected systems.
+/// Enrich catalog releases from `GameDataBase` CSVs for the selected systems.
 /// Mirrors `commands/catalog/enrich_gdb.rs::run_catalog_enrich_gdb`.
 pub fn run_gdb_enrich(app: &mut RetroJunkApp, ctx: &egui::Context) {
     let Some(db_path) = app.db_path.clone() else {
@@ -310,31 +335,31 @@ pub fn run_gdb_enrich(app: &mut RetroJunkApp, ctx: &egui::Context) {
         String::new(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
-            gdb_worker(
-                op_id, &cancel, &tx, &context, &selected, &db_path, limit, &egui_ctx,
-            );
-            finish(&tx, op_id, &egui_ctx);
+            let w = WorkerCtx {
+                op_id,
+                cancel: cancel.as_ref(),
+                tx: &tx,
+                ctx: &egui_ctx,
+            };
+            gdb_worker(&w, &context, &selected, &db_path, limit);
+            w.finish();
         },
     );
 }
 
-#[allow(clippy::too_many_arguments)]
 fn gdb_worker(
-    op_id: u64,
-    cancel: &AtomicBool,
-    tx: &mpsc::Sender<AppMessage>,
+    w: &WorkerCtx<'_>,
     context: &AnalysisContext,
     selected: &HashSet<Platform>,
     db_path: &Path,
     limit: Option<u32>,
-    ctx: &egui::Context,
 ) {
     use retro_junk_import::gdb_import::{GdbEnrichOptions, enrich_gdb};
 
     let conn = match retro_junk_db::open_database(db_path) {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Failed to open catalog database: {}", e);
+            log::error!("Failed to open catalog database: {e}");
             return;
         }
     };
@@ -342,16 +367,11 @@ fn gdb_worker(
     let to_enrich = targets(context, selected, Cap::Gdb);
     let total = to_enrich.len() as u64;
     for (i, console) in to_enrich.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
+        if w.cancelled() {
             log::info!("GDB enrichment cancelled");
             break;
         }
-        let _ = tx.send(AppMessage::OperationProgress {
-            op_id,
-            current: i as u64,
-            total,
-        });
-        ctx.request_repaint();
+        w.progress(i as u64, total);
 
         let short_name = console.metadata.short_name;
         let options = GdbEnrichOptions {
@@ -368,7 +388,7 @@ fn gdb_worker(
                 stats.enriched,
                 stats.disagreements,
             ),
-            Err(e) => log::error!("\u{2718} {}: {}", short_name, e),
+            Err(e) => log::error!("\u{2718} {short_name}: {e}"),
         }
     }
     log::info!("GDB enrichment done");
@@ -376,7 +396,7 @@ fn gdb_worker(
 
 // ── ScreenScraper enrichment ────────────────────────────────────────────────
 
-/// Enrich catalog releases from ScreenScraper for the selected systems, with
+/// Enrich catalog releases from `ScreenScraper` for the selected systems, with
 /// optional asset download and post-enrichment reconciliation. Mirrors
 /// `commands/catalog/enrich.rs::run_catalog_enrich`.
 pub fn run_ss_enrich(app: &mut RetroJunkApp, ctx: &egui::Context, opts: SsEnrichOptions) {
@@ -394,27 +414,30 @@ pub fn run_ss_enrich(app: &mut RetroJunkApp, ctx: &egui::Context, opts: SsEnrich
         String::new(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
-            ss_worker(op_id, &cancel, &tx, &selected, &db_path, &opts, &egui_ctx);
-            finish(&tx, op_id, &egui_ctx);
+            let w = WorkerCtx {
+                op_id,
+                cancel: cancel.as_ref(),
+                tx: &tx,
+                ctx: &egui_ctx,
+            };
+            ss_worker(&w, &selected, &db_path, &opts);
+            w.finish();
         },
     );
 }
 
 fn ss_worker(
-    op_id: u64,
-    cancel: &AtomicBool,
-    tx: &mpsc::Sender<AppMessage>,
+    w: &WorkerCtx<'_>,
     selected: &HashSet<Platform>,
     db_path: &Path,
     opts: &SsEnrichOptions,
-    ctx: &egui::Context,
 ) {
     use retro_junk_import::scraper_import::{self, EnrichEvent, EnrichOptions};
 
     let conn = match retro_junk_db::open_database(db_path) {
         Ok(c) => c,
         Err(e) => {
-            log::error!("Failed to open catalog database: {}", e);
+            log::error!("Failed to open catalog database: {e}");
             return;
         }
     };
@@ -438,7 +461,7 @@ fn ss_worker(
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
-            log::error!("Failed to create async runtime: {}", e);
+            log::error!("Failed to create async runtime: {e}");
             return;
         }
     };
@@ -446,11 +469,11 @@ fn ss_worker(
     rt.block_on(async {
         // Connect to ScreenScraper (cancel-aware — the handshake can be slow).
         let (client, max_workers) =
-            match cancellable(retro_junk_scraper::create_client(None), cancel).await {
+            match cancellable(retro_junk_scraper::create_client(None), w.cancel).await {
                 None => return,
                 Some(Ok(r)) => r,
                 Some(Err(e)) => {
-                    log::error!("ScreenScraper connection failed: {}", e);
+                    log::error!("ScreenScraper connection failed: {e}");
                     return;
                 }
             };
@@ -460,8 +483,9 @@ fn ss_worker(
             scraper_import::enrich_releases(client, &conn, &options, max_workers, event_tx);
 
         // Progress is tracked per-platform (reset on PlatformStarted).
-        let tx_ev = tx.clone();
-        let ctx_ev = ctx.clone();
+        let op_id = w.op_id;
+        let tx_ev = w.tx.clone();
+        let ctx_ev = w.ctx.clone();
         let mut processed: u64 = 0;
         let mut total: u64 = 0;
         let result = run_with_events(enrich_future, event_rx, |e| match e {
@@ -472,7 +496,7 @@ fn ss_worker(
             } => {
                 total = t as u64;
                 processed = 0;
-                log::info!("Enriching {} releases for {}", t, platform_name);
+                log::info!("Enriching {t} releases for {platform_name}");
                 let _ = tx_ev.send(AppMessage::OperationProgress {
                     op_id,
                     current: 0,
@@ -482,7 +506,7 @@ fn ss_worker(
             }
             EnrichEvent::ReleaseFound { title, ss_name, .. } => {
                 processed += 1;
-                log::info!("  \u{2714} {} (SS: \"{}\")", title, ss_name);
+                log::info!("  \u{2714} {title} (SS: \"{ss_name}\")");
                 let _ = tx_ev.send(AppMessage::OperationProgress {
                     op_id,
                     current: processed,
@@ -492,7 +516,7 @@ fn ss_worker(
             }
             EnrichEvent::ReleaseNotFound { title, .. } => {
                 processed += 1;
-                log::info!("  \u{2718} {}", title);
+                log::info!("  \u{2718} {title}");
                 let _ = tx_ev.send(AppMessage::OperationProgress {
                     op_id,
                     current: processed,
@@ -501,12 +525,12 @@ fn ss_worker(
             }
             EnrichEvent::ReleaseError { title, error, .. } => {
                 processed += 1;
-                log::warn!("  {}: {}", title, error);
+                log::warn!("  {title}: {error}");
             }
             EnrichEvent::ReleaseSkipped { .. } => {
                 processed += 1;
             }
-            EnrichEvent::FatalError { message } => log::error!("Fatal: {}", message),
+            EnrichEvent::FatalError { message } => log::error!("Fatal: {message}"),
             EnrichEvent::Done { stats } => log::info!(
                 "Enrichment complete: {} enriched, {} not found, {} skipped, {} assets",
                 stats.releases_enriched,
@@ -519,7 +543,7 @@ fn ss_worker(
         .await;
 
         if let Err(e) = result {
-            log::error!("Enrichment failed: {}", e);
+            log::error!("Enrichment failed: {e}");
             return;
         }
 
@@ -542,7 +566,7 @@ fn ss_worker(
     });
 }
 
-/// Merge duplicate works sharing a ScreenScraper ID. Mirrors
+/// Merge duplicate works sharing a `ScreenScraper` ID. Mirrors
 /// `commands/catalog/reconcile.rs::run_reconcile_on_conn` (non-dry-run).
 fn run_reconcile(conn: &retro_junk_db::Connection, platform_ids: &[String]) {
     use retro_junk_import::reconcile::{ReconcileOptions, reconcile_works};
@@ -556,10 +580,10 @@ fn run_reconcile(conn: &retro_junk_db::Connection, platform_ids: &[String]) {
             log::info!(
                 "Reconciled {} duplicate work group(s)",
                 result.stats.groups_found
-            )
+            );
         }
         Ok(_) => {}
-        Err(e) => log::warn!("Reconciliation failed: {}", e),
+        Err(e) => log::warn!("Reconciliation failed: {e}"),
     }
 }
 
@@ -583,20 +607,23 @@ pub fn run_cache_fetch(app: &mut RetroJunkApp, ctx: &egui::Context, kind: CacheK
         String::new(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
-            cache_fetch_worker(op_id, &cancel, &tx, &context, &selected, kind, &egui_ctx);
-            finish(&tx, op_id, &egui_ctx);
+            let w = WorkerCtx {
+                op_id,
+                cancel: cancel.as_ref(),
+                tx: &tx,
+                ctx: &egui_ctx,
+            };
+            cache_fetch_worker(&w, &context, &selected, kind);
+            w.finish();
         },
     );
 }
 
 fn cache_fetch_worker(
-    op_id: u64,
-    cancel: &AtomicBool,
-    tx: &mpsc::Sender<AppMessage>,
+    w: &WorkerCtx<'_>,
     context: &AnalysisContext,
     selected: &HashSet<Platform>,
     kind: CacheKind,
-    ctx: &egui::Context,
 ) {
     let cap = match kind {
         CacheKind::Dat => Cap::Dat,
@@ -606,16 +633,11 @@ fn cache_fetch_worker(
     let total = to_fetch.len() as u64;
 
     for (i, console) in to_fetch.iter().enumerate() {
-        if cancel.load(Ordering::Relaxed) {
+        if w.cancelled() {
             log::info!("Fetch cancelled");
             break;
         }
-        let _ = tx.send(AppMessage::OperationProgress {
-            op_id,
-            current: i as u64,
-            total,
-        });
-        ctx.request_repaint();
+        w.progress(i as u64, total);
 
         let short_name = console.metadata.short_name;
         match kind {
@@ -628,16 +650,16 @@ fn cache_fetch_worker(
                     false,
                 ) {
                     Ok(paths) => {
-                        log::info!("\u{2714} {} ({} DAT file(s))", short_name, paths.len())
+                        log::info!("\u{2714} {} ({} DAT file(s))", short_name, paths.len());
                     }
-                    Err(e) => log::warn!("\u{2718} {}: {}", short_name, e),
+                    Err(e) => log::warn!("\u{2718} {short_name}: {e}"),
                 }
             }
             CacheKind::Gdb => {
                 for csv_name in console.analyzer.gdb_csv_names() {
                     match retro_junk_dat::gdb_cache::fetch_gdb(csv_name, false) {
-                        Ok(_) => log::info!("\u{2714} {} [{}]", short_name, csv_name),
-                        Err(e) => log::warn!("\u{2718} {} [{}]: {}", short_name, csv_name, e),
+                        Ok(_) => log::info!("\u{2714} {short_name} [{csv_name}]"),
+                        Err(e) => log::warn!("\u{2718} {short_name} [{csv_name}]: {e}"),
                     }
                 }
             }
@@ -663,8 +685,8 @@ pub fn run_cache_clear(app: &mut RetroJunkApp, ctx: &egui::Context, kind: CacheK
                 CacheKind::Gdb => retro_junk_dat::gdb_cache::clear(),
             };
             match result {
-                Ok(freed) => log::info!("Cache cleared ({} bytes freed)", freed),
-                Err(e) => log::warn!("Failed to clear cache: {}", e),
+                Ok(freed) => log::info!("Cache cleared ({freed} bytes freed)"),
+                Err(e) => log::warn!("Failed to clear cache: {e}"),
             }
             finish(&tx, op_id, &egui_ctx);
         },

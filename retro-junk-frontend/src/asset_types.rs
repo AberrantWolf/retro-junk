@@ -42,6 +42,7 @@ impl fmt::Display for AssetType {
 
 impl AssetType {
     /// File extension for this asset type.
+    #[must_use]
     pub fn default_extension(&self) -> &'static str {
         match self {
             AssetType::Video => "mp4",
@@ -51,9 +52,10 @@ impl AssetType {
 
     /// All file extensions to check when discovering assets on disk.
     ///
-    /// ScreenScraper may return media in different formats (e.g., JPG instead
+    /// `ScreenScraper` may return media in different formats (e.g., JPG instead
     /// of PNG for screenshots), so discovery must check all plausible extensions.
     /// The default extension is always first.
+    #[must_use]
     pub fn discovery_extensions(&self) -> &'static [&'static str] {
         match self {
             AssetType::Video => &["mp4"],

@@ -1,7 +1,7 @@
 use super::*;
 use std::io::Cursor;
 
-/// Build a synthetic 256 KB LoROM with a valid header and checksums.
+/// Build a synthetic 256 KB `LoROM` with a valid header and checksums.
 fn make_snes_rom() -> Vec<u8> {
     let size: usize = 256 * 1024; // 256 KB
     let mut rom = vec![0u8; size];
@@ -42,7 +42,7 @@ fn make_snes_rom() -> Vec<u8> {
     rom
 }
 
-/// Build a synthetic 1 MB HiROM with a valid header and checksums.
+/// Build a synthetic 1 MB `HiROM` with a valid header and checksums.
 fn make_snes_hirom() -> Vec<u8> {
     let size: usize = 1024 * 1024; // 1 MB
     let mut rom = vec![0u8; size];
@@ -107,7 +107,7 @@ fn recompute_snes_checksums(rom: &mut [u8], header_base: usize) {
     let mut sum: u16 = 0;
     if power == rom_size {
         for &byte in rom.iter() {
-            sum = sum.wrapping_add(byte as u16);
+            sum = sum.wrapping_add(u16::from(byte));
         }
     } else {
         let base_data = &rom[..power as usize];
@@ -115,11 +115,11 @@ fn recompute_snes_checksums(rom: &mut [u8], header_base: usize) {
         let remainder_len = remainder.len();
 
         for &byte in base_data {
-            sum = sum.wrapping_add(byte as u16);
+            sum = sum.wrapping_add(u16::from(byte));
         }
         let mirror_total = power as usize;
         for i in 0..mirror_total {
-            sum = sum.wrapping_add(remainder[i % remainder_len] as u16);
+            sum = sum.wrapping_add(u16::from(remainder[i % remainder_len]));
         }
     }
 
@@ -200,7 +200,7 @@ fn test_analyze_hirom() {
     assert_eq!(result.extra.get("country").unwrap(), "Japan");
     assert_eq!(result.regions, vec![Region::Japan]);
     assert_eq!(result.version, "1.1");
-    assert!(result.extra.get("sram_size").is_some());
+    assert!(result.extra.contains_key("sram_size"));
 }
 
 #[test]
@@ -386,9 +386,7 @@ fn test_scoring_prefers_correct_mapping() {
     let hi_score = score_header_at(&mut Cursor::new(&rom), HIROM_HEADER_BASE);
     assert!(
         lo_score > hi_score,
-        "LoROM score ({}) should be higher than HiROM score ({})",
-        lo_score,
-        hi_score
+        "LoROM score ({lo_score}) should be higher than HiROM score ({hi_score})"
     );
 }
 

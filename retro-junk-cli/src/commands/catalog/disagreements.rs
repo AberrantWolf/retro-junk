@@ -10,8 +10,8 @@ use super::{default_catalog_db_path, or_str};
 /// List unresolved disagreements between data sources.
 pub(crate) fn run_catalog_disagreements(
     db_path: Option<PathBuf>,
-    system: String,
-    field: String,
+    system: &str,
+    field: &str,
     limit: u32,
 ) -> Result<(), CliError> {
     use retro_junk_db::DisagreementFilter;
@@ -25,17 +25,17 @@ pub(crate) fn run_catalog_disagreements(
     }
 
     let conn = retro_junk_db::open_database(&db_path)
-        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {e}")))?;
 
     let filter = DisagreementFilter {
-        platform_id: (!system.is_empty()).then_some(system.as_str()),
-        field: (!field.is_empty()).then_some(field.as_str()),
+        platform_id: (!system.is_empty()).then_some(system),
+        field: (!field.is_empty()).then_some(field),
         limit: Some(limit),
         ..Default::default()
     };
 
     let disagreements = retro_junk_db::list_unresolved_disagreements(&conn, &filter)
-        .map_err(|e| CliError::database(format!("Failed to query disagreements: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to query disagreements: {e}")))?;
 
     if disagreements.is_empty() {
         log::info!("No unresolved disagreements found.");
@@ -85,7 +85,7 @@ pub(crate) fn run_catalog_resolve(
     db_path: Option<PathBuf>,
     source_a: bool,
     source_b: bool,
-    custom: Option<String>,
+    custom: Option<&str>,
 ) -> Result<(), CliError> {
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
 
@@ -95,12 +95,12 @@ pub(crate) fn run_catalog_resolve(
     }
 
     let conn = retro_junk_db::open_database(&db_path)
-        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {e}")))?;
 
     // Fetch the disagreement first
     let disagreement = retro_junk_db::get_disagreement(&conn, id)
-        .map_err(|e| CliError::database(format!("Failed to fetch disagreement: {}", e)))?
-        .ok_or_else(|| CliError::other(format!("Disagreement #{} not found.", id)))?;
+        .map_err(|e| CliError::database(format!("Failed to fetch disagreement: {e}")))?
+        .ok_or_else(|| CliError::other(format!("Disagreement #{id} not found.")))?;
 
     if disagreement.resolved {
         log::warn!(
@@ -116,8 +116,8 @@ pub(crate) fn run_catalog_resolve(
         ("source_a".to_string(), disagreement.value_a.clone())
     } else if source_b {
         ("source_b".to_string(), disagreement.value_b.clone())
-    } else if let Some(ref val) = custom {
-        (format!("custom: {val}"), val.clone())
+    } else if let Some(val) = custom {
+        (format!("custom: {val}"), val.to_string())
     } else {
         return Err(CliError::other(
             "Must specify --source-a, --source-b, or --custom <value>.",
@@ -135,14 +135,13 @@ pub(crate) fn run_catalog_resolve(
         )
     {
         return Err(CliError::database(format!(
-            "Failed to apply resolution: {}",
-            e
+            "Failed to apply resolution: {e}"
         )));
     }
 
     // Mark as resolved
     retro_junk_db::resolve_disagreement(&conn, id, &resolution)
-        .map_err(|e| CliError::database(format!("Failed to resolve disagreement: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to resolve disagreement: {e}")))?;
 
     log::info!(
         "{} Resolved disagreement #{}",

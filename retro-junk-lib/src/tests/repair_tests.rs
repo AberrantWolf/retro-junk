@@ -5,7 +5,7 @@ fn test_is_power_of_two() {
     assert!(is_power_of_two(1));
     assert!(is_power_of_two(2));
     assert!(is_power_of_two(1024));
-    assert!(is_power_of_two(1048576));
+    assert!(is_power_of_two(1_048_576));
     assert!(!is_power_of_two(0));
     assert!(!is_power_of_two(3));
     assert!(!is_power_of_two(1000));
@@ -58,13 +58,13 @@ fn test_build_strategies_expected_plus_redump() {
 fn test_repair_method_description() {
     let m = RepairMethod::AppendPadding {
         fill_byte: 0x00,
-        bytes_added: 1048576,
+        bytes_added: 1_048_576,
     };
     assert_eq!(m.description(), "append 1 MB of 0x00");
 
     let m = RepairMethod::PrependPadding {
         fill_byte: 0x00,
-        bytes_added: 352800,
+        bytes_added: 352_800,
     };
     assert_eq!(m.description(), "prepend 352800 bytes of 0x00");
 }

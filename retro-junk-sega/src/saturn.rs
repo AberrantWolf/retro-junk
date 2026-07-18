@@ -60,8 +60,7 @@ fn parse_ip_bin(data: &[u8]) -> Option<SaturnHeader> {
 /// Read a fixed-size ASCII field and trim trailing spaces/nulls.
 fn read_trimmed(bytes: &[u8]) -> String {
     let s = std::str::from_utf8(bytes).unwrap_or("");
-    s.trim_end_matches(|c: char| c == ' ' || c == '\0')
-        .to_string()
+    s.trim_end_matches([' ', '\0']).to_string()
 }
 
 /// Map Saturn region code characters to Region enum values.
@@ -74,10 +73,10 @@ fn saturn_region_codes(codes: &str) -> Vec<Region> {
     for ch in codes.chars() {
         match ch {
             'J' => regions.push(Region::Japan),
-            'T' => regions.push(Region::Asia), // Asia (NTSC)
+            // T = Asia (NTSC), A = Asia (PAL)
+            'T' | 'A' => regions.push(Region::Asia),
             'U' => regions.push(Region::Usa),
             'E' => regions.push(Region::Europe),
-            'A' => regions.push(Region::Asia), // Asia (PAL)
             'B' => regions.push(Region::Brazil),
             'L' => regions.push(Region::LatinAmerica),
             'K' => regions.push(Region::Korea),
@@ -97,7 +96,6 @@ impl SaturnAnalyzer {
     /// Saturn uses Mode 1 sectors. For raw BIN, user data starts at offset 16
     /// (12 sync + 4 header), not 24 (Mode 2 Form 1).
     fn read_ip_bin_sector(
-        &self,
         reader: &mut dyn ReadSeek,
         format: DiscFormat,
     ) -> Result<[u8; 2048], AnalysisError> {
@@ -112,19 +110,18 @@ impl SaturnAnalyzer {
 
     /// Analyze an ISO or raw BIN disc image.
     fn analyze_disc_image(
-        &self,
         reader: &mut dyn ReadSeek,
         _options: &AnalysisOptions,
         format: DiscFormat,
     ) -> Result<RomIdentification, AnalysisError> {
         let file_size = retro_junk_core::util::file_size(reader)?;
 
-        let sector0 = self.read_ip_bin_sector(reader, format)?;
+        let sector0 = Self::read_ip_bin_sector(reader, format)?;
         let header = parse_ip_bin(&sector0).ok_or_else(|| {
             AnalysisError::invalid_format("Not a Saturn disc (IP.BIN magic mismatch)")
         })?;
 
-        let mut id = self.build_identification(&header);
+        let mut id = Self::build_identification(&header);
         id.file_size = file_size;
         id.extra.insert("format".into(), format.name().into());
         id.extra
@@ -135,7 +132,7 @@ impl SaturnAnalyzer {
             if !pvd.volume_identifier.is_empty() && id.internal_name.is_empty() {
                 id.internal_name = pvd.volume_identifier;
             }
-            id.expected_size = pvd.volume_space_size as u64 * retro_junk_disc::ISO_SECTOR_SIZE;
+            id.expected_size = u64::from(pvd.volume_space_size) * retro_junk_disc::ISO_SECTOR_SIZE;
         }
 
         Ok(id)
@@ -143,7 +140,6 @@ impl SaturnAnalyzer {
 
     /// Analyze a CUE sheet.
     fn analyze_cue(
-        &self,
         reader: &mut dyn ReadSeek,
         options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
@@ -201,16 +197,16 @@ impl SaturnAnalyzer {
                     DiscFormat::RawSector2352 => DiscFormat::RawSector2352,
                     _ => DiscFormat::Iso2048,
                 };
-                if let Ok(sector0) = self.read_ip_bin_sector(&mut bin_file, bin_format) {
-                    if let Some(header) = parse_ip_bin(&sector0) {
-                        let header_id = self.build_identification(&header);
-                        id.serial_number = header_id.serial_number;
-                        id.regions = header_id.regions;
-                        id.internal_name = header_id.internal_name;
-                        // Copy Saturn-specific extras
-                        for (k, v) in &header_id.extra {
-                            id.extra.insert(k.clone(), v.clone());
-                        }
+                if let Ok(sector0) = Self::read_ip_bin_sector(&mut bin_file, bin_format)
+                    && let Some(header) = parse_ip_bin(&sector0)
+                {
+                    let header_id = Self::build_identification(&header);
+                    id.serial_number = header_id.serial_number;
+                    id.regions = header_id.regions;
+                    id.internal_name = header_id.internal_name;
+                    // Copy Saturn-specific extras
+                    for (k, v) in &header_id.extra {
+                        id.extra.insert(k.clone(), v.clone());
                     }
                 }
             }
@@ -221,7 +217,6 @@ impl SaturnAnalyzer {
 
     /// Analyze a CHD compressed disc image.
     fn analyze_chd(
-        &self,
         reader: &mut dyn ReadSeek,
         _options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
@@ -237,7 +232,7 @@ impl SaturnAnalyzer {
             AnalysisError::invalid_format("Not a Saturn disc (IP.BIN magic mismatch in CHD)")
         })?;
 
-        let mut id = self.build_identification(&header);
+        let mut id = Self::build_identification(&header);
         id.file_size = file_size;
         id.extra.insert("format".into(), "CHD".into());
         id.extra.insert("detected_extension".into(), "chd".into());
@@ -251,25 +246,26 @@ impl SaturnAnalyzer {
         );
 
         // Try to read PVD for volume identifier
-        if let Ok(pvd) = chd::read_pvd_from_chd(reader) {
-            if !pvd.volume_identifier.is_empty() && id.internal_name.is_empty() {
-                id.internal_name = pvd.volume_identifier;
-            }
+        if let Ok(pvd) = chd::read_pvd_from_chd(reader)
+            && !pvd.volume_identifier.is_empty()
+            && id.internal_name.is_empty()
+        {
+            id.internal_name = pvd.volume_identifier;
         }
 
         Ok(id)
     }
 
-    /// Build a RomIdentification from a parsed Saturn header.
-    fn build_identification(&self, header: &SaturnHeader) -> RomIdentification {
+    /// Build a `RomIdentification` from a parsed Saturn header.
+    fn build_identification(header: &SaturnHeader) -> RomIdentification {
         let mut id = RomIdentification::new();
 
         if !header.game_name.is_empty() {
-            id.internal_name = header.game_name.clone();
+            id.internal_name.clone_from(&header.game_name);
         }
 
         if !header.serial.is_empty() {
-            id.serial_number = header.serial.clone();
+            id.serial_number.clone_from(&header.serial);
         }
 
         id.regions = saturn_region_codes(&header.region_codes);
@@ -307,10 +303,10 @@ impl RomAnalyzer for SaturnAnalyzer {
 
         match format {
             DiscFormat::Iso2048 | DiscFormat::RawSector2352 => {
-                self.analyze_disc_image(reader, options, format)
+                Self::analyze_disc_image(reader, options, format)
             }
-            DiscFormat::Cue => self.analyze_cue(reader, options),
-            DiscFormat::Chd => self.analyze_chd(reader, options),
+            DiscFormat::Cue => Self::analyze_cue(reader, options),
+            DiscFormat::Chd => Self::analyze_chd(reader, options),
         }
     }
 
@@ -323,19 +319,17 @@ impl RomAnalyzer for SaturnAnalyzer {
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
-        let format = match detect_disc_format(reader) {
-            Ok(f) => f,
-            Err(_) => return false,
+        let Ok(format) = detect_disc_format(reader) else {
+            return false;
         };
 
         match format {
-            DiscFormat::Iso2048 | DiscFormat::RawSector2352 => self
-                .read_ip_bin_sector(reader, format)
-                .map(|s| s[0..16] == *SATURN_MAGIC)
-                .unwrap_or(false),
-            DiscFormat::Chd => chd::read_chd_sector_mode1(reader, 0)
-                .map(|s| s[0..16] == *SATURN_MAGIC)
-                .unwrap_or(false),
+            DiscFormat::Iso2048 | DiscFormat::RawSector2352 => {
+                Self::read_ip_bin_sector(reader, format).is_ok_and(|s| s[0..16] == *SATURN_MAGIC)
+            }
+            DiscFormat::Chd => {
+                chd::read_chd_sector_mode1(reader, 0).is_ok_and(|s| s[0..16] == *SATURN_MAGIC)
+            }
             // CUE: can't cheaply verify without opening the referenced BIN
             DiscFormat::Cue => true,
         }

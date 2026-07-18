@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,19 +9,21 @@ use owo_colors::Stream::Stdout;
 
 use retro_junk_disc::cue::check_cue_compat;
 use retro_junk_lib::display::{HARDWARE_KEYS, SizeVerdict, compute_size_verdict, prettify_key};
-use retro_junk_lib::{AnalysisContext, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
+use retro_junk_lib::{AnalysisContext, AnalysisOptions, RomAnalyzer, RomIdentification};
 
 use crate::CliError;
+use crate::cli_types::AnalyzeArgs;
 use crate::scan_folders;
 
 /// Run the analyze command.
 pub(crate) fn run_analyze(
     ctx: &AnalysisContext,
-    quick: bool,
-    consoles: Option<Vec<Platform>>,
-    limit: Option<usize>,
-    library_path: PathBuf,
+    args: &AnalyzeArgs,
+    library_path: &Path,
 ) -> Result<(), CliError> {
+    let quick = args.quick;
+    let consoles = &args.roms.consoles;
+    let limit = args.roms.limit;
     let root_path = library_path;
 
     log::info!("Analyzing ROMs in: {}", root_path.display());
@@ -28,15 +31,14 @@ pub(crate) fn run_analyze(
         log::info!("Quick mode enabled");
     }
     if let Some(n) = limit {
-        log::info!("Limit: {} games per console", n);
+        log::info!("Limit: {n} games per console");
     }
     crate::log_blank();
 
     let options = AnalysisOptions::new().quick(quick);
 
-    let scan = match scan_folders(ctx, &root_path, &consoles) {
-        Some(s) => s,
-        None => return Ok(()),
+    let Some(scan) = scan_folders(ctx, root_path, consoles.as_deref()) else {
+        return Ok(());
     };
 
     for cf in &scan.matches {
@@ -110,7 +112,7 @@ fn analyze_folder(
                 any_output = true;
                 log::info!(
                     "  {}",
-                    format!("{}:", name).if_supports_color(Stdout, |t| t.bold()),
+                    format!("{name}:").if_supports_color(Stdout, |t| t.bold()),
                 );
                 for path in files {
                     analyze_and_print(path, analyzer, options, "  ");
@@ -167,7 +169,7 @@ fn analyze_and_print(
                 } else {
                     *level
                 };
-                log::log!(effective_level, "{}", msg);
+                log::log!(effective_level, "{msg}");
             }
         }
         Err(e) => {
@@ -185,27 +187,26 @@ fn analyze_and_print(
     if path
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
+        && let Ok(content) = std::fs::read_to_string(path)
     {
-        if let Ok(content) = std::fs::read_to_string(path) {
-            let report = check_cue_compat(&content);
-            if !report.is_standard() {
-                if report.can_auto_fix() {
-                    log::warn!(
-                        "    {}{} {}: {} (fix with: retro-junk fix-cue)",
-                        indent,
-                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                        file_name,
-                        report.summary(),
-                    );
-                } else {
-                    log::warn!(
-                        "    {}{} {}: {} (re-dump required)",
-                        indent,
-                        "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                        file_name,
-                        report.summary(),
-                    );
-                }
+        let report = check_cue_compat(&content);
+        if !report.is_standard() {
+            if report.can_auto_fix() {
+                log::warn!(
+                    "    {}{} {}: {} (fix with: retro-junk fix-cue)",
+                    indent,
+                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                    file_name,
+                    report.summary(),
+                );
+            } else {
+                log::warn!(
+                    "    {}{} {}: {} (re-dump required)",
+                    indent,
+                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
+                    file_name,
+                    report.summary(),
+                );
             }
         }
     }
@@ -248,6 +249,8 @@ fn print_size_verdict(verdict: &SizeVerdict) -> String {
 
 /// Format the analysis result for a single file as level-tagged lines.
 /// The first element is always the file header line.
+// Linear formatting of every identification field/section in display order.
+#[allow(clippy::too_many_lines)]
 fn format_analysis(
     file_name: &str,
     info: &RomIdentification,
@@ -327,10 +330,10 @@ fn format_analysis(
         );
         if let Some(mapper) = info.extra.get("mapper") {
             shown_keys.insert("mapper");
-            format_line.push_str(&format!(", Mapper {}", mapper));
+            let _ = write!(format_line, ", Mapper {mapper}");
             if let Some(mapper_name) = info.extra.get("mapper_name") {
                 shown_keys.insert("mapper_name");
-                format_line.push_str(&format!(" ({})", mapper_name));
+                let _ = write!(format_line, " ({mapper_name})");
             }
         }
         lines.push((Level::Info, format_line));
@@ -423,7 +426,7 @@ fn format_analysis(
                     "    {}{} {}  {}",
                     indent,
                     "\u{2714}".if_supports_color(Stdout, |t| t.green()),
-                    format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
+                    format!("{name}:").if_supports_color(Stdout, |t| t.cyan()),
                     colored_status,
                 ),
             ));
@@ -435,7 +438,7 @@ fn format_analysis(
                     "    {}{} {}  {}",
                     indent,
                     "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                    format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
+                    format!("{name}:").if_supports_color(Stdout, |t| t.cyan()),
                     colored_status,
                 ),
             ));
@@ -444,7 +447,11 @@ fn format_analysis(
 
     // (f) Region
     if !info.regions.is_empty() {
-        let region_str: Vec<_> = info.regions.iter().map(|r| r.name()).collect();
+        let region_str: Vec<_> = info
+            .regions
+            .iter()
+            .map(retro_junk_lib::Region::name)
+            .collect();
         lines.push((
             Level::Info,
             format!(

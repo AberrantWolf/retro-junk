@@ -1,4 +1,4 @@
-//! PlayStation 2 disc image analyzer.
+//! `PlayStation` 2 disc image analyzer.
 //!
 //! Supports:
 //! - ISO images (2048 bytes/sector)
@@ -20,21 +20,20 @@ use retro_junk_core::{
 
 use crate::sony_disc::{self, BootKey, DiscFormat};
 
-/// DVD-5 capacity threshold (4.7 GB = 4_700_000_000 bytes).
+/// DVD-5 capacity threshold (4.7 GB = `4_700_000_000` bytes).
 /// Files larger than this are likely DVD-9 (dual layer).
 const DVD5_SIZE_THRESHOLD: u64 = 4_700_000_000;
 
 // Multi-disc PS2 games with shared serials resolve via hash fallback
 // after serial ambiguity. No fixup tables needed with full Redump DATs.
 
-/// Analyzer for PlayStation 2 disc images.
+/// Analyzer for `PlayStation` 2 disc images.
 #[derive(Debug, Default)]
 pub struct Ps2Analyzer;
 
 impl Ps2Analyzer {
     /// Analyze an ISO or raw BIN disc image.
     fn analyze_disc_image(
-        &self,
         reader: &mut dyn ReadSeek,
         _options: &AnalysisOptions,
         format: DiscFormat,
@@ -58,7 +57,7 @@ impl Ps2Analyzer {
             .insert("detected_extension".into(), format.extension().into());
 
         if !pvd.volume_identifier.is_empty() {
-            id.internal_name = pvd.volume_identifier.clone();
+            id.internal_name.clone_from(&pvd.volume_identifier);
         }
 
         // Calculate expected size from PVD
@@ -66,7 +65,7 @@ impl Ps2Analyzer {
             DiscFormat::RawSector2352 => retro_junk_disc::RAW_SECTOR_SIZE,
             _ => retro_junk_disc::ISO_SECTOR_SIZE,
         };
-        id.expected_size = pvd.volume_space_size as u64 * sector_size;
+        id.expected_size = u64::from(pvd.volume_space_size) * sector_size;
 
         // Detect DVD layer type from file size
         detect_dvd_layer(file_size, &mut id);
@@ -90,7 +89,6 @@ impl Ps2Analyzer {
 
     /// Analyze a CUE sheet.
     fn analyze_cue(
-        &self,
         reader: &mut dyn ReadSeek,
         options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
@@ -161,7 +159,7 @@ impl Ps2Analyzer {
                     && pvd.system_identifier.starts_with("PLAYSTATION")
                 {
                     if !pvd.volume_identifier.is_empty() {
-                        id.internal_name = pvd.volume_identifier.clone();
+                        id.internal_name.clone_from(&pvd.volume_identifier);
                     }
                     if let Ok(content) =
                         sony_disc::find_file_in_root(&mut bin_file, bin_format, &pvd, "SYSTEM.CNF")
@@ -180,7 +178,6 @@ impl Ps2Analyzer {
 
     /// Analyze a CHD compressed disc image.
     fn analyze_chd(
-        &self,
         reader: &mut dyn ReadSeek,
         _options: &AnalysisOptions,
     ) -> Result<RomIdentification, AnalysisError> {
@@ -205,16 +202,13 @@ impl Ps2Analyzer {
         detect_dvd_layer(chd_info.logical_size, &mut id);
 
         // Read SYSTEM.CNF from CHD
-        match sony_disc::read_system_cnf_from_chd(reader) {
-            Ok(content) => {
-                let text = String::from_utf8_lossy(&content);
-                if let Ok(ref cnf) = sony_disc::parse_system_cnf(&text) {
-                    apply_system_cnf(cnf, &mut id);
-                }
+        if let Ok(content) = sony_disc::read_system_cnf_from_chd(reader) {
+            let text = String::from_utf8_lossy(&content);
+            if let Ok(ref cnf) = sony_disc::parse_system_cnf(&text) {
+                apply_system_cnf(cnf, &mut id);
             }
-            Err(_) => {
-                // CHD might not be PS2, or SYSTEM.CNF not found
-            }
+        } else {
+            // CHD might not be PS2, or SYSTEM.CNF not found
         }
 
         Ok(id)
@@ -231,10 +225,10 @@ impl RomAnalyzer for Ps2Analyzer {
 
         match format {
             DiscFormat::Iso2048 | DiscFormat::RawSector2352 => {
-                self.analyze_disc_image(reader, options, format)
+                Self::analyze_disc_image(reader, options, format)
             }
-            DiscFormat::Cue => self.analyze_cue(reader, options),
-            DiscFormat::Chd => self.analyze_chd(reader, options),
+            DiscFormat::Cue => Self::analyze_cue(reader, options),
+            DiscFormat::Chd => Self::analyze_chd(reader, options),
         }
     }
 
@@ -247,9 +241,8 @@ impl RomAnalyzer for Ps2Analyzer {
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
-        let format = match sony_disc::detect_disc_format(reader) {
-            Ok(f) => f,
-            Err(_) => return false,
+        let Ok(format) = sony_disc::detect_disc_format(reader) else {
+            return false;
         };
 
         match format {

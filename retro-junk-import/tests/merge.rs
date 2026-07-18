@@ -49,7 +49,7 @@ fn setup_db_with_release() -> (rusqlite::Connection, String) {
     (conn, "smb1-nes-usa".to_string())
 }
 
-fn field_ref<'a>(field: &'a str) -> FieldRef<'a> {
+fn field_ref(field: &str) -> FieldRef<'_> {
     FieldRef {
         entity_type: "release",
         entity_id: "smb1-nes-usa",
@@ -99,7 +99,8 @@ fn disagreement_recorded_when_values_differ() {
     .unwrap();
     assert!(result);
 
-    let disagreements = list_unresolved_disagreements(&conn, &Default::default()).unwrap();
+    let disagreements =
+        list_unresolved_disagreements(&conn, &DisagreementFilter::default()).unwrap();
     assert_eq!(disagreements.len(), 1);
     assert_eq!(disagreements[0].field, "release_date");
     assert_eq!(disagreements[0].value_a, "1985-10-18");

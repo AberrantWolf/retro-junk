@@ -45,6 +45,7 @@ pub enum NesFormat {
 }
 
 impl NesFormat {
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             Self::INes => "iNES",
@@ -65,6 +66,7 @@ pub enum Mirroring {
 }
 
 impl Mirroring {
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             Self::Horizontal => "Horizontal",
@@ -84,6 +86,7 @@ pub enum TvSystem {
 }
 
 impl TvSystem {
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             Self::Ntsc => "NTSC",
@@ -94,6 +97,7 @@ impl TvSystem {
     }
 
     /// Map a timing mode to region(s).
+    #[must_use]
     pub fn to_regions(&self) -> Vec<Region> {
         match self {
             Self::Ntsc => vec![Region::Usa, Region::Japan],
@@ -114,6 +118,7 @@ pub enum ConsoleType {
 }
 
 impl ConsoleType {
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             Self::Nes => "NES/Famicom",
@@ -206,6 +211,25 @@ pub enum NesRomInfo {
 // Parsing
 // ---------------------------------------------------------------------------
 
+/// Decode a NES 2.0 ROM size field: either `raw * unit`, or (when the MSB
+/// nibble is 0xF) exponent-multiplier notation.
+fn nes2_rom_size(lsb: u8, msb: u8, unit: u32, what: &str) -> Result<u32, AnalysisError> {
+    if msb == 0x0F {
+        // Exponent-multiplier notation
+        let exponent = (lsb >> 2) & 0x3F;
+        if exponent >= 32 {
+            return Err(AnalysisError::corrupted_header(format!(
+                "NES 2.0 {what} ROM exponent out of range"
+            )));
+        }
+        let multiplier = (lsb & 0x03) * 2 + 1;
+        Ok((1u32 << exponent) * u32::from(multiplier))
+    } else {
+        let raw = u32::from(lsb) | (u32::from(msb) << 8);
+        Ok(raw * unit)
+    }
+}
+
 /// Parse an iNES / NES 2.0 header from a 16-byte buffer.
 fn parse_ines_header(header: &[u8; 16]) -> Result<INesHeader, AnalysisError> {
     // Byte 6: flags
@@ -249,39 +273,14 @@ fn parse_ines_header(header: &[u8; 16]) -> Result<INesHeader, AnalysisError> {
         let mapper_msb = header[8] & 0x0F;
         let submapper = (header[8] >> 4) & 0x0F;
 
-        let mapper = mapper_lo as u16 | ((mapper_hi as u16) << 4) | ((mapper_msb as u16) << 8);
+        let mapper =
+            u16::from(mapper_lo) | (u16::from(mapper_hi) << 4) | (u16::from(mapper_msb) << 8);
 
         let prg_rom_msb = header[9] & 0x0F;
         let chr_rom_msb = (header[9] >> 4) & 0x0F;
 
-        let prg_rom_size = if prg_rom_msb == 0x0F {
-            // Exponent-multiplier notation
-            let exponent = (header[4] >> 2) & 0x3F;
-            if exponent >= 32 {
-                return Err(AnalysisError::corrupted_header(
-                    "NES 2.0 PRG ROM exponent out of range",
-                ));
-            }
-            let multiplier = (header[4] & 0x03) * 2 + 1;
-            (1u32 << exponent) * multiplier as u32
-        } else {
-            let raw = header[4] as u32 | ((prg_rom_msb as u32) << 8);
-            raw * 16384
-        };
-
-        let chr_rom_size = if chr_rom_msb == 0x0F {
-            let exponent = (header[5] >> 2) & 0x3F;
-            if exponent >= 32 {
-                return Err(AnalysisError::corrupted_header(
-                    "NES 2.0 CHR ROM exponent out of range",
-                ));
-            }
-            let multiplier = (header[5] & 0x03) * 2 + 1;
-            (1u32 << exponent) * multiplier as u32
-        } else {
-            let raw = header[5] as u32 | ((chr_rom_msb as u32) << 8);
-            raw * 8192
-        };
+        let prg_rom_size = nes2_rom_size(header[4], prg_rom_msb, 16384, "PRG")?;
+        let chr_rom_size = nes2_rom_size(header[5], chr_rom_msb, 8192, "CHR")?;
 
         let prg_ram_shift = header[10] & 0x0F;
         let prg_nvram_shift = (header[10] >> 4) & 0x0F;
@@ -322,10 +321,10 @@ fn parse_ines_header(header: &[u8; 16]) -> Result<INesHeader, AnalysisError> {
         })
     } else {
         // iNES 1.0
-        let mapper = mapper_lo as u16 | ((mapper_hi as u16) << 4);
+        let mapper = u16::from(mapper_lo) | (u16::from(mapper_hi) << 4);
 
-        let prg_rom_size = header[4] as u32 * 16384;
-        let chr_rom_size = header[5] as u32 * 8192;
+        let prg_rom_size = u32::from(header[4]) * 16384;
+        let chr_rom_size = u32::from(header[5]) * 8192;
 
         // Byte 9 in iNES 1.0: bit 0 = TV system (unofficial)
         let tv_system = if header[9] & 0x01 != 0 {
@@ -434,7 +433,7 @@ fn parse_bcd_date(year: u8, month: u8, day: u8) -> Option<(u8, u8, u8)> {
 /// Format a BCD date as a human-readable string.
 fn format_bcd_date(year: u8, month: u8, day: u8) -> String {
     // BCD bytes: e.g. 0x86 means 1986, 0x01 means January
-    format!("19{:02x}-{:02x}-{:02x}", year, month, day)
+    format!("19{year:02x}-{month:02x}-{day:02x}")
 }
 
 /// Look up a human-readable name for common NES mapper numbers.
@@ -626,7 +625,7 @@ fn analyze_fds(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> {
     // Calculate number of sides from data size
     let data_size = total_size - data_offset;
     let side_count = if let Some(c) = disk_count_from_header {
-        c as u64
+        u64::from(c)
     } else {
         data_size / FDS_SIDE_SIZE
     };
@@ -692,7 +691,7 @@ fn analyze_unif(reader: &mut dyn ReadSeek) -> Result<NesRomInfo, AnalysisError> 
 fn ines_expected_size(hdr: &INesHeader) -> u64 {
     let header_size = 16u64;
     let trainer_size = if hdr.has_trainer { 512u64 } else { 0 };
-    header_size + trainer_size + hdr.prg_rom_size as u64 + hdr.chr_rom_size as u64
+    header_size + trainer_size + u64::from(hdr.prg_rom_size) + u64::from(hdr.chr_rom_size)
 }
 
 /// Compute the expected file size for an FDS image.
@@ -702,6 +701,49 @@ fn fds_expected_size(format: NesFormat, side_count: usize) -> u64 {
         _ => 0u64,
     };
     header_size + (side_count as u64 * FDS_SIDE_SIZE)
+}
+
+/// Insert the NES 2.0-only fields (RAM sizes, expansion device, misc ROMs).
+fn insert_nes2_extras(id: &mut RomIdentification, hdr: &INesHeader) {
+    if hdr.format != NesFormat::Nes2 {
+        return;
+    }
+    if hdr.prg_ram_size > 0 {
+        id.extra.insert(
+            "prg_ram_size".into(),
+            format_bytes(u64::from(hdr.prg_ram_size)),
+        );
+    }
+    if hdr.prg_nvram_size > 0 {
+        id.extra.insert(
+            "prg_nvram_size".into(),
+            format_bytes(u64::from(hdr.prg_nvram_size)),
+        );
+    }
+    if hdr.chr_ram_size > 0 {
+        id.extra.insert(
+            "chr_ram_size".into(),
+            format_bytes(u64::from(hdr.chr_ram_size)),
+        );
+    }
+    if hdr.chr_nvram_size > 0 {
+        id.extra.insert(
+            "chr_nvram_size".into(),
+            format_bytes(u64::from(hdr.chr_nvram_size)),
+        );
+    }
+    if hdr.expansion_device != 0 {
+        let dev = if let Some(name) = expansion_device_name(hdr.expansion_device) {
+            name.to_string()
+        } else {
+            format!("Unknown (0x{:02X})", hdr.expansion_device)
+        };
+        id.extra.insert("expansion_device".into(), dev);
+    }
+    if hdr.misc_roms > 0 {
+        id.extra
+            .insert("misc_roms".into(), hdr.misc_roms.to_string());
+    }
 }
 
 /// Convert parsed NES ROM info into a generic `RomIdentification`.
@@ -722,12 +764,14 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
             }
             id.extra
                 .insert("mirroring".into(), hdr.mirroring.name().into());
-            id.extra
-                .insert("prg_rom_size".into(), format_bytes(hdr.prg_rom_size as u64));
+            id.extra.insert(
+                "prg_rom_size".into(),
+                format_bytes(u64::from(hdr.prg_rom_size)),
+            );
             id.extra.insert(
                 "chr_rom_size".into(),
                 if hdr.chr_rom_size > 0 {
-                    format_bytes(hdr.chr_rom_size as u64)
+                    format_bytes(u64::from(hdr.chr_rom_size))
                 } else {
                     "CHR RAM".into()
                 },
@@ -746,41 +790,7 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
                 .insert("tv_system".into(), hdr.tv_system.name().into());
             id.regions = hdr.tv_system.to_regions();
 
-            // NES 2.0 specifics
-            if hdr.format == NesFormat::Nes2 {
-                if hdr.prg_ram_size > 0 {
-                    id.extra
-                        .insert("prg_ram_size".into(), format_bytes(hdr.prg_ram_size as u64));
-                }
-                if hdr.prg_nvram_size > 0 {
-                    id.extra.insert(
-                        "prg_nvram_size".into(),
-                        format_bytes(hdr.prg_nvram_size as u64),
-                    );
-                }
-                if hdr.chr_ram_size > 0 {
-                    id.extra
-                        .insert("chr_ram_size".into(), format_bytes(hdr.chr_ram_size as u64));
-                }
-                if hdr.chr_nvram_size > 0 {
-                    id.extra.insert(
-                        "chr_nvram_size".into(),
-                        format_bytes(hdr.chr_nvram_size as u64),
-                    );
-                }
-                if hdr.expansion_device != 0 {
-                    let dev = if let Some(name) = expansion_device_name(hdr.expansion_device) {
-                        name.to_string()
-                    } else {
-                        format!("Unknown (0x{:02X})", hdr.expansion_device)
-                    };
-                    id.extra.insert("expansion_device".into(), dev);
-                }
-                if hdr.misc_roms > 0 {
-                    id.extra
-                        .insert("misc_roms".into(), hdr.misc_roms.to_string());
-                }
-            }
+            insert_nes2_extras(&mut id, hdr);
 
             id.expected_size = ines_expected_size(hdr);
         }
@@ -800,7 +810,7 @@ fn to_identification(info: &NesRomInfo, file_size: u64) -> RomIdentification {
 
             if let Some(first) = sides.first() {
                 if !first.game_name.is_empty() {
-                    id.internal_name = first.game_name.clone();
+                    id.internal_name.clone_from(&first.game_name);
                 }
                 if let Some(name) = fds_manufacturer_name(first.manufacturer_code) {
                     id.maker_code = format!("0x{:02X} ({})", first.manufacturer_code, name);

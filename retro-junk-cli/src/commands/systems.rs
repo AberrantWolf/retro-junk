@@ -19,7 +19,7 @@ pub(crate) enum SystemCapability {
 pub(crate) fn resolve_systems<'a>(
     ctx: &'a AnalysisContext,
     systems: &[String],
-    capability: SystemCapability,
+    capability: &SystemCapability,
 ) -> Result<Vec<&'a RegisteredConsole>, CliError> {
     let cap_filter = |c: &&RegisteredConsole| -> bool {
         match capability {
@@ -48,18 +48,16 @@ pub(crate) fn resolve_systems<'a>(
 
         let console = console.ok_or_else(|| {
             CliError::unknown_system(format!(
-                "Unknown system '{}'. Run 'retro-junk systems' to see all available systems.",
-                name
+                "Unknown system '{name}'. Run 'retro-junk systems' to see all available systems."
             ))
         })?;
 
-        if !cap_filter(&console) {
-            if let Some(cap) = cap_name {
-                return Err(CliError::unknown_system(format!(
-                    "No {} support for '{}'. Run 'retro-junk systems' to see supported systems.",
-                    cap, name
-                )));
-            }
+        if !cap_filter(&console)
+            && let Some(cap) = cap_name
+        {
+            return Err(CliError::unknown_system(format!(
+                "No {cap} support for '{name}'. Run 'retro-junk systems' to see supported systems."
+            )));
         }
 
         result.push(console);
@@ -82,13 +80,12 @@ pub(crate) fn resolve_single_system<'a>(
         })
         .ok_or_else(|| {
             CliError::unknown_system(format!(
-                "Unknown system '{}'. Run 'retro-junk systems' to see all available systems.",
-                system
+                "Unknown system '{system}'. Run 'retro-junk systems' to see all available systems."
             ))
         })
 }
 
-/// Resolve systems to DB platform IDs (for enrich, which doesn't use AnalysisContext directly).
+/// Resolve systems to DB platform IDs (for enrich, which doesn't use `AnalysisContext` directly).
 ///
 /// Empty vec or "all" returns all platform IDs with `core_platform` set.
 pub(crate) fn resolve_platform_ids(
@@ -97,7 +94,7 @@ pub(crate) fn resolve_platform_ids(
 ) -> Result<Vec<String>, CliError> {
     if systems.is_empty() || (systems.len() == 1 && systems[0].eq_ignore_ascii_case("all")) {
         let platforms = retro_junk_db::list_platforms(conn)
-            .map_err(|e| CliError::database(format!("Failed to list platforms: {}", e)))?;
+            .map_err(|e| CliError::database(format!("Failed to list platforms: {e}")))?;
         return Ok(platforms
             .into_iter()
             .filter(|p| !p.core_platform.is_empty())
@@ -109,8 +106,7 @@ pub(crate) fn resolve_platform_ids(
     for s in systems {
         let p: Platform = s.parse().map_err(|_| {
             CliError::unknown_system(format!(
-                "Unknown system '{}'. Run 'retro-junk systems' to see all available systems.",
-                s
+                "Unknown system '{s}'. Run 'retro-junk systems' to see all available systems."
             ))
         })?;
         ids.push(p.short_name().to_string());
@@ -119,7 +115,7 @@ pub(crate) fn resolve_platform_ids(
 }
 
 /// List all supported systems grouped by manufacturer.
-pub(crate) fn run_systems(ctx: &AnalysisContext, manufacturer: String) -> Result<(), CliError> {
+pub(crate) fn run_systems(ctx: &AnalysisContext, manufacturer: &str) {
     log::info!(
         "{}",
         "Supported systems:".if_supports_color(Stdout, |t| t.bold()),
@@ -132,7 +128,7 @@ pub(crate) fn run_systems(ctx: &AnalysisContext, manufacturer: String) -> Result
     let mut gdb_count = 0u32;
 
     for mfr in &manufacturers {
-        if !manufacturer.is_empty() && !mfr.eq_ignore_ascii_case(&manufacturer) {
+        if !manufacturer.is_empty() && !mfr.eq_ignore_ascii_case(manufacturer) {
             continue;
         }
 
@@ -146,7 +142,7 @@ pub(crate) fn run_systems(ctx: &AnalysisContext, manufacturer: String) -> Result
         }
 
         log::info!("");
-        log::info!("  {}", mfr.if_supports_color(Stdout, |t| t.bold()),);
+        log::info!("  {}", mfr.if_supports_color(Stdout, |t| t.bold()));
 
         for c in &consoles {
             let has_dat = c.analyzer.has_dat_support();
@@ -179,12 +175,5 @@ pub(crate) fn run_systems(ctx: &AnalysisContext, manufacturer: String) -> Result
     }
 
     log::info!("");
-    log::info!(
-        "{} systems ({} with DAT support, {} with GDB support)",
-        total,
-        dat_count,
-        gdb_count,
-    );
-
-    Ok(())
+    log::info!("{total} systems ({dat_count} with DAT support, {gdb_count} with GDB support)");
 }

@@ -13,9 +13,9 @@ use super::default_catalog_db_path;
 /// Re-verify collection entries against files on disk.
 pub(crate) fn run_catalog_verify(
     ctx: &AnalysisContext,
-    system: String,
+    system: &str,
     db_path: Option<PathBuf>,
-    user_id: String,
+    user_id: &str,
     _quiet: bool,
 ) -> Result<(), CliError> {
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
@@ -26,10 +26,10 @@ pub(crate) fn run_catalog_verify(
         return Ok(());
     }
 
-    let console = resolve_single_system(ctx, &system)?;
+    let console = resolve_single_system(ctx, system)?;
 
     let conn = retro_junk_db::open_database(&db_path)
-        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {e}")))?;
 
     log::info!(
         "{}",
@@ -44,9 +44,9 @@ pub(crate) fn run_catalog_verify(
         &conn,
         console.analyzer.as_ref(),
         console.metadata.platform,
-        &user_id,
+        user_id,
     )
-    .map_err(|e| CliError::database(format!("Verification failed: {}", e)))?;
+    .map_err(|e| CliError::database(format!("Verification failed: {e}")))?;
 
     crate::log_blank();
     log::info!(

@@ -22,7 +22,10 @@ use owo_colors::Stream::Stdout;
 
 use retro_junk_lib::{AnalysisContext, FolderScanResult, Platform};
 
-use cli_types::*;
+use cli_types::{
+    CacheAction, CatalogAction, Cli, Commands, CredentialsAction, DatCacheAction, GdbCacheAction,
+    SettingsAction,
+};
 
 // -- Custom logger --
 
@@ -44,7 +47,7 @@ impl CliLogger {
         let hours = (total_secs / 3600) % 24;
         let minutes = (total_secs / 60) % 60;
         let seconds = total_secs % 60;
-        format!("{:02}:{:02}:{:02}.{:03}", hours, minutes, seconds, millis)
+        format!("{hours:02}:{minutes:02}:{seconds:02}.{millis:03}")
     }
 }
 
@@ -64,25 +67,25 @@ impl log::Log for CliLogger {
             let ts = Self::timestamp();
             let level = record.level();
             let module = record.module_path().unwrap_or("?");
-            let formatted = format!("[{} {:5} {}] {}", ts, level, module, msg);
+            let formatted = format!("[{ts} {level:5} {module}] {msg}");
             if record.level() <= log::Level::Warn {
-                eprintln!("{}", formatted);
+                eprintln!("{formatted}");
             } else {
-                println!("{}", formatted);
+                println!("{formatted}");
             }
             // Logfile: ANSI-stripped
             if let Some(ref file) = self.logfile {
                 let stripped = strip_ansi_escapes::strip(&formatted);
                 let text = String::from_utf8_lossy(&stripped);
                 let mut guard = file.lock().unwrap();
-                let _ = writeln!(guard, "{}", text);
+                let _ = writeln!(guard, "{text}");
             }
         } else {
             // Normal mode: no timestamps for terminal
             if record.level() <= log::Level::Warn {
-                eprintln!("{}", msg);
+                eprintln!("{msg}");
             } else {
-                println!("{}", msg);
+                println!("{msg}");
             }
             // Logfile always gets timestamps
             if let Some(ref file) = self.logfile {
@@ -91,7 +94,7 @@ impl log::Log for CliLogger {
                 let stripped = strip_ansi_escapes::strip(&msg);
                 let text = String::from_utf8_lossy(&stripped);
                 let mut guard = file.lock().unwrap();
-                let _ = writeln!(guard, "[{} {:5}] {}", ts, level, text);
+                let _ = writeln!(guard, "[{ts} {level:5}] {text}");
             }
         }
     }
@@ -159,341 +162,203 @@ fn run(
     // Commands that need the library path resolve it once here.
     let needs_library_path = matches!(
         command,
-        Commands::Analyze { .. }
-            | Commands::Rename { .. }
-            | Commands::Organize { .. }
-            | Commands::FixCue { .. }
-            | Commands::Compress { .. }
-            | Commands::Repair { .. }
-            | Commands::Scrape { .. }
+        Commands::Analyze(_)
+            | Commands::Rename(_)
+            | Commands::Organize(_)
+            | Commands::FixCue(_)
+            | Commands::Compress(_)
+            | Commands::Repair(_)
+            | Commands::Scrape(_)
     );
     let library_path = if needs_library_path {
-        retro_junk_lib::settings::resolve_library_path(library_path_override.clone())
+        retro_junk_lib::settings::resolve_library_path(library_path_override)
     } else {
         // Unused — give a dummy value that won't be accessed.
         PathBuf::new()
     };
 
     match command {
-        Commands::Analyze { quick, roms } => {
-            commands::analyze::run_analyze(ctx, quick, roms.consoles, roms.limit, library_path)?;
+        Commands::Analyze(args) => {
+            commands::analyze::run_analyze(ctx, &args, &library_path)?;
         }
-        Commands::Rename {
-            dry_run,
-            hash,
-            roms,
-            dat_dir,
-            media_dir,
-            no_media,
-        } => {
-            commands::rename::run_rename(
-                ctx,
-                dry_run,
-                hash,
-                roms.consoles,
-                roms.limit,
-                library_path,
-                dat_dir,
-                quiet,
-                media_dir,
-                no_media,
-            )?;
+        Commands::Rename(args) => {
+            commands::rename::run_rename(ctx, args, &library_path, quiet)?;
         }
-        Commands::Organize {
-            dry_run,
-            roms,
-            dat_dir,
-            include_single_disc,
-            hash_fallback,
-        } => {
-            commands::organize::run_organize(
-                ctx,
-                dry_run,
-                roms.consoles,
-                roms.limit,
-                library_path,
-                dat_dir,
-                include_single_disc,
-                hash_fallback,
-                quiet,
-            )?;
+        Commands::Organize(args) => {
+            commands::organize::run_organize(ctx, args, &library_path, quiet)?;
         }
-        Commands::FixCue {
-            dry_run,
-            no_backup,
-            roms,
-        } => {
-            commands::fix_cue::run_fix_cue(
-                ctx,
-                dry_run,
-                no_backup,
-                roms.consoles,
-                library_path,
-                quiet,
-            )?;
+        Commands::FixCue(args) => {
+            commands::fix_cue::run_fix_cue(ctx, &args, &library_path, quiet)?;
         }
-        Commands::Compress {
-            dry_run,
-            delete_sources,
-            yes,
-            chdman,
-            roms,
-        } => {
-            commands::compress::run_compress(
-                ctx,
-                dry_run,
-                delete_sources,
-                yes,
-                chdman,
-                roms.consoles,
-                roms.limit,
-                library_path,
-                quiet,
-            )?;
+        Commands::Compress(args) => {
+            commands::compress::run_compress(ctx, &args, &library_path, quiet)?;
         }
-        Commands::Repair {
-            dry_run,
-            no_backup,
-            roms,
-            dat_dir,
-        } => {
-            commands::repair::run_repair(
-                ctx,
-                dry_run,
-                no_backup,
-                roms.consoles,
-                roms.limit,
-                library_path,
-                dat_dir,
-                quiet,
-            )?;
+        Commands::Repair(args) => {
+            commands::repair::run_repair(ctx, args, &library_path, quiet)?;
         }
-        Commands::Scrape {
-            roms,
-            media_types,
-            metadata_dir,
-            media_dir,
-            frontend,
-            region,
-            language,
-            language_fallback,
-            force_full_hash,
-            dry_run,
-            skip_existing,
-            no_log,
-            no_miximage,
-            force_redownload,
-            threads,
-        } => {
-            commands::scrape::run_scrape(
-                ctx,
-                roms.consoles,
-                roms.limit,
-                media_types,
-                metadata_dir,
-                media_dir,
-                frontend,
-                region,
-                language,
-                language_fallback,
-                force_full_hash,
-                dry_run,
-                skip_existing,
-                no_log,
-                no_miximage,
-                force_redownload,
-                threads,
-                library_path,
-                quiet,
-            )?;
+        Commands::Scrape(args) => {
+            commands::scrape::run_scrape(ctx, args, &library_path, quiet)?;
         }
         Commands::Cache { action } => match action {
             CacheAction::Dat { action } => match action {
-                DatCacheAction::List => commands::cache::run_cache_list()?,
-                DatCacheAction::Clear => commands::cache::run_cache_clear()?,
+                DatCacheAction::List => commands::cache::run_cache_list(),
+                DatCacheAction::Clear => commands::cache::run_cache_clear(),
                 DatCacheAction::Fetch { systems, force } => {
-                    commands::cache::run_cache_fetch(ctx, systems, force)?
+                    commands::cache::run_cache_fetch(ctx, systems, force);
                 }
             },
             CacheAction::Gdb { action } => match action {
-                GdbCacheAction::List => commands::cache::run_gdb_cache_list()?,
-                GdbCacheAction::Clear => commands::cache::run_gdb_cache_clear()?,
+                GdbCacheAction::List => commands::cache::run_gdb_cache_list(),
+                GdbCacheAction::Clear => commands::cache::run_gdb_cache_clear(),
                 GdbCacheAction::Fetch { systems, force } => {
-                    commands::cache::run_gdb_cache_fetch(ctx, systems, force)?
+                    commands::cache::run_gdb_cache_fetch(ctx, systems, force);
                 }
             },
         },
         Commands::Credentials { action } => match action {
-            CredentialsAction::Show => commands::credentials::run_credentials_show()?,
+            CredentialsAction::Show => commands::credentials::run_credentials_show(),
             CredentialsAction::Setup => commands::credentials::run_credentials_setup()?,
             CredentialsAction::Test => commands::credentials::run_credentials_test(quiet)?,
             CredentialsAction::Path => commands::credentials::run_credentials_path()?,
         },
         Commands::Settings { action } => match action {
-            SettingsAction::Show => commands::settings::run_config_show()?,
+            SettingsAction::Show => commands::settings::run_config_show(),
             SettingsAction::LibraryPath { path, clear } => {
-                commands::settings::run_config_library_path(path, clear)?
+                commands::settings::run_config_library_path(path, clear)?;
             }
         },
         Commands::Systems { manufacturer } => {
-            commands::systems::run_systems(ctx, manufacturer)?;
+            commands::systems::run_systems(ctx, &manufacturer);
         }
-        Commands::Catalog { action } => match action {
-            CatalogAction::Import {
-                systems,
-                catalog_dir,
+        Commands::Catalog { action } => run_catalog(action, quiet, ctx)?,
+    }
+
+    Ok(())
+}
+
+/// Dispatch `catalog` subcommands.
+// Flat dispatch match over every catalog subcommand; one arm per command.
+#[allow(clippy::too_many_lines)]
+fn run_catalog(action: CatalogAction, quiet: bool, ctx: &AnalysisContext) -> Result<(), CliError> {
+    match action {
+        CatalogAction::Import {
+            systems,
+            catalog_dir,
+            db,
+            dat_dir,
+        } => {
+            commands::catalog::import::run_catalog_import(
+                ctx,
+                &systems,
+                &catalog_dir,
                 db,
-                dat_dir,
-            } => {
-                commands::catalog::import::run_catalog_import(
-                    ctx,
-                    systems,
-                    catalog_dir,
-                    db,
-                    dat_dir,
-                )?;
-            }
-            CatalogAction::EnrichGdb {
-                systems,
+                dat_dir.as_deref(),
+            )?;
+        }
+        CatalogAction::EnrichGdb {
+            systems,
+            db,
+            limit,
+            gdb_dir,
+        } => {
+            commands::catalog::enrich_gdb::run_catalog_enrich_gdb(
+                ctx,
+                &systems,
                 db,
                 limit,
-                gdb_dir,
-            } => {
-                commands::catalog::enrich_gdb::run_catalog_enrich_gdb(
-                    ctx, systems, db, limit, gdb_dir,
-                )?;
-            }
-            CatalogAction::Enrich {
-                systems,
-                db,
-                limit,
-                force,
-                download_assets,
-                asset_dir,
-                region,
-                language,
-                threads,
-                no_reconcile,
-            } => {
-                commands::catalog::enrich::run_catalog_enrich(
-                    systems,
-                    db,
-                    limit,
-                    force,
-                    download_assets,
-                    asset_dir,
-                    region,
-                    language,
-                    threads,
-                    no_reconcile,
-                    quiet,
-                )?;
-            }
-            CatalogAction::Scan {
-                system,
-                folder,
-                db,
-                user_id,
-            } => {
-                commands::catalog::scan::run_catalog_scan(ctx, system, folder, db, user_id, quiet)?;
-            }
-            CatalogAction::Verify {
-                system,
-                db,
-                user_id,
-            } => {
-                commands::catalog::verify::run_catalog_verify(ctx, system, db, user_id, quiet)?;
-            }
-            CatalogAction::Disagreements {
-                db,
-                system,
-                field,
-                limit,
-            } => {
-                commands::catalog::disagreements::run_catalog_disagreements(
-                    db, system, field, limit,
-                )?;
-            }
-            CatalogAction::Resolve {
+                gdb_dir.as_deref(),
+            )?;
+        }
+        CatalogAction::Enrich(args) => {
+            commands::catalog::enrich::run_catalog_enrich(args, quiet)?;
+        }
+        CatalogAction::Scan {
+            system,
+            folder,
+            db,
+            user_id,
+        } => {
+            commands::catalog::scan::run_catalog_scan(ctx, &system, &folder, db, user_id, quiet)?;
+        }
+        CatalogAction::Verify {
+            system,
+            db,
+            user_id,
+        } => {
+            commands::catalog::verify::run_catalog_verify(ctx, &system, db, &user_id, quiet)?;
+        }
+        CatalogAction::Disagreements {
+            db,
+            system,
+            field,
+            limit,
+        } => {
+            commands::catalog::disagreements::run_catalog_disagreements(
+                db, &system, &field, limit,
+            )?;
+        }
+        CatalogAction::Resolve {
+            id,
+            db,
+            source_a,
+            source_b,
+            custom,
+        } => {
+            commands::catalog::disagreements::run_catalog_resolve(
                 id,
                 db,
                 source_a,
                 source_b,
-                custom,
-            } => {
-                commands::catalog::disagreements::run_catalog_resolve(
-                    id, db, source_a, source_b, custom,
-                )?;
-            }
-            CatalogAction::Gaps {
-                system,
+                custom.as_deref(),
+            )?;
+        }
+        CatalogAction::Gaps {
+            system,
+            db,
+            collection_only,
+            missing,
+            limit,
+        } => {
+            commands::catalog::gaps::run_catalog_gaps(
+                ctx,
+                &system,
                 db,
                 collection_only,
-                missing,
+                missing.as_deref(),
                 limit,
-            } => {
-                commands::catalog::gaps::run_catalog_gaps(
-                    ctx,
-                    system,
-                    db,
-                    collection_only,
-                    missing,
-                    limit,
-                )?;
-            }
-            CatalogAction::Lookup {
-                query,
-                r#type,
-                platform,
-                manufacturer,
-                crc,
-                sha1,
-                md5,
-                serial,
-                limit,
-                offset,
-                group,
-                db,
-            } => {
-                commands::catalog::lookup::run_catalog_lookup(
-                    query,
-                    platform,
-                    r#type,
-                    manufacturer,
-                    crc,
-                    sha1,
-                    md5,
-                    serial,
-                    limit,
-                    offset,
-                    group,
-                    db,
-                )?;
-            }
-            CatalogAction::Reconcile {
-                systems,
-                db,
-                dry_run,
-            } => {
-                commands::catalog::reconcile::run_catalog_reconcile(systems, db, dry_run)?;
-            }
-            CatalogAction::Stats { db } => {
-                commands::catalog::stats::run_catalog_stats(db)?;
-            }
-            CatalogAction::Unenrich {
-                system,
-                after,
+            )?;
+        }
+        CatalogAction::Lookup(args) => {
+            commands::catalog::lookup::run_catalog_lookup(args)?;
+        }
+        CatalogAction::Reconcile {
+            systems,
+            db,
+            dry_run,
+        } => {
+            commands::catalog::reconcile::run_catalog_reconcile(&systems, db, dry_run)?;
+        }
+        CatalogAction::Stats { db } => {
+            commands::catalog::stats::run_catalog_stats(db)?;
+        }
+        CatalogAction::Unenrich {
+            system,
+            after,
+            db,
+            confirm,
+        } => {
+            commands::catalog::unenrich::run_catalog_unenrich(
+                ctx,
+                &system,
+                after.as_deref(),
                 db,
                 confirm,
-            } => {
-                commands::catalog::unenrich::run_catalog_unenrich(ctx, system, after, db, confirm)?;
-            }
-            CatalogAction::Reset { db, confirm } => {
-                commands::catalog::reset::run_catalog_reset(db, confirm)?;
-            }
-        },
+            )?;
+        }
+        CatalogAction::Reset { db, confirm } => {
+            commands::catalog::reset::run_catalog_reset(db, confirm)?;
+        }
     }
-
     Ok(())
 }
 
@@ -508,10 +373,9 @@ fn create_context() -> AnalysisContext {
 pub(crate) fn scan_folders(
     ctx: &AnalysisContext,
     root: &std::path::Path,
-    consoles: &Option<Vec<Platform>>,
+    consoles: Option<&[Platform]>,
 ) -> Option<FolderScanResult> {
-    let filter = consoles.as_deref();
-    match ctx.scan_console_folders(root, filter) {
+    match ctx.scan_console_folders(root, consoles) {
         Ok(result) => {
             for name in &result.unrecognized {
                 log::info!(
@@ -543,7 +407,7 @@ pub(crate) fn log_dat_error(
     log::warn!(
         "{} {}: {} Error: {}",
         platform_name.if_supports_color(Stdout, |t| t.bold()),
-        format!("({})", folder_name).if_supports_color(Stdout, |t| t.dimmed()),
+        format!("({folder_name})").if_supports_color(Stdout, |t| t.dimmed()),
         "\u{2718}".if_supports_color(Stdout, |t| t.red()),
         error,
     );

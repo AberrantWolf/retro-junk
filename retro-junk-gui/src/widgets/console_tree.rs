@@ -65,7 +65,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     for mfr in manufacturers {
         egui::CollapsingHeader::new(egui::RichText::new(mfr).strong())
-            .id_salt(format!("mfr_{}", mfr))
+            .id_salt(format!("mfr_{mfr}"))
             .default_open(true)
             .show(ui, |ui| {
                 for i in 0..app.library.consoles.len() {
@@ -95,8 +95,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         console
                             .entries
                             .iter()
-                            .map(|e| e.effective_status())
-                            .max_by_key(|s| s.severity())
+                            .map(super::super::state::LibraryEntry::effective_status)
+                            .max_by_key(|status| status.severity())
                     } else {
                         None
                     };

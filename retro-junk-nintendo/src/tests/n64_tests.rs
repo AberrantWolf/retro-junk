@@ -3,7 +3,7 @@ use std::io::Cursor;
 
 use crate::n64_byteorder::MAGIC_Z64;
 
-/// Build a synthetic z64 (big-endian) N64 ROM of MIN_CRC_SIZE bytes
+/// Build a synthetic z64 (big-endian) N64 ROM of `MIN_CRC_SIZE` bytes
 /// with CIC-6102 boot code and valid CRC.
 fn make_n64_rom() -> Vec<u8> {
     make_n64_rom_with_cic(CicVariant::Cic6102)
@@ -21,13 +21,13 @@ fn make_n64_rom_with_cic(cic: CicVariant) -> Vec<u8> {
     rom[0..4].copy_from_slice(&MAGIC_Z64);
 
     // Clock rate
-    rom[0x04..0x08].copy_from_slice(&0x0000000Fu32.to_be_bytes());
+    rom[0x04..0x08].copy_from_slice(&0x0000_000F_u32.to_be_bytes());
 
     // Boot address
-    rom[0x08..0x0C].copy_from_slice(&0x80000400u32.to_be_bytes());
+    rom[0x08..0x0C].copy_from_slice(&0x8000_0400_u32.to_be_bytes());
 
     // Libultra version
-    rom[0x0C..0x10].copy_from_slice(&0x0000144Bu32.to_be_bytes());
+    rom[0x0C..0x10].copy_from_slice(&0x0000_144B_u32.to_be_bytes());
 
     // Title at 0x20: "SUPER MARIO 64      " (20 bytes, space-padded)
     let title = b"SUPER MARIO 64      ";
@@ -47,13 +47,23 @@ fn make_n64_rom_with_cic(cic: CicVariant) -> Vec<u8> {
     rom[0x3F] = 0;
 
     // Fill boot code region with a pattern (won't match any real CIC)
-    for i in (BOOT_CODE_START as usize)..(BOOT_CODE_END as usize) {
-        rom[i] = ((i * 13 + 7) & 0xFF) as u8;
+    for (i, byte) in rom
+        .iter_mut()
+        .enumerate()
+        .take(BOOT_CODE_END as usize)
+        .skip(BOOT_CODE_START as usize)
+    {
+        *byte = ((i * 13 + 7) & 0xFF) as u8;
     }
 
     // Fill CRC data region with some non-zero pattern for meaningful CRC
-    for i in (CRC_START as usize)..(CRC_END as usize) {
-        rom[i] = ((i * 7 + 3) & 0xFF) as u8;
+    for (i, byte) in rom
+        .iter_mut()
+        .enumerate()
+        .take(CRC_END as usize)
+        .skip(CRC_START as usize)
+    {
+        *byte = ((i * 7 + 3) & 0xFF) as u8;
     }
 
     // Compute and store correct CRC for the given CIC variant
@@ -63,7 +73,7 @@ fn make_n64_rom_with_cic(cic: CicVariant) -> Vec<u8> {
 }
 
 /// Recompute CRC for a z64-format ROM buffer and write to header.
-fn recompute_crc(rom: &mut Vec<u8>, cic: CicVariant) {
+fn recompute_crc(rom: &mut [u8], cic: CicVariant) {
     let seed = cic.seed();
     let data = &rom[CRC_START as usize..CRC_END as usize];
 
@@ -146,7 +156,7 @@ fn to_n64_format(z64: &[u8]) -> Vec<u8> {
 #[test]
 fn test_crc32_ieee() {
     // Known test vector: CRC32 of "123456789" = 0xCBF43926
-    assert_eq!(crc32fast::hash(b"123456789"), 0xCBF43926);
+    assert_eq!(crc32fast::hash(b"123456789"), 0xCBF4_3926);
 }
 
 // -- can_handle tests --
@@ -302,13 +312,11 @@ fn test_crc1_mismatch() {
     let status = result.extra.get("checksum_status:N64 CRC").unwrap();
     assert!(
         status.starts_with("CRC1 MISMATCH"),
-        "Expected CRC1 MISMATCH, got: {}",
-        status
+        "Expected CRC1 MISMATCH, got: {status}"
     );
     assert!(
         !status.contains("CRC2 MISMATCH"),
-        "Should not have CRC2 mismatch: {}",
-        status
+        "Should not have CRC2 mismatch: {status}"
     );
 }
 
@@ -324,13 +332,11 @@ fn test_crc2_mismatch() {
     let status = result.extra.get("checksum_status:N64 CRC").unwrap();
     assert!(
         status.starts_with("CRC2 MISMATCH"),
-        "Expected CRC2 MISMATCH, got: {}",
-        status
+        "Expected CRC2 MISMATCH, got: {status}"
     );
     assert!(
         !status.contains("CRC1 MISMATCH"),
-        "Should not have CRC1 mismatch: {}",
-        status
+        "Should not have CRC1 mismatch: {status}"
     );
 }
 
@@ -344,8 +350,8 @@ fn test_both_crc_mismatch() {
         .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
         .unwrap();
     let status = result.extra.get("checksum_status:N64 CRC").unwrap();
-    assert!(status.contains("CRC1 MISMATCH"), "Missing CRC1: {}", status);
-    assert!(status.contains("CRC2 MISMATCH"), "Missing CRC2: {}", status);
+    assert!(status.contains("CRC1 MISMATCH"), "Missing CRC1: {status}");
+    assert!(status.contains("CRC2 MISMATCH"), "Missing CRC2: {status}");
 }
 
 #[test]
@@ -360,8 +366,7 @@ fn test_quick_mode_still_computes_crc() {
     let status = result.extra.get("checksum_status:N64 CRC").unwrap();
     assert!(
         !status.starts_with("SKIPPED"),
-        "Expected CRC to be computed even in quick mode, got: {}",
-        status
+        "Expected CRC to be computed even in quick mode, got: {status}"
     );
 }
 
@@ -383,8 +388,7 @@ fn test_file_too_small_for_crc() {
     let status = result.extra.get("checksum_status:N64 CRC").unwrap();
     assert!(
         status.starts_with("SKIPPED"),
-        "Expected SKIPPED, got: {}",
-        status
+        "Expected SKIPPED, got: {status}"
     );
 }
 
@@ -578,23 +582,19 @@ fn test_invalid_format_error_message() {
     let msg = err.to_string();
     assert!(
         msg.contains("DE, AD, BE, EF"),
-        "Error should include actual bytes: {}",
-        msg
+        "Error should include actual bytes: {msg}"
     );
     assert!(
         msg.contains("z64=[80,37,12,40]"),
-        "Error should include z64 magic: {}",
-        msg
+        "Error should include z64 magic: {msg}"
     );
     assert!(
         msg.contains("v64=[37,80,40,12]"),
-        "Error should include v64 magic: {}",
-        msg
+        "Error should include v64 magic: {msg}"
     );
     assert!(
         msg.contains("n64=[40,12,37,80]"),
-        "Error should include n64 magic: {}",
-        msg
+        "Error should include n64 magic: {msg}"
     );
 }
 

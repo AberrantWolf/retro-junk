@@ -7,6 +7,7 @@ pub use retro_junk_core::util::*;
 ///
 /// Convention: `{parent}/{folder_name}-media`.
 /// For `/path/to/roms` → `/path/to/roms-media`.
+#[must_use]
 pub fn default_media_dir(root: &Path) -> PathBuf {
     default_sibling_dir(root, "media")
 }
@@ -14,6 +15,7 @@ pub fn default_media_dir(root: &Path) -> PathBuf {
 /// Compute the default metadata directory (gamelist.xml etc.) for a ROM root.
 ///
 /// Convention: `{parent}/{folder_name}-metadata`.
+#[must_use]
 pub fn default_metadata_dir(root: &Path) -> PathBuf {
     default_sibling_dir(root, "metadata")
 }

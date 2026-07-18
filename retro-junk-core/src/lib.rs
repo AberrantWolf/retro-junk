@@ -45,15 +45,18 @@ pub struct AnalysisOptions {
 }
 
 impl AnalysisOptions {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn quick(mut self, quick: bool) -> Self {
         self.quick = quick;
         self
     }
 
+    #[must_use]
     pub fn file_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.file_path = Some(path.into());
         self
@@ -116,20 +119,24 @@ pub struct RomIdentification {
 }
 
 impl RomIdentification {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_serial(mut self, serial: impl Into<String>) -> Self {
         self.serial_number = serial.into();
         self
     }
 
+    #[must_use]
     pub fn with_internal_name(mut self, name: impl Into<String>) -> Self {
         self.internal_name = name.into();
         self
     }
 
+    #[must_use]
     pub fn with_region(mut self, region: Region) -> Self {
         self.regions.push(region);
         self
@@ -138,18 +145,19 @@ impl RomIdentification {
 
 /// The source database for DAT files.
 ///
-/// - No-Intro DATs for cartridge-based consoles (from LibRetro GitHub `metadat/no-intro/`)
+/// - No-Intro DATs for cartridge-based consoles (from `LibRetro` GitHub `metadat/no-intro/`)
 /// - Redump DATs for disc-based consoles (from redump.info direct downloads)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DatSource {
     /// No-Intro DATs (cartridge-based consoles: NES, SNES, N64, GB, GBA, etc.)
     NoIntro,
-    /// Redump DATs (disc-based consoles: PS1, PS2, GameCube, Saturn, etc.)
+    /// Redump DATs (disc-based consoles: PS1, PS2, `GameCube`, Saturn, etc.)
     Redump,
 }
 
 impl DatSource {
     /// Returns the base URL for downloading DATs from this source.
+    #[must_use]
     pub fn base_url(&self) -> &'static str {
         match self {
             DatSource::NoIntro => {
@@ -160,6 +168,7 @@ impl DatSource {
     }
 
     /// Returns a human-readable name for this source.
+    #[must_use]
     pub fn display_name(&self) -> &'static str {
         match self {
             DatSource::NoIntro => "No-Intro",
@@ -212,17 +221,20 @@ pub enum HashAlgorithms {
     Crc32,
     /// CRC32 + SHA1 (standard DAT matching).
     Crc32Sha1,
-    /// CRC32 + SHA1 + MD5 (ScreenScraper API needs all three).
+    /// CRC32 + SHA1 + MD5 (`ScreenScraper` API needs all three).
     All,
 }
 
 impl HashAlgorithms {
+    #[must_use]
     pub fn crc32(&self) -> bool {
         true
     }
+    #[must_use]
     pub fn sha1(&self) -> bool {
         matches!(self, Self::Crc32Sha1 | Self::All)
     }
+    #[must_use]
     pub fn md5(&self) -> bool {
         matches!(self, Self::All)
     }
@@ -349,7 +361,7 @@ pub trait RomAnalyzer: Send + Sync {
     /// Returns download identifiers for DAT files.
     ///
     /// For No-Intro, this is the same as `dat_names()` (the DAT name IS the download path).
-    /// For Redump, this returns the redump_slug wrapped in a slice.
+    /// For Redump, this returns the `redump_slug` wrapped in a slice.
     fn dat_download_ids(&self) -> &'static [&'static str] {
         self.dat_names()
     }
@@ -435,7 +447,7 @@ pub trait RomAnalyzer: Send + Sync {
     ///
     /// Different sources use different serial formats:
     /// - ROM headers (analyzers): `NUS-NSME-USA` (prefix-code-region)
-    /// - LibRetro DATs: `NSME` (just the 4-char game code)
+    /// - `LibRetro` DATs: `NSME` (just the 4-char game code)
     ///
     /// Override this to extract the inner game code from your platform's
     /// serial format. Returns `None` if the serial doesn't match the
@@ -456,7 +468,7 @@ pub trait RomAnalyzer: Send + Sync {
 
     /// Returns GDB CSV names for this platform.
     ///
-    /// GameDataBase by PigSaint provides supplementary metadata (Japanese titles,
+    /// `GameDataBase` by `PigSaint` provides supplementary metadata (Japanese titles,
     /// developer/publisher, genre, player count) indexed by SHA1 hash. Each CSV
     /// corresponds to a system; multi-CSV platforms (e.g., NES + FDS) return
     /// multiple names that are merged into one index.
@@ -473,11 +485,11 @@ pub trait RomAnalyzer: Send + Sync {
 
     // -- Scraper support methods (override in platform analyzers) --
 
-    /// Extract a serial number adapted for ScreenScraper API lookups.
+    /// Extract a serial number adapted for `ScreenScraper` API lookups.
     ///
-    /// ScreenScraper may need a different serial format than NoIntro DATs.
+    /// `ScreenScraper` may need a different serial format than `NoIntro` DATs.
     /// By default this delegates to `extract_dat_game_code()`, which works
-    /// for most platforms. Override per-console when ScreenScraper needs
+    /// for most platforms. Override per-console when `ScreenScraper` needs
     /// a different format.
     ///
     /// Returns `None` if no adaptation is needed (use the raw serial as-is).

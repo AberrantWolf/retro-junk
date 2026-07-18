@@ -1,10 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
 use crate::CliError;
+use crate::cli_types::CatalogLookupArgs;
 
 use super::{default_catalog_db_path, format_file_size_or, or_str, truncate_str};
 
@@ -15,21 +15,21 @@ const PREFIX_RELEASE: &str = "rel-";
 const PREFIX_MEDIA: &str = "med-";
 
 /// Entry point for `catalog lookup`.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn run_catalog_lookup(
-    query: Option<String>,
-    platform: String,
-    entity_type: String,
-    manufacturer: String,
-    crc: Option<String>,
-    sha1: Option<String>,
-    md5: Option<String>,
-    serial: Option<String>,
-    limit: u32,
-    offset: u32,
-    group: bool,
-    db_path: Option<PathBuf>,
-) -> Result<(), CliError> {
+pub(crate) fn run_catalog_lookup(args: CatalogLookupArgs) -> Result<(), CliError> {
+    let CatalogLookupArgs {
+        query,
+        r#type: entity_type,
+        platform,
+        manufacturer,
+        crc,
+        sha1,
+        md5,
+        serial,
+        limit,
+        offset,
+        group,
+        db: db_path,
+    } = args;
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
     if !db_path.exists() {
         log::warn!("No catalog database found at {}", db_path.display());
@@ -38,7 +38,7 @@ pub(crate) fn run_catalog_lookup(
     }
 
     let conn = retro_junk_db::open_database(&db_path)
-        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {e}")))?;
 
     // ── Hash / serial lookups (original behavior) ─────────────────────
     // Mutual exclusivity of --crc/--sha1/--md5/--serial is enforced by
@@ -132,13 +132,13 @@ fn lookup_by_hash<F>(
     let media_list = match find_fn(hash) {
         Ok(m) => m,
         Err(e) => {
-            log::error!("Hash lookup failed: {}", e);
+            log::error!("Hash lookup failed: {e}");
             return;
         }
     };
 
     if media_list.is_empty() {
-        log::info!("No media found for {} {}.", hash_type, hash);
+        log::info!("No media found for {hash_type} {hash}.");
         return;
     }
 
@@ -159,7 +159,7 @@ fn lookup_by_hash<F>(
                 continue;
             }
             Err(e) => {
-                log::error!("Failed to fetch release: {}", e);
+                log::error!("Failed to fetch release: {e}");
                 continue;
             }
         };
@@ -211,7 +211,7 @@ fn lookup_by_serial(
     }
 
     if releases.is_empty() {
-        log::info!("No releases found for serial \"{}\".", serial);
+        log::info!("No releases found for serial \"{serial}\".");
         return;
     }
 
@@ -253,32 +253,34 @@ fn dispatch_id_lookup(conn: &retro_junk_db::Connection, q: &str) {
     if let Some(id) = q.strip_prefix(PREFIX_PLATFORM) {
         match retro_junk_db::get_platform_by_id(conn, id) {
             Ok(Some(p)) => print_platform_detail(conn, &p),
-            Ok(None) => log::info!("No platform found with ID \"{}\".", id),
-            Err(e) => log::error!("Lookup failed: {}", e),
+            Ok(None) => log::info!("No platform found with ID \"{id}\"."),
+            Err(e) => log::error!("Lookup failed: {e}"),
         }
     } else if let Some(id) = q.strip_prefix(PREFIX_WORK) {
         match retro_junk_db::get_work_by_id(conn, id) {
             Ok(Some(w)) => print_work_detail(conn, &w, &platform_label),
-            Ok(None) => log::info!("No work found with ID \"{}\".", id),
-            Err(e) => log::error!("Lookup failed: {}", e),
+            Ok(None) => log::info!("No work found with ID \"{id}\"."),
+            Err(e) => log::error!("Lookup failed: {e}"),
         }
     } else if let Some(id) = q.strip_prefix(PREFIX_RELEASE) {
         match retro_junk_db::get_release_by_id(conn, id) {
             Ok(Some(r)) => print_release_detail(conn, &r, &platform_label, &company_label),
-            Ok(None) => log::info!("No release found with ID \"{}\".", id),
-            Err(e) => log::error!("Lookup failed: {}", e),
+            Ok(None) => log::info!("No release found with ID \"{id}\"."),
+            Err(e) => log::error!("Lookup failed: {e}"),
         }
     } else if let Some(id) = q.strip_prefix(PREFIX_MEDIA) {
         match retro_junk_db::get_media_by_id(conn, id) {
             Ok(Some(m)) => print_media_detail(conn, &m, &platform_label),
-            Ok(None) => log::info!("No media found with ID \"{}\".", id),
-            Err(e) => log::error!("Lookup failed: {}", e),
+            Ok(None) => log::info!("No media found with ID \"{id}\"."),
+            Err(e) => log::error!("Lookup failed: {e}"),
         }
     }
 }
 
 // ── Search ──────────────────────────────────────────────────────────────────
 
+// Flat dispatch over entity types, each with its own result formatting.
+#[allow(clippy::too_many_lines)]
 fn dispatch_search(
     conn: &retro_junk_db::Connection,
     query: &str,
@@ -296,12 +298,12 @@ fn dispatch_search(
             let results = match retro_junk_db::search_works(conn, query, limit, offset) {
                 Ok(r) => r,
                 Err(e) => {
-                    log::error!("Search failed: {}", e);
+                    log::error!("Search failed: {e}");
                     return;
                 }
             };
             if results.is_empty() {
-                log::info!("No works found matching \"{}\".", query);
+                log::info!("No works found matching \"{query}\".");
                 return;
             }
             print_works_table(&results, offset);
@@ -311,12 +313,12 @@ fn dispatch_search(
                 match retro_junk_db::search_releases_paged(conn, query, platform, limit, offset) {
                     Ok(r) => r,
                     Err(e) => {
-                        log::error!("Search failed: {}", e);
+                        log::error!("Search failed: {e}");
                         return;
                     }
                 };
             if results.is_empty() {
-                log::info!("No releases found matching \"{}\".", query);
+                log::info!("No releases found matching \"{query}\".");
                 return;
             }
             print_releases_table(&results, &platform_label, offset, limit);
@@ -325,12 +327,12 @@ fn dispatch_search(
             let results = match retro_junk_db::search_media(conn, query, platform, limit, offset) {
                 Ok(r) => r,
                 Err(e) => {
-                    log::error!("Search failed: {}", e);
+                    log::error!("Search failed: {e}");
                     return;
                 }
             };
             if results.is_empty() {
-                log::info!("No media found matching \"{}\".", query);
+                log::info!("No media found matching \"{query}\".");
                 return;
             }
             print_media_table(conn, &results, &platform_label, offset, limit);
@@ -344,7 +346,7 @@ fn dispatch_search(
                 retro_junk_db::search_media(conn, query, platform, limit, 0).unwrap_or_default();
 
             if works.is_empty() && releases.is_empty() && media.is_empty() {
-                log::info!("No results found matching \"{}\".", query);
+                log::info!("No results found matching \"{query}\".");
                 return;
             }
 
@@ -412,10 +414,7 @@ fn dispatch_search(
             );
         }
         other => {
-            log::error!(
-                "Unknown type \"{}\". Use: platforms, works, releases, media",
-                other
-            );
+            log::error!("Unknown type \"{other}\". Use: platforms, works, releases, media");
         }
     }
 }
@@ -441,27 +440,26 @@ fn dispatch_listing(
             );
         }
         "releases" | "release" => {
-            if !platform.is_empty() {
-                list_releases_for_platform(conn, platform, limit, offset);
-            } else {
+            if platform.is_empty() {
                 log::info!(
                     "Listing releases requires --platform. Try: catalog lookup --type releases --platform nes"
                 );
+            } else {
+                list_releases_for_platform(conn, platform, limit, offset);
             }
         }
         "media" => {
-            if !platform.is_empty() {
-                list_media_for_platform(conn, platform, limit, offset);
-            } else {
+            if platform.is_empty() {
                 log::info!(
                     "Listing media requires --platform. Try: catalog lookup --type media --platform nes"
                 );
+            } else {
+                list_media_for_platform(conn, platform, limit, offset);
             }
         }
         other => {
             return Err(CliError::other(format!(
-                "Unknown type \"{}\". Use: platforms, works, releases, media",
-                other
+                "Unknown type \"{other}\". Use: platforms, works, releases, media"
             )));
         }
     }
@@ -474,7 +472,7 @@ fn list_platforms(conn: &retro_junk_db::Connection, manufacturer_filter: &str, g
     let platforms = match retro_junk_db::list_platforms(conn) {
         Ok(p) => p,
         Err(e) => {
-            log::error!("Failed to list platforms: {}", e);
+            log::error!("Failed to list platforms: {e}");
             return;
         }
     };
@@ -499,13 +497,10 @@ fn list_platforms(conn: &retro_junk_db::Connection, manufacturer_filter: &str, g
         .collect();
 
     if filtered.is_empty() {
-        if !manufacturer_filter.is_empty() {
-            log::info!(
-                "No platforms found for manufacturer \"{}\".",
-                manufacturer_filter
-            );
-        } else {
+        if manufacturer_filter.is_empty() {
             log::info!("No platforms in the catalog.");
+        } else {
+            log::info!("No platforms found for manufacturer \"{manufacturer_filter}\".");
         }
         return;
     }
@@ -516,7 +511,7 @@ fn list_platforms(conn: &retro_junk_db::Connection, manufacturer_filter: &str, g
         let mut current_mfr = String::new();
         for p in &filtered {
             if p.manufacturer != current_mfr {
-                current_mfr = p.manufacturer.clone();
+                current_mfr.clone_from(&p.manufacturer);
                 by_mfr.push((current_mfr.clone(), Vec::new()));
             }
             // SAFETY: just pushed an entry above when manufacturer changes, or on first iteration
@@ -524,7 +519,7 @@ fn list_platforms(conn: &retro_junk_db::Connection, manufacturer_filter: &str, g
         }
 
         for (mfr, group_platforms) in &by_mfr {
-            log::info!("{}", mfr.if_supports_color(Stdout, |t| t.bold()),);
+            log::info!("{}", mfr.if_supports_color(Stdout, |t| t.bold()));
             print_platform_table_rows(group_platforms, &release_counts, &media_counts);
             crate::log_blank();
         }
@@ -587,20 +582,20 @@ fn list_releases_for_platform(
         match retro_junk_db::search_releases_paged(conn, "%", Some(platform_id), limit, offset) {
             Ok(r) => r,
             Err(e) => {
-                log::error!("Query failed: {}", e);
+                log::error!("Query failed: {e}");
                 return;
             }
         };
 
     if results.is_empty() {
-        log::info!("No releases found for platform \"{}\".", platform_id);
+        log::info!("No releases found for platform \"{platform_id}\".");
         return;
     }
 
     let plat_name = platform_label(platform_id);
     log::info!(
         "{}",
-        format!("Releases for {} (offset {}):", plat_name, offset)
+        format!("Releases for {plat_name} (offset {offset}):")
             .if_supports_color(Stdout, |t| t.bold()),
     );
     crate::log_blank();
@@ -618,21 +613,20 @@ fn list_media_for_platform(
     let results = match retro_junk_db::search_media(conn, "%", Some(platform_id), limit, offset) {
         Ok(r) => r,
         Err(e) => {
-            log::error!("Query failed: {}", e);
+            log::error!("Query failed: {e}");
             return;
         }
     };
 
     if results.is_empty() {
-        log::info!("No media found for platform \"{}\".", platform_id);
+        log::info!("No media found for platform \"{platform_id}\".");
         return;
     }
 
     let plat_name = platform_label(platform_id);
     log::info!(
         "{}",
-        format!("Media for {} (offset {}):", plat_name, offset)
-            .if_supports_color(Stdout, |t| t.bold()),
+        format!("Media for {plat_name} (offset {offset}):").if_supports_color(Stdout, |t| t.bold()),
     );
     crate::log_blank();
     print_media_table(conn, &results, &platform_label, offset, limit);
@@ -665,13 +659,13 @@ fn print_platform_detail(conn: &retro_junk_db::Connection, p: &retro_junk_db::Pl
     let rel_count = release_counts.get(&p.id).copied().unwrap_or(0);
     let med_count = media_counts.get(&p.id).copied().unwrap_or(0);
 
-    log::info!("{}", p.display_name.if_supports_color(Stdout, |t| t.bold()),);
+    log::info!("{}", p.display_name.if_supports_color(Stdout, |t| t.bold()));
     log::info!("  ID:           {}{}", PREFIX_PLATFORM, &p.id);
     log::info!("  Short name:   {}", &p.short_name);
     log::info!("  Manufacturer: {}", &p.manufacturer);
-    log::info!("  Generation:   {}", gen_str);
+    log::info!("  Generation:   {gen_str}");
     log::info!("  Media type:   {}", &p.media_type);
-    log::info!("  Release year: {}", year_str);
+    log::info!("  Release year: {year_str}");
     log::info!("  Releases:     {}", format_count(rel_count));
     log::info!("  Media:        {}", format_count(med_count));
     crate::log_blank();
@@ -711,6 +705,8 @@ fn print_work_detail(
 }
 
 /// Print a detailed view of a single release.
+// Linear report of every release field/section in display order.
+#[allow(clippy::too_many_lines)]
 fn print_release_detail(
     conn: &retro_junk_db::Connection,
     release: &retro_junk_catalog::types::Release,
@@ -730,20 +726,17 @@ fn print_release_detail(
     let publisher = release
         .publisher_id
         .as_deref()
-        .map(company_label)
-        .unwrap_or_else(|| dash.to_string());
+        .map_or_else(|| dash.to_string(), company_label);
     let developer = release
         .developer_id
         .as_deref()
-        .map(company_label)
-        .unwrap_or_else(|| dash.to_string());
+        .map_or_else(|| dash.to_string(), company_label);
     let date_str = or_str(&release.release_date, dash);
     let genre_str = or_str(&release.genre, dash);
     let players_str = or_str(&release.players, dash);
     let rating_str = release
         .rating
-        .map(|r| format!("{:.1}", r))
-        .unwrap_or_else(|| dash.to_string());
+        .map_or_else(|| dash.to_string(), |r| format!("{r:.1}"));
 
     log::info!("  ID:           {}{}", PREFIX_RELEASE, &release.id);
     if !release.alt_title.is_empty() {
@@ -755,13 +748,13 @@ fn print_release_detail(
     if !release.cover_title.is_empty() {
         log::info!("  Cover title:  {}", release.cover_title);
     }
-    log::info!("  Serial:       {}", serial_str);
-    log::info!("  Publisher:    {}", publisher);
-    log::info!("  Developer:    {}", developer);
-    log::info!("  Release date: {}", date_str);
-    log::info!("  Genre:        {}", genre_str);
-    log::info!("  Players:      {}", players_str);
-    log::info!("  Rating:       {}", rating_str);
+    log::info!("  Serial:       {serial_str}");
+    log::info!("  Publisher:    {publisher}");
+    log::info!("  Developer:    {developer}");
+    log::info!("  Release date: {date_str}");
+    log::info!("  Genre:        {genre_str}");
+    log::info!("  Players:      {players_str}");
+    log::info!("  Rating:       {rating_str}");
 
     if !release.description.is_empty() {
         let desc = &release.description;
@@ -770,17 +763,17 @@ fn print_release_detail(
         } else {
             desc.clone()
         };
-        log::info!("  Description:  {}", short);
+        log::info!("  Description:  {short}");
     }
 
     // Media entries
     match retro_junk_db::media_for_release(conn, &release.id) {
         Ok(media) if !media.is_empty() => {
             crate::log_blank();
-            log::info!("  {}", "Media:".if_supports_color(Stdout, |t| t.bold()),);
+            log::info!("  {}", "Media:".if_supports_color(Stdout, |t| t.bold()));
             for (i, m) in media.iter().enumerate() {
                 let name = or_str(&m.dat_name, &m.id);
-                log::info!("    {}. {}", i + 1, name,);
+                log::info!("    {}. {}", i + 1, name);
                 let crc = or_str(&m.crc32, dash);
                 let sha1_val = or_str(&m.sha1, dash);
                 let sha1_short = if sha1_val.len() > 12 {
@@ -789,16 +782,11 @@ fn print_release_detail(
                     sha1_val
                 };
                 let size_str = format_file_size_or(m.file_size, dash);
-                log::info!(
-                    "       CRC32: {}  SHA1: {}...  Size: {}",
-                    crc,
-                    sha1_short,
-                    size_str,
-                );
+                log::info!("       CRC32: {crc}  SHA1: {sha1_short}...  Size: {size_str}");
 
                 let status = format!("{:?}", m.status).to_lowercase();
                 let source = or_str(&m.dat_source, dash);
-                log::info!("       Status: {}  Source: {}", status, source,);
+                log::info!("       Status: {status}  Source: {source}");
 
                 // Check collection status
                 if let Ok(Some(entry)) =
@@ -852,7 +840,7 @@ fn print_media_detail(
     let dash = "--";
     let name = or_str(&m.dat_name, &m.id);
 
-    log::info!("{}", name.if_supports_color(Stdout, |t| t.bold()),);
+    log::info!("{}", name.if_supports_color(Stdout, |t| t.bold()));
     log::info!("  ID:        {}{}", PREFIX_MEDIA, &m.id);
 
     // Resolve parent release for platform info
@@ -860,7 +848,7 @@ fn print_media_detail(
         let plat = platform_label(&release.platform_id);
         log::info!("  Release:   {}{}", PREFIX_RELEASE, &m.release_id);
         log::info!("  Title:     {}", &release.title);
-        log::info!("  Platform:  {}", plat);
+        log::info!("  Platform:  {plat}");
         log::info!("  Region:    {}", &release.region);
     } else {
         log::info!("  Release:   {}{}", PREFIX_RELEASE, &m.release_id);
@@ -873,12 +861,12 @@ fn print_media_detail(
     let status = format!("{:?}", m.status).to_lowercase();
     let source = or_str(&m.dat_source, dash);
 
-    log::info!("  Size:      {}", size_str);
-    log::info!("  CRC32:     {}", crc);
-    log::info!("  SHA1:      {}", sha1_val);
-    log::info!("  MD5:       {}", md5_val);
-    log::info!("  Status:    {}", status);
-    log::info!("  Source:    {}", source);
+    log::info!("  Size:      {size_str}");
+    log::info!("  CRC32:     {crc}");
+    log::info!("  SHA1:      {sha1_val}");
+    log::info!("  MD5:       {md5_val}");
+    log::info!("  Status:    {status}");
+    log::info!("  Source:    {source}");
 
     // Check collection status
     if let Ok(Some(entry)) = retro_junk_db::find_collection_entry(conn, &m.id, "default") {

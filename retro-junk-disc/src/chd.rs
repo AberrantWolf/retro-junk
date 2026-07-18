@@ -39,14 +39,14 @@ fn read_chd_sector_with_offset(
     reader.seek(SeekFrom::Start(0))?;
 
     let mut chd = chd::Chd::open(reader, None)
-        .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {}", e)))?;
+        .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {e}")))?;
 
-    let hunk_size = chd.header().hunk_size() as u64;
+    let hunk_size = u64::from(chd.header().hunk_size());
 
     // Use the CHD header's unit_bytes for the actual sector stride.
     // CHDs without subchannel data (SUBTYPE:NONE) use 2352 bytes per sector,
     // not the 2448 assumed by the CHD_CD_SECTOR_SIZE constant.
-    let unit_bytes = chd.header().unit_bytes() as u64;
+    let unit_bytes = u64::from(chd.header().unit_bytes());
     let sector_byte_offset = sector * unit_bytes;
 
     // Which hunk contains this offset?
@@ -59,11 +59,11 @@ fn read_chd_sector_with_offset(
 
     let mut hunk = chd
         .hunk(hunk_num as u32)
-        .map_err(|e| AnalysisError::other(format!("Failed to get CHD hunk {}: {}", hunk_num, e)))?;
+        .map_err(|e| AnalysisError::other(format!("Failed to get CHD hunk {hunk_num}: {e}")))?;
 
     hunk.read_hunk_in(&mut cmp_buf, &mut hunk_buf)
         .map_err(|e| {
-            AnalysisError::other(format!("Failed to decompress CHD hunk {}: {}", hunk_num, e))
+            AnalysisError::other(format!("Failed to decompress CHD hunk {hunk_num}: {e}"))
         })?;
 
     // Within the raw sector, user data starts at the given offset
@@ -91,7 +91,7 @@ pub fn read_chd_info(reader: &mut dyn retro_junk_core::ReadSeek) -> Result<ChdIn
     reader.seek(SeekFrom::Start(0))?;
 
     let chd = chd::Chd::open(reader, None)
-        .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {}", e)))?;
+        .map_err(|e| AnalysisError::other(format!("Failed to open CHD: {e}")))?;
 
     let header = chd.header();
 
@@ -137,11 +137,11 @@ pub fn find_file_in_chd(
     let pvd = parse_pvd_data(&pvd_data)?;
 
     // Walk root directory to find the file
-    let dir_sectors = (pvd.root_dir_data_length as u64).div_ceil(crate::sector::ISO_SECTOR_SIZE);
+    let dir_sectors = u64::from(pvd.root_dir_data_length).div_ceil(crate::sector::ISO_SECTOR_SIZE);
     let target_upper = filename.to_uppercase();
 
     for sector_offset in 0..dir_sectors {
-        let sector = pvd.root_dir_extent_lba as u64 + sector_offset;
+        let sector = u64::from(pvd.root_dir_extent_lba) + sector_offset;
         let sector_data = read_chd_sector(reader, sector)?;
 
         let mut pos = 0;
@@ -170,8 +170,7 @@ pub fn find_file_in_chd(
     }
 
     Err(AnalysisError::other(format!(
-        "'{}' not found in CHD root directory",
-        filename,
+        "'{filename}' not found in CHD root directory",
     )))
 }
 
@@ -189,11 +188,11 @@ pub fn read_file_from_chd(
         ));
     }
     let mut result = Vec::with_capacity(record.data_length as usize);
-    let sectors_needed = (record.data_length as u64).div_ceil(crate::sector::ISO_SECTOR_SIZE);
+    let sectors_needed = u64::from(record.data_length).div_ceil(crate::sector::ISO_SECTOR_SIZE);
     let mut remaining = record.data_length as usize;
 
     for i in 0..sectors_needed {
-        let sector = record.extent_lba as u64 + i;
+        let sector = u64::from(record.extent_lba) + i;
         let sector_data = read_chd_sector(reader, sector)?;
         let to_copy = remaining.min(crate::sector::ISO_SECTOR_SIZE as usize);
         result.extend_from_slice(&sector_data[..to_copy]);
@@ -208,7 +207,7 @@ pub fn read_file_from_chd(
 pub struct ChdTrackInfo {
     /// Track number (1-based).
     pub track_number: u32,
-    /// Track type string (e.g., "MODE1_RAW", "MODE2_RAW", "AUDIO").
+    /// Track type string (e.g., "`MODE1_RAW`", "`MODE2_RAW`", "AUDIO").
     pub track_type: String,
     /// Number of data frames (sectors) in this track.
     pub frames: usize,
@@ -219,6 +218,7 @@ pub struct ChdTrackInfo {
 
 impl ChdTrackInfo {
     /// Returns true if this is a data track (MODE1 or MODE2, not AUDIO).
+    #[must_use]
     pub fn is_data(&self) -> bool {
         self.track_type.contains("MODE")
     }
@@ -246,7 +246,7 @@ pub fn parse_chd_tracks<F: std::io::Read + std::io::Seek>(
 
         let meta = meta_ref
             .read(chd.inner())
-            .map_err(|e| AnalysisError::other(format!("Failed to read CHD metadata: {}", e)))?;
+            .map_err(|e| AnalysisError::other(format!("Failed to read CHD metadata: {e}")))?;
 
         let text = String::from_utf8_lossy(&meta.value);
 
@@ -285,6 +285,7 @@ pub fn parse_chd_tracks<F: std::io::Read + std::io::Seek>(
 /// TYPE contains "MODE"). This handles both single-data-track discs (PS1/PS2
 /// where Track 1 is the only data track) and multi-data-track discs (Saturn
 /// where Track 2 is often the largest data track).
+#[must_use]
 pub fn select_largest_data_track(tracks: &[ChdTrackInfo]) -> Option<&ChdTrackInfo> {
     tracks
         .iter()
@@ -311,8 +312,9 @@ pub fn parse_chd_track1_frames<F: std::io::Read + std::io::Seek>(
 
 /// Extract a field value from CHD metadata text (e.g., "FRAMES" from
 /// `"TRACK:1 TYPE:MODE2_RAW SUBTYPE:NONE FRAMES:229020"`).
+#[must_use]
 pub fn parse_meta_field<'a>(text: &'a str, field: &str) -> Option<&'a str> {
-    let prefix = format!("{}:", field);
+    let prefix = format!("{field}:");
     for token in text.split_whitespace() {
         if let Some(value) = token.strip_prefix(&prefix) {
             return Some(value);

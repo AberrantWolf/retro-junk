@@ -20,7 +20,7 @@ fn config_template_parses_with_no_values_set() {
 /// it sees the full set of options.
 #[test]
 fn config_template_documents_every_field() {
-    for meta in CREDENTIAL_FIELDS.iter() {
+    for meta in &CREDENTIAL_FIELDS {
         assert!(
             CONFIG_TEMPLATE.contains(meta.key),
             "template is missing key `{}`",
@@ -35,7 +35,7 @@ fn config_template_documents_every_field() {
 }
 
 /// A blank value (empty or whitespace-only) is "unset": it must fall through
-/// to the next level of the chain rather than masking it. A blank user_id
+/// to the next level of the chain rather than masking it. A blank `user_id`
 /// means anonymous API access, not a login with an empty username.
 #[test]
 fn blank_values_are_treated_as_unset() {
@@ -85,7 +85,7 @@ fn sources_by_key_covers_every_field() {
         user_id: CredentialSource::Missing,
         user_password: CredentialSource::Missing,
     };
-    for meta in CREDENTIAL_FIELDS.iter() {
+    for meta in &CREDENTIAL_FIELDS {
         assert!(
             sources.by_key(meta.key).is_some(),
             "by_key must resolve `{}`",

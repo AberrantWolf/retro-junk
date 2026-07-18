@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
@@ -7,21 +7,26 @@ use owo_colors::Stream::Stdout;
 use retro_junk_lib::organize::{
     OrganizeOptions, OrganizeProgress, execute_organize_job, plan_organize,
 };
-use retro_junk_lib::{AnalysisContext, DatSource, Platform};
+use retro_junk_lib::{AnalysisContext, DatSource};
 
 use crate::CliError;
+use crate::cli_types::{ConsoleFilterArgs, DatDirArg, OrganizeArgs};
 
+// Linear per-console organize orchestration (plan, report, execute, summarize).
+#[allow(clippy::too_many_lines)]
 pub(crate) fn run_organize(
     ctx: &AnalysisContext,
-    dry_run: bool,
-    consoles: Option<Vec<Platform>>,
-    limit: Option<usize>,
-    library_path: PathBuf,
-    dat_dir: Option<PathBuf>,
-    include_single_disc: bool,
-    hash_fallback: bool,
+    args: OrganizeArgs,
+    library_path: &Path,
     quiet: bool,
 ) -> Result<(), CliError> {
+    let OrganizeArgs {
+        dry_run,
+        roms: ConsoleFilterArgs { consoles, limit },
+        dat: DatDirArg { dat_dir },
+        include_single_disc,
+        hash_fallback,
+    } = args;
     let options = OrganizeOptions {
         dat_dir,
         limit,
@@ -55,9 +60,8 @@ pub(crate) fn run_organize(
     }
     crate::log_blank();
 
-    let scan = match crate::scan_folders(ctx, &library_path, &consoles) {
-        Some(s) => s,
-        None => return Ok(()),
+    let Some(scan) = crate::scan_folders(ctx, library_path, consoles.as_deref()) else {
+        return Ok(());
     };
 
     let mut total_jobs = 0usize;
@@ -119,9 +123,8 @@ pub(crate) fn run_organize(
                 bytes_done,
                 bytes_total,
             } => {
-                if bytes_total > 0 {
-                    let pct = (bytes_done * 100) / bytes_total;
-                    pb.set_message(format!("Hashing {} ({pct}%)", file_name));
+                if let Some(pct) = (bytes_done * 100).checked_div(bytes_total) {
+                    pb.set_message(format!("Hashing {file_name} ({pct}%)"));
                 }
                 pb.tick();
             }
@@ -217,7 +220,7 @@ pub(crate) fn run_organize(
                         }
                         total_files_moved += result.files_moved;
                         for err in &result.errors {
-                            log::error!("    {}", err);
+                            log::error!("    {err}");
                             total_errors.push(err.clone());
                         }
                     }

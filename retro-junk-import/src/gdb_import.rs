@@ -1,11 +1,11 @@
-//! GameDataBase (GDB) catalog enrichment.
+//! `GameDataBase` (GDB) catalog enrichment.
 //!
-//! Enriches catalog releases with metadata from PigSaint's GameDataBase:
+//! Enriches catalog releases with metadata from `PigSaint`'s `GameDataBase`:
 //! Japanese titles, developer/publisher, release dates, genre, player count.
 //! Matches are performed by SHA1 hash from media entries.
 //!
 //! Data source: <https://github.com/PigSaint/GameDataBase>
-//! License: CC BY 4.0 — Attribution to PigSaint required.
+//! License: CC BY 4.0 — Attribution to `PigSaint` required.
 
 use retro_junk_catalog::types::Company;
 use retro_junk_dat::gdb::{self, GdbGame};
@@ -47,7 +47,7 @@ pub struct GdbEnrichOptions {
 /// Enrich catalog releases for a platform using GDB data.
 ///
 /// For each media entry with a SHA1, looks up the hash in the GDB index.
-/// When found, fills in missing alt_title, developer, publisher, release_date,
+/// When found, fills in missing `alt_title`, developer, publisher, `release_date`,
 /// genre, and players on the parent release.
 pub fn enrich_gdb(
     conn: &Connection,
@@ -104,9 +104,8 @@ pub fn enrich_gdb(
                     .flatten()
             });
 
-            let gdb_game = match gdb_game {
-                Some(g) => g,
-                None => continue,
+            let Some(gdb_game) = gdb_game else {
+                continue;
             };
 
             stats.matched += 1;
@@ -214,16 +213,16 @@ fn enrich_release(
     ];
     for (column, existing, gdb_full) in title_columns {
         let (_, native) = gdb::split_title(gdb_full);
-        if let Some(native) = native {
-            if existing.is_empty() || existing.contains('@') {
-                conn.execute(
-                    &format!(
-                        "UPDATE releases SET {column} = ?2, updated_at = datetime('now') WHERE id = ?1"
-                    ),
-                    params![release_id, native],
-                )?;
-                updated = true;
-            }
+        if let Some(native) = native
+            && (existing.is_empty() || existing.contains('@'))
+        {
+            conn.execute(
+                &format!(
+                    "UPDATE releases SET {column} = ?2, updated_at = datetime('now') WHERE id = ?1"
+                ),
+                params![release_id, native],
+            )?;
+            updated = true;
         }
     }
 
@@ -243,47 +242,15 @@ fn enrich_release(
         ),
     ];
     for (field, column, existing_id, gdb_name) in company_columns {
-        if gdb_name.is_empty() {
-            continue;
-        }
-        let company_id = find_or_create_company(conn, gdb_name, stats)?;
-        match existing_id {
-            None => {
-                conn.execute(
-                    &format!(
-                        "UPDATE releases SET {column} = ?2, updated_at = datetime('now')
-                         WHERE id = ?1 AND {column} IS NULL"
-                    ),
-                    params![release_id, company_id],
-                )?;
-                updated = true;
-            }
-            Some(existing_id) => {
-                let existing_name = queries::get_company_name(conn, existing_id)
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default();
-                let disagreed = merge::check_field(
-                    conn,
-                    &merge::FieldRef {
-                        entity_type: "release",
-                        entity_id: release_id,
-                        field,
-                    },
-                    &merge::SourcedValue {
-                        source: EXISTING_SOURCE,
-                        value: &existing_name,
-                    },
-                    &merge::SourcedValue {
-                        source: GDB_SOURCE,
-                        value: gdb_name,
-                    },
-                )?;
-                if disagreed {
-                    stats.disagreements += 1;
-                }
-            }
-        }
+        updated |= enrich_company(
+            conn,
+            release_id,
+            field,
+            column,
+            existing_id.as_deref(),
+            gdb_name,
+            stats,
+        )?;
     }
 
     // -- release_date --
@@ -324,6 +291,63 @@ fn enrich_release(
     Ok(updated)
 }
 
+/// Fill an unset company FK column with a GDB-provided company, or record a
+/// disagreement when both sides have a value and differ. Returns true if updated.
+///
+/// `column` must be a compile-time column name (it is interpolated into SQL).
+fn enrich_company(
+    conn: &Connection,
+    release_id: &str,
+    field: &'static str,
+    column: &'static str,
+    existing_id: Option<&str>,
+    gdb_name: &str,
+    stats: &mut GdbEnrichStats,
+) -> Result<bool, ImportError> {
+    if gdb_name.is_empty() {
+        return Ok(false);
+    }
+    let company_id = find_or_create_company(conn, gdb_name, stats)?;
+    match existing_id {
+        None => {
+            conn.execute(
+                &format!(
+                    "UPDATE releases SET {column} = ?2, updated_at = datetime('now')
+                     WHERE id = ?1 AND {column} IS NULL"
+                ),
+                params![release_id, company_id],
+            )?;
+            Ok(true)
+        }
+        Some(existing_id) => {
+            let existing_name = queries::get_company_name(conn, existing_id)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            let disagreed = merge::check_field(
+                conn,
+                &merge::FieldRef {
+                    entity_type: "release",
+                    entity_id: release_id,
+                    field,
+                },
+                &merge::SourcedValue {
+                    source: EXISTING_SOURCE,
+                    value: &existing_name,
+                },
+                &merge::SourcedValue {
+                    source: GDB_SOURCE,
+                    value: gdb_name,
+                },
+            )?;
+            if disagreed {
+                stats.disagreements += 1;
+            }
+            Ok(false)
+        }
+    }
+}
+
 /// Find or create a company by name, returning its ID.
 fn find_or_create_company(
     conn: &Connection,
@@ -355,7 +379,7 @@ fn find_or_create_company(
     };
     operations::upsert_company(conn, &company)?;
     stats.companies_created += 1;
-    log::debug!("Created new company: {} ({})", name, slug);
+    log::debug!("Created new company: {name} ({slug})");
 
     Ok(slug)
 }

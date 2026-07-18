@@ -47,18 +47,18 @@ fn test_compressed_detection_resets_position() {
     assert_eq!(cursor.position(), 0);
 }
 
-/// Build a synthetic GameCube disc image with a valid header.
+/// Build a synthetic `GameCube` disc image with a valid header.
 ///
 /// The image is 8 KB (enough for header + some padding). The game code,
 /// maker code, version, and game name are configurable.
-fn make_gc_disc(game_code: &[u8; 4], maker_code: &[u8; 2], version: u8, name: &str) -> Vec<u8> {
+fn make_gc_disc(game_code: [u8; 4], maker_code: [u8; 2], version: u8, name: &str) -> Vec<u8> {
     let size = 8 * 1024;
     let mut disc = vec![0u8; size];
 
     // Game code at 0x0000
-    disc[0x0000..0x0004].copy_from_slice(game_code);
+    disc[0x0000..0x0004].copy_from_slice(&game_code);
     // Maker code at 0x0004
-    disc[0x0004..0x0006].copy_from_slice(maker_code);
+    disc[0x0004..0x0006].copy_from_slice(&maker_code);
     // Disc ID at 0x0006
     disc[0x0006] = 0;
     // Version at 0x0007
@@ -76,18 +76,18 @@ fn make_gc_disc(game_code: &[u8; 4], maker_code: &[u8; 2], version: u8, name: &s
     disc[0x0020..0x0020 + copy_len].copy_from_slice(&name_bytes[..copy_len]);
 
     // DOL offset at 0x0420 (plausible value)
-    disc[0x0420..0x0424].copy_from_slice(&0x00040000u32.to_be_bytes());
+    disc[0x0420..0x0424].copy_from_slice(&0x0004_0000_u32.to_be_bytes());
     // FST offset at 0x0424
-    disc[0x0424..0x0428].copy_from_slice(&0x00080000u32.to_be_bytes());
+    disc[0x0424..0x0428].copy_from_slice(&0x0008_0000_u32.to_be_bytes());
     // FST size at 0x0428
-    disc[0x0428..0x042C].copy_from_slice(&0x00001000u32.to_be_bytes());
+    disc[0x0428..0x042C].copy_from_slice(&0x0000_1000_u32.to_be_bytes());
 
     disc
 }
 
 /// Build a default test disc (USA, Nintendo, version 0).
 fn make_default_gc_disc() -> Vec<u8> {
-    make_gc_disc(b"GALE", b"01", 0, "THE LEGEND OF ZELDA")
+    make_gc_disc(*b"GALE", *b"01", 0, "THE LEGEND OF ZELDA")
 }
 
 // ---------------------------------------------------------------------------
@@ -141,15 +141,26 @@ fn test_basic_analysis() {
     assert_eq!(id.serial_number, "GALE");
     assert_eq!(id.internal_name, "THE LEGEND OF ZELDA");
     assert_eq!(id.regions, vec![Region::Usa]);
-    assert_eq!(id.extra.get("game_code").map(|s| s.as_str()), Some("GALE"));
-    assert_eq!(id.extra.get("maker_code").map(|s| s.as_str()), Some("01"));
     assert_eq!(
-        id.extra.get("maker_name").map(|s| s.as_str()),
+        id.extra.get("game_code").map(std::string::String::as_str),
+        Some("GALE")
+    );
+    assert_eq!(
+        id.extra.get("maker_code").map(std::string::String::as_str),
+        Some("01")
+    );
+    assert_eq!(
+        id.extra.get("maker_name").map(std::string::String::as_str),
         Some("Nintendo R&D1")
     );
-    assert_eq!(id.extra.get("format").map(|s| s.as_str()), Some("ISO"));
     assert_eq!(
-        id.extra.get("product_code").map(|s| s.as_str()),
+        id.extra.get("format").map(std::string::String::as_str),
+        Some("ISO")
+    );
+    assert_eq!(
+        id.extra
+            .get("product_code")
+            .map(std::string::String::as_str),
         Some("DOL-GALE-0")
     );
     assert_eq!(id.expected_size, GCM_DISC_SIZE);
@@ -157,7 +168,7 @@ fn test_basic_analysis() {
 
 #[test]
 fn test_region_usa() {
-    let disc = make_gc_disc(b"GALE", b"01", 0, "GAME");
+    let disc = make_gc_disc(*b"GALE", *b"01", 0, "GAME");
     let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
@@ -167,7 +178,7 @@ fn test_region_usa() {
 
 #[test]
 fn test_region_japan() {
-    let disc = make_gc_disc(b"GALJ", b"01", 0, "GAME");
+    let disc = make_gc_disc(*b"GALJ", *b"01", 0, "GAME");
     let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
@@ -177,7 +188,7 @@ fn test_region_japan() {
 
 #[test]
 fn test_region_europe() {
-    let disc = make_gc_disc(b"GALP", b"01", 0, "GAME");
+    let disc = make_gc_disc(*b"GALP", *b"01", 0, "GAME");
     let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
@@ -187,7 +198,7 @@ fn test_region_europe() {
 
 #[test]
 fn test_region_korea() {
-    let disc = make_gc_disc(b"GALK", b"01", 0, "GAME");
+    let disc = make_gc_disc(*b"GALK", *b"01", 0, "GAME");
     let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
@@ -197,7 +208,7 @@ fn test_region_korea() {
 
 #[test]
 fn test_version_nonzero() {
-    let disc = make_gc_disc(b"GALE", b"01", 2, "GAME");
+    let disc = make_gc_disc(*b"GALE", *b"01", 2, "GAME");
     let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
@@ -207,7 +218,7 @@ fn test_version_nonzero() {
 
 #[test]
 fn test_version_zero_is_empty() {
-    let disc = make_gc_disc(b"GALE", b"01", 0, "GAME");
+    let disc = make_gc_disc(*b"GALE", *b"01", 0, "GAME");
     let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
@@ -218,7 +229,7 @@ fn test_version_zero_is_empty() {
 #[test]
 fn test_game_name_trimming() {
     // Name followed by nulls should be trimmed
-    let disc = make_gc_disc(b"GALE", b"01", 0, "TEST GAME");
+    let disc = make_gc_disc(*b"GALE", *b"01", 0, "TEST GAME");
     let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())

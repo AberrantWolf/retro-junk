@@ -15,7 +15,10 @@ fn mask_value(s: &str) -> String {
 }
 
 /// Show current credentials and their sources.
-pub(crate) fn run_credentials_show() -> Result<(), CliError> {
+// Linear report of each credential field and its source; splitting would
+// scatter the tightly coupled field table.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn run_credentials_show() {
     use retro_junk_scraper::CredentialSource;
 
     let path = retro_junk_scraper::config_path();
@@ -130,12 +133,12 @@ pub(crate) fn run_credentials_show() -> Result<(), CliError> {
     ];
 
     for (name, source, value) in fields {
-        let source_str = format!("({})", source);
+        let source_str = format!("({source})");
         match value {
             Some(v) => {
                 log::info!(
                     "  {} {} {}",
-                    format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
+                    format!("{name}:").if_supports_color(Stdout, |t| t.cyan()),
                     v,
                     source_str.if_supports_color(Stdout, |t| t.dimmed()),
                 );
@@ -143,15 +146,13 @@ pub(crate) fn run_credentials_show() -> Result<(), CliError> {
             None => {
                 log::info!(
                     "  {} {} {}",
-                    format!("{}:", name).if_supports_color(Stdout, |t| t.cyan()),
+                    format!("{name}:").if_supports_color(Stdout, |t| t.cyan()),
                     "not set".if_supports_color(Stdout, |t| t.yellow()),
                     source_str.if_supports_color(Stdout, |t| t.dimmed()),
                 );
             }
         }
     }
-
-    Ok(())
 }
 
 /// Interactively set up credentials.
@@ -168,9 +169,9 @@ pub(crate) fn run_credentials_setup() -> Result<(), CliError> {
     let read_line = |prompt: &str, default: Option<&str>, required: bool| -> Option<String> {
         loop {
             if let Some(def) = default {
-                print!("  {} [{}]: ", prompt, def);
+                print!("  {prompt} [{def}]: ");
             } else {
-                print!("  {}: ", prompt);
+                print!("  {prompt}: ");
             }
             let _ = std::io::stdout().flush();
 
@@ -206,10 +207,8 @@ pub(crate) fn run_credentials_setup() -> Result<(), CliError> {
         // Use whatever load() resolved (embedded or overridden)
         let base = existing.as_ref();
         (
-            base.map(|c| c.dev_id.clone())
-                .unwrap_or_else(|| "embedded".to_string()),
-            base.map(|c| c.dev_password.clone())
-                .unwrap_or_else(|| "embedded".to_string()),
+            base.map_or_else(|| "embedded".to_string(), |c| c.dev_id.clone()),
+            base.map_or_else(|| "embedded".to_string(), |c| c.dev_password.clone()),
         )
     } else {
         println!(
@@ -256,15 +255,13 @@ pub(crate) fn run_credentials_setup() -> Result<(), CliError> {
     let creds = retro_junk_scraper::Credentials {
         dev_id,
         dev_password,
-        soft_name: existing
-            .map(|c| c.soft_name)
-            .unwrap_or_else(|| "retro-junk".to_string()),
+        soft_name: existing.map_or_else(|| "retro-junk".to_string(), |c| c.soft_name),
         user_id,
         user_password,
     };
 
     let path = retro_junk_scraper::save_to_file(&creds)
-        .map_err(|e| CliError::config(format!("Failed to save credentials: {}", e)))?;
+        .map_err(|e| CliError::config(format!("Failed to save credentials: {e}")))?;
 
     println!();
     log::info!(
@@ -276,7 +273,7 @@ pub(crate) fn run_credentials_setup() -> Result<(), CliError> {
     Ok(())
 }
 
-/// Test credentials against the ScreenScraper API.
+/// Test credentials against the `ScreenScraper` API.
 pub(crate) fn run_credentials_test(quiet: bool) -> Result<(), CliError> {
     let creds = match retro_junk_scraper::Credentials::load() {
         Ok(c) => c,
@@ -295,7 +292,7 @@ pub(crate) fn run_credentials_test(quiet: bool) -> Result<(), CliError> {
     log::info!("Testing credentials against ScreenScraper API...");
 
     let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| CliError::runtime(format!("Failed to create tokio runtime: {}", e)))?;
+        .map_err(|e| CliError::runtime(format!("Failed to create tokio runtime: {e}")))?;
 
     rt.block_on(async {
         let pb = if quiet {

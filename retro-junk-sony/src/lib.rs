@@ -2,11 +2,11 @@
 //!
 //! This crate provides ROM/disc analysis implementations for Sony consoles:
 //!
-//! - PlayStation (PS1/PSX)
-//! - PlayStation 2 (PS2)
-//! - PlayStation 3 (PS3)
-//! - PlayStation Portable (PSP)
-//! - PlayStation Vita
+//! - `PlayStation` (PS1/PSX)
+//! - `PlayStation` 2 (PS2)
+//! - `PlayStation` 3 (PS3)
+//! - `PlayStation` Portable (PSP)
+//! - `PlayStation` Vita
 
 pub mod ps1;
 pub mod ps2;

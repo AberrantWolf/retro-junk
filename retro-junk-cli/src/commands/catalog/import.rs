@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
@@ -11,12 +11,15 @@ use crate::commands::systems::{SystemCapability, resolve_systems};
 use super::default_catalog_db_path;
 
 /// Import DAT files into the catalog database.
+// Linear ETL orchestration (seed, per-system import loop, overrides, summary);
+// splitting would scatter tightly coupled stats accumulation.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn run_catalog_import(
     ctx: &AnalysisContext,
-    systems: Vec<String>,
-    catalog_dir: PathBuf,
+    systems: &[String],
+    catalog_dir: &Path,
     db_path: Option<PathBuf>,
-    dat_dir: Option<PathBuf>,
+    dat_dir: Option<&Path>,
 ) -> Result<(), CliError> {
     use retro_junk_import::{ImportStats, dat_source_str, import_dat, log_import};
 
@@ -33,7 +36,7 @@ pub(crate) fn run_catalog_import(
 
     // Seed platforms and companies from YAML
     if catalog_dir.exists() {
-        match retro_junk_db::seed_from_catalog(&conn, &catalog_dir) {
+        match retro_junk_db::seed_from_catalog(&conn, catalog_dir) {
             Ok(stats) => {
                 log::info!(
                     "Seeded {} platforms, {} companies, {} overrides from {}",
@@ -44,7 +47,7 @@ pub(crate) fn run_catalog_import(
                 );
             }
             Err(e) => {
-                log::warn!("Warning: failed to seed from catalog YAML: {}", e);
+                log::warn!("Warning: failed to seed from catalog YAML: {e}");
             }
         }
     } else {
@@ -55,7 +58,7 @@ pub(crate) fn run_catalog_import(
     }
 
     // Determine which consoles to import
-    let to_import = resolve_systems(ctx, &systems, SystemCapability::DatSupport)?;
+    let to_import = resolve_systems(ctx, systems, &SystemCapability::DatSupport)?;
 
     log::info!(
         "{}",
@@ -81,7 +84,7 @@ pub(crate) fn run_catalog_import(
             short_name,
             dat_names,
             download_ids,
-            dat_dir.as_deref(),
+            dat_dir,
             source,
             false,
         ) {
@@ -116,7 +119,7 @@ pub(crate) fn run_catalog_import(
 
             // Log the import
             if let Err(e) = log_import(&conn, source_str, &dat.name, &dat.version, &stats) {
-                log::warn!("Failed to log import: {}", e);
+                log::warn!("Failed to log import: {e}");
             }
 
             log::info!(
@@ -162,14 +165,14 @@ pub(crate) fn run_catalog_import(
                         count
                     }
                     Err(e) => {
-                        log::warn!("Failed to apply overrides: {}", e);
+                        log::warn!("Failed to apply overrides: {e}");
                         0
                     }
                 }
             }
             Ok(_) => 0,
             Err(e) => {
-                log::warn!("Failed to load overrides: {}", e);
+                log::warn!("Failed to load overrides: {e}");
                 0
             }
         }
@@ -203,7 +206,7 @@ pub(crate) fn run_catalog_import(
         log::info!("  Disagreements: {}", total_stats.disagreements_found);
     }
     if overrides_applied > 0 {
-        log::info!("  Overrides applied: {}", overrides_applied);
+        log::info!("  Overrides applied: {overrides_applied}");
     }
     log::info!("  Database: {}", db_path.display());
 
@@ -237,10 +240,10 @@ impl retro_junk_import::ImportProgress for CliImportProgress {
     }
 
     fn on_phase(&self, message: &str) {
-        log::info!("{}", message);
+        log::info!("{message}");
     }
 
     fn on_complete(&self, message: &str) {
-        log::info!("{}", message);
+        log::info!("{message}");
     }
 }

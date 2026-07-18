@@ -25,7 +25,7 @@ fn settings_harness<'a>() -> Harness<'a, RetroJunkApp> {
     })
 }
 
-/// The ScreenScraper section lists every credential field with a status dot,
+/// The `ScreenScraper` section lists every credential field with a status dot,
 /// and populates the cached provenance snapshot on first render.
 ///
 /// Assertions are structural only — actual statuses depend on the machine's
@@ -37,7 +37,7 @@ fn scraper_section_lists_all_credential_fields() {
 
     harness.get_by_label("ScreenScraper");
     harness.get_by_label("Open Config File");
-    for meta in retro_junk_scraper::CREDENTIAL_FIELDS.iter() {
+    for meta in &retro_junk_scraper::CREDENTIAL_FIELDS {
         harness.get_by_label(meta.label);
     }
 

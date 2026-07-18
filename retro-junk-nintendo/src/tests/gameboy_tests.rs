@@ -47,7 +47,7 @@ fn make_gb_rom() -> Vec<u8> {
     let mut global: u16 = 0;
     for (i, &b) in rom.iter().enumerate() {
         if i != 0x014E && i != 0x014F {
-            global = global.wrapping_add(b as u16);
+            global = global.wrapping_add(u16::from(b));
         }
     }
     rom[0x014E] = (global >> 8) as u8;
@@ -110,7 +110,10 @@ fn test_cgb_compatible() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     assert_eq!(
-        result.extra.get("platform_variant").map(|s| s.as_str()),
+        result
+            .extra
+            .get("platform_variant")
+            .map(std::string::String::as_str),
         Some("Game Boy Color")
     );
     assert_eq!(
@@ -130,7 +133,10 @@ fn test_cgb_exclusive() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     assert_eq!(
-        result.extra.get("platform_variant").map(|s| s.as_str()),
+        result
+            .extra
+            .get("platform_variant")
+            .map(std::string::String::as_str),
         Some("Game Boy Color")
     );
     assert_eq!(
@@ -186,8 +192,7 @@ fn test_header_checksum_mismatch() {
     let status = result.extra.get("checksum_status:GB Header").unwrap();
     assert!(
         status.starts_with("MISMATCH"),
-        "Expected MISMATCH, got: {}",
-        status
+        "Expected MISMATCH, got: {status}"
     );
 }
 
@@ -213,8 +218,7 @@ fn test_global_checksum_mismatch() {
     let status = result.extra.get("checksum_status:GB Global").unwrap();
     assert!(
         status.starts_with("MISMATCH"),
-        "Expected MISMATCH, got: {}",
-        status
+        "Expected MISMATCH, got: {status}"
     );
 }
 
@@ -308,7 +312,7 @@ fn test_cartridge_with_ram() {
 }
 
 /// Helper to recompute both checksums in a ROM buffer.
-fn recompute_checksums(rom: &mut Vec<u8>) {
+fn recompute_checksums(rom: &mut [u8]) {
     // Header checksum
     let mut cksum: u8 = 0;
     for &b in &rom[0x0134..=0x014C] {
@@ -321,7 +325,7 @@ fn recompute_checksums(rom: &mut Vec<u8>) {
     rom[0x014F] = 0;
     let mut global: u16 = 0;
     for &b in rom.iter() {
-        global = global.wrapping_add(b as u16);
+        global = global.wrapping_add(u16::from(b));
     }
     rom[0x014E] = (global >> 8) as u8;
     rom[0x014F] = (global & 0xFF) as u8;

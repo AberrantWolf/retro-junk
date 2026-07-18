@@ -3,11 +3,13 @@
 use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
-use retro_junk_core::{
-    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, RomIdentification,
-};
+use retro_junk_core::{AnalysisError, AnalysisOptions, RomIdentification};
 
-use super::common::*;
+use super::common::{
+    CciOrigin, detect_cci_origin, format_title_id, is_all_zeros, media_platform_name,
+    media_type_name, read_u16_le, read_u32_le, record_ncch_common, record_sha256_check,
+    record_title_version, title_type_from_id,
+};
 use super::ncch::parse_ncch_header;
 use super::{CARD_SEED_SIZE, MEDIA_UNIT, MIN_CCI_SIZE, NCSD_MAGIC};
 
@@ -18,7 +20,7 @@ use super::{CARD_SEED_SIZE, MEDIA_UNIT, MIN_CCI_SIZE, NCSD_MAGIC};
 /// Parsed NCSD header fields.
 pub(crate) struct NcsdHeader {
     pub(crate) image_size_mu: u32,
-    /// Partition table: (offset_mu, size_mu) for each of 8 partitions.
+    /// Partition table: (`offset_mu`, `size_mu`) for each of 8 partitions.
     pub(crate) partitions: [(u32, u32); 8],
     /// Partition flags byte 5: media type index.
     pub(crate) media_type: u8,
@@ -88,7 +90,7 @@ pub(crate) fn parse_ncsd_header(reader: &mut dyn ReadSeek) -> Result<NcsdHeader,
     // the actual used content size in bytes (NOT in media units). Used by
     // trimming tools to know where real data ends.
     let filled_size_raw = read_u32_le(&buf, 0x300).ok_or_else(trunc)?;
-    let filled_size = filled_size_raw as u64;
+    let filled_size = u64::from(filled_size_raw);
 
     // Card seed at 0x1000
     let card_seed_is_zero = {
@@ -114,76 +116,8 @@ pub(crate) fn parse_ncsd_header(reader: &mut dyn ReadSeek) -> Result<NcsdHeader,
     })
 }
 
-// ---------------------------------------------------------------------------
-// CCI analysis
-// ---------------------------------------------------------------------------
-
-pub(crate) fn analyze_cci(
-    reader: &mut dyn ReadSeek,
-    file_size: u64,
-    options: &AnalysisOptions,
-) -> Result<RomIdentification, AnalysisError> {
-    let ncsd = parse_ncsd_header(reader)?;
-
-    // Partition 0 must exist
-    if ncsd.partitions[0].1 == 0 {
-        return Err(AnalysisError::invalid_format(
-            "NCSD partition 0 has zero size",
-        ));
-    }
-
-    let partition0_offset = ncsd.partitions[0].0 as u64 * MEDIA_UNIT;
-    let ncch = parse_ncch_header(reader, partition0_offset)?;
-
-    let mut id = RomIdentification::new();
-
-    // Format
-    id.extra.insert("format".into(), "CCI (NCSD)".into());
-
-    // Product code -> serial number
-    if !ncch.product_code.is_empty() {
-        id.serial_number = ncch.product_code.clone();
-        id.extra
-            .insert("product_code".into(), ncch.product_code.clone());
-    }
-
-    // Maker code
-    if !ncch.maker_code.is_empty() {
-        id.maker_code = crate::licensee::maker_code_name(&ncch.maker_code)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| ncch.maker_code.clone());
-        id.extra
-            .insert("maker_code_raw".into(), ncch.maker_code.clone());
-    }
-
-    // Program ID / Title ID
-    if ncch.program_id != 0 {
-        id.extra
-            .insert("title_id".into(), format_title_id(ncch.program_id));
-        id.extra.insert(
-            "title_type".into(),
-            title_type_from_id(ncch.program_id).into(),
-        );
-    }
-
-    // Regions from product code
-    let regions = region_from_product_code(&ncch.product_code);
-    id.regions = regions;
-
-    // Title version from card info header
-    if ncsd.title_version > 0 {
-        let major = ncsd.title_version >> 10;
-        let minor = (ncsd.title_version >> 4) & 0x3F;
-        let micro = ncsd.title_version & 0xF;
-        id.version = format!("v{}.{}.{}", major, minor, micro);
-        id.extra.insert(
-            "title_version_raw".into(),
-            format!("{}", ncsd.title_version),
-        );
-    } else {
-        id.version = "v0".into();
-    }
-
+/// Record file size, expected size, and trim status for a CCI image.
+fn record_size_and_trim(id: &mut RomIdentification, ncsd: &NcsdHeader, file_size: u64) {
     // File size and trimming detection
     //
     // 3DS CCI files are commonly "trimmed": the unused padding between the
@@ -192,7 +126,7 @@ pub(crate) fn analyze_cci(
     // and untrimmed dumps are valid. Only files smaller than `filled_size`
     // are genuinely truncated.
     id.file_size = file_size;
-    let image_size = ncsd.image_size_mu as u64 * MEDIA_UNIT;
+    let image_size = u64::from(ncsd.image_size_mu) * MEDIA_UNIT;
     let used_size = ncsd.filled_size;
 
     if used_size > 0 && image_size > 0 {
@@ -221,7 +155,10 @@ pub(crate) fn analyze_cci(
         // No filled_size available; fall back to image_size
         id.expected_size = image_size;
     }
+}
 
+/// Record media/card metadata and the partition layout.
+fn record_card_and_partitions(id: &mut RomIdentification, ncsd: &NcsdHeader) {
     // Media type
     id.extra
         .insert("media_type".into(), media_type_name(ncsd.media_type).into());
@@ -243,10 +180,10 @@ pub(crate) fn analyze_cci(
         2 => {
             id.extra
                 .insert("card_type".into(), "Card2 (on-card save)".into());
-            if ncsd.writable_address != 0 && ncsd.writable_address != 0xFFFFFFFF {
+            if ncsd.writable_address != 0 && ncsd.writable_address != 0xFFFF_FFFF {
                 id.extra.insert(
                     "save_offset".into(),
-                    format!("0x{:08X}", ncsd.writable_address as u64 * MEDIA_UNIT),
+                    format!("0x{:08X}", u64::from(ncsd.writable_address) * MEDIA_UNIT),
                 );
             }
         }
@@ -262,7 +199,7 @@ pub(crate) fn analyze_cci(
     // Partition layout
     let partition_count = ncsd.partitions.iter().filter(|p| p.1 > 0).count();
     id.extra
-        .insert("partition_count".into(), format!("{}", partition_count));
+        .insert("partition_count".into(), format!("{partition_count}"));
 
     // Partition details
     let partition_names = [
@@ -278,62 +215,22 @@ pub(crate) fn analyze_cci(
     for (i, &(off, sz)) in ncsd.partitions.iter().enumerate() {
         if sz > 0 {
             id.extra.insert(
-                format!("partition_{}", i),
+                format!("partition_{i}"),
                 format!(
                     "{}: offset 0x{:X}, size {} KB",
                     partition_names[i],
-                    off as u64 * MEDIA_UNIT,
-                    sz as u64 * MEDIA_UNIT / 1024
+                    u64::from(off) * MEDIA_UNIT,
+                    u64::from(sz) * MEDIA_UNIT / 1024
                 ),
             );
         }
     }
+}
 
-    // NCCH content info
-    id.extra.insert(
-        "ncch_content_size".into(),
-        format!("{} KB", ncch.content_size_mu as u64 * MEDIA_UNIT / 1024),
-    );
-    id.extra.insert(
-        "content_type".into(),
-        content_type_description(ncch.content_type_flags).into(),
-    );
-
-    // Encryption status
-    if ncch.no_crypto {
-        id.extra
-            .insert("encryption".into(), "None (NoCrypto)".into());
-    } else {
-        let crypto_desc = match ncch.crypto_method {
-            0x00 => "Original (pre-7.0)",
-            0x01 => "7.0.0+",
-            0x0A => "9.3.0+ (New 3DS)",
-            0x0B => "9.6.0+ (New 3DS)",
-            _ => "Unknown",
-        };
-        id.extra
-            .insert("encryption".into(), format!("Encrypted ({})", crypto_desc));
-    }
-
-    // ExeFS / RomFS presence
-    if ncch.exefs_size_mu > 0 {
-        id.extra.insert(
-            "exefs_size".into(),
-            format!("{} KB", ncch.exefs_size_mu as u64 * MEDIA_UNIT / 1024),
-        );
-    }
-    if ncch.romfs_size_mu > 0 {
-        id.extra.insert(
-            "romfs_size".into(),
-            format!(
-                "{} MB",
-                ncch.romfs_size_mu as u64 * MEDIA_UNIT / (1024 * 1024)
-            ),
-        );
-    }
-
+/// Record the game-card vs digital origin heuristic and its evidence.
+fn record_origin(id: &mut RomIdentification, ncsd: &NcsdHeader) {
     // Origin detection (game card vs digital) — heuristic, not definitive
-    let origin = detect_cci_origin(&ncsd);
+    let origin = detect_cci_origin(ncsd);
     let origin_str = match origin {
         CciOrigin::GameCard => "Game card dump (likely)",
         CciOrigin::Digital => "Converted from digital/CIA (likely)",
@@ -361,120 +258,104 @@ pub(crate) fn analyze_cci(
     }
     id.extra
         .insert("origin_evidence".into(), origin_evidence.join("; "));
+}
+
+// ---------------------------------------------------------------------------
+// CCI analysis
+// ---------------------------------------------------------------------------
+
+pub(crate) fn analyze_cci(
+    reader: &mut dyn ReadSeek,
+    file_size: u64,
+    options: &AnalysisOptions,
+) -> Result<RomIdentification, AnalysisError> {
+    let ncsd = parse_ncsd_header(reader)?;
+
+    // Partition 0 must exist
+    if ncsd.partitions[0].1 == 0 {
+        return Err(AnalysisError::invalid_format(
+            "NCSD partition 0 has zero size",
+        ));
+    }
+
+    let partition0_offset = u64::from(ncsd.partitions[0].0) * MEDIA_UNIT;
+    let ncch = parse_ncch_header(reader, partition0_offset)?;
+
+    let mut id = RomIdentification::new();
+
+    // Format
+    id.extra.insert("format".into(), "CCI (NCSD)".into());
+
+    // Shared NCCH-derived fields (product code, maker, regions, content
+    // type, encryption, ExeFS/RomFS sizes)
+    record_ncch_common(&mut id, &ncch);
+
+    // Program ID / Title ID
+    if ncch.program_id != 0 {
+        id.extra
+            .insert("title_id".into(), format_title_id(ncch.program_id));
+        id.extra.insert(
+            "title_type".into(),
+            title_type_from_id(ncch.program_id).into(),
+        );
+    }
+
+    // Title version from card info header
+    record_title_version(&mut id, ncsd.title_version);
+
+    record_size_and_trim(&mut id, &ncsd, file_size);
+
+    record_card_and_partitions(&mut id, &ncsd);
+
+    // NCCH content info
+    id.extra.insert(
+        "ncch_content_size".into(),
+        format!("{} KB", u64::from(ncch.content_size_mu) * MEDIA_UNIT / 1024),
+    );
+    record_origin(&mut id, &ncsd);
 
     // SHA-256 hash verification (only if not encrypted and not quick mode)
     if !options.quick && ncch.no_crypto {
         // ExHeader hash
         if ncch.exheader_size > 0 {
             let exheader_offset = partition0_offset + 0x200;
-            let hash_size = 0x400u64.min(ncch.exheader_size as u64);
-            match verify_sha256(reader, exheader_offset, hash_size, &ncch.exheader_hash)? {
-                HashResult::Ok => {
-                    id.extra
-                        .insert("checksum_status:ExHeader SHA-256".into(), "OK".into());
-                    id.expected_checksums.push(
-                        ExpectedChecksum::new(
-                            ChecksumAlgorithm::Sha256,
-                            ncch.exheader_hash.to_vec(),
-                        )
-                        .with_description("ExHeader SHA-256"),
-                    );
-                }
-                HashResult::Mismatch { expected, actual } => {
-                    id.extra.insert(
-                        "checksum_status:ExHeader SHA-256".into(),
-                        format!("MISMATCH (expected {}, got {})", expected, actual),
-                    );
-                    id.expected_checksums.push(
-                        ExpectedChecksum::new(
-                            ChecksumAlgorithm::Sha256,
-                            ncch.exheader_hash.to_vec(),
-                        )
-                        .with_description("ExHeader SHA-256"),
-                    );
-                }
-                _ => {}
-            }
+            let hash_size = 0x400u64.min(u64::from(ncch.exheader_size));
+            record_sha256_check(
+                &mut id,
+                reader,
+                exheader_offset,
+                hash_size,
+                &ncch.exheader_hash,
+                "ExHeader SHA-256",
+            )?;
         }
 
         // ExeFS superblock hash
         if ncch.exefs_size_mu > 0 && ncch.exefs_hash_region_size_mu > 0 {
-            let exefs_offset = partition0_offset + ncch.exefs_offset_mu as u64 * MEDIA_UNIT;
-            let hash_region_size = ncch.exefs_hash_region_size_mu as u64 * MEDIA_UNIT;
-            match verify_sha256(
+            let exefs_offset = partition0_offset + u64::from(ncch.exefs_offset_mu) * MEDIA_UNIT;
+            let hash_region_size = u64::from(ncch.exefs_hash_region_size_mu) * MEDIA_UNIT;
+            record_sha256_check(
+                &mut id,
                 reader,
                 exefs_offset,
                 hash_region_size,
                 &ncch.exefs_superblock_hash,
-            )? {
-                HashResult::Ok => {
-                    id.extra.insert(
-                        "checksum_status:ExeFS Superblock SHA-256".into(),
-                        "OK".into(),
-                    );
-                    id.expected_checksums.push(
-                        ExpectedChecksum::new(
-                            ChecksumAlgorithm::Sha256,
-                            ncch.exefs_superblock_hash.to_vec(),
-                        )
-                        .with_description("ExeFS Superblock SHA-256"),
-                    );
-                }
-                HashResult::Mismatch { expected, actual } => {
-                    id.extra.insert(
-                        "checksum_status:ExeFS Superblock SHA-256".into(),
-                        format!("MISMATCH (expected {}, got {})", expected, actual),
-                    );
-                    id.expected_checksums.push(
-                        ExpectedChecksum::new(
-                            ChecksumAlgorithm::Sha256,
-                            ncch.exefs_superblock_hash.to_vec(),
-                        )
-                        .with_description("ExeFS Superblock SHA-256"),
-                    );
-                }
-                _ => {}
-            }
+                "ExeFS Superblock SHA-256",
+            )?;
         }
 
         // RomFS superblock hash
         if ncch.romfs_size_mu > 0 && ncch.romfs_hash_region_size_mu > 0 {
-            let romfs_offset = partition0_offset + ncch.romfs_offset_mu as u64 * MEDIA_UNIT;
-            let hash_region_size = ncch.romfs_hash_region_size_mu as u64 * MEDIA_UNIT;
-            match verify_sha256(
+            let romfs_offset = partition0_offset + u64::from(ncch.romfs_offset_mu) * MEDIA_UNIT;
+            let hash_region_size = u64::from(ncch.romfs_hash_region_size_mu) * MEDIA_UNIT;
+            record_sha256_check(
+                &mut id,
                 reader,
                 romfs_offset,
                 hash_region_size,
                 &ncch.romfs_superblock_hash,
-            )? {
-                HashResult::Ok => {
-                    id.extra.insert(
-                        "checksum_status:RomFS Superblock SHA-256".into(),
-                        "OK".into(),
-                    );
-                    id.expected_checksums.push(
-                        ExpectedChecksum::new(
-                            ChecksumAlgorithm::Sha256,
-                            ncch.romfs_superblock_hash.to_vec(),
-                        )
-                        .with_description("RomFS Superblock SHA-256"),
-                    );
-                }
-                HashResult::Mismatch { expected, actual } => {
-                    id.extra.insert(
-                        "checksum_status:RomFS Superblock SHA-256".into(),
-                        format!("MISMATCH (expected {}, got {})", expected, actual),
-                    );
-                    id.expected_checksums.push(
-                        ExpectedChecksum::new(
-                            ChecksumAlgorithm::Sha256,
-                            ncch.romfs_superblock_hash.to_vec(),
-                        )
-                        .with_description("RomFS Superblock SHA-256"),
-                    );
-                }
-                _ => {}
-            }
+                "RomFS Superblock SHA-256",
+            )?;
         }
     } else if !ncch.no_crypto && !options.quick {
         id.extra.insert(

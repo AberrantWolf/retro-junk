@@ -14,3 +14,6 @@ serde_json.workspace = true
 csv.workspace = true
 log.workspace = true
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[lints]
+workspace = true

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Arc;
 
 use indicatif::{ProgressBar, ProgressStyle};
@@ -6,13 +6,15 @@ use log::LevelFilter;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
-use retro_junk_lib::{AnalysisContext, Platform};
+use retro_junk_frontend::Frontend;
+use retro_junk_lib::AnalysisContext;
 
 use crate::CliError;
+use crate::cli_types::{ConsoleFilterArgs, ScrapeArgs};
 use crate::scan_folders;
 use crate::spinner;
 
-/// Try to enrich scraped games with cover_title from the catalog database.
+/// Try to enrich scraped games with `cover_title` from the catalog database.
 ///
 /// Looks up each game by title in the catalog DB. If a release with a
 /// `cover_title` is found, it's set on the `ScrapedGame` so ES-DE can
@@ -25,9 +27,8 @@ fn enrich_from_catalog(games: &mut [retro_junk_frontend::ScrapedGame]) {
     if !catalog_path.exists() {
         return;
     }
-    let conn = match retro_junk_db::open_database(&catalog_path) {
-        Ok(c) => c,
-        Err(_) => return,
+    let Ok(conn) = retro_junk_db::open_database(&catalog_path) else {
+        return;
     };
 
     for game in games.iter_mut() {
@@ -71,7 +72,7 @@ pub(crate) async fn connect_screenscraper(
         Ok(result) => result,
         Err(e) => {
             pb.finish_and_clear();
-            let mut msg = format!("Failed to connect to ScreenScraper: {}", e);
+            let mut msg = format!("Failed to connect to ScreenScraper: {e}");
             if e.to_string().contains("credentials") {
                 msg.push_str(
                     "\n\nSet credentials via environment variables:\n\
@@ -106,32 +107,36 @@ pub(crate) async fn connect_screenscraper(
 }
 
 /// Run the scrape command.
-#[allow(clippy::too_many_arguments)]
+// Linear per-console scrape orchestration (connect, scan, progress-event
+// rendering, metadata/log writing); splitting would scatter tightly coupled state.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn run_scrape(
     ctx: &AnalysisContext,
-    consoles: Option<Vec<Platform>>,
-    limit: Option<usize>,
-    media_types: Option<Vec<String>>,
-    metadata_dir: Option<PathBuf>,
-    media_dir: Option<PathBuf>,
-    _frontend: String,
-    region: String,
-    language: String,
-    language_fallback: String,
-    force_full_hash: bool,
-    dry_run: bool,
-    skip_existing: bool,
-    no_log: bool,
-    no_miximage: bool,
-    force_redownload: bool,
-    threads: Option<usize>,
-    library_path: PathBuf,
+    args: ScrapeArgs,
+    library_path: &Path,
     quiet: bool,
 ) -> Result<(), CliError> {
+    let ScrapeArgs {
+        roms: ConsoleFilterArgs { consoles, limit },
+        media_types,
+        metadata_dir,
+        media_dir,
+        frontend: _,
+        region,
+        language,
+        language_fallback,
+        force_full_hash,
+        dry_run,
+        skip_existing,
+        no_log,
+        no_miximage,
+        force_redownload,
+        threads,
+    } = args;
     let root_path = library_path;
 
     // Build scrape options
-    let mut options = retro_junk_scraper::ScrapeOptions::new(root_path.clone());
+    let mut options = retro_junk_scraper::ScrapeOptions::new(root_path.to_path_buf());
     options.region = region;
     options.language = language;
     options.language_fallback = language_fallback;
@@ -182,7 +187,7 @@ pub(crate) fn run_scrape(
     if let Some(n) = limit {
         log::info!(
             "{}",
-            format!("Limit: {} ROMs per console", n).if_supports_color(Stdout, |t| t.dimmed()),
+            format!("Limit: {n} ROMs per console").if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
     log::info!(
@@ -202,14 +207,13 @@ pub(crate) fn run_scrape(
     crate::log_blank();
 
     let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| CliError::runtime(format!("Failed to create tokio runtime: {}", e)))?;
+        .map_err(|e| CliError::runtime(format!("Failed to create tokio runtime: {e}")))?;
 
     rt.block_on(async {
         let (client, max_workers) = connect_screenscraper(threads, quiet).await?;
 
-        let scan = match scan_folders(ctx, &root_path, &consoles) {
-            Some(s) => s,
-            None => return Ok(()),
+        let Some(scan) = scan_folders(ctx, root_path, consoles.as_deref()) else {
+            return Ok(());
         };
 
         let esde = retro_junk_frontend::esde::EsDeFrontend;
@@ -241,7 +245,7 @@ pub(crate) fn run_scrape(
                     .metadata
                     .platform_name
                     .if_supports_color(Stdout, |t| t.bold()),
-                format!("({})", folder_name).if_supports_color(Stdout, |t| t.dimmed()),
+                format!("({folder_name})").if_supports_color(Stdout, |t| t.dimmed()),
             );
 
             // Set up MultiProgress with N spinner slots
@@ -351,9 +355,9 @@ pub(crate) fn run_scrape(
                         );
                         pool.release(index);
                     }
-                    retro_junk_scraper::ScrapeEvent::GameGrouped { .. } => {
-                        // Grouped discs happen after the concurrent phase; no spinner
-                    }
+                    // Grouped discs happen after the concurrent phase; no spinner
+                    retro_junk_scraper::ScrapeEvent::GameGrouped { .. }
+                    | retro_junk_scraper::ScrapeEvent::Done => {}
                     retro_junk_scraper::ScrapeEvent::FatalError { ref message } => {
                         pool.clear_all();
                         log::warn!(
@@ -362,7 +366,6 @@ pub(crate) fn run_scrape(
                             message,
                         );
                     }
-                    retro_junk_scraper::ScrapeEvent::Done => {}
                 })
                 .await;
 
@@ -381,7 +384,7 @@ pub(crate) fn run_scrape(
 
                     // In quiet mode, re-emit console header as warn for context
                     if has_issues && log::max_level() < LevelFilter::Info {
-                        log::warn!("{} ({}):", console.metadata.platform_name, folder_name,);
+                        log::warn!("{} ({}):", console.metadata.platform_name, folder_name);
                     }
 
                     // Print per-system summary
@@ -438,14 +441,13 @@ pub(crate) fn run_scrape(
                                 sha1,
                                 errors,
                             } => {
-                                log::warn!("  ? {}: unidentified", file);
+                                log::warn!("  ? {file}: unidentified");
                                 if !serial_tried.is_empty() {
-                                    log::warn!("      ROM serial: {}", serial_tried);
+                                    log::warn!("      ROM serial: {serial_tried}");
                                 }
                                 if !scraper_serial_tried.is_empty() {
                                     log::warn!(
-                                        "      Scraper serial tried: {}",
-                                        scraper_serial_tried
+                                        "      Scraper serial tried: {scraper_serial_tried}"
                                     );
                                 }
                                 if *filename_tried {
@@ -454,17 +456,17 @@ pub(crate) fn run_scrape(
                                 if *hashes_tried {
                                     log::warn!("      Hash lookup: tried");
                                     if !crc32.is_empty() {
-                                        log::warn!("        CRC32: {}", crc32);
+                                        log::warn!("        CRC32: {crc32}");
                                     }
                                     if !md5.is_empty() {
-                                        log::warn!("        MD5:   {}", md5);
+                                        log::warn!("        MD5:   {md5}");
                                     }
                                     if !sha1.is_empty() {
-                                        log::warn!("        SHA1:  {}", sha1);
+                                        log::warn!("        SHA1:  {sha1}");
                                     }
                                 }
                                 for e in errors {
-                                    log::warn!("      Error: {}", e);
+                                    log::warn!("      Error: {e}");
                                 }
                             }
                             retro_junk_scraper::LogEntry::Partial {
@@ -479,7 +481,7 @@ pub(crate) fn run_scrape(
                                     game_name.if_supports_color(Stdout, |t| t.green()),
                                 );
                                 for w in warnings {
-                                    log::warn!("      {}", w);
+                                    log::warn!("      {w}");
                                 }
                             }
                             retro_junk_scraper::LogEntry::Error { file, message } => {
@@ -498,7 +500,6 @@ pub(crate) fn run_scrape(
                         let system_metadata_dir = options.metadata_dir.join(folder_name);
                         let system_media_dir = options.media_dir.join(folder_name);
 
-                        use retro_junk_frontend::Frontend;
                         if let Err(e) = esde.write_metadata(
                             &games,
                             path,
@@ -527,9 +528,9 @@ pub(crate) fn run_scrape(
                             chrono::Local::now().format("%Y%m%d-%H%M%S"),
                         ));
                         if let Err(e) = std::fs::create_dir_all(&options.metadata_dir) {
-                            log::warn!("Warning: could not create metadata dir: {}", e);
+                            log::warn!("Warning: could not create metadata dir: {e}");
                         } else if let Err(e) = result.log.write_to_file(&log_path) {
-                            log::warn!("Warning: could not write scrape log: {}", e);
+                            log::warn!("Warning: could not write scrape log: {e}");
                         }
                     }
                 }

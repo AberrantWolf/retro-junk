@@ -47,7 +47,7 @@ fn make_gba_rom() -> Vec<u8> {
 }
 
 /// Recompute the GBA header complement checksum for a ROM buffer.
-fn recompute_checksum(rom: &mut Vec<u8>) {
+fn recompute_checksum(rom: &mut [u8]) {
     let mut sum: u8 = 0;
     for &b in &rom[0xA0..=0xBC] {
         sum = sum.wrapping_add(b);
@@ -178,8 +178,7 @@ fn test_checksum_mismatch() {
     let status = result.extra.get("checksum_status:GBA Complement").unwrap();
     assert!(
         status.starts_with("MISMATCH"),
-        "Expected MISMATCH, got: {}",
-        status
+        "Expected MISMATCH, got: {status}"
     );
 }
 
@@ -195,11 +194,7 @@ fn test_invalid_fixed_value() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
 
     let fixed = result.extra.get("fixed_value").unwrap();
-    assert!(
-        fixed.contains("INVALID"),
-        "Expected INVALID, got: {}",
-        fixed
-    );
+    assert!(fixed.contains("INVALID"), "Expected INVALID, got: {fixed}");
 }
 
 #[test]
@@ -279,7 +274,7 @@ fn test_quick_mode_skips_save_type() {
         ..Default::default()
     };
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
-    assert!(result.extra.get("save_type").is_none());
+    assert!(!result.extra.contains_key("save_type"));
 }
 
 #[test]

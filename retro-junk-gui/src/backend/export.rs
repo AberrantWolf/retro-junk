@@ -10,9 +10,8 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
     let console = &app.library.consoles[console_idx];
     let folder_name = console.folder_name.clone();
 
-    let root_path = match app.root_path.clone() {
-        Some(p) => p,
-        None => return,
+    let Some(root_path) = app.root_path.clone() else {
+        return;
     };
 
     // Collect the data we need from each entry before moving to the background thread.
@@ -22,11 +21,10 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
         .map(|entry| EntrySnapshot {
             rom_stem: entry.game_entry.rom_stem().to_string(),
             rom_filename: entry.game_entry.display_name().to_string(),
-            name: entry
-                .dat_match
-                .as_ref()
-                .map(|m| m.game_name.clone())
-                .unwrap_or_else(|| entry.game_entry.display_name().to_string()),
+            name: entry.dat_match.as_ref().map_or_else(
+                || entry.game_entry.display_name().to_string(),
+                |m| m.game_name.clone(),
+            ),
             cover_title: entry.cover_title.clone(),
         })
         .collect();
@@ -38,7 +36,7 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
     let metadata_dir_setting = app.settings.general.metadata_dir.clone();
     let media_dir_setting = app.settings.general.assets_dir.clone();
     let ctx = ctx.clone();
-    let description = format!("Exporting gamelist.xml for {}", folder_name);
+    let description = format!("Exporting gamelist.xml for {folder_name}");
 
     spawn_background_op(
         app,
@@ -85,8 +83,7 @@ fn do_generate(
     let media_dir = state::asset_dir_for_console(root_path, folder_name, media_dir_setting)
         .ok_or_else(|| "Could not determine media directory".to_string())?;
     let metadata_dir =
-        state::metadata_dir_for_console(root_path, folder_name, metadata_dir_setting)
-            .ok_or_else(|| "Could not determine metadata directory".to_string())?;
+        state::metadata_dir_for_console(root_path, folder_name, metadata_dir_setting);
 
     let games: Vec<ScrapedGame> = entries
         .iter()

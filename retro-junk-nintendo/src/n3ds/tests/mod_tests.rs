@@ -3,33 +3,33 @@ use std::io::Cursor;
 
 use retro_junk_core::{AnalysisOptions, Region, RomAnalyzer};
 
-/// Minimal CCI for can_handle / format detection tests.
+/// Minimal CCI for `can_handle` / format detection tests.
 fn make_cci_minimal() -> Vec<u8> {
     let partition0_offset: u64 = 0x4000;
     let ncch_content_size_mu: u32 = 0x100;
-    let total_size = partition0_offset + ncch_content_size_mu as u64 * MEDIA_UNIT;
+    let total_size = partition0_offset + u64::from(ncch_content_size_mu) * MEDIA_UNIT;
     let mut rom = vec![0u8; total_size as usize];
 
     rom[0x00] = 0xAB;
     rom[0x100..0x104].copy_from_slice(&NCSD_MAGIC);
     let image_size_mu = (total_size / MEDIA_UNIT) as u32;
     rom[0x104..0x108].copy_from_slice(&image_size_mu.to_le_bytes());
-    rom[0x108..0x110].copy_from_slice(&0x0004000000ABCDEF_u64.to_le_bytes());
+    rom[0x108..0x110].copy_from_slice(&0x0004_0000_00AB_CDEF_u64.to_le_bytes());
     let p0_offset_mu = (partition0_offset / MEDIA_UNIT) as u32;
     rom[0x120..0x124].copy_from_slice(&p0_offset_mu.to_le_bytes());
     rom[0x124..0x128].copy_from_slice(&ncch_content_size_mu.to_le_bytes());
     rom[0x188 + 4] = 1;
     rom[0x188 + 5] = 1;
-    rom[0x200..0x204].copy_from_slice(&0xFFFFFFFF_u32.to_le_bytes());
+    rom[0x200..0x204].copy_from_slice(&0xFFFF_FFFF_u32.to_le_bytes());
     rom[0x300..0x304].copy_from_slice(&(total_size as u32).to_le_bytes());
     rom[0x1000] = 0x42;
 
     let p0 = partition0_offset as usize;
     rom[p0 + 0x100..p0 + 0x104].copy_from_slice(&NCCH_MAGIC);
     rom[p0 + 0x104..p0 + 0x108].copy_from_slice(&ncch_content_size_mu.to_le_bytes());
-    rom[p0 + 0x108..p0 + 0x110].copy_from_slice(&0x0004000000ABCDEF_u64.to_le_bytes());
+    rom[p0 + 0x108..p0 + 0x110].copy_from_slice(&0x0004_0000_00AB_CDEF_u64.to_le_bytes());
     rom[p0 + 0x110..p0 + 0x112].copy_from_slice(b"31");
-    rom[p0 + 0x118..p0 + 0x120].copy_from_slice(&0x0004000000ABCDEF_u64.to_le_bytes());
+    rom[p0 + 0x118..p0 + 0x120].copy_from_slice(&0x0004_0000_00AB_CDEF_u64.to_le_bytes());
     rom[p0 + 0x150..p0 + 0x160].copy_from_slice(b"CTR-P-ABCE\0\0\0\0\0\0");
     rom[p0 + 0x180..p0 + 0x184].copy_from_slice(&0x400u32.to_le_bytes());
     rom[p0 + 0x188 + 4] = 0x01;
@@ -39,7 +39,7 @@ fn make_cci_minimal() -> Vec<u8> {
     rom
 }
 
-/// Minimal CIA for can_handle / format detection tests.
+/// Minimal CIA for `can_handle` / format detection tests.
 fn make_cia_minimal() -> Vec<u8> {
     let header_size: u32 = 0x2020;
     let cert_chain_size: u32 = 0x0A00;
@@ -63,14 +63,14 @@ fn make_cia_minimal() -> Vec<u8> {
     cia.resize(common::align64(cia.len() as u64) as usize, 0);
 
     let mut ticket = vec![0u8; ticket_size as usize];
-    ticket[0x00..0x04].copy_from_slice(&0x00010004u32.to_be_bytes());
-    let title_id: u64 = 0x00040000_00ABCDEF;
+    ticket[0x00..0x04].copy_from_slice(&0x0001_0004_u32.to_be_bytes());
+    let title_id: u64 = 0x0004_0000_00AB_CDEF;
     ticket[0x1DC..0x1E4].copy_from_slice(&title_id.to_be_bytes());
     cia.extend_from_slice(&ticket);
     cia.resize(common::align64(cia.len() as u64) as usize, 0);
 
     let mut tmd = vec![0u8; tmd_size as usize];
-    tmd[0x00..0x04].copy_from_slice(&0x00010004u32.to_be_bytes());
+    tmd[0x00..0x04].copy_from_slice(&0x0001_0004_u32.to_be_bytes());
     let tmd_hdr = 0x140;
     tmd[tmd_hdr + 0x4C..tmd_hdr + 0x54].copy_from_slice(&title_id.to_be_bytes());
     tmd[tmd_hdr + 0x9C..tmd_hdr + 0x9E].copy_from_slice(&0x0410u16.to_be_bytes());

@@ -50,6 +50,7 @@ pub struct ScrapeLog {
 }
 
 impl ScrapeLog {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -58,10 +59,12 @@ impl ScrapeLog {
         self.entries.push(entry);
     }
 
+    #[must_use]
     pub fn entries(&self) -> &[LogEntry] {
         &self.entries
     }
 
+    #[must_use]
     pub fn summary(&self) -> LogSummary {
         let mut summary = LogSummary::default();
         for entry in &self.entries {
@@ -125,11 +128,7 @@ impl ScrapeLog {
                     method,
                     media_downloaded,
                 } => {
-                    writeln!(
-                        file,
-                        "[OK] {} -> \"{}\" (matched by {})",
-                        f, game_name, method
-                    )?;
+                    writeln!(file, "[OK] {f} -> \"{game_name}\" (matched by {method})")?;
                     if !media_downloaded.is_empty() {
                         writeln!(file, "     Media: {}", media_downloaded.join(", "))?;
                     }
@@ -139,9 +138,9 @@ impl ScrapeLog {
                     game_name,
                     warnings,
                 } => {
-                    writeln!(file, "[PARTIAL] {} -> \"{}\"", f, game_name)?;
+                    writeln!(file, "[PARTIAL] {f} -> \"{game_name}\"")?;
                     for w in warnings {
-                        writeln!(file, "     Warning: {}", w)?;
+                        writeln!(file, "     Warning: {w}")?;
                     }
                 }
                 LogEntry::Unidentified {
@@ -155,12 +154,12 @@ impl ScrapeLog {
                     sha1,
                     errors,
                 } => {
-                    writeln!(file, "[UNIDENTIFIED] {}", f)?;
+                    writeln!(file, "[UNIDENTIFIED] {f}")?;
                     if !serial_tried.is_empty() {
-                        writeln!(file, "     ROM serial: {}", serial_tried)?;
+                        writeln!(file, "     ROM serial: {serial_tried}")?;
                     }
                     if !scraper_serial_tried.is_empty() {
-                        writeln!(file, "     Scraper serial tried: {}", scraper_serial_tried)?;
+                        writeln!(file, "     Scraper serial tried: {scraper_serial_tried}")?;
                     }
                     if *filename_tried {
                         writeln!(file, "     Filename lookup: tried")?;
@@ -168,17 +167,17 @@ impl ScrapeLog {
                     if *hashes_tried {
                         writeln!(file, "     Hash lookup: tried")?;
                         if !crc32.is_empty() {
-                            writeln!(file, "       CRC32: {}", crc32)?;
+                            writeln!(file, "       CRC32: {crc32}")?;
                         }
                         if !md5.is_empty() {
-                            writeln!(file, "       MD5:   {}", md5)?;
+                            writeln!(file, "       MD5:   {md5}")?;
                         }
                         if !sha1.is_empty() {
-                            writeln!(file, "       SHA1:  {}", sha1)?;
+                            writeln!(file, "       SHA1:  {sha1}")?;
                         }
                     }
                     for e in errors {
-                        writeln!(file, "     Error: {}", e)?;
+                        writeln!(file, "     Error: {e}")?;
                     }
                 }
                 LogEntry::GroupedDisc {
@@ -188,12 +187,11 @@ impl ScrapeLog {
                 } => {
                     writeln!(
                         file,
-                        "[GROUPED] {} -> \"{}\" (grouped with {})",
-                        f, game_name, primary_file
+                        "[GROUPED] {f} -> \"{game_name}\" (grouped with {primary_file})"
                     )?;
                 }
                 LogEntry::Error { file: f, message } => {
-                    writeln!(file, "[ERROR] {}: {}", f, message)?;
+                    writeln!(file, "[ERROR] {f}: {message}")?;
                 }
             }
         }

@@ -3,7 +3,7 @@
 //! Supports:
 //! - Headered ROMs (.smc, .swc) with 512-byte copier header
 //! - Headerless ROMs (.sfc)
-//! - LoROM, HiROM, ExHiROM, SA-1, and S-DD1 mappings
+//! - `LoROM`, `HiROM`, `ExHiROM`, SA-1, and S-DD1 mappings
 //!
 //! SNES ROMs have no magic bytes. Detection uses a heuristic scoring system
 //! that evaluates candidate header locations and picks the best match.
@@ -24,14 +24,14 @@ use retro_junk_core::{
 /// Size of the optional copier header (SMC/SWC/fig).
 const COPIER_HEADER_SIZE: u64 = 512;
 
-/// Minimum file size: smallest valid LoROM is 32 KB.
+/// Minimum file size: smallest valid `LoROM` is 32 KB.
 const MIN_FILE_SIZE: u64 = 0x8000;
 
 /// Header base offsets within the ROM data (relative to start of ROM, after
 /// any copier header has been stripped).
 const LOROM_HEADER_BASE: u64 = 0x7FB0;
 const HIROM_HEADER_BASE: u64 = 0xFFB0;
-const EXHIROM_HEADER_BASE: u64 = 0x40FFB0;
+const EXHIROM_HEADER_BASE: u64 = 0x0040_FFB0;
 
 /// Field offsets within the 48-byte header region (base + offset).
 const OFF_TITLE: usize = 0x10; // 21 bytes
@@ -45,7 +45,7 @@ const OFF_VERSION: usize = 0x2B;
 const OFF_COMPLEMENT: usize = 0x2C; // 2 bytes, little-endian
 const OFF_CHECKSUM: usize = 0x2E; // 2 bytes, little-endian
 
-/// Extended header fields (at base + 0x00..0x0F, valid when developer_id == 0x33).
+/// Extended header fields (at base + 0x00..0x0F, valid when `developer_id` == 0x33).
 const OFF_EXT_MAKER_CODE: usize = 0x00; // 2 bytes ASCII
 const OFF_EXT_GAME_CODE: usize = 0x02; // 4 bytes ASCII
 const OFF_EXT_EXPANSION_RAM: usize = 0x0D;
@@ -73,6 +73,7 @@ pub enum SnesMapping {
 }
 
 impl SnesMapping {
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             Self::LoRom => "LoROM",
@@ -111,6 +112,7 @@ pub enum SnesSpeed {
 }
 
 impl SnesSpeed {
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             Self::Slow => "SlowROM (2.68 MHz)",
@@ -161,13 +163,13 @@ pub struct SnesHeader {
     /// Offset of the header within the file (including copier header if present).
     pub header_offset: u64,
 
-    /// Extended header ("ExHeader"), present only when developer_id == 0x33.
+    /// Extended header ("`ExHeader`"), present only when `developer_id` == 0x33.
     pub extended: Option<SnesExtendedHeader>,
 }
 
 /// SNES extended header fields (valid only when the developer ID is 0x33).
 ///
-/// Documents the ExHeader layout at 0x00-0x0F before the main header.
+/// Documents the `ExHeader` layout at 0x00-0x0F before the main header.
 #[derive(Debug, Clone)]
 pub struct SnesExtendedHeader {
     /// 2-character maker code. Empty when blank in the ROM.
@@ -238,7 +240,7 @@ fn score_header_at(reader: &mut dyn ReadSeek, offset: u64) -> i32 {
     match mapping {
         SnesMapping::LoRom | SnesMapping::SA1 if is_lorom_offset => score += 3,
         SnesMapping::HiRom | SnesMapping::SDD1 if is_hirom_offset => score += 3,
-        SnesMapping::ExHiRom if offset > 0x400000 => score += 3,
+        SnesMapping::ExHiRom if offset > 0x0040_0000 => score += 3,
         _ => {}
     }
 
@@ -328,7 +330,7 @@ fn detect_mapping(reader: &mut dyn ReadSeek, file_size: u64) -> Result<(u64, boo
     }
 
     // Pick the highest-scoring candidate
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     if let Some(&(offset, score)) = candidates.first()
         && score >= MIN_SCORE_THRESHOLD
@@ -385,15 +387,15 @@ fn parse_header(
     // ROM size: (1 << code) KB
     let rom_size_code = buf[OFF_ROM_SIZE];
     let rom_size = if rom_size_code > 0 && rom_size_code <= 0x0D {
-        (1u64 << rom_size_code as u64) * 1024
+        (1u64 << u64::from(rom_size_code)) * 1024
     } else {
         0
     };
 
     // RAM size: same encoding, 0 means no SRAM
-    let ram_size_code = buf[OFF_RAM_SIZE];
-    let ram_size = if ram_size_code > 0 && ram_size_code <= 0x08 {
-        (1u64 << ram_size_code as u64) * 1024
+    let sram_size_code = buf[OFF_RAM_SIZE];
+    let sram_size = if sram_size_code > 0 && sram_size_code <= 0x08 {
+        (1u64 << u64::from(sram_size_code)) * 1024
     } else {
         0
     };
@@ -415,7 +417,7 @@ fn parse_header(
             .to_string();
         let exp_ram_code = buf[OFF_EXT_EXPANSION_RAM];
         let expansion_ram_size = if exp_ram_code > 0 {
-            (1u64 << exp_ram_code as u64) * 1024
+            (1u64 << u64::from(exp_ram_code)) * 1024
         } else {
             0
         };
@@ -436,7 +438,7 @@ fn parse_header(
         speed,
         rom_type,
         rom_size,
-        ram_size,
+        ram_size: sram_size,
         country,
         developer_id,
         version,
@@ -491,7 +493,7 @@ fn compute_snes_checksum(
     if power == rom_size {
         // Power-of-2 size: simple sum
         for &byte in &rom_data {
-            sum = sum.wrapping_add(byte as u16);
+            sum = sum.wrapping_add(u16::from(byte));
         }
     } else {
         // Non-power-of-2: sum the base block, then mirror the remainder
@@ -501,7 +503,7 @@ fn compute_snes_checksum(
 
         // Sum the base block
         for &byte in base {
-            sum = sum.wrapping_add(byte as u16);
+            sum = sum.wrapping_add(u16::from(byte));
         }
 
         // Mirror the remainder to fill (power - remainder_len) bytes
@@ -509,7 +511,7 @@ fn compute_snes_checksum(
         // for the second "half"
         let mirror_total = power as usize;
         for i in 0..mirror_total {
-            sum = sum.wrapping_add(remainder[i % remainder_len] as u16);
+            sum = sum.wrapping_add(u16::from(remainder[i % remainder_len]));
         }
     }
 
@@ -549,12 +551,12 @@ fn country_name(code: u8) -> &'static str {
 fn country_to_region(code: u8) -> Region {
     match code {
         0x00 => Region::Japan,
-        0x01 => Region::Usa,
+        0x01 | 0x0F => Region::Usa,
         0x02..=0x0A => Region::Europe,
         0x0B => Region::China,
         0x0D => Region::Korea,
         0x0E => Region::World,
-        0x0F => Region::Usa, // Canada
+        // Canada
         0x10 => Region::Brazil,
         0x11 => Region::Australia,
         _ => Region::Unknown,
@@ -627,48 +629,9 @@ fn coprocessor_name(rom_type: u8) -> Option<&'static str> {
 // Conversion to RomIdentification
 // ---------------------------------------------------------------------------
 
-/// Convert a parsed SnesHeader into a RomIdentification.
-fn to_identification(
-    header: &SnesHeader,
-    file_size: u64,
-    computed_checksum: Option<u16>,
-) -> RomIdentification {
-    let mut id = RomIdentification::new();
-
-    // Internal name
-    if !header.title.is_empty() {
-        id = id.with_internal_name(&header.title);
-    }
-
-    // Serial / game code
-    if let Some(ext) = &header.extended
-        && !ext.game_code.is_empty()
-    {
-        // Prepend SHVC- to game code so that we don't overlap with NDS/3DS
-        // on accident, which get shortened to 4-letter codes
-        // id.serial_number = format!("SHVC-{}", ext.game_code);
-        id.serial_number = ext.game_code.clone();
-    }
-
-    // Version
-    id.version = format!("1.{}", header.version);
-
-    // Maker code
-    if let Some(ext) = &header.extended {
-        if !ext.maker_code.is_empty() {
-            if let Some(name) = crate::licensee::maker_code_name(&ext.maker_code) {
-                id.maker_code = format!("{} ({})", ext.maker_code, name);
-            } else {
-                id.maker_code = ext.maker_code.clone();
-            }
-        }
-    } else if let Some(name) = crate::licensee::old_licensee_name(header.developer_id) {
-        id.maker_code = format!("0x{:02X} ({})", header.developer_id, name);
-    } else if header.developer_id != 0 {
-        id.maker_code = format!("0x{:02X}", header.developer_id);
-    }
-
-    // File sizes
+/// Record file size and, when the file is genuinely too small or too large,
+/// the expected size derived from the header ROM size field.
+fn record_expected_size(id: &mut RomIdentification, header: &SnesHeader, file_size: u64) {
     id.file_size = file_size;
     if header.rom_size > 0 {
         let copier = if header.has_copier_header {
@@ -690,6 +653,51 @@ fn to_identification(
             }
         }
     }
+}
+
+/// Convert a parsed `SnesHeader` into a `RomIdentification`.
+fn to_identification(
+    header: &SnesHeader,
+    file_size: u64,
+    computed_checksum: Option<u16>,
+) -> RomIdentification {
+    let mut id = RomIdentification::new();
+
+    // Internal name
+    if !header.title.is_empty() {
+        id = id.with_internal_name(&header.title);
+    }
+
+    // Serial / game code
+    if let Some(ext) = &header.extended
+        && !ext.game_code.is_empty()
+    {
+        // Prepend SHVC- to game code so that we don't overlap with NDS/3DS
+        // on accident, which get shortened to 4-letter codes
+        // id.serial_number = format!("SHVC-{}", ext.game_code);
+        id.serial_number.clone_from(&ext.game_code);
+    }
+
+    // Version
+    id.version = format!("1.{}", header.version);
+
+    // Maker code
+    if let Some(ext) = &header.extended {
+        if !ext.maker_code.is_empty() {
+            if let Some(name) = crate::licensee::maker_code_name(&ext.maker_code) {
+                id.maker_code = format!("{} ({})", ext.maker_code, name);
+            } else {
+                id.maker_code.clone_from(&ext.maker_code);
+            }
+        }
+    } else if let Some(name) = crate::licensee::old_licensee_name(header.developer_id) {
+        id.maker_code = format!("0x{:02X} ({})", header.developer_id, name);
+    } else if header.developer_id != 0 {
+        id.maker_code = format!("0x{:02X}", header.developer_id);
+    }
+
+    // File sizes
+    record_expected_size(&mut id, header, file_size);
 
     // Region
     id.regions = vec![country_to_region(header.country)];
@@ -805,10 +813,10 @@ impl RomAnalyzer for SnesAnalyzer {
         let header = parse_header(reader, header_offset, has_copier)?;
 
         // Compute checksum unless in quick mode
-        let computed_checksum = if !options.quick {
-            compute_snes_checksum(reader, has_copier).ok()
-        } else {
+        let computed_checksum = if options.quick {
             None
+        } else {
+            compute_snes_checksum(reader, has_copier).ok()
         };
 
         Ok(to_identification(&header, file_size, computed_checksum))

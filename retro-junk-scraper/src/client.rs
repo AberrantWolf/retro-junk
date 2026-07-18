@@ -26,9 +26,9 @@ const MAX_RETRIES: u32 = 3;
 const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
 
 /// Hard timeout for media file downloads.
-const MEDIA_TIMEOUT: Duration = Duration::from_secs(120);
+const MEDIA_TIMEOUT: Duration = Duration::from_mins(2);
 
-/// HTTP client for the ScreenScraper API with rate limiting and quota tracking.
+/// HTTP client for the `ScreenScraper` API with rate limiting and quota tracking.
 ///
 /// Concurrency is controlled externally by the caller (e.g., worker pool count
 /// or `buffer_unordered` limit). Each API call sleeps for `MIN_REQUEST_INTERVAL`
@@ -44,7 +44,7 @@ pub struct ScreenScraperClient {
 impl ScreenScraperClient {
     /// Create a new client and validate credentials by calling ssuserInfos.php.
     ///
-    /// Returns the client and user info (which includes max_threads for the
+    /// Returns the client and user info (which includes `max_threads` for the
     /// caller to configure its own concurrency control).
     pub async fn new(creds: Credentials) -> Result<(Self, UserInfo), ScrapeError> {
         let http = reqwest::Client::builder()
@@ -74,7 +74,7 @@ impl ScreenScraperClient {
         params.insert("output", "json".to_string());
 
         let text = self
-            .rate_limited_get(&format!("{}/ssuserInfos.php", BASE_URL), &params)
+            .rate_limited_get(&format!("{BASE_URL}/ssuserInfos.php"), &params)
             .await?;
 
         let status_err = check_auth_status_from_text(&text);
@@ -104,7 +104,7 @@ impl ScreenScraperClient {
         }
 
         let text = self
-            .rate_limited_get(&format!("{}/jeuInfos.php", BASE_URL), &all_params)
+            .rate_limited_get(&format!("{BASE_URL}/jeuInfos.php"), &all_params)
             .await?;
 
         // Check for error patterns in the response text.
@@ -168,7 +168,7 @@ impl ScreenScraperClient {
     ///
     /// Media CDN downloads don't count against the API rate limit, so no
     /// rate limiting is applied here — but we still enforce a total timeout
-    /// to prevent hangs when ScreenScraper stalls mid-transfer.
+    /// to prevent hangs when `ScreenScraper` stalls mid-transfer.
     pub async fn download_media(&self, url: &str) -> Result<Vec<u8>, ScrapeError> {
         tokio::time::timeout(MEDIA_TIMEOUT, async {
             let resp = self.http.get(url).send().await?;
@@ -186,13 +186,63 @@ impl ScreenScraperClient {
 
     /// Get current quota info if available.
     pub async fn current_quota(&self) -> Option<UserQuota> {
-        match tokio::time::timeout(LOCK_TIMEOUT, self.quota.lock()).await {
-            Ok(guard) => guard.clone(),
-            Err(_) => {
-                log::debug!("Quota lock timed out during read");
-                None
-            }
+        if let Ok(guard) = tokio::time::timeout(LOCK_TIMEOUT, self.quota.lock()).await {
+            guard.clone()
+        } else {
+            log::debug!("Quota lock timed out during read");
+            None
         }
+    }
+
+    /// Perform a single HTTP GET attempt, mapping HTTP-level failures to
+    /// `ScrapeError`s (credential rejection, rate limit, server errors, and
+    /// HTML error pages returned with a 200 status).
+    async fn attempt_get(
+        &self,
+        url: &str,
+        params: &HashMap<&str, String>,
+    ) -> Result<String, ScrapeError> {
+        let resp = self
+            .http
+            .get(url)
+            .query(params)
+            .send()
+            .await
+            .map_err(|e| ScrapeError::Api(redact_credentials(&e.to_string())))?;
+
+        let status = resp.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            return Err(ScrapeError::InvalidCredentials(
+                "Credentials rejected".to_string(),
+            ));
+        }
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            return Err(ScrapeError::RateLimit);
+        }
+        if status.is_server_error() {
+            return Err(ScrapeError::ServerError {
+                status: status.as_u16(),
+                message: format!("Server returned HTTP {}", status.as_u16()),
+            });
+        }
+
+        let text = resp.text().await.map_err(|e| ScrapeError::ServerError {
+            status: 200,
+            message: format!(
+                "Failed to read response body: {}",
+                redact_credentials(&e.to_string())
+            ),
+        })?;
+
+        // Detect HTML error pages returned with 200 status (CDN/proxy errors)
+        if looks_like_html_error(&text) {
+            return Err(ScrapeError::ServerError {
+                status: 200,
+                message: "Server returned HTML error page instead of JSON".to_string(),
+            });
+        }
+
+        Ok(text)
     }
 
     /// Perform a rate-limited HTTP GET request with retries for transient errors.
@@ -223,84 +273,15 @@ impl ScreenScraperClient {
         let request_start = tokio::time::Instant::now();
 
         for attempt in 0..=MAX_RETRIES {
-            // Back off before retries (not before the first attempt)
-            if attempt > 0 {
-                let backoff = INITIAL_BACKOFF * 2u32.pow(attempt - 1);
-                log::info!(
-                    "[req:{}] {} retry {}/{} after {}s backoff",
-                    req_id,
-                    endpoint,
-                    attempt + 1,
-                    MAX_RETRIES + 1,
-                    backoff.as_secs(),
-                );
-                tokio::time::sleep(backoff).await;
-            }
+            backoff_before_retry(req_id, endpoint, attempt).await;
 
             let attempt_start = tokio::time::Instant::now();
             let wall_start = SystemTime::now();
 
-            let result = tokio::time::timeout(API_TIMEOUT, async {
-                let resp = self
-                    .http
-                    .get(url)
-                    .query(params)
-                    .send()
-                    .await
-                    .map_err(|e| ScrapeError::Api(redact_credentials(&e.to_string())))?;
-
-                let status = resp.status();
-                if status == reqwest::StatusCode::UNAUTHORIZED
-                    || status == reqwest::StatusCode::FORBIDDEN
-                {
-                    return Err(ScrapeError::InvalidCredentials(
-                        "Credentials rejected".to_string(),
-                    ));
-                }
-                if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                    return Err(ScrapeError::RateLimit);
-                }
-                if status.is_server_error() {
-                    return Err(ScrapeError::ServerError {
-                        status: status.as_u16(),
-                        message: format!("Server returned HTTP {}", status.as_u16()),
-                    });
-                }
-
-                let text = resp.text().await.map_err(|e| ScrapeError::ServerError {
-                    status: 200,
-                    message: format!(
-                        "Failed to read response body: {}",
-                        redact_credentials(&e.to_string())
-                    ),
-                })?;
-
-                // Detect HTML error pages returned with 200 status (CDN/proxy errors)
-                if looks_like_html_error(&text) {
-                    return Err(ScrapeError::ServerError {
-                        status: 200,
-                        message: "Server returned HTML error page instead of JSON".to_string(),
-                    });
-                }
-
-                Ok(text)
-            })
-            .await;
+            let result = tokio::time::timeout(API_TIMEOUT, self.attempt_get(url, params)).await;
 
             let attempt_elapsed = attempt_start.elapsed();
-            let wall_elapsed = wall_start.elapsed().unwrap_or_default();
-
-            // Detect machine sleep: if wall-clock time advanced much more
-            // than the tokio Instant-based elapsed, the machine likely slept.
-            if wall_elapsed > attempt_elapsed + std::time::Duration::from_secs(10) {
-                log::warn!(
-                    "[req:{}] {} clock drift: wall={}s vs tokio={}ms (machine likely slept)",
-                    req_id,
-                    endpoint,
-                    wall_elapsed.as_secs(),
-                    attempt_elapsed.as_millis(),
-                );
-            }
+            warn_on_clock_drift(req_id, endpoint, attempt_elapsed, wall_start);
 
             // Rate limit: sleep after each request so this worker doesn't
             // fire another request too quickly.
@@ -329,7 +310,6 @@ impl ScreenScraperClient {
                         e,
                     );
                     last_error = Some(e);
-                    continue;
                 }
                 Ok(Err(e)) => {
                     log::debug!(
@@ -359,14 +339,10 @@ impl ScreenScraperClient {
                     // (e.g., laptop woke from sleep). Stop retrying to recover faster.
                     if consecutive_timeouts >= 2 {
                         log::warn!(
-                            "[req:{}] {} aborting after {} consecutive timeouts (stale connections?)",
-                            req_id,
-                            endpoint,
-                            consecutive_timeouts,
+                            "[req:{req_id}] {endpoint} aborting after {consecutive_timeouts} consecutive timeouts (stale connections?)",
                         );
                         break;
                     }
-                    continue;
                 }
             }
         }
@@ -416,12 +392,12 @@ fn looks_like_html_error(text: &str) -> bool {
     trimmed.starts_with("<!DOCTYPE") || trimmed.starts_with("<html") || trimmed.starts_with("<HTML")
 }
 
-/// Check if a ScrapeError is retryable (transient server issue).
+/// Check if a `ScrapeError` is retryable (transient server issue).
 fn is_retryable(e: &ScrapeError) -> bool {
     matches!(e, ScrapeError::ServerError { .. })
 }
 
-/// Load credentials and create a connected ScreenScraper client.
+/// Load credentials and create a connected `ScreenScraper` client.
 ///
 /// Returns the client and the maximum number of worker threads to use,
 /// computed from the server-granted thread limit, the optional user override,
@@ -435,12 +411,9 @@ pub async fn create_client(
     let (client, user_info) = ScreenScraperClient::new(creds).await?;
 
     let ss_max = user_info.max_threads() as usize;
-    let cpu_max = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
+    let cpu_max = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let max_workers = threads
-        .map(|t| t.min(ss_max))
-        .unwrap_or_else(|| ss_max.min(cpu_max))
+        .map_or_else(|| ss_max.min(cpu_max), |t| t.min(ss_max))
         .max(1);
 
     // Seed the quota tracker with data from the initial user info response
@@ -457,6 +430,45 @@ pub async fn create_client(
 }
 
 /// Extract the API endpoint name from a full URL (e.g., "jeuInfos" from ".../jeuInfos.php").
+/// Sleep with exponential backoff before a retry attempt.
+///
+/// No-op on the first attempt (`attempt == 0`).
+async fn backoff_before_retry(req_id: u64, endpoint: &str, attempt: u32) {
+    if attempt == 0 {
+        return;
+    }
+    let backoff = INITIAL_BACKOFF * 2u32.pow(attempt - 1);
+    log::info!(
+        "[req:{}] {} retry {}/{} after {}s backoff",
+        req_id,
+        endpoint,
+        attempt + 1,
+        MAX_RETRIES + 1,
+        backoff.as_secs(),
+    );
+    tokio::time::sleep(backoff).await;
+}
+
+/// Detect machine sleep: if wall-clock time advanced much more than the
+/// tokio Instant-based elapsed, the machine likely slept.
+fn warn_on_clock_drift(
+    req_id: u64,
+    endpoint: &str,
+    attempt_elapsed: std::time::Duration,
+    wall_start: SystemTime,
+) {
+    let wall_elapsed = wall_start.elapsed().unwrap_or_default();
+    if wall_elapsed > attempt_elapsed + std::time::Duration::from_secs(10) {
+        log::warn!(
+            "[req:{}] {} clock drift: wall={}s vs tokio={}ms (machine likely slept)",
+            req_id,
+            endpoint,
+            wall_elapsed.as_secs(),
+            attempt_elapsed.as_millis(),
+        );
+    }
+}
+
 fn extract_endpoint(url: &str) -> &str {
     url.rsplit('/')
         .next()
@@ -479,7 +491,7 @@ fn summarize_params(params: &HashMap<&str, String>) -> String {
             if v.len() > 40 {
                 format!("{}={}...", k, &v[..37])
             } else {
-                format!("{}={}", k, v)
+                format!("{k}={v}")
             }
         })
         .collect();
@@ -494,13 +506,12 @@ fn redact_credentials(msg: &str) -> String {
     let mut result = msg.to_string();
     for param in &["devpassword", "sspassword", "devid", "ssid"] {
         // Match param=value where value ends at & or end of string/whitespace
-        let prefix = format!("{}=", param);
+        let prefix = format!("{param}=");
         while let Some(start) = result.find(&prefix) {
             let value_start = start + prefix.len();
             let value_end = result[value_start..]
                 .find(|c: char| c == '&' || c.is_whitespace() || c == '"' || c == '\'')
-                .map(|i| value_start + i)
-                .unwrap_or(result.len());
+                .map_or(result.len(), |i| value_start + i);
             result.replace_range(value_start..value_end, "[REDACTED]");
         }
     }

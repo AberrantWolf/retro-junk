@@ -1,4 +1,4 @@
-//! Headless GUI smoke tests driven through egui_kittest.
+//! Headless GUI smoke tests driven through `egui_kittest`.
 //!
 //! These build the app via `RetroJunkApp::with_parts` with default settings
 //! and no catalog DB, so they never touch the user's config or cache dirs.

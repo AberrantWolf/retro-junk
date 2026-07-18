@@ -189,6 +189,7 @@ pub enum MediaStatus {
 }
 
 impl MediaStatus {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Verified => "verified",
@@ -200,6 +201,7 @@ impl MediaStatus {
         }
     }
 
+    #[must_use]
     pub fn from_str_loose(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "bad" => Self::Bad,
@@ -221,6 +223,7 @@ pub enum CatalogTag {
 }
 
 impl CatalogTag {
+    #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Homebrew => "homebrew",
@@ -228,6 +231,7 @@ impl CatalogTag {
         }
     }
 
+    #[must_use]
     pub fn from_str_loose(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "homebrew" => Some(Self::Homebrew),
@@ -249,6 +253,7 @@ pub enum AssetOwner {
 
 impl AssetOwner {
     /// The `media_assets.release_id` column value.
+    #[must_use]
     pub fn release_id(&self) -> Option<&str> {
         match self {
             Self::Release(id) => Some(id),
@@ -257,6 +262,7 @@ impl AssetOwner {
     }
 
     /// The `media_assets.media_id` column value.
+    #[must_use]
     pub fn media_id(&self) -> Option<&str> {
         match self {
             Self::Release(_) => None,

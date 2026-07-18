@@ -165,7 +165,7 @@ fn detect_save_type(reader: &mut dyn ReadSeek) -> Result<Option<&'static str>, A
 // Identification
 // ---------------------------------------------------------------------------
 
-/// Convert a parsed GBA header into a RomIdentification.
+/// Convert a parsed GBA header into a `RomIdentification`.
 fn to_identification(
     header: &GbaHeader,
     file_size: u64,
@@ -176,7 +176,7 @@ fn to_identification(
 
     // Internal name
     if !header.title.is_empty() {
-        id.internal_name = header.title.clone();
+        id.internal_name.clone_from(&header.title);
     }
 
     // Serial number: AGB-XXXX format
@@ -186,9 +186,10 @@ fn to_identification(
 
     // Maker code
     if header.maker_code.len() == 2 {
-        id.maker_code = crate::licensee::maker_code_name(&header.maker_code)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| header.maker_code.clone());
+        id.maker_code = crate::licensee::maker_code_name(&header.maker_code).map_or_else(
+            || header.maker_code.clone(),
+            std::string::ToString::to_string,
+        );
     }
 
     // Region from game code

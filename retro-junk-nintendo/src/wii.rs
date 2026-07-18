@@ -4,7 +4,7 @@
 //! - ISO images (.iso)
 //! - Compressed formats via `nod`: WBFS, RVZ, WIA, CISO, GCZ
 //!
-//! The Wii disc header shares the same layout as GameCube ("boot.bin",
+//! The Wii disc header shares the same layout as `GameCube` ("boot.bin",
 //! 0x0000–0x043F). Detection uses the Wii magic word 0x5D1C9EA3 at
 //! offset 0x0018.
 //!
@@ -87,9 +87,7 @@ impl RomAnalyzer for WiiAnalyzer {
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
-        nintendo_disc::check_magic(reader)
-            .map(|(_, wii)| wii)
-            .unwrap_or(false)
+        nintendo_disc::check_magic(reader).is_ok_and(|(_, wii)| wii)
     }
 
     fn compute_container_hashes(

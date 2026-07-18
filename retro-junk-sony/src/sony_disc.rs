@@ -28,7 +28,7 @@ pub enum BootKey {
 /// Parsed SYSTEM.CNF contents.
 #[derive(Debug, Clone)]
 pub struct SystemCnf {
-    /// Boot executable path, e.g. "cdrom:\SLUS_012.34;1"
+    /// Boot executable path, e.g. "`cdrom:\SLUS_012.34;1`"
     pub boot_path: String,
     /// Which key was used (`BOOT` for PS1, `BOOT2` for PS2).
     pub boot_key: BootKey,
@@ -58,11 +58,9 @@ pub fn parse_system_cnf(content: &str) -> Result<SystemCnf, AnalysisError> {
                     boot_path = Some(value.to_string());
                     boot_key = Some(BootKey::Boot2);
                 }
-                "BOOT" => {
-                    if boot_path.is_none() {
-                        boot_path = Some(value.to_string());
-                        boot_key = Some(BootKey::Boot);
-                    }
+                "BOOT" if boot_path.is_none() => {
+                    boot_path = Some(value.to_string());
+                    boot_key = Some(BootKey::Boot);
                 }
                 "VMODE" => {
                     vmode = value.to_string();
@@ -112,7 +110,7 @@ pub fn extract_serial(boot_path: &str) -> Option<String> {
 
     // Extract digits after the prefix+separator
     let rest = &filename[4..];
-    let digits: String = rest.chars().filter(|c| c.is_ascii_digit()).collect();
+    let digits: String = rest.chars().filter(char::is_ascii_digit).collect();
 
     if digits.len() >= 5 {
         Some(format!("{}-{}", prefix.to_uppercase(), digits))
@@ -150,10 +148,10 @@ pub fn serial_to_region(serial: &str) -> Option<Region> {
     let prefix = serial[..4].to_uppercase();
     match prefix.as_str() {
         "SLUS" | "SCUS" => Some(Region::Usa),
-        "SLPS" | "SCPS" | "SLPM" | "SIPS" => Some(Region::Japan),
+        // PAPX/PCPX are dev/promo discs, usually Japanese
+        "SLPS" | "SCPS" | "SLPM" | "SIPS" | "PAPX" | "PCPX" => Some(Region::Japan),
         "SLES" | "SCES" | "SCED" => Some(Region::Europe),
         "SLKA" | "SCKA" => Some(Region::Korea),
-        "PAPX" | "PCPX" => Some(Region::Japan), // dev/promo discs, usually Japanese
         _ => None,
     }
 }

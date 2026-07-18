@@ -1,11 +1,11 @@
 //! GDB CSV cache management.
 //!
-//! Downloads and caches GameDataBase CSV files from GitHub. Uses a separate
+//! Downloads and caches `GameDataBase` CSV files from GitHub. Uses a separate
 //! cache namespace (`~/.cache/retro-junk/gdb/`) from the DAT cache to allow
 //! independent versioning and lifecycle management.
 //!
 //! Data source: <https://github.com/PigSaint/GameDataBase>
-//! License: CC BY 4.0 — Attribution to PigSaint required.
+//! License: CC BY 4.0 — Attribution to `PigSaint` required.
 
 use std::collections::HashMap;
 use std::fs;
@@ -38,7 +38,7 @@ pub struct CachedGdb {
 pub struct GdbCacheMeta {
     #[serde(default)]
     pub version: u32,
-    /// Keyed by CSV name (e.g., "console_nintendo_famicom_nes")
+    /// Keyed by CSV name (e.g., "`console_nintendo_famicom_nes`")
     pub csvs: HashMap<String, CachedGdb>,
 }
 
@@ -167,7 +167,7 @@ pub fn fetch_gdb(csv_name: &str, force: bool) -> Result<PathBuf, DatError> {
     Ok(csv_path)
 }
 
-/// Load a GDB CSV file, downloading if not cached. Returns parsed GdbFile.
+/// Load a GDB CSV file, downloading if not cached. Returns parsed `GdbFile`.
 pub fn load_gdb(csv_name: &str) -> Result<GdbFile, DatError> {
     // fetch_gdb with force=false skips download if already cached
     let path = fetch_gdb(csv_name, false)?;

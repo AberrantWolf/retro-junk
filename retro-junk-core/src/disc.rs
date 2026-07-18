@@ -10,6 +10,7 @@ use std::collections::HashMap;
 /// Examples:
 /// - `"Final Fantasy VII (Disc 1) (USA)"` → `"Final Fantasy VII (USA)"`
 /// - `"Crash Bandicoot (USA)"` → `"Crash Bandicoot (USA)"` (unchanged)
+#[must_use]
 pub fn strip_disc_tag(name: &str) -> String {
     const PREFIX: &str = " (Disc ";
     if let Some(start) = name.find(PREFIX) {
@@ -33,6 +34,7 @@ pub fn strip_disc_tag(name: &str) -> String {
 /// Examples:
 /// - `"Final Fantasy VII (Disc 2) (USA).chd"` → `Some(2)`
 /// - `"Crash Bandicoot (USA).chd"` → `None`
+#[must_use]
 pub fn extract_disc_number(name: &str) -> Option<u32> {
     const PREFIX: &str = "(Disc ";
     let start = name.find(PREFIX)?;
@@ -52,10 +54,11 @@ pub struct DiscGroup {
     pub member_indices: Vec<usize>,
 }
 
-/// Given a list of (index, filename_stem) pairs, detect disc groups.
+/// Given a list of (index, `filename_stem`) pairs, detect disc groups.
 ///
 /// Only entries containing "(Disc N)" are considered. Groups with a single
 /// entry are excluded (a lone "Disc 1" with no other discs isn't a group).
+#[must_use]
 pub fn detect_disc_groups(entries: &[(usize, &str)]) -> Vec<DiscGroup> {
     // Group by base name (disc tag stripped)
     let mut groups: HashMap<String, Vec<(usize, u32)>> = HashMap::new();
@@ -94,19 +97,20 @@ pub fn detect_disc_groups(entries: &[(usize, &str)]) -> Vec<DiscGroup> {
 /// - 2+ names → if `strip_disc_tag` changes the first name, use that (fast path for
 ///   numbered discs). Otherwise, compute the longest common prefix trimmed to a clean
 ///   parenthesized-group boundary (handles scenario-named discs like "Leon Hen"/"Claire Hen").
+#[must_use]
 pub fn derive_base_game_name(names: &[&str]) -> String {
     match names.len() {
         0 => String::new(),
         1 => strip_disc_tag(names[0]),
         _ => {
             let stripped = strip_disc_tag(names[0]);
-            if stripped != names[0] {
-                // Fast path: numbered discs — strip_disc_tag handled it
-                stripped
-            } else {
+            if stripped == names[0] {
                 // Scenario discs: find the longest common prefix across all names
                 let prefix = longest_common_prefix(names);
                 trim_to_paren_boundary(&prefix)
+            } else {
+                // Fast path: numbered discs — strip_disc_tag handled it
+                stripped
             }
         }
     }
@@ -156,6 +160,7 @@ fn trim_to_paren_boundary(s: &str) -> String {
 
 /// Check if all candidate names are disc variants of the same base game.
 /// Returns the base name if so, None otherwise.
+#[must_use]
 pub fn candidates_are_same_game(candidates: &[String]) -> Option<String> {
     if candidates.is_empty() {
         return None;

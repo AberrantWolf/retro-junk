@@ -46,6 +46,7 @@ impl Region {
     ];
 
     /// Returns the standard abbreviation for this region.
+    #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
             Self::Japan => "JPN",
@@ -64,6 +65,7 @@ impl Region {
     }
 
     /// Returns the full name of this region.
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             Self::Japan => "Japan",
@@ -82,6 +84,7 @@ impl Region {
     }
 
     /// Attempt to parse a region from a code character (common in serial numbers).
+    #[must_use]
     pub fn from_code_char(c: char) -> Option<Self> {
         match c.to_ascii_uppercase() {
             'J' => Some(Self::Japan),

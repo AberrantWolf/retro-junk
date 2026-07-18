@@ -6,3 +6,6 @@ edition.workspace = true
 [dependencies]
 retro-junk-core.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true

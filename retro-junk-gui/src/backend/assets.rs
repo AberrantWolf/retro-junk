@@ -26,19 +26,17 @@ pub fn load_assets_for_entry(
     media_dir_setting: String,
 ) {
     std::thread::spawn(move || {
-        let media_dir =
-            match state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
-                Some(d) => d,
-                None => {
-                    let _ = tx.send(AppMessage::AssetsLoaded {
-                        folder_name,
-                        entry_name,
-                        assets: HashMap::new(),
-                    });
-                    ctx.request_repaint();
-                    return;
-                }
-            };
+        let Some(media_dir) =
+            state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting)
+        else {
+            let _ = tx.send(AppMessage::AssetsLoaded {
+                folder_name,
+                entry_name,
+                assets: HashMap::new(),
+            });
+            ctx.request_repaint();
+            return;
+        };
 
         let found = state::collect_existing_assets(&media_dir, &rom_stem);
 
@@ -68,9 +66,9 @@ struct ScrapeWorkItem {
     file_size: u64,
     /// Serial from ROM header analysis. Empty = none.
     serial: String,
-    /// Serial adapted for ScreenScraper lookups. Empty = none.
+    /// Serial adapted for `ScreenScraper` lookups. Empty = none.
     scraper_serial: String,
-    /// Hash triple for the ScreenScraper hash tier (all-or-nothing).
+    /// Hash triple for the `ScreenScraper` hash tier (all-or-nothing).
     hashes: Option<retro_junk_scraper::lookup::RomHashes>,
     preferred_region: String,
     platform: Platform,
@@ -104,7 +102,7 @@ pub fn scrape_missing_media_for_selection(
     scrape_media_for_selection(app, console_idx, ctx, false);
 }
 
-/// Scrape media from ScreenScraper for selected entries.
+/// Scrape media from `ScreenScraper` for selected entries.
 ///
 /// When `force_redownload` is true, re-downloads all media types and clears cached paths.
 /// When false, only downloads missing types and leaves existing paths visible during scrape.
@@ -118,9 +116,8 @@ fn scrape_media_for_selection(
     let platform = console.platform;
     let folder_name = console.folder_name.clone();
 
-    let root_path = match app.root_path.clone() {
-        Some(p) => p,
-        None => return,
+    let Some(root_path) = app.root_path.clone() else {
+        return;
     };
 
     // Borrow the analyzer for extract_scraper_serial (UI thread only)
@@ -139,9 +136,7 @@ fn scrape_media_for_selection(
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let file_size = std::fs::metadata(analysis_path)
-                .map(|m| m.len())
-                .unwrap_or(0);
+            let file_size = std::fs::metadata(analysis_path).map_or(0, |m| m.len());
 
             let serial = entry
                 .identification
@@ -154,10 +149,10 @@ fn scrape_media_for_selection(
                 .unwrap_or_default();
 
             let regions = entry.effective_regions();
-            let preferred_region = regions
-                .first()
-                .map(|r| retro_junk_scraper::region_to_ss_code(r).to_string())
-                .unwrap_or_else(|| "us".to_string());
+            let preferred_region = regions.first().map_or_else(
+                || "us".to_string(),
+                |r| retro_junk_scraper::region_to_ss_code(r).to_string(),
+            );
 
             Some(ScrapeWorkItem {
                 entry_name: entry.game_entry.display_name().to_string(),
@@ -213,9 +208,9 @@ fn scrape_media_for_selection(
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
                 Err(e) => {
-                    log::error!("Failed to create tokio runtime: {}", e);
+                    log::error!("Failed to create tokio runtime: {e}");
                     let _ = tx.send(AppMessage::ScrapeFatalError {
-                        message: format!("Failed to create async runtime: {}", e),
+                        message: format!("Failed to create async runtime: {e}"),
                         op_id,
                     });
                     let _ = tx.send(AppMessage::OperationComplete { op_id });
@@ -233,9 +228,9 @@ fn scrape_media_for_selection(
                         }
                         Some(Ok(r)) => r,
                         Some(Err(e)) => {
-                            log::error!("Failed to connect to ScreenScraper: {}", e);
+                            log::error!("Failed to connect to ScreenScraper: {e}");
                             let _ = tx.send(AppMessage::ScrapeFatalError {
-                                message: format!("ScreenScraper connection failed: {}", e),
+                                message: format!("ScreenScraper connection failed: {e}"),
                                 op_id,
                             });
                             let _ = tx.send(AppMessage::OperationComplete { op_id });
@@ -243,37 +238,26 @@ fn scrape_media_for_selection(
                         }
                     };
 
-                let system_id = match retro_junk_scraper::screenscraper_system_id(platform) {
-                    Some(id) => id,
-                    None => {
-                        log::error!("No ScreenScraper system ID for {:?}", platform);
-                        let _ = tx.send(AppMessage::ScrapeFatalError {
-                            message: format!(
-                                "Platform {:?} is not supported by ScreenScraper",
-                                platform
-                            ),
-                            op_id,
-                        });
-                        let _ = tx.send(AppMessage::OperationComplete { op_id });
-                        return;
-                    }
+                let Some(system_id) = retro_junk_scraper::screenscraper_system_id(platform) else {
+                    log::error!("No ScreenScraper system ID for {platform:?}");
+                    let _ = tx.send(AppMessage::ScrapeFatalError {
+                        message: format!("Platform {platform:?} is not supported by ScreenScraper"),
+                        op_id,
+                    });
+                    let _ = tx.send(AppMessage::OperationComplete { op_id });
+                    return;
                 };
 
-                let media_dir = match state::asset_dir_for_console(
-                    &root_path,
-                    &folder_name,
-                    &media_dir_setting,
-                ) {
-                    Some(d) => d,
-                    None => {
-                        log::error!("Cannot determine media directory for {}", folder_name);
-                        let _ = tx.send(AppMessage::ScrapeFatalError {
-                            message: "Cannot determine media directory".to_string(),
-                            op_id,
-                        });
-                        let _ = tx.send(AppMessage::OperationComplete { op_id });
-                        return;
-                    }
+                let Some(media_dir) =
+                    state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting)
+                else {
+                    log::error!("Cannot determine media directory for {folder_name}");
+                    let _ = tx.send(AppMessage::ScrapeFatalError {
+                        message: "Cannot determine media directory".to_string(),
+                        op_id,
+                    });
+                    let _ = tx.send(AppMessage::OperationComplete { op_id });
+                    return;
                 };
 
                 let selection = retro_junk_scraper::AssetSelection::default();
@@ -318,7 +302,7 @@ fn scrape_media_for_selection(
                         Some(Ok(result)) => result,
                         Some(Err(e)) => {
                             if is_fatal_scrape_error(&e) {
-                                log::error!("Fatal scrape error: {}", e);
+                                log::error!("Fatal scrape error: {e}");
                                 let _ = tx.send(AppMessage::ScrapeFatalError {
                                     message: e.to_string(),
                                     op_id,
@@ -341,15 +325,17 @@ fn scrape_media_for_selection(
                     let downloaded = match cancellable(
                         retro_junk_scraper::assets::download_game_assets(
                             &client,
-                            &lookup_result.game,
-                            &selection,
-                            &media_dir,
-                            &item.rom_stem,
-                            &item.preferred_region,
-                            force_redownload,
-                            file_num,
-                            &item.filename,
-                            &event_tx,
+                            &retro_junk_scraper::assets::AssetDownloadRequest {
+                                game: &lookup_result.game,
+                                selection: &selection,
+                                media_dir: &media_dir,
+                                rom_stem: &item.rom_stem,
+                                preferred_region: &item.preferred_region,
+                                force_redownload,
+                                index: file_num,
+                                filename: &item.filename,
+                                events: &event_tx,
+                            },
                         ),
                         &cancel,
                     )
@@ -359,7 +345,7 @@ fn scrape_media_for_selection(
                         Some(Ok(media)) => media,
                         Some(Err(e)) => {
                             if is_fatal_scrape_error(&e) {
-                                log::error!("Fatal scrape error during download: {}", e);
+                                log::error!("Fatal scrape error during download: {e}");
                                 let _ = tx.send(AppMessage::ScrapeFatalError {
                                     message: e.to_string(),
                                     op_id,
@@ -412,7 +398,7 @@ fn scrape_media_for_selection(
 /// Re-generate miximages from existing on-disk media for selected entries.
 ///
 /// Composites miximages using already-scraped component images (screenshot, box art, etc.)
-/// without contacting ScreenScraper. Uses a sync background thread (no tokio needed).
+/// without contacting `ScreenScraper`. Uses a sync background thread (no tokio needed).
 pub fn regenerate_miximages_for_selection(
     app: &mut RetroJunkApp,
     console_idx: usize,
@@ -421,9 +407,8 @@ pub fn regenerate_miximages_for_selection(
     let console = &app.library.consoles[console_idx];
     let folder_name = console.folder_name.clone();
 
-    let root_path = match app.root_path.clone() {
-        Some(p) => p,
-        None => return,
+    let Some(root_path) = app.root_path.clone() else {
+        return;
     };
 
     // Collect (entry_name, rom_stem) for selected entries
@@ -455,21 +440,19 @@ pub fn regenerate_miximages_for_selection(
         folder_name.clone(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
-            let media_dir =
-                match state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
-                    Some(d) => d,
-                    None => {
-                        log::error!("Cannot determine media directory for {}", folder_name);
-                        let _ = tx.send(AppMessage::OperationComplete { op_id });
-                        return;
-                    }
-                };
+            let Some(media_dir) =
+                state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting)
+            else {
+                log::error!("Cannot determine media directory for {folder_name}");
+                let _ = tx.send(AppMessage::OperationComplete { op_id });
+                return;
+            };
 
             let layout =
                 match retro_junk_frontend::miximage_layout::MiximageLayout::load_or_create() {
                     Ok(l) => l,
                     Err(e) => {
-                        log::error!("Failed to load miximage layout: {}", e);
+                        log::error!("Failed to load miximage layout: {e}");
                         let _ = tx.send(AppMessage::OperationComplete { op_id });
                         return;
                     }
@@ -527,11 +510,11 @@ pub fn discover_assets_for_console(
     entries: Vec<(String, String)>, // (entry_name, rom_stem)
 ) {
     std::thread::spawn(move || {
-        let media_dir =
-            match state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting) {
-                Some(d) => d,
-                None => return,
-            };
+        let Some(media_dir) =
+            state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting)
+        else {
+            return;
+        };
 
         for (entry_name, rom_stem) in entries {
             let found = state::collect_existing_assets(&media_dir, &rom_stem);
@@ -566,7 +549,7 @@ fn generate_miximage_for_entry(
 ) -> HashMap<AssetType, PathBuf> {
     let existing = state::collect_existing_assets(media_dir, rom_stem);
     let miximage_dir = media_dir.join("miximages");
-    let output_path = miximage_dir.join(format!("{}.png", rom_stem));
+    let output_path = miximage_dir.join(format!("{rom_stem}.png"));
 
     match retro_junk_frontend::miximage::generate_miximage(&existing, &output_path, layout) {
         Ok(generated) => {
@@ -579,7 +562,7 @@ fn generate_miximage_for_entry(
             }
         }
         Err(e) => {
-            log::warn!("Failed to generate miximage for {}: {}", rom_stem, e);
+            log::warn!("Failed to generate miximage for {rom_stem}: {e}");
         }
     }
 

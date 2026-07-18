@@ -87,7 +87,7 @@ fn refresh_multidisc_files_remaps_via_playlist_with_claim_tracking() {
 
     let extensions: HashSet<String> = ["chd", "bin", "sbi"]
         .iter()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     refresh_multidisc_files(&mut entry, folder, &extensions);
 
@@ -115,7 +115,10 @@ fn refresh_multidisc_files_does_not_wipe_entry_on_empty_result() {
         files: original_files.clone(),
     });
 
-    let extensions: HashSet<String> = ["chd"].iter().map(|s| s.to_string()).collect();
+    let extensions: HashSet<String> = ["chd"]
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     refresh_multidisc_files(&mut entry, folder, &extensions);
 
     let GameEntry::MultiDisc { files, .. } = &entry.game_entry else {
@@ -155,7 +158,10 @@ fn refresh_multidisc_files_claim_tracking_avoids_double_assignment() {
         },
     ]);
 
-    let extensions: HashSet<String> = ["chd"].iter().map(|s| s.to_string()).collect();
+    let extensions: HashSet<String> = ["chd"]
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     refresh_multidisc_files(&mut entry, folder, &extensions);
 
     let discs = entry.disc_identifications.as_ref().unwrap();

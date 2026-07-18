@@ -98,6 +98,7 @@ pub fn parse_pvd_data(sector_data: &[u8; 2048]) -> Result<PrimaryVolumeDescripto
 }
 
 /// Read a padded ISO 9660 string (strip trailing spaces).
+#[must_use]
 pub fn read_str_a(bytes: &[u8]) -> String {
     let s = std::str::from_utf8(bytes).unwrap_or("");
     s.trim_end().to_string()
@@ -113,10 +114,10 @@ pub fn find_file_in_root(
     let target_upper = filename.to_uppercase();
 
     // Read root directory sectors
-    let dir_sectors = (pvd.root_dir_data_length as u64).div_ceil(crate::sector::ISO_SECTOR_SIZE);
+    let dir_sectors = u64::from(pvd.root_dir_data_length).div_ceil(crate::sector::ISO_SECTOR_SIZE);
 
     for sector_offset in 0..dir_sectors {
-        let sector = pvd.root_dir_extent_lba as u64 + sector_offset;
+        let sector = u64::from(pvd.root_dir_extent_lba) + sector_offset;
         let sector_data = read_sector_data(reader, sector, format)?;
 
         let mut pos = 0;
@@ -146,12 +147,12 @@ pub fn find_file_in_root(
     }
 
     Err(AnalysisError::other(format!(
-        "File '{}' not found in root directory",
-        filename
+        "File '{filename}' not found in root directory"
     )))
 }
 
 /// Parse a single ISO 9660 directory record.
+#[must_use]
 pub fn parse_directory_record(data: &[u8]) -> Option<DirectoryRecord> {
     if data.len() < 33 {
         return None;
@@ -196,11 +197,11 @@ pub fn read_file_content(
         ));
     }
     let mut result = Vec::with_capacity(record.data_length as usize);
-    let sectors_needed = (record.data_length as u64).div_ceil(crate::sector::ISO_SECTOR_SIZE);
+    let sectors_needed = u64::from(record.data_length).div_ceil(crate::sector::ISO_SECTOR_SIZE);
     let mut remaining = record.data_length as usize;
 
     for i in 0..sectors_needed {
-        let sector = record.extent_lba as u64 + i;
+        let sector = u64::from(record.extent_lba) + i;
         let sector_data = read_sector_data(reader, sector, format)?;
         let to_copy = remaining.min(crate::sector::ISO_SECTOR_SIZE as usize);
         result.extend_from_slice(&sector_data[..to_copy]);

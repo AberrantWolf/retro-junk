@@ -42,9 +42,9 @@ fn make_cia() -> Vec<u8> {
     // -- Ticket --
     let mut ticket = vec![0u8; ticket_size as usize];
     // Signature type: RSA-2048 SHA-256 = 0x00010004 (big-endian)
-    ticket[0x00..0x04].copy_from_slice(&0x00010004u32.to_be_bytes());
+    ticket[0x00..0x04].copy_from_slice(&0x0001_0004_u32.to_be_bytes());
     // Title ID at ticket_data + 0x9C = 0x140 + 0x9C = 0x1DC
-    let title_id: u64 = 0x00040000_00ABCDEF;
+    let title_id: u64 = 0x0004_0000_00AB_CDEF;
     ticket[0x1DC..0x1E4].copy_from_slice(&title_id.to_be_bytes());
     cia.extend_from_slice(&ticket);
     cia.resize(align64(cia.len() as u64) as usize, 0);
@@ -52,7 +52,7 @@ fn make_cia() -> Vec<u8> {
     // -- TMD --
     let mut tmd = vec![0u8; tmd_size as usize];
     // Signature type: RSA-2048 SHA-256
-    tmd[0x00..0x04].copy_from_slice(&0x00010004u32.to_be_bytes());
+    tmd[0x00..0x04].copy_from_slice(&0x0001_0004_u32.to_be_bytes());
     // Signature block size = 4 + 256 + 60 = 320 = 0x140
     // TMD header at 0x140:
     let tmd_hdr = 0x140;

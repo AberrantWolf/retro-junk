@@ -23,9 +23,10 @@ pub use context::{AnalysisContext, Console, ConsoleFolder, FolderScanResult, Reg
 
 /// Create an `AnalysisContext` with all built-in console analyzers registered.
 ///
-/// Registers all 25 analyzers: NES, SNES, N64, GameCube, Wii, Wii U, GB, GBA,
+/// Registers all 25 analyzers: NES, SNES, N64, `GameCube`, Wii, Wii U, GB, GBA,
 /// DS, 3DS, PS1, PS2, PS3, PSP, Vita, SG-1000, Master System, Genesis, Sega CD,
 /// 32X, Saturn, Dreamcast, Game Gear, Xbox, Xbox 360.
+#[must_use]
 pub fn create_default_context() -> AnalysisContext {
     let mut ctx = AnalysisContext::new();
 

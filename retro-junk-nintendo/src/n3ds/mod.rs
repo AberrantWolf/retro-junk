@@ -10,7 +10,7 @@
 //! image originated from a physical game card or was converted from a CIA.
 //!
 //! SHA-256 hashes in the NCCH header can be verified when content is unencrypted
-//! (NoCrypto flag set).
+//! (`NoCrypto` flag set).
 
 mod cia;
 pub(crate) mod common;
@@ -97,7 +97,7 @@ fn detect_format(reader: &mut dyn ReadSeek) -> Result<Option<N3dsFormat>, Analys
                 && ticket_size > 0
                 && ticket_size < 0x10000
                 && tmd_size > 0
-                && tmd_size < 0x100000
+                && tmd_size < 0x0010_0000
                 && content_size > 0
             {
                 reader.seek(SeekFrom::Start(0))?;

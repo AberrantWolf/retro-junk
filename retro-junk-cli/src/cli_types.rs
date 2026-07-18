@@ -42,65 +42,207 @@ pub(crate) struct ConsoleFilterArgs {
     pub limit: Option<usize>,
 }
 
+/// Shared `--dat-dir` argument for commands that read DAT files.
+#[derive(Args, Clone)]
+pub(crate) struct DatDirArg {
+    /// Use DAT files from this directory instead of the cache
+    #[arg(long)]
+    pub dat_dir: Option<PathBuf>,
+}
+
+/// Arguments for the `analyze` command.
+#[derive(Args)]
+pub(crate) struct AnalyzeArgs {
+    /// Quick mode: read as little data as possible (useful for network shares)
+    #[arg(short, long)]
+    pub quick: bool,
+
+    #[command(flatten)]
+    pub roms: ConsoleFilterArgs,
+}
+
+/// Arguments for the `rename` command.
+#[derive(Args)]
+pub(crate) struct RenameArgs {
+    /// Show planned renames without executing
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+
+    /// Force CRC32 hash-based matching (reads full files)
+    #[arg(long)]
+    pub hash: bool,
+
+    #[command(flatten)]
+    pub roms: ConsoleFilterArgs,
+
+    #[command(flatten)]
+    pub dat: DatDirArg,
+
+    /// Directory for media files (default: <root>-media)
+    #[arg(long)]
+    pub media_dir: Option<PathBuf>,
+
+    /// Don't rename media files alongside ROMs
+    #[arg(long)]
+    pub no_media: bool,
+}
+
+/// Arguments for the `organize` command.
+#[derive(Args)]
+pub(crate) struct OrganizeArgs {
+    /// Show planned organization without executing
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+
+    #[command(flatten)]
+    pub roms: ConsoleFilterArgs,
+
+    #[command(flatten)]
+    pub dat: DatDirArg,
+
+    /// Also organize single-disc games into .m3u folders (default: multi-disc only)
+    #[arg(long)]
+    pub include_single_disc: bool,
+
+    /// Fall back to hashing when serial lookup fails (slower but catches more files)
+    #[arg(long)]
+    pub hash_fallback: bool,
+}
+
+/// Arguments for the `compress` command.
+#[derive(Args)]
+pub(crate) struct CompressArgs {
+    /// Show planned compressions without executing
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+
+    /// Delete original files after each verified compression
+    #[arg(long)]
+    pub delete_sources: bool,
+
+    /// Skip the per-console confirmation prompt
+    #[arg(short = 'y', long)]
+    pub yes: bool,
+
+    /// Path to the chdman executable (default: chdman from PATH)
+    #[arg(long)]
+    pub chdman: Option<PathBuf>,
+
+    #[command(flatten)]
+    pub roms: ConsoleFilterArgs,
+}
+
+/// Arguments for the `fix-cue` command.
+#[derive(Args)]
+pub(crate) struct FixCueArgs {
+    /// Show planned fixes without executing
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+
+    /// Don't create .cue.bak backup files
+    #[arg(long)]
+    pub no_backup: bool,
+
+    #[command(flatten)]
+    pub roms: ConsoleFilterArgs,
+}
+
+/// Arguments for the `repair` command.
+#[derive(Args)]
+pub(crate) struct RepairArgs {
+    /// Show planned repairs without executing
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+
+    /// Don't create .bak backup files
+    #[arg(long)]
+    pub no_backup: bool,
+
+    #[command(flatten)]
+    pub roms: ConsoleFilterArgs,
+
+    #[command(flatten)]
+    pub dat: DatDirArg,
+}
+
+/// Arguments for the `scrape` command.
+// Each bool mirrors an independent clap flag; grouping them into enums would
+// change the CLI surface.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Args)]
+pub(crate) struct ScrapeArgs {
+    #[command(flatten)]
+    pub roms: ConsoleFilterArgs,
+
+    /// Media types to download (e.g., covers,screenshots,videos,marquees)
+    #[arg(long, value_delimiter = ',')]
+    pub media_types: Option<Vec<String>>,
+
+    /// Directory for metadata files (default: <root>-metadata).
+    /// Set to the same path as --root to place gamelist.xml inside ROM directories,
+    /// which is needed for ES-DE with `LegacyGamelistFileLocation` enabled
+    #[arg(long)]
+    pub metadata_dir: Option<PathBuf>,
+
+    /// Directory for media files (default: <root>-media)
+    #[arg(long)]
+    pub media_dir: Option<PathBuf>,
+
+    /// Frontend to generate metadata for
+    #[arg(long, default_value = "esde")]
+    pub frontend: String,
+
+    /// Fallback region when ROM header detection fails (e.g., us, eu, jp). ROM-detected region is always preferred.
+    #[arg(long, default_value = "us")]
+    pub region: String,
+
+    /// Language for descriptions: "match" derives from ROM region (default), or a code like "en", "ja", "fr"
+    #[arg(long, default_value = "match")]
+    pub language: String,
+
+    /// Fallback language when region-matched language has no data (default: en)
+    #[arg(long, default_value = "en")]
+    pub language_fallback: String,
+
+    /// Hash all files even when serial/filename should suffice
+    #[arg(long)]
+    pub force_full_hash: bool,
+
+    /// Show what would be scraped without downloading
+    #[arg(short = 'n', long)]
+    pub dry_run: bool,
+
+    /// Skip games that already have metadata
+    #[arg(long)]
+    pub skip_existing: bool,
+
+    /// Disable scrape log file
+    #[arg(long)]
+    pub no_log: bool,
+
+    /// Disable miximage generation
+    #[arg(long)]
+    pub no_miximage: bool,
+
+    /// Force redownload of all media, ignoring existing files
+    #[arg(long)]
+    pub force_redownload: bool,
+
+    /// Maximum concurrent API threads (default: server-granted max)
+    #[arg(long)]
+    pub threads: Option<usize>,
+}
+
 #[derive(Subcommand)]
 pub(crate) enum Commands {
     /// Analyze games in a library directory structure
-    Analyze {
-        /// Quick mode: read as little data as possible (useful for network shares)
-        #[arg(short, long)]
-        quick: bool,
+    Analyze(AnalyzeArgs),
 
-        #[command(flatten)]
-        roms: ConsoleFilterArgs,
-    },
-
-    /// Rename ROM files to NoIntro canonical names
-    Rename {
-        /// Show planned renames without executing
-        #[arg(short = 'n', long)]
-        dry_run: bool,
-
-        /// Force CRC32 hash-based matching (reads full files)
-        #[arg(long)]
-        hash: bool,
-
-        #[command(flatten)]
-        roms: ConsoleFilterArgs,
-
-        /// Use DAT files from this directory instead of the cache
-        #[arg(long)]
-        dat_dir: Option<PathBuf>,
-
-        /// Directory for media files (default: <root>-media)
-        #[arg(long)]
-        media_dir: Option<PathBuf>,
-
-        /// Don't rename media files alongside ROMs
-        #[arg(long)]
-        no_media: bool,
-    },
+    /// Rename ROM files to `NoIntro` canonical names
+    Rename(RenameArgs),
 
     /// Organize loose disc images into ES-DE .m3u folders using Redump DAT names
-    Organize {
-        /// Show planned organization without executing
-        #[arg(short = 'n', long)]
-        dry_run: bool,
-
-        #[command(flatten)]
-        roms: ConsoleFilterArgs,
-
-        /// Use DAT files from this directory instead of the cache
-        #[arg(long)]
-        dat_dir: Option<PathBuf>,
-
-        /// Also organize single-disc games into .m3u folders (default: multi-disc only)
-        #[arg(long)]
-        include_single_disc: bool,
-
-        /// Fall back to hashing when serial lookup fails (slower but catches more files)
-        #[arg(long)]
-        hash_fallback: bool,
-    },
+    Organize(OrganizeArgs),
 
     /// Compress disc images (cue/bin, GDI, ISO) to CHD using chdman
     ///
@@ -108,122 +250,16 @@ pub(crate) enum Commands {
     /// track-by-track against the originals) before being reported as
     /// compressed. Originals are kept unless --delete-sources is given,
     /// and are never deleted when verification fails.
-    Compress {
-        /// Show planned compressions without executing
-        #[arg(short = 'n', long)]
-        dry_run: bool,
-
-        /// Delete original files after each verified compression
-        #[arg(long)]
-        delete_sources: bool,
-
-        /// Skip the per-console confirmation prompt
-        #[arg(short = 'y', long)]
-        yes: bool,
-
-        /// Path to the chdman executable (default: chdman from PATH)
-        #[arg(long)]
-        chdman: Option<PathBuf>,
-
-        #[command(flatten)]
-        roms: ConsoleFilterArgs,
-    },
+    Compress(CompressArgs),
 
     /// Fix CDRWin-format CUE sheets for wider emulator compatibility
-    FixCue {
-        /// Show planned fixes without executing
-        #[arg(short = 'n', long)]
-        dry_run: bool,
-
-        /// Don't create .cue.bak backup files
-        #[arg(long)]
-        no_backup: bool,
-
-        #[command(flatten)]
-        roms: ConsoleFilterArgs,
-    },
+    FixCue(FixCueArgs),
 
     /// [Experimental] Repair trimmed/truncated ROMs by padding to match DAT checksums
-    Repair {
-        /// Show planned repairs without executing
-        #[arg(short = 'n', long)]
-        dry_run: bool,
-
-        /// Don't create .bak backup files
-        #[arg(long)]
-        no_backup: bool,
-
-        #[command(flatten)]
-        roms: ConsoleFilterArgs,
-
-        /// Use DAT files from this directory instead of the cache
-        #[arg(long)]
-        dat_dir: Option<PathBuf>,
-    },
+    Repair(RepairArgs),
 
     /// Scrape metadata and media into ES-DE gamelists via ScreenScraper.fr
-    Scrape {
-        #[command(flatten)]
-        roms: ConsoleFilterArgs,
-
-        /// Media types to download (e.g., covers,screenshots,videos,marquees)
-        #[arg(long, value_delimiter = ',')]
-        media_types: Option<Vec<String>>,
-
-        /// Directory for metadata files (default: <root>-metadata).
-        /// Set to the same path as --root to place gamelist.xml inside ROM directories,
-        /// which is needed for ES-DE with LegacyGamelistFileLocation enabled
-        #[arg(long)]
-        metadata_dir: Option<PathBuf>,
-
-        /// Directory for media files (default: <root>-media)
-        #[arg(long)]
-        media_dir: Option<PathBuf>,
-
-        /// Frontend to generate metadata for
-        #[arg(long, default_value = "esde")]
-        frontend: String,
-
-        /// Fallback region when ROM header detection fails (e.g., us, eu, jp). ROM-detected region is always preferred.
-        #[arg(long, default_value = "us")]
-        region: String,
-
-        /// Language for descriptions: "match" derives from ROM region (default), or a code like "en", "ja", "fr"
-        #[arg(long, default_value = "match")]
-        language: String,
-
-        /// Fallback language when region-matched language has no data (default: en)
-        #[arg(long, default_value = "en")]
-        language_fallback: String,
-
-        /// Hash all files even when serial/filename should suffice
-        #[arg(long)]
-        force_full_hash: bool,
-
-        /// Show what would be scraped without downloading
-        #[arg(short = 'n', long)]
-        dry_run: bool,
-
-        /// Skip games that already have metadata
-        #[arg(long)]
-        skip_existing: bool,
-
-        /// Disable scrape log file
-        #[arg(long)]
-        no_log: bool,
-
-        /// Disable miximage generation
-        #[arg(long)]
-        no_miximage: bool,
-
-        /// Force redownload of all media, ignoring existing files
-        #[arg(long)]
-        force_redownload: bool,
-
-        /// Maximum concurrent API threads (default: server-granted max)
-        #[arg(long)]
-        threads: Option<usize>,
-    },
+    Scrape(ScrapeArgs),
 
     /// Manage cached DAT and GDB files
     Cache {
@@ -231,7 +267,7 @@ pub(crate) enum Commands {
         action: CacheAction,
     },
 
-    /// Manage ScreenScraper credentials
+    /// Manage `ScreenScraper` credentials
     Credentials {
         #[command(subcommand)]
         action: CredentialsAction,
@@ -265,7 +301,7 @@ pub(crate) enum CacheAction {
         action: DatCacheAction,
     },
 
-    /// Manage cached GDB (GameDataBase) CSV files
+    /// Manage cached GDB (`GameDataBase`) CSV files
     Gdb {
         #[command(subcommand)]
         action: GdbCacheAction,
@@ -324,7 +360,7 @@ pub(crate) enum CredentialsAction {
     /// Interactively set up credentials
     Setup,
 
-    /// Test credentials against the ScreenScraper API
+    /// Test credentials against the `ScreenScraper` API
     Test,
 
     /// Print the credentials file path
@@ -371,7 +407,7 @@ pub(crate) enum CatalogAction {
         dat_dir: Option<PathBuf>,
     },
 
-    /// Enrich catalog releases with GameDataBase metadata (Japanese titles, developer/publisher, genre)
+    /// Enrich catalog releases with `GameDataBase` metadata (Japanese titles, developer/publisher, genre)
     EnrichGdb {
         /// Systems to enrich (e.g., nes,snes) or "all". Defaults to all if omitted.
         #[arg(value_delimiter = ',')]
@@ -390,48 +426,8 @@ pub(crate) enum CatalogAction {
         gdb_dir: Option<PathBuf>,
     },
 
-    /// Enrich catalog releases with ScreenScraper metadata
-    Enrich {
-        /// Systems to enrich (e.g., nes,snes) or "all". Defaults to all if omitted.
-        #[arg(value_delimiter = ',')]
-        systems: Vec<String>,
-
-        /// Path to the catalog database file
-        #[arg(long)]
-        db: Option<PathBuf>,
-
-        /// Maximum releases to process per system
-        #[arg(long)]
-        limit: Option<u32>,
-
-        /// Re-enrich releases that already have ScreenScraper data
-        #[arg(long)]
-        force: bool,
-
-        /// Download media assets
-        #[arg(long)]
-        download_assets: bool,
-
-        /// Directory for downloaded media assets
-        #[arg(long)]
-        asset_dir: Option<PathBuf>,
-
-        /// Preferred region for names and media (default: us)
-        #[arg(long, default_value = "us")]
-        region: String,
-
-        /// Preferred language for descriptions (default: en)
-        #[arg(long, default_value = "en")]
-        language: String,
-
-        /// Maximum concurrent API threads (default: server-granted max)
-        #[arg(long)]
-        threads: Option<usize>,
-
-        /// Skip automatic work reconciliation after enrichment
-        #[arg(long)]
-        no_reconcile: bool,
-    },
+    /// Enrich catalog releases with `ScreenScraper` metadata
+    Enrich(CatalogEnrichArgs),
 
     /// Scan a ROM folder and add matched files to collection
     Scan {
@@ -474,7 +470,7 @@ pub(crate) enum CatalogAction {
         #[arg(long, default_value = "")]
         system: String,
 
-        /// Filter by field name (e.g., release_date, title)
+        /// Filter by field name (e.g., `release_date`, title)
         #[arg(long, default_value = "")]
         field: String,
 
@@ -529,56 +525,9 @@ pub(crate) enum CatalogAction {
 
     /// Browse, search, and look up games in the catalog database
     #[command(group = clap::ArgGroup::new("hash_lookup").multiple(false))]
-    Lookup {
-        /// Search query, prefixed ID (plt-X, wrk-X, rel-X, med-X), or omit to list
-        query: Option<String>,
+    Lookup(CatalogLookupArgs),
 
-        /// Filter by entity type: platforms, works, releases, media
-        #[arg(long, short = 't', default_value = "")]
-        r#type: String,
-
-        /// Filter by platform short name (e.g., nes, snes, psx)
-        #[arg(long, default_value = "")]
-        platform: String,
-
-        /// Filter by manufacturer (e.g., Nintendo, Sega)
-        #[arg(long, default_value = "")]
-        manufacturer: String,
-
-        /// Look up by CRC32 hash
-        #[arg(long, group = "hash_lookup")]
-        crc: Option<String>,
-
-        /// Look up by SHA1 hash
-        #[arg(long, group = "hash_lookup")]
-        sha1: Option<String>,
-
-        /// Look up by MD5 hash
-        #[arg(long, group = "hash_lookup")]
-        md5: Option<String>,
-
-        /// Look up by serial number
-        #[arg(long, group = "hash_lookup")]
-        serial: Option<String>,
-
-        /// Maximum number of results (default 25)
-        #[arg(long, default_value = "25")]
-        limit: u32,
-
-        /// Skip this many results (for pagination)
-        #[arg(long, default_value = "0")]
-        offset: u32,
-
-        /// Group results (e.g., platforms by manufacturer)
-        #[arg(long)]
-        group: bool,
-
-        /// Path to the catalog database file
-        #[arg(long)]
-        db: Option<PathBuf>,
-    },
-
-    /// Merge duplicate works that share a ScreenScraper ID
+    /// Merge duplicate works that share a `ScreenScraper` ID
     Reconcile {
         /// Systems to reconcile (e.g., nes,snes) or "all". Defaults to all if omitted.
         #[arg(value_delimiter = ',')]
@@ -600,7 +549,7 @@ pub(crate) enum CatalogAction {
         db: Option<PathBuf>,
     },
 
-    /// Clear enrichment status for releases (screenscraper_id and scraper_not_found)
+    /// Clear enrichment status for releases (`screenscraper_id` and `scraper_not_found`)
     Unenrich {
         /// System to unenrich (e.g., saturn). Run 'retro-junk systems' for a full list.
         system: String,
@@ -628,4 +577,99 @@ pub(crate) enum CatalogAction {
         #[arg(long)]
         confirm: bool,
     },
+}
+
+/// Arguments for `catalog enrich`.
+#[derive(Args)]
+pub(crate) struct CatalogEnrichArgs {
+    /// Systems to enrich (e.g., nes,snes) or "all". Defaults to all if omitted.
+    #[arg(value_delimiter = ',')]
+    pub systems: Vec<String>,
+
+    /// Path to the catalog database file
+    #[arg(long)]
+    pub db: Option<PathBuf>,
+
+    /// Maximum releases to process per system
+    #[arg(long)]
+    pub limit: Option<u32>,
+
+    /// Re-enrich releases that already have `ScreenScraper` data
+    #[arg(long)]
+    pub force: bool,
+
+    /// Download media assets
+    #[arg(long)]
+    pub download_assets: bool,
+
+    /// Directory for downloaded media assets
+    #[arg(long)]
+    pub asset_dir: Option<PathBuf>,
+
+    /// Preferred region for names and media (default: us)
+    #[arg(long, default_value = "us")]
+    pub region: String,
+
+    /// Preferred language for descriptions (default: en)
+    #[arg(long, default_value = "en")]
+    pub language: String,
+
+    /// Maximum concurrent API threads (default: server-granted max)
+    #[arg(long)]
+    pub threads: Option<usize>,
+
+    /// Skip automatic work reconciliation after enrichment
+    #[arg(long)]
+    pub no_reconcile: bool,
+}
+
+/// Arguments for `catalog lookup`.
+#[derive(Args)]
+pub(crate) struct CatalogLookupArgs {
+    /// Search query, prefixed ID (plt-X, wrk-X, rel-X, med-X), or omit to list
+    pub query: Option<String>,
+
+    /// Filter by entity type: platforms, works, releases, media
+    #[arg(long, short = 't', default_value = "")]
+    pub r#type: String,
+
+    /// Filter by platform short name (e.g., nes, snes, psx)
+    #[arg(long, default_value = "")]
+    pub platform: String,
+
+    /// Filter by manufacturer (e.g., Nintendo, Sega)
+    #[arg(long, default_value = "")]
+    pub manufacturer: String,
+
+    /// Look up by CRC32 hash
+    #[arg(long, group = "hash_lookup")]
+    pub crc: Option<String>,
+
+    /// Look up by SHA1 hash
+    #[arg(long, group = "hash_lookup")]
+    pub sha1: Option<String>,
+
+    /// Look up by MD5 hash
+    #[arg(long, group = "hash_lookup")]
+    pub md5: Option<String>,
+
+    /// Look up by serial number
+    #[arg(long, group = "hash_lookup")]
+    pub serial: Option<String>,
+
+    /// Maximum number of results (default 25)
+    #[arg(long, default_value = "25")]
+    pub limit: u32,
+
+    /// Skip this many results (for pagination)
+    #[arg(long, default_value = "0")]
+    pub offset: u32,
+
+    /// Group results (e.g., platforms by manufacturer)
+    #[arg(long)]
+    pub group: bool,
+
+    /// Path to the catalog database file
+    #[arg(long)]
+    pub db: Option<PathBuf>,
 }

@@ -1,30 +1,31 @@
-use std::path::PathBuf;
-
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
 use crate::CliError;
+use crate::cli_types::CatalogEnrichArgs;
 use crate::commands::scrape::connect_screenscraper;
 use crate::commands::systems::resolve_platform_ids;
 
 use super::default_catalog_db_path;
 
-/// Enrich catalog releases with ScreenScraper metadata.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn run_catalog_enrich(
-    systems: Vec<String>,
-    db_path: Option<PathBuf>,
-    limit: Option<u32>,
-    force: bool,
-    download_assets: bool,
-    asset_dir: Option<PathBuf>,
-    region: String,
-    language: String,
-    threads: Option<usize>,
-    no_reconcile: bool,
-    quiet: bool,
-) -> Result<(), CliError> {
+/// Enrich catalog releases with `ScreenScraper` metadata.
+// Linear enrich orchestration: options setup, async event-rendering loop, summary.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn run_catalog_enrich(args: CatalogEnrichArgs, quiet: bool) -> Result<(), CliError> {
     use retro_junk_import::scraper_import::{self, EnrichEvent, EnrichOptions};
+
+    let CatalogEnrichArgs {
+        systems,
+        db: db_path,
+        limit,
+        force,
+        download_assets,
+        asset_dir,
+        region,
+        language,
+        threads,
+        no_reconcile,
+    } = args;
 
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
 
@@ -35,7 +36,7 @@ pub(crate) fn run_catalog_enrich(
     }
 
     let conn = retro_junk_db::open_database(&db_path)
-        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {e}")))?;
 
     let platform_ids = resolve_platform_ids(&conn, &systems)?;
 
@@ -52,7 +53,7 @@ pub(crate) fn run_catalog_enrich(
     };
 
     let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| CliError::runtime(format!("Failed to create tokio runtime: {}", e)))?;
+        .map_err(|e| CliError::runtime(format!("Failed to create tokio runtime: {e}")))?;
 
     rt.block_on(async {
         let (client, max_workers) = connect_screenscraper(threads, quiet).await?;
@@ -141,7 +142,7 @@ pub(crate) fn run_catalog_enrich(
             })
             .await;
 
-        enrich_result.map_err(|e| CliError::other(format!("Enrichment failed: {}", e)))?;
+        enrich_result.map_err(|e| CliError::other(format!("Enrichment failed: {e}")))?;
 
         Ok::<(), CliError>(())
     })?;

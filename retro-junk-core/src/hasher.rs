@@ -26,6 +26,7 @@ impl<'a> MultiHasher<'a> {
     ///
     /// `data_size` is used for progress reporting (the "total" in the callback).
     /// Pass 0 if the total size is unknown.
+    #[must_use]
     pub fn new(
         algorithms: HashAlgorithms,
         data_size: u64,
@@ -90,6 +91,7 @@ impl<'a> MultiHasher<'a> {
     }
 
     /// Finalize all hashers and return the computed hashes.
+    #[must_use]
     pub fn finalize(self) -> FileHashes {
         FileHashes {
             crc32: self

@@ -1,10 +1,10 @@
 //! Multi-source merge logic with disagreement detection.
 //!
-//! When importing data from a second source (e.g., ScreenScraper after No-Intro),
+//! When importing data from a second source (e.g., `ScreenScraper` after No-Intro),
 //! this module detects conflicts between existing and new values, creating
 //! disagreement records for manual resolution.
 
-use retro_junk_catalog::types::*;
+use retro_junk_catalog::types::{Disagreement, Override, Release};
 use retro_junk_db::operations;
 use rusqlite::Connection;
 
@@ -141,7 +141,7 @@ pub fn apply_overrides(conn: &Connection, overrides: &[Override]) -> Result<u32,
                 .query_map(rusqlite::params![sql_pattern, ovr.platform_id], |row| {
                     Ok((row.get(0)?, row.get(1)?))
                 })?
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
                 .collect();
 
             for (media_id, release_id) in &matches {
@@ -206,12 +206,7 @@ fn apply_field_override(
         "status",
     ];
     if !safe_fields.contains(&field) {
-        log::warn!(
-            "Skipping override for unsafe field '{}' on {}.{}",
-            field,
-            table,
-            entity_id
-        );
+        log::warn!("Skipping override for unsafe field '{field}' on {table}.{entity_id}");
         return Ok(());
     }
 

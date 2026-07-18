@@ -93,7 +93,7 @@ fn read_sector_data_with_offset(
     let mut data = [0u8; 2048];
     reader.read_exact(&mut data).map_err(|e| {
         if e.kind() == std::io::ErrorKind::UnexpectedEof {
-            AnalysisError::corrupted_header(format!("Sector {} is beyond end of image", sector))
+            AnalysisError::corrupted_header(format!("Sector {sector} is beyond end of image"))
         } else {
             AnalysisError::Io(e)
         }

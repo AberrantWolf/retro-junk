@@ -6,7 +6,7 @@ use owo_colors::Stream::Stdout;
 use crate::CliError;
 
 /// Show all saved settings.
-pub(crate) fn run_config_show() -> Result<(), CliError> {
+pub(crate) fn run_config_show() {
     let path = retro_junk_lib::settings::settings_path();
 
     log::info!(
@@ -23,7 +23,7 @@ pub(crate) fn run_config_show() -> Result<(), CliError> {
     match retro_junk_lib::settings::load_settings_string() {
         Some(pretty) => {
             for line in pretty.lines() {
-                log::info!("  {}", line);
+                log::info!("  {line}");
             }
         }
         None => {
@@ -33,8 +33,6 @@ pub(crate) fn run_config_show() -> Result<(), CliError> {
             );
         }
     }
-
-    Ok(())
 }
 
 /// Show or set the library path.
@@ -44,7 +42,7 @@ pub(crate) fn run_config_library_path(
 ) -> Result<(), CliError> {
     if clear {
         retro_junk_lib::settings::clear_library_path()
-            .map_err(|e| CliError::config(format!("Failed to clear library path: {}", e)))?;
+            .map_err(|e| CliError::config(format!("Failed to clear library path: {e}")))?;
         log::info!(
             "{} Library path cleared",
             "\u{2714}".if_supports_color(Stdout, |t| t.green()),
@@ -55,7 +53,7 @@ pub(crate) fn run_config_library_path(
     if let Some(path) = new_path {
         let canonical = path.canonicalize().unwrap_or(path);
         retro_junk_lib::settings::save_library_path(&canonical)
-            .map_err(|e| CliError::config(format!("Failed to save library path: {}", e)))?;
+            .map_err(|e| CliError::config(format!("Failed to save library path: {e}")))?;
         log::info!(
             "{} Library path set to: {}",
             "\u{2714}".if_supports_color(Stdout, |t| t.green()),

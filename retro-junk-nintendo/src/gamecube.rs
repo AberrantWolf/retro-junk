@@ -1,11 +1,11 @@
-//! Nintendo GameCube disc image analyzer.
+//! Nintendo `GameCube` disc image analyzer.
 //!
 //! Supports:
 //! - ISO images (.iso)
 //! - GCM images (.gcm)
 //! - Compressed formats via `nod`: RVZ, WIA, WBFS, CISO, GCZ
 //!
-//! The GameCube disc header ("boot.bin") occupies bytes 0x0000–0x043F.
+//! The `GameCube` disc header ("boot.bin") occupies bytes 0x0000–0x043F.
 //! Detection uses the DVD magic word 0xC2339F3D at offset 0x001C, with
 //! verification that the Wii magic at 0x0018 is absent.
 //!
@@ -24,10 +24,10 @@ use retro_junk_core::{
 
 use crate::nintendo_disc;
 
-/// Standard GameCube disc size: 1,459,978,240 bytes (1.4 GB mini-DVD).
+/// Standard `GameCube` disc size: 1,459,978,240 bytes (1.4 GB mini-DVD).
 const GCM_DISC_SIZE: u64 = 1_459_978_240;
 
-/// Analyzer for Nintendo GameCube disc images.
+/// Analyzer for Nintendo `GameCube` disc images.
 #[derive(Debug, Default)]
 pub struct GameCubeAnalyzer;
 
@@ -79,9 +79,7 @@ impl RomAnalyzer for GameCubeAnalyzer {
     }
 
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool {
-        nintendo_disc::check_magic(reader)
-            .map(|(gc, _)| gc)
-            .unwrap_or(false)
+        nintendo_disc::check_magic(reader).is_ok_and(|(gc, _)| gc)
     }
 
     fn compute_container_hashes(

@@ -3,19 +3,23 @@
 use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
-use retro_junk_core::{
-    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, RomIdentification,
-};
+use retro_junk_core::{AnalysisError, AnalysisOptions, RomIdentification};
 
-use super::common::*;
+use super::CIA_HEADER_SIZE;
+use super::common::{
+    align64, format_title_id, media_platform_name, read_u16_be, read_u32_be, read_u32_le,
+    read_u64_be, read_u64_le, record_ncch_common, record_sha256_check, record_title_version,
+    title_type_from_id,
+};
 use super::ncch::parse_ncch_header;
-use super::{CIA_HEADER_SIZE, MEDIA_UNIT};
 
 // ---------------------------------------------------------------------------
 // CIA header
 // ---------------------------------------------------------------------------
 
 /// Parsed CIA header.
+// Field names mirror the canonical CIA spec section names; stripping the `size` suffix would lose that mapping.
+#[allow(clippy::struct_field_names)]
 pub(crate) struct CiaHeader {
     pub(crate) header_size: u32,
     pub(crate) cert_chain_size: u32,
@@ -34,8 +38,7 @@ pub(crate) fn parse_cia_header(reader: &mut dyn ReadSeek) -> Result<CiaHeader, A
     let header_size = read_u32_le(&buf, 0x00).ok_or_else(trunc)?;
     if header_size != CIA_HEADER_SIZE {
         return Err(AnalysisError::invalid_format(format!(
-            "Unexpected CIA header size: 0x{:X}",
-            header_size
+            "Unexpected CIA header size: 0x{header_size:X}"
         )));
     }
 
@@ -63,9 +66,9 @@ pub(crate) struct CiaTmdInfo {
 /// Determine the size of a TMD/Ticket signature block based on signature type.
 fn signature_block_size(sig_type: u32) -> Option<usize> {
     match sig_type {
-        0x00010003 => Some(4 + 0x200 + 0x3C), // RSA-4096: type(4) + sig(512) + pad(60)
-        0x00010004 => Some(4 + 0x100 + 0x3C), // RSA-2048: type(4) + sig(256) + pad(60)
-        0x00010005 => Some(4 + 0x3C + 0x40),  // ECDSA: type(4) + sig(60) + pad(64)
+        0x0001_0003 => Some(4 + 0x200 + 0x3C), // RSA-4096: type(4) + sig(512) + pad(60)
+        0x0001_0004 => Some(4 + 0x100 + 0x3C), // RSA-2048: type(4) + sig(256) + pad(60)
+        0x0001_0005 => Some(4 + 0x3C + 0x40),  // ECDSA: type(4) + sig(60) + pad(64)
         _ => None,
     }
 }
@@ -88,7 +91,7 @@ pub(crate) fn parse_cia_tmd(
         .ok_or_else(|| AnalysisError::corrupted_header("TMD signature type truncated"))?;
 
     let sig_block_size = signature_block_size(sig_type).ok_or_else(|| {
-        AnalysisError::invalid_format(format!("Unknown TMD signature type: 0x{:08X}", sig_type))
+        AnalysisError::invalid_format(format!("Unknown TMD signature type: 0x{sig_type:08X}"))
     })?;
 
     // TMD header starts after signature block
@@ -128,7 +131,7 @@ fn parse_cia_ticket_title_id(
         .ok_or_else(|| AnalysisError::corrupted_header("Ticket signature type truncated"))?;
 
     let sig_block_size = signature_block_size(sig_type).ok_or_else(|| {
-        AnalysisError::invalid_format(format!("Unknown Ticket signature type: 0x{:08X}", sig_type))
+        AnalysisError::invalid_format(format!("Unknown Ticket signature type: 0x{sig_type:08X}"))
     })?;
 
     let ticket_data_offset = ticket_offset + sig_block_size as u64;
@@ -145,25 +148,25 @@ fn parse_cia_ticket_title_id(
 
 /// Calculate the offset of the content section within a CIA.
 fn cia_content_offset(cia: &CiaHeader) -> u64 {
-    let mut offset = align64(cia.header_size as u64);
-    offset += align64(cia.cert_chain_size as u64);
-    offset += align64(cia.ticket_size as u64);
-    offset += align64(cia.tmd_size as u64);
+    let mut offset = align64(u64::from(cia.header_size));
+    offset += align64(u64::from(cia.cert_chain_size));
+    offset += align64(u64::from(cia.ticket_size));
+    offset += align64(u64::from(cia.tmd_size));
     offset
 }
 
 /// Calculate the offset of the TMD section within a CIA.
 fn cia_tmd_offset(cia: &CiaHeader) -> u64 {
-    let mut offset = align64(cia.header_size as u64);
-    offset += align64(cia.cert_chain_size as u64);
-    offset += align64(cia.ticket_size as u64);
+    let mut offset = align64(u64::from(cia.header_size));
+    offset += align64(u64::from(cia.cert_chain_size));
+    offset += align64(u64::from(cia.ticket_size));
     offset
 }
 
 /// Calculate the offset of the Ticket section within a CIA.
 fn cia_ticket_offset(cia: &CiaHeader) -> u64 {
-    let mut offset = align64(cia.header_size as u64);
-    offset += align64(cia.cert_chain_size as u64);
+    let mut offset = align64(u64::from(cia.header_size));
+    offset += align64(u64::from(cia.cert_chain_size));
     offset
 }
 
@@ -189,7 +192,7 @@ pub(crate) fn analyze_cia(
     let expected_size = content_offset
         + cia.content_size
         + if cia.meta_size > 0 {
-            align64(cia.meta_size as u64)
+            align64(u64::from(cia.meta_size))
         } else {
             0
         };
@@ -216,18 +219,7 @@ pub(crate) fn analyze_cia(
     }
 
     // Title version
-    if tmd_info.title_version > 0 {
-        let major = tmd_info.title_version >> 10;
-        let minor = (tmd_info.title_version >> 4) & 0x3F;
-        let micro = tmd_info.title_version & 0xF;
-        id.version = format!("v{}.{}.{}", major, minor, micro);
-        id.extra.insert(
-            "title_version_raw".into(),
-            format!("{}", tmd_info.title_version),
-        );
-    } else {
-        id.version = "v0".into();
-    }
+    record_title_version(&mut id, tmd_info.title_version);
 
     // Content count
     id.extra.insert(
@@ -248,69 +240,14 @@ pub(crate) fn analyze_cia(
     // Try to parse NCCH from content section
     let ncch_result = parse_ncch_header(reader, content_offset);
     if let Ok(ncch) = ncch_result {
-        // Product code
-        if !ncch.product_code.is_empty() {
-            id.serial_number = ncch.product_code.clone();
-            id.extra
-                .insert("product_code".into(), ncch.product_code.clone());
-        }
-
-        // Maker code
-        if !ncch.maker_code.is_empty() {
-            id.maker_code = crate::licensee::maker_code_name(&ncch.maker_code)
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| ncch.maker_code.clone());
-            id.extra
-                .insert("maker_code_raw".into(), ncch.maker_code.clone());
-        }
+        // Shared NCCH-derived fields (product code, maker, regions, content
+        // type, encryption, ExeFS/RomFS sizes)
+        record_ncch_common(&mut id, &ncch);
 
         // Program ID from NCCH (may differ from TMD title ID for updates/DLC)
         if ncch.program_id != 0 {
             id.extra
                 .insert("program_id".into(), format_title_id(ncch.program_id));
-        }
-
-        // Regions
-        let regions = region_from_product_code(&ncch.product_code);
-        id.regions = regions;
-
-        // Content type
-        id.extra.insert(
-            "content_type".into(),
-            content_type_description(ncch.content_type_flags).into(),
-        );
-
-        // Encryption status
-        if ncch.no_crypto {
-            id.extra
-                .insert("encryption".into(), "None (NoCrypto)".into());
-        } else {
-            let crypto_desc = match ncch.crypto_method {
-                0x00 => "Original (pre-7.0)",
-                0x01 => "7.0.0+",
-                0x0A => "9.3.0+ (New 3DS)",
-                0x0B => "9.6.0+ (New 3DS)",
-                _ => "Unknown",
-            };
-            id.extra
-                .insert("encryption".into(), format!("Encrypted ({})", crypto_desc));
-        }
-
-        // ExeFS / RomFS
-        if ncch.exefs_size_mu > 0 {
-            id.extra.insert(
-                "exefs_size".into(),
-                format!("{} KB", ncch.exefs_size_mu as u64 * MEDIA_UNIT / 1024),
-            );
-        }
-        if ncch.romfs_size_mu > 0 {
-            id.extra.insert(
-                "romfs_size".into(),
-                format!(
-                    "{} MB",
-                    ncch.romfs_size_mu as u64 * MEDIA_UNIT / (1024 * 1024)
-                ),
-            );
         }
 
         // Platform
@@ -324,34 +261,15 @@ pub(crate) fn analyze_cia(
         // SHA-256 verification for unencrypted content (not quick mode)
         if !options.quick && ncch.no_crypto && ncch.exheader_size > 0 {
             let exheader_offset = content_offset + 0x200;
-            let hash_size = 0x400u64.min(ncch.exheader_size as u64);
-            match verify_sha256(reader, exheader_offset, hash_size, &ncch.exheader_hash)? {
-                HashResult::Ok => {
-                    id.extra
-                        .insert("checksum_status:ExHeader SHA-256".into(), "OK".into());
-                    id.expected_checksums.push(
-                        ExpectedChecksum::new(
-                            ChecksumAlgorithm::Sha256,
-                            ncch.exheader_hash.to_vec(),
-                        )
-                        .with_description("ExHeader SHA-256"),
-                    );
-                }
-                HashResult::Mismatch { expected, actual } => {
-                    id.extra.insert(
-                        "checksum_status:ExHeader SHA-256".into(),
-                        format!("MISMATCH (expected {}, got {})", expected, actual),
-                    );
-                    id.expected_checksums.push(
-                        ExpectedChecksum::new(
-                            ChecksumAlgorithm::Sha256,
-                            ncch.exheader_hash.to_vec(),
-                        )
-                        .with_description("ExHeader SHA-256"),
-                    );
-                }
-                _ => {}
-            }
+            let hash_size = 0x400u64.min(u64::from(ncch.exheader_size));
+            record_sha256_check(
+                &mut id,
+                reader,
+                exheader_offset,
+                hash_size,
+                &ncch.exheader_hash,
+                "ExHeader SHA-256",
+            )?;
         }
     } else {
         // NCCH might be encrypted or have a different structure

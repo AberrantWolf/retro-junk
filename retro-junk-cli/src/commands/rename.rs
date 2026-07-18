@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use indicatif::{ProgressBar, ProgressStyle};
 use log::Level;
@@ -8,6 +8,7 @@ use owo_colors::Stream::Stdout;
 
 use std::collections::HashMap;
 
+use retro_junk_lib::AnalysisContext;
 use retro_junk_lib::disc_set::CueVerification;
 use retro_junk_lib::rename::{
     ExecutionContext, M3uRenameJob, MediaRenamePlan, RenameOptions, RenamePlan, RenameProgress,
@@ -15,23 +16,27 @@ use retro_junk_lib::rename::{
     plan_media_renames, plan_renames,
 };
 use retro_junk_lib::util::{default_media_dir, default_metadata_dir};
-use retro_junk_lib::{AnalysisContext, Platform};
 
 use crate::CliError;
+use crate::cli_types::{ConsoleFilterArgs, DatDirArg, RenameArgs};
 
-#[allow(clippy::too_many_arguments)]
+// Linear per-console rename orchestration (plan, confirm, execute, summarize);
+// splitting would scatter tightly coupled totals and progress state.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn run_rename(
     ctx: &AnalysisContext,
-    dry_run: bool,
-    hash_mode: bool,
-    consoles: Option<Vec<Platform>>,
-    limit: Option<usize>,
-    library_path: PathBuf,
-    dat_dir: Option<PathBuf>,
+    args: RenameArgs,
+    library_path: &Path,
     quiet: bool,
-    media_dir_override: Option<PathBuf>,
-    no_media: bool,
 ) -> Result<(), CliError> {
+    let RenameArgs {
+        dry_run,
+        hash: hash_mode,
+        roms: ConsoleFilterArgs { consoles, limit },
+        dat: DatDirArg { dat_dir },
+        media_dir: media_dir_override,
+        no_media,
+    } = args;
     let root_path = library_path;
 
     let rename_options = RenameOptions {
@@ -59,21 +64,20 @@ pub(crate) fn run_rename(
     if let Some(n) = limit {
         log::info!(
             "{}",
-            format!("Limit: {} ROMs per console", n).if_supports_color(Stdout, |t| t.dimmed()),
+            format!("Limit: {n} ROMs per console").if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
     crate::log_blank();
 
-    let scan = match crate::scan_folders(ctx, &root_path, &consoles) {
-        Some(s) => s,
-        None => return Ok(()),
+    let Some(scan) = crate::scan_folders(ctx, root_path, consoles.as_deref()) else {
+        return Ok(());
     };
 
     // Compute effective media directory (explicit override or auto-detect)
     let effective_media_dir = if no_media {
         None
     } else {
-        let dir = media_dir_override.unwrap_or_else(|| default_media_dir(&root_path));
+        let dir = media_dir_override.unwrap_or_else(|| default_media_dir(root_path));
         if dir.is_dir() { Some(dir) } else { None }
     };
 
@@ -138,9 +142,8 @@ pub(crate) fn run_rename(
                 bytes_done,
                 bytes_total,
             } => {
-                if bytes_total > 0 {
-                    let pct = (bytes_done * 100) / bytes_total;
-                    pb.set_message(format!("Hashing {} ({pct}%)", file_name));
+                if let Some(pct) = (bytes_done * 100).checked_div(bytes_total) {
+                    pb.set_message(format!("Hashing {file_name} ({pct}%)"));
                 }
                 pb.tick();
             }
@@ -183,37 +186,39 @@ pub(crate) fn run_rename(
                     .as_ref()
                     .map(|media_dir| plan_media_renames(&plan, media_dir, &cf.folder_name));
 
-                if let Some(ref mp) = media_plan {
-                    if mp.has_actions() {
-                        print_media_rename_plan(mp);
-                    }
+                if let Some(ref mp) = media_plan
+                    && mp.has_actions()
+                {
+                    print_media_rename_plan(mp);
                 }
 
                 let has_work = !plan.renames.is_empty()
                     || !plan.m3u_jobs.is_empty()
                     || !plan.broken_cue_files.is_empty()
                     || !plan.broken_m3u_files.is_empty();
-                let has_media_work = media_plan.as_ref().is_some_and(|mp| mp.has_actions());
+                let has_media_work = media_plan
+                    .as_ref()
+                    .is_some_and(retro_junk_lib::rename::MediaRenamePlan::has_actions);
                 if !dry_run && (has_work || has_media_work) {
                     // Prompt for confirmation (raw print — user interaction)
                     let m3u_count = plan.m3u_jobs.len();
                     let cue_count = plan.broken_cue_files.len();
-                    let m3u_fix_count = plan.broken_m3u_files.len();
+                    let broken_m3u_count = plan.broken_m3u_files.len();
                     let mut parts = Vec::new();
-                    let total_renames = plan.total_renames();
-                    if total_renames > 0 {
-                        parts.push(format!("{} renames", total_renames));
+                    let planned_renames = plan.total_renames();
+                    if planned_renames > 0 {
+                        parts.push(format!("{planned_renames} renames"));
                     }
                     if m3u_count > 0 {
-                        parts.push(format!("{} m3u updates", m3u_count));
+                        parts.push(format!("{m3u_count} m3u updates"));
                     }
-                    if cue_count > 0 || m3u_fix_count > 0 {
-                        let total = cue_count + m3u_fix_count;
-                        parts.push(format!("{} reference fixes", total));
+                    if cue_count > 0 || broken_m3u_count > 0 {
+                        let total = cue_count + broken_m3u_count;
+                        parts.push(format!("{total} reference fixes"));
                     }
                     if has_media_work {
                         let media_count = media_plan.as_ref().unwrap().renames.len();
-                        parts.push(format!("{} media renames", media_count));
+                        parts.push(format!("{media_count} media renames"));
                     }
                     print!("\n  Proceed with {}? [y/N] ", parts.join(" and "));
                     std::io::stdout().flush()?;
@@ -229,7 +234,7 @@ pub(crate) fn run_rename(
                             .as_ref()
                             .map(|d| d.join(&cf.folder_name))
                             .filter(|d| d.is_dir());
-                        let gamelist_path = default_metadata_dir(&root_path)
+                        let gamelist_path = default_metadata_dir(root_path)
                             .join(&cf.folder_name)
                             .join("gamelist.xml");
                         let gamelist_rewriter = move |stem_map: &HashMap<String, String>| {
@@ -397,6 +402,8 @@ pub(crate) fn run_rename(
 }
 
 /// Print the rename plan for a single console.
+// Linear report over every plan section (renames, m3u, cue fixes, warnings).
+#[allow(clippy::too_many_lines)]
 pub(crate) fn print_rename_plan(plan: &RenamePlan) {
     // Renames
     for rename in &plan.renames {
@@ -583,7 +590,15 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
                 full_serial,
                 game_code,
             } => {
-                if !game_code.is_empty() {
+                if game_code.is_empty() {
+                    log::warn!(
+                        "  {} {}: serial \"{}\" not found in DAT{}",
+                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                        file_name.if_supports_color(Stdout, |t| t.dimmed()),
+                        full_serial,
+                        hash_suffix,
+                    );
+                } else {
                     let code = game_code;
                     log::warn!(
                         "  {} {}: serial \"{}\" (looked up as \"{}\") not found in DAT{}",
@@ -591,14 +606,6 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
                         file_name.if_supports_color(Stdout, |t| t.dimmed()),
                         full_serial,
                         code,
-                        hash_suffix,
-                    );
-                } else {
-                    log::warn!(
-                        "  {} {}: serial \"{}\" not found in DAT{}",
-                        "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                        file_name.if_supports_color(Stdout, |t| t.dimmed()),
-                        full_serial,
                         hash_suffix,
                     );
                 }

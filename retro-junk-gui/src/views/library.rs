@@ -221,7 +221,7 @@ pub fn switch_to_root_unchecked(
     // Save settings immediately
     app.settings.library.current_root = Some(new_root);
     if let Err(e) = crate::settings::save_settings(&app.settings) {
-        log::warn!("Failed to save settings: {}", e);
+        log::warn!("Failed to save settings: {e}");
     }
 }
 

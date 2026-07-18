@@ -202,7 +202,7 @@ fn disagreement_filter_by_field() {
     .unwrap();
 
     // No filter — both
-    let all = list_unresolved_disagreements(&conn, &Default::default()).unwrap();
+    let all = list_unresolved_disagreements(&conn, &DisagreementFilter::default()).unwrap();
     assert_eq!(all.len(), 2);
 
     // Filter by field
@@ -247,7 +247,7 @@ fn disagreement_filter_by_platform() {
     .unwrap();
 
     // All disagreements
-    let all = list_unresolved_disagreements(&conn, &Default::default()).unwrap();
+    let all = list_unresolved_disagreements(&conn, &DisagreementFilter::default()).unwrap();
     assert_eq!(all.len(), 2);
 
     // Filter to NES only
@@ -493,7 +493,7 @@ fn find_media_by_md5_with_match() {
     let mut zelda_media = test_media("zelda1-nes-usa-v1", "zelda1-nes-usa");
     zelda_media.dat_name = "The Legend of Zelda (USA).nes".to_string();
     zelda_media.dat_source = "no-intro".to_string();
-    zelda_media.file_size = 131088;
+    zelda_media.file_size = 131_088;
     zelda_media.crc32 = "a12b1f68".to_string();
     zelda_media.sha1 = "a1234567890abcdef1234567890abcdef12345678".to_string();
     zelda_media.md5 = "abc123def456abc123def456abc123de".to_string();

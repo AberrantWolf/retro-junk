@@ -1,16 +1,16 @@
 //! Nintendo disc header parsing utilities.
 //!
-//! Shared by GameCube and Wii analyzers. Both consoles use the same
+//! Shared by `GameCube` and Wii analyzers. Both consoles use the same
 //! disc header layout (0x0000-0x043F, "boot.bin") with identical field
 //! positions and big-endian byte order.
 //!
 //! The key difference is the magic word used for identification:
-//! - GameCube: 0xC2339F3D at offset 0x001C
+//! - `GameCube`: 0xC2339F3D at offset 0x001C
 //! - Wii: 0x5D1C9EA3 at offset 0x0018
 //!
 //! Sources:
-//! - Yet Another GameCube Documentation (YAGCD): https://www.gc-forever.com/yagcd/chap13.html
-//! - Wiibrew disc format: https://wiibrew.org/wiki/Wii_disc
+//! - Yet Another `GameCube` Documentation (YAGCD): <https://www.gc-forever.com/yagcd/chap13.html>
+//! - Wiibrew disc format: <https://wiibrew.org/wiki/Wii_disc>
 
 use std::io::SeekFrom;
 use std::path::Path;
@@ -26,11 +26,11 @@ use crate::licensee::maker_code_name;
 // Constants
 // ---------------------------------------------------------------------------
 
-/// GameCube magic word at offset 0x001C (big-endian).
-pub(crate) const GC_MAGIC: u32 = 0xC2339F3D;
+/// `GameCube` magic word at offset 0x001C (big-endian).
+pub(crate) const GC_MAGIC: u32 = 0xC233_9F3D;
 
 /// Wii magic word at offset 0x0018 (big-endian).
-pub(crate) const WII_MAGIC: u32 = 0x5D1C9EA3;
+pub(crate) const WII_MAGIC: u32 = 0x5D1C_9EA3;
 
 /// Size of the disc header ("boot.bin"): 0x440 bytes.
 pub(crate) const HEADER_SIZE: usize = 0x440;
@@ -44,9 +44,9 @@ pub(crate) const MAGIC_CHECK_SIZE: usize = 0x20;
 
 /// Parsed Nintendo disc header (0x0000-0x043F).
 ///
-/// This structure is identical for GameCube and Wii discs.
+/// This structure is identical for `GameCube` and Wii discs.
 pub(crate) struct NintendoDiscHeader {
-    /// 4-byte game code: [console_id, game_code_hi, game_code_lo, country]
+    /// 4-byte game code: [`console_id`, `game_code_hi`, `game_code_lo`, country]
     pub game_code: [u8; 4],
     /// 2-byte maker/publisher code
     pub maker_code: [u8; 2],
@@ -58,7 +58,7 @@ pub(crate) struct NintendoDiscHeader {
     pub audio_streaming: bool,
     /// Wii magic word at offset 0x0018
     pub wii_magic: u32,
-    /// GameCube magic word at offset 0x001C
+    /// `GameCube` magic word at offset 0x001C
     pub gc_magic: u32,
     /// Game name (null-terminated string from offset 0x0020, up to 992 bytes)
     pub game_name: String,
@@ -133,7 +133,7 @@ pub(crate) fn parse_disc_header(
 // Identification helpers
 // ---------------------------------------------------------------------------
 
-/// Returns true if the header indicates a GameCube disc.
+/// Returns true if the header indicates a `GameCube` disc.
 pub(crate) fn is_gamecube(header: &NintendoDiscHeader) -> bool {
     header.gc_magic == GC_MAGIC && header.wii_magic != WII_MAGIC
 }
@@ -157,7 +157,7 @@ pub(crate) fn maker_code_str(header: &NintendoDiscHeader) -> String {
 ///
 /// Populates serial number, internal name, region, version, maker code,
 /// and platform-specific extras. Caller should add `file_size` and any
-/// platform-specific fields (e.g., expected_size, DVD layer) afterward.
+/// platform-specific fields (e.g., `expected_size`, DVD layer) afterward.
 pub(crate) fn build_identification(
     header: &NintendoDiscHeader,
     platform: Platform,
@@ -180,7 +180,7 @@ pub(crate) fn build_identification(
     }
 
     // Maker code
-    id.maker_code = maker.clone();
+    id.maker_code.clone_from(&maker);
 
     // Composite product code for display (e.g., "DOL-GALE-0" for GC, "RVL-RSBE-0" for Wii)
     let platform_prefix = match platform {
@@ -286,7 +286,7 @@ pub(crate) fn open_compressed_disc(
     path: &Path,
 ) -> Result<(NintendoDiscHeader, &'static str, u64), AnalysisError> {
     let mut disc = nod::Disc::new(path).map_err(|e| {
-        AnalysisError::invalid_format(&format!("Failed to open compressed disc: {e}"))
+        AnalysisError::invalid_format(format!("Failed to open compressed disc: {e}"))
     })?;
 
     let format_name = nod_format_name(disc.meta().format);
@@ -320,7 +320,7 @@ pub(crate) fn hash_compressed_disc(
     use std::io::Read;
 
     let mut disc = nod::Disc::new(path).map_err(|e| {
-        AnalysisError::invalid_format(&format!("Failed to open compressed disc for hashing: {e}"))
+        AnalysisError::invalid_format(format!("Failed to open compressed disc for hashing: {e}"))
     })?;
 
     let data_size = disc.disc_size();

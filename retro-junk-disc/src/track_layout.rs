@@ -34,7 +34,7 @@ fn first_index_frame(track: &CueTrack) -> Result<u64, AnalysisError> {
         .indexes
         .iter()
         .min_by_key(|i| i.number)
-        .map(|i| i.to_sector_offset())
+        .map(super::cue::CueIndex::to_sector_offset)
         .ok_or_else(|| {
             AnalysisError::invalid_format(format!(
                 "CUE TRACK {:02} has no INDEX lines",

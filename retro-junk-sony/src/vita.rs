@@ -1,4 +1,4 @@
-//! PlayStation Vita ROM analyzer.
+//! `PlayStation` Vita ROM analyzer.
 //!
 //! Supports:
 //! - VPK files
@@ -8,7 +8,7 @@ use retro_junk_core::ReadSeek;
 
 use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
 
-/// Analyzer for PlayStation Vita ROMs.
+/// Analyzer for `PlayStation` Vita ROMs.
 #[derive(Debug, Default)]
 pub struct VitaAnalyzer;
 

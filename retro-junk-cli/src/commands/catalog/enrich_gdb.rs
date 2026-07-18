@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
@@ -9,13 +9,13 @@ use crate::commands::systems::{SystemCapability, resolve_systems};
 
 use super::default_catalog_db_path;
 
-/// Enrich catalog releases with GameDataBase metadata.
+/// Enrich catalog releases with `GameDataBase` metadata.
 pub(crate) fn run_catalog_enrich_gdb(
     ctx: &AnalysisContext,
-    systems: Vec<String>,
+    systems: &[String],
     db_path: Option<PathBuf>,
     limit: Option<u32>,
-    gdb_dir: Option<PathBuf>,
+    gdb_dir: Option<&Path>,
 ) -> Result<(), CliError> {
     use retro_junk_import::gdb_import::{self, GdbEnrichOptions};
 
@@ -28,10 +28,10 @@ pub(crate) fn run_catalog_enrich_gdb(
     }
 
     let conn = retro_junk_db::open_database(&db_path)
-        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {e}")))?;
 
     // Resolve systems
-    let resolved = resolve_systems(ctx, &systems, SystemCapability::GdbSupport)?;
+    let resolved = resolve_systems(ctx, systems, &SystemCapability::GdbSupport)?;
     let consoles: Vec<(String, &'static [&'static str])> = resolved
         .into_iter()
         .map(|c| {
@@ -54,7 +54,7 @@ pub(crate) fn run_catalog_enrich_gdb(
         let options = GdbEnrichOptions {
             platform_id: short_name.clone(),
             limit,
-            gdb_dir: gdb_dir.clone(),
+            gdb_dir: gdb_dir.map(Path::to_path_buf),
         };
 
         match gdb_import::enrich_gdb(&conn, csv_names, &options) {
@@ -69,7 +69,7 @@ pub(crate) fn run_catalog_enrich_gdb(
                     stats.disagreements,
                 );
                 if stats.companies_created > 0 {
-                    log::info!("    {} new companies created", stats.companies_created,);
+                    log::info!("    {} new companies created", stats.companies_created);
                 }
                 if stats.skipped_no_hash > 0 {
                     log::info!(

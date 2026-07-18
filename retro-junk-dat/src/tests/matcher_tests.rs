@@ -1,14 +1,39 @@
 use super::*;
 use crate::dat::{DatFile, DatGame, DatRom};
 
-/// Helper: unwrap a SerialLookupResult::Match, panicking on NotFound/Ambiguous.
+/// Helper: unwrap a `SerialLookupResult::Match`, panicking on NotFound/Ambiguous.
 fn expect_match(result: SerialLookupResult) -> MatchResult {
     match result {
         SerialLookupResult::Match(m) => m,
         SerialLookupResult::Ambiguous { candidates } => {
-            panic!("Expected Match, got Ambiguous with: {:?}", candidates)
+            panic!("Expected Match, got Ambiguous with: {candidates:?}")
         }
         SerialLookupResult::NotFound => panic!("Expected Match, got NotFound"),
+    }
+}
+
+/// Helper: build a `DatGame` containing a single ROM with the given metadata.
+fn single_rom_game(
+    name: &str,
+    rom_name: &str,
+    size: u64,
+    crc: &str,
+    serial: Option<&str>,
+) -> DatGame {
+    DatGame {
+        name: name.into(),
+        region: None,
+        serial: None,
+        version: None,
+        category: None,
+        roms: vec![DatRom {
+            name: rom_name.into(),
+            size,
+            crc: crc.into(),
+            sha1: None,
+            md5: None,
+            serial: serial.map(Into::into),
+        }],
     }
 }
 
@@ -26,7 +51,7 @@ fn make_test_dat() -> DatFile {
                 category: None,
                 roms: vec![DatRom {
                     name: "Super Mario World (USA).sfc".into(),
-                    size: 524288,
+                    size: 524_288,
                     crc: "b19ed489".into(),
                     sha1: Some("6b47bb75d16514b6a476aa0c73a683a2a4c18765".into()),
                     md5: None,
@@ -41,7 +66,7 @@ fn make_test_dat() -> DatFile {
                 category: None,
                 roms: vec![DatRom {
                     name: "Super Mario 64 (USA).z64".into(),
-                    size: 8388608,
+                    size: 8_388_608,
                     crc: "635a2bff".into(),
                     sha1: None,
                     md5: None,
@@ -57,7 +82,7 @@ fn make_test_dat() -> DatFile {
                 category: None,
                 roms: vec![DatRom {
                     name: "Super Mario 64 (Japan).z64".into(),
-                    size: 8388608,
+                    size: 8_388_608,
                     crc: "4eab3152".into(),
                     sha1: None,
                     md5: None,
@@ -72,7 +97,7 @@ fn make_test_dat() -> DatFile {
                 category: None,
                 roms: vec![DatRom {
                     name: "The Legend of Zelda - A Link to the Past (USA).sfc".into(),
-                    size: 1048576,
+                    size: 1_048_576,
                     crc: "777aac2f".into(),
                     sha1: None,
                     md5: None,
@@ -90,11 +115,11 @@ fn test_match_by_crc32() {
         crc32: "b19ed489".into(),
         sha1: None,
         md5: None,
-        data_size: 524288,
+        data_size: 524_288,
         warnings: vec![],
     };
     let result = index
-        .match_by_hash(524288, &hashes)
+        .match_by_hash(524_288, &hashes)
         .into_iter()
         .next()
         .unwrap();
@@ -153,11 +178,11 @@ fn test_hash_distinguishes_regions() {
         crc32: "635a2bff".into(),
         sha1: None,
         md5: None,
-        data_size: 8388608,
+        data_size: 8_388_608,
         warnings: vec![],
     };
     let usa = index
-        .match_by_hash(8388608, &usa_hashes)
+        .match_by_hash(8_388_608, &usa_hashes)
         .into_iter()
         .next()
         .unwrap();
@@ -167,11 +192,11 @@ fn test_hash_distinguishes_regions() {
         crc32: "4eab3152".into(),
         sha1: None,
         md5: None,
-        data_size: 8388608,
+        data_size: 8_388_608,
         warnings: vec![],
     };
     let jpn = index
-        .match_by_hash(8388608, &jpn_hashes)
+        .match_by_hash(8_388_608, &jpn_hashes)
         .into_iter()
         .next()
         .unwrap();
@@ -199,7 +224,7 @@ fn test_no_match() {
 fn test_from_dats_merge() {
     let dat1 = DatFile {
         name: "DAT A".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![DatGame {
             name: "Game A (USA)".into(),
@@ -219,7 +244,7 @@ fn test_from_dats_merge() {
     };
     let dat2 = DatFile {
         name: "DAT B".into(),
-        description: "".into(),
+        description: String::new(),
         version: "2".into(),
         games: vec![DatGame {
             name: "Game B (USA)".into(),
@@ -273,7 +298,7 @@ fn test_crc32_requires_matching_size() {
         crc32: "b19ed489".into(),
         sha1: None,
         md5: None,
-        data_size: 524288,
+        data_size: 524_288,
         warnings: vec![],
     };
     assert!(index.match_by_hash(999, &hashes).is_empty());
@@ -284,7 +309,7 @@ fn test_comma_separated_serials() {
     // Redump DATs have comma-separated serials like "SLUS-01041, SLUS-01041GH"
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![DatGame {
             name: "Chrono Cross (USA) (Disc 1)".into(),
@@ -294,7 +319,7 @@ fn test_comma_separated_serials() {
             category: None,
             roms: vec![DatRom {
                 name: "Chrono Cross (USA) (Disc 1).bin".into(),
-                size: 736651104,
+                size: 736_651_104,
                 crc: "a07898cc".into(),
                 sha1: None,
                 md5: None,
@@ -325,7 +350,7 @@ fn test_serial_space_dash_normalization() {
     // ROM analysis produces dashes: "SLPS-00700"
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![DatGame {
             name: "Some Game (Japan)".into(),
@@ -357,100 +382,53 @@ fn test_multi_disc_suffix_prefers_suffixed_over_bare() {
     // suffixed entry should be preferred since the bare serial is ambiguous.
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![
             // Bare entries (shared serial — multiple entries in Vec now)
-            DatGame {
-                name: "FF7 (USA) (Disc 1)".into(),
-                region: None,
-                serial: None,
-                version: None,
-                category: None,
-                roms: vec![DatRom {
-                    name: "FF7 (USA) (Disc 1).bin".into(),
-                    size: 747435024,
-                    crc: "1459cbef".into(),
-                    sha1: None,
-                    md5: None,
-                    serial: Some("SCUS-94163".into()),
-                }],
-            },
-            DatGame {
-                name: "FF7 (USA) (Disc 1) [suffixed]".into(),
-                region: None,
-                serial: None,
-                version: None,
-                category: None,
-                roms: vec![DatRom {
-                    name: "FF7 (USA) (Disc 1).bin".into(),
-                    size: 747435024,
-                    crc: "1459cbef".into(),
-                    sha1: None,
-                    md5: None,
-                    serial: Some("SCUS-94163-0".into()),
-                }],
-            },
-            DatGame {
-                name: "FF7 (USA) (Disc 2)".into(),
-                region: None,
-                serial: None,
-                version: None,
-                category: None,
-                roms: vec![DatRom {
-                    name: "FF7 (USA) (Disc 2).bin".into(),
-                    size: 732657408,
-                    crc: "a997a8cc".into(),
-                    sha1: None,
-                    md5: None,
-                    serial: Some("SCUS-94163".into()),
-                }],
-            },
-            DatGame {
-                name: "FF7 (USA) (Disc 2) [suffixed]".into(),
-                region: None,
-                serial: None,
-                version: None,
-                category: None,
-                roms: vec![DatRom {
-                    name: "FF7 (USA) (Disc 2).bin".into(),
-                    size: 732657408,
-                    crc: "a997a8cc".into(),
-                    sha1: None,
-                    md5: None,
-                    serial: Some("SCUS-94163-1".into()),
-                }],
-            },
-            DatGame {
-                name: "FF7 (USA) (Disc 3)".into(),
-                region: None,
-                serial: None,
-                version: None,
-                category: None,
-                roms: vec![DatRom {
-                    name: "FF7 (USA) (Disc 3).bin".into(),
-                    size: 659561952,
-                    crc: "1c27b277".into(),
-                    sha1: None,
-                    md5: None,
-                    serial: Some("SCUS-94163".into()),
-                }],
-            },
-            DatGame {
-                name: "FF7 (USA) (Disc 3) [suffixed]".into(),
-                region: None,
-                serial: None,
-                version: None,
-                category: None,
-                roms: vec![DatRom {
-                    name: "FF7 (USA) (Disc 3).bin".into(),
-                    size: 659561952,
-                    crc: "1c27b277".into(),
-                    sha1: None,
-                    md5: None,
-                    serial: Some("SCUS-94163-2".into()),
-                }],
-            },
+            // interleaved with their "-N" suffixed counterparts.
+            single_rom_game(
+                "FF7 (USA) (Disc 1)",
+                "FF7 (USA) (Disc 1).bin",
+                747_435_024,
+                "1459cbef",
+                Some("SCUS-94163"),
+            ),
+            single_rom_game(
+                "FF7 (USA) (Disc 1) [suffixed]",
+                "FF7 (USA) (Disc 1).bin",
+                747_435_024,
+                "1459cbef",
+                Some("SCUS-94163-0"),
+            ),
+            single_rom_game(
+                "FF7 (USA) (Disc 2)",
+                "FF7 (USA) (Disc 2).bin",
+                732_657_408,
+                "a997a8cc",
+                Some("SCUS-94163"),
+            ),
+            single_rom_game(
+                "FF7 (USA) (Disc 2) [suffixed]",
+                "FF7 (USA) (Disc 2).bin",
+                732_657_408,
+                "a997a8cc",
+                Some("SCUS-94163-1"),
+            ),
+            single_rom_game(
+                "FF7 (USA) (Disc 3)",
+                "FF7 (USA) (Disc 3).bin",
+                659_561_952,
+                "1c27b277",
+                Some("SCUS-94163"),
+            ),
+            single_rom_game(
+                "FF7 (USA) (Disc 3) [suffixed]",
+                "FF7 (USA) (Disc 3).bin",
+                659_561_952,
+                "1c27b277",
+                Some("SCUS-94163-2"),
+            ),
         ],
     };
     let index = DatIndex::from_dat(dat);
@@ -475,7 +453,7 @@ fn test_suffix_fallback_when_no_exact_match() {
     // When exact serial doesn't match, try with disc suffixes
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![DatGame {
             name: "Some Game (USA) (Disc 1)".into(),
@@ -485,7 +463,7 @@ fn test_suffix_fallback_when_no_exact_match() {
             category: None,
             roms: vec![DatRom {
                 name: "Some Game (USA) (Disc 1).bin".into(),
-                size: 700000000,
+                size: 700_000_000,
                 crc: "deadbeef".into(),
                 sha1: None,
                 md5: None,
@@ -509,7 +487,7 @@ fn test_normal_game_unaffected_by_suffix_logic() {
     // Single-disc games with no suffixed variants should still match normally
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![DatGame {
             name: "Crash Bandicoot (USA)".into(),
@@ -519,7 +497,7 @@ fn test_normal_game_unaffected_by_suffix_logic() {
             category: None,
             roms: vec![DatRom {
                 name: "Crash Bandicoot (USA).bin".into(),
-                size: 500000000,
+                size: 500_000_000,
                 crc: "aabbccdd".into(),
                 sha1: None,
                 md5: None,
@@ -540,7 +518,7 @@ fn test_ambiguous_serial_returns_ambiguous() {
     // Two different games share the same serial (e.g., original + romhack)
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![
             DatGame {
@@ -551,7 +529,7 @@ fn test_ambiguous_serial_returns_ambiguous() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Pokemon FireRed (USA).gba".into(),
-                    size: 16777216,
+                    size: 16_777_216,
                     crc: "dd88761c".into(),
                     sha1: None,
                     md5: None,
@@ -566,7 +544,7 @@ fn test_ambiguous_serial_returns_ambiguous() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Pokemon FireRed (USA) (Rev 1).gba".into(),
-                    size: 16777216,
+                    size: 16_777_216,
                     crc: "aabbccdd".into(),
                     sha1: None,
                     md5: None,
@@ -583,7 +561,7 @@ fn test_ambiguous_serial_returns_ambiguous() {
             assert!(candidates.contains(&"Pokemon FireRed (USA)".to_string()));
             assert!(candidates.contains(&"Pokemon FireRed (USA) (Rev 1)".to_string()));
         }
-        other => panic!("Expected Ambiguous, got {:?}", other),
+        other => panic!("Expected Ambiguous, got {other:?}"),
     }
 }
 
@@ -592,7 +570,7 @@ fn test_ambiguous_via_game_code() {
     // Two games share the same 4-char code, tested via the game_code path
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![
             DatGame {
@@ -603,7 +581,7 @@ fn test_ambiguous_via_game_code() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Game Original (USA).z64".into(),
-                    size: 8388608,
+                    size: 8_388_608,
                     crc: "11111111".into(),
                     sha1: None,
                     md5: None,
@@ -618,7 +596,7 @@ fn test_ambiguous_via_game_code() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Game Original (USA) (Rev 1).z64".into(),
-                    size: 8388608,
+                    size: 8_388_608,
                     crc: "22222222".into(),
                     sha1: None,
                     md5: None,
@@ -636,7 +614,7 @@ fn test_ambiguous_via_game_code() {
             assert!(candidates.contains(&"Game Original (USA)".to_string()));
             assert!(candidates.contains(&"Game Original (USA) (Rev 1)".to_string()));
         }
-        other => panic!("Expected Ambiguous, got {:?}", other),
+        other => panic!("Expected Ambiguous, got {other:?}"),
     }
 }
 
@@ -646,7 +624,7 @@ fn test_multi_disc_shared_bare_serial_resolves_via_suffix() {
     // should NOT be ambiguous — the suffix resolves it.
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![
             DatGame {
@@ -657,7 +635,7 @@ fn test_multi_disc_shared_bare_serial_resolves_via_suffix() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Multi Disc Game (USA) (Disc 1).bin".into(),
-                    size: 700000000,
+                    size: 700_000_000,
                     crc: "aaaa0001".into(),
                     sha1: None,
                     md5: None,
@@ -672,7 +650,7 @@ fn test_multi_disc_shared_bare_serial_resolves_via_suffix() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Multi Disc Game (USA) (Disc 2).bin".into(),
-                    size: 700000000,
+                    size: 700_000_000,
                     crc: "aaaa0002".into(),
                     sha1: None,
                     md5: None,
@@ -687,7 +665,7 @@ fn test_multi_disc_shared_bare_serial_resolves_via_suffix() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Multi Disc Game (USA) (Disc 1).bin".into(),
-                    size: 700000000,
+                    size: 700_000_000,
                     crc: "aaaa0001".into(),
                     sha1: None,
                     md5: None,
@@ -715,7 +693,7 @@ fn test_same_name_entries_resolve_as_match() {
     // as a unique match, not ambiguous.
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![
             DatGame {
@@ -726,7 +704,7 @@ fn test_same_name_entries_resolve_as_match() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Metroid Fusion (USA).gba".into(),
-                    size: 8388608,
+                    size: 8_388_608,
                     crc: "11111111".into(),
                     sha1: None,
                     md5: None,
@@ -741,7 +719,7 @@ fn test_same_name_entries_resolve_as_match() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Metroid Fusion (USA).gba".into(),
-                    size: 8388608,
+                    size: 8_388_608,
                     crc: "22222222".into(),
                     sha1: None,
                     md5: None,
@@ -763,7 +741,7 @@ fn test_match_short_game_code_to_long_dat_serial() {
     // Analyzer extracts short 4-char game code "GALE" from disc header
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![DatGame {
             name: "The Legend of Zelda - The Wind Waker (USA)".into(),
@@ -773,7 +751,7 @@ fn test_match_short_game_code_to_long_dat_serial() {
             category: None,
             roms: vec![DatRom {
                 name: "The Legend of Zelda - The Wind Waker (USA).iso".into(),
-                size: 1459978240,
+                size: 1_459_978_240,
                 crc: "d8e4d45a".into(),
                 sha1: None,
                 md5: None,
@@ -797,7 +775,7 @@ fn test_hash_returns_all_regional_variants() {
     // match_by_hash should return both entries.
     let dat = DatFile {
         name: "Test".into(),
-        description: "".into(),
+        description: String::new(),
         version: "1".into(),
         games: vec![
             DatGame {
@@ -808,7 +786,7 @@ fn test_hash_returns_all_regional_variants() {
                 category: None,
                 roms: vec![DatRom {
                     name: "NiGHTS into Dreams... (USA).chd".into(),
-                    size: 500000000,
+                    size: 500_000_000,
                     crc: "aabb1122".into(),
                     sha1: None,
                     md5: None,
@@ -823,7 +801,7 @@ fn test_hash_returns_all_regional_variants() {
                 category: None,
                 roms: vec![DatRom {
                     name: "NiGHTS into Dreams... (Japan).chd".into(),
-                    size: 500000000,
+                    size: 500_000_000,
                     crc: "aabb1122".into(), // Same hash as USA
                     sha1: None,
                     md5: None,
@@ -838,10 +816,10 @@ fn test_hash_returns_all_regional_variants() {
         crc32: "aabb1122".into(),
         sha1: None,
         md5: None,
-        data_size: 500000000,
+        data_size: 500_000_000,
         warnings: vec![],
     };
-    let matches = index.match_by_hash(500000000, &hashes);
+    let matches = index.match_by_hash(500_000_000, &hashes);
     assert_eq!(matches.len(), 2, "Should return both USA and Japan entries");
 
     let names: Vec<&str> = matches

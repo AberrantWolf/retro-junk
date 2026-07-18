@@ -62,6 +62,7 @@ pub enum DumpStatus {
 /// assert_eq!(parsed.revision, Some("Rev A".to_string()));
 /// assert_eq!(parsed.languages, vec!["En", "Fr"]);
 /// ```
+#[must_use]
 pub fn parse_dat_name(name: &str) -> ParsedDatName {
     let mut result = ParsedDatName {
         title: String::new(),
@@ -221,7 +222,7 @@ fn classify_paren_tag(content: &str, result: &mut ParsedDatName) {
     }
 
     // Version: "v1.0", "v1.1", "V1.2"
-    if (trimmed.starts_with("v") || trimmed.starts_with("V"))
+    if (trimmed.starts_with('v') || trimmed.starts_with('V'))
         && trimmed.len() > 1
         && trimmed.as_bytes()[1].is_ascii_digit()
     {
@@ -298,6 +299,7 @@ fn classify_bracket_tag(content: &str, result: &mut ParsedDatName) {
 ///
 /// Returns the display string (e.g., "USA", "Japan", "Europe").
 /// Unknown slugs are returned title-cased.
+#[must_use]
 pub fn region_slug_to_display(slug: &str) -> String {
     match slug {
         "usa" => "USA".to_string(),
@@ -349,6 +351,7 @@ pub fn region_slug_to_display(slug: &str) -> String {
 /// Map a No-Intro/Redump region string to a lowercase slug used in the catalog.
 ///
 /// Returns the canonical region slug (e.g., "usa", "japan", "europe").
+#[must_use]
 pub fn region_to_slug(region: &str) -> &'static str {
     match region.to_lowercase().as_str() {
         "usa" | "us" | "united states" => "usa",

@@ -82,15 +82,15 @@ fn refresh_data(state: &mut ToolsState, conn: &retro_junk_db::Connection) {
         retro_junk_db::list_unresolved_disagreements(conn, &filter).unwrap_or_default();
 
     // Clamp or clear selection
-    if let Some(idx) = state.selected_idx {
-        if idx >= state.disagreements.len() {
-            if state.disagreements.is_empty() {
-                state.selected_idx = None;
-                state.selected_context = None;
-            } else {
-                state.selected_idx = Some(state.disagreements.len() - 1);
-                state.selected_context = None;
-            }
+    if let Some(idx) = state.selected_idx
+        && idx >= state.disagreements.len()
+    {
+        if state.disagreements.is_empty() {
+            state.selected_idx = None;
+            state.selected_context = None;
+        } else {
+            state.selected_idx = Some(state.disagreements.len() - 1);
+            state.selected_context = None;
         }
     }
 
@@ -104,7 +104,7 @@ fn show_stats_section(ui: &mut egui::Ui, state: &ToolsState) {
     ui.strong("Catalog Statistics");
     ui.add_space(4.0);
 
-    let Some(ref stats) = state.stats else {
+    let Some(ref catalog_stats) = state.stats else {
         ui.weak("No statistics available.");
         return;
     };
@@ -113,16 +113,16 @@ fn show_stats_section(ui: &mut egui::Ui, state: &ToolsState) {
         .num_columns(2)
         .spacing([40.0, 4.0])
         .show(ui, |ui| {
-            stat_row(ui, "Platforms", stats.platforms);
-            stat_row(ui, "Works", stats.works);
-            stat_row(ui, "Releases", stats.releases);
-            stat_row(ui, "Media entries", stats.media);
-            stat_row(ui, "Assets", stats.assets);
-            stat_row(ui, "Collection (owned)", stats.collection_owned);
+            stat_row(ui, "Platforms", catalog_stats.platforms);
+            stat_row(ui, "Works", catalog_stats.works);
+            stat_row(ui, "Releases", catalog_stats.releases);
+            stat_row(ui, "Media entries", catalog_stats.media);
+            stat_row(ui, "Assets", catalog_stats.assets);
+            stat_row(ui, "Collection (owned)", catalog_stats.collection_owned);
             stat_row(
                 ui,
                 "Unresolved disagreements",
-                stats.unresolved_disagreements,
+                catalog_stats.unresolved_disagreements,
             );
         });
 }
@@ -227,8 +227,7 @@ fn show_filter_toolbar(ui: &mut egui::Ui, state: &mut ToolsState) -> bool {
                 .platforms
                 .iter()
                 .find(|p| p.id == *pid)
-                .map(|p| p.short_name.as_str())
-                .unwrap_or("???"),
+                .map_or("???", |p| p.short_name.as_str()),
             None => "All",
         };
         egui::ComboBox::from_id_salt("tools_platform_filter")
@@ -388,13 +387,13 @@ fn load_disagreement_context(state: &mut ToolsState, conn: &retro_junk_db::Conne
         _ => (d.entity_id.clone(), String::new()),
     };
 
-    let platform_name = if !platform_id.is_empty() {
+    let platform_name = if platform_id.is_empty() {
+        String::new()
+    } else {
         retro_junk_db::get_platform_display_name(conn, &platform_id)
             .ok()
             .flatten()
             .unwrap_or(platform_id)
-    } else {
-        String::new()
     };
 
     state.selected_context = Some(DisagreementContext {
@@ -465,20 +464,20 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     let field = d.field.clone();
     let value_a = d.value_a.clone();
     let value_b = d.value_b.clone();
-    let source_a_label = d.source_a.clone();
-    let source_b_label = d.source_b.clone();
+    let label_a = d.source_a.clone();
+    let label_b = d.source_b.clone();
 
     // Resolution buttons
     let mut resolution: Option<(&str, Option<&str>)> = None;
 
     ui.horizontal(|ui| {
-        if ui.button(format!("Accept {}", source_a_label)).clicked() {
+        if ui.button(format!("Accept {label_a}")).clicked() {
             resolution = Some((
                 "source_a",
                 (!value_a.is_empty()).then_some(value_a.as_str()),
             ));
         }
-        if ui.button(format!("Accept {}", source_b_label)).clicked() {
+        if ui.button(format!("Accept {label_b}")).clicked() {
             resolution = Some((
                 "source_b",
                 (!value_b.is_empty()).then_some(value_b.as_str()),
@@ -504,21 +503,21 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         let conn = app.catalog_db.as_ref().unwrap();
 
         // Step 1: Apply the value to the entity
-        if let Some(value) = chosen_value {
-            if let Err(e) = retro_junk_db::apply_disagreement_resolution(
+        if let Some(value) = chosen_value
+            && let Err(e) = retro_junk_db::apply_disagreement_resolution(
                 conn,
                 &entity_type,
                 &entity_id,
                 &field,
                 value,
-            ) {
-                log::warn!("Failed to apply resolution: {}", e);
-            }
+            )
+        {
+            log::warn!("Failed to apply resolution: {e}");
         }
 
         // Step 2: Mark disagreement as resolved
         if let Err(e) = retro_junk_db::resolve_disagreement(conn, disagreement_id, resolution_str) {
-            log::warn!("Failed to resolve disagreement: {}", e);
+            log::warn!("Failed to resolve disagreement: {e}");
         }
 
         // Refresh to pick up changes — keeps selected_idx at same position,

@@ -33,8 +33,8 @@ impl From<serde_json::Error> for CacheError {
 impl std::fmt::Display for CacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CacheError::Db(e) => write!(f, "database error: {}", e),
-            CacheError::Json(e) => write!(f, "serialization error: {}", e),
+            CacheError::Db(e) => write!(f, "database error: {e}"),
+            CacheError::Json(e) => write!(f, "serialization error: {e}"),
         }
     }
 }
@@ -48,7 +48,11 @@ pub struct FolderFingerprint {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    use std::fmt::Write;
+    bytes.iter().fold(String::new(), |mut s, b| {
+        let _ = write!(s, "{b:02x}");
+        s
+    })
 }
 
 /// Compute a quick fingerprint of a folder by hashing sorted filenames.
@@ -103,7 +107,7 @@ pub fn save_library(conn: &Connection, root: &Path, library: &Library) -> Result
         }
     }
 
-    log::info!("Saving library cache: {} scanned consoles", scanned_count);
+    log::info!("Saving library cache: {scanned_count} scanned consoles");
 
     let root_str = root.to_string_lossy();
     let root_id = retro_junk_db::upsert_library_root(conn, &root_str)?;
@@ -144,23 +148,19 @@ pub fn load_library(
         };
 
         let registered = context.get_by_platform(platform);
-        let (manufacturer, platform_name) = match registered {
-            Some(r) => (r.metadata.manufacturer, r.metadata.platform_name),
-            None => {
-                log::warn!(
-                    "Platform {:?} not registered, skipping cached console {}",
-                    platform,
-                    cr.folder_name
-                );
-                continue;
-            }
+        let (manufacturer, platform_name) = if let Some(r) = registered {
+            (r.metadata.manufacturer, r.metadata.platform_name)
+        } else {
+            log::warn!(
+                "Platform {:?} not registered, skipping cached console {}",
+                platform,
+                cr.folder_name
+            );
+            continue;
         };
 
         let entry_rows = retro_junk_db::load_entries_for_console(conn, cr.id).ok()?;
-        let entries: Vec<LibraryEntry> = entry_rows
-            .into_iter()
-            .filter_map(|r| row_to_entry(r))
-            .collect();
+        let entries: Vec<LibraryEntry> = entry_rows.into_iter().filter_map(row_to_entry).collect();
 
         let folder_path = PathBuf::from(&cr.folder_path);
         let current_fp = compute_fingerprint(&folder_path);
@@ -271,7 +271,7 @@ pub fn clear_all_caches(conn: &Connection) -> Result<(), CacheError> {
 
 // ── JSON Migration ──────────────────────────────────────────────────────────
 
-/// One-time migration from JSON cache files to SQLite.
+/// One-time migration from JSON cache files to `SQLite`.
 /// Reads old JSON format, writes to DB, deletes JSON file.
 pub fn migrate_json_cache(conn: &Connection, root: &Path, context: &AnalysisContext) {
     let json_path = legacy_cache_path(root);
@@ -284,7 +284,7 @@ pub fn migrate_json_cache(conn: &Connection, root: &Path, context: &AnalysisCont
     let contents = match std::fs::read_to_string(&json_path) {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("Failed to read JSON cache for migration: {}", e);
+            log::warn!("Failed to read JSON cache for migration: {e}");
             return;
         }
     };
@@ -292,7 +292,7 @@ pub fn migrate_json_cache(conn: &Connection, root: &Path, context: &AnalysisCont
     let cached: LegacyLibraryCache = match serde_json::from_str(&contents) {
         Ok(c) => c,
         Err(e) => {
-            log::warn!("Failed to parse JSON cache for migration: {}", e);
+            log::warn!("Failed to parse JSON cache for migration: {e}");
             // Delete corrupt cache file
             let _ = std::fs::remove_file(&json_path);
             return;
@@ -300,16 +300,16 @@ pub fn migrate_json_cache(conn: &Connection, root: &Path, context: &AnalysisCont
     };
 
     // Load via the old code path to get a Library, then save to DB
-    if let Some((library, _stale)) = load_library_from_legacy(&cached, context) {
-        if let Err(e) = save_library(conn, root, &library) {
-            log::warn!("Failed to save migrated cache to DB: {}", e);
-            return;
-        }
+    if let Some((library, _stale)) = load_library_from_legacy(&cached, context)
+        && let Err(e) = save_library(conn, root, &library)
+    {
+        log::warn!("Failed to save migrated cache to DB: {e}");
+        return;
     }
 
     // Delete the old JSON file
     if let Err(e) = std::fs::remove_file(&json_path) {
-        log::warn!("Failed to delete old JSON cache: {}", e);
+        log::warn!("Failed to delete old JSON cache: {e}");
     } else {
         log::info!("JSON cache migrated and deleted: {}", json_path.display());
     }
@@ -481,11 +481,10 @@ fn ensure_console_id(
     let platform_str = serde_json::to_string(&console.platform)?;
     // serde_json wraps enums in quotes: "\"NES\"" — strip them
     let platform_str = platform_str.trim_matches('"');
-    let fingerprint = console
-        .fingerprint
-        .as_ref()
-        .map(|fp| fp.name_hash.clone())
-        .unwrap_or_else(|| compute_fingerprint(&console.folder_path).name_hash);
+    let fingerprint = console.fingerprint.as_ref().map_or_else(
+        || compute_fingerprint(&console.folder_path).name_hash,
+        |fp| fp.name_hash.clone(),
+    );
     let dat_game_count = match &console.dat_status {
         DatStatus::Loaded { game_count } => *game_count as i64,
         _ => 0,
@@ -498,12 +497,14 @@ fn ensure_console_id(
 
     let console_id = retro_junk_db::save_console_bulk(
         conn,
-        root_id,
-        platform_str,
-        &console.folder_name,
-        &console.folder_path.to_string_lossy(),
-        &fingerprint,
-        dat_game_count,
+        &retro_junk_db::ConsoleRecord {
+            root_id,
+            platform: platform_str,
+            folder_name: &console.folder_name,
+            folder_path: &console.folder_path.to_string_lossy(),
+            fingerprint_hash: &fingerprint,
+            dat_game_count,
+        },
         &entries,
     )?;
     Ok(console_id)
@@ -514,34 +515,7 @@ fn save_console_inner(
     root_id: i64,
     console: &ConsoleState,
 ) -> Result<(), CacheError> {
-    let platform_str = serde_json::to_string(&console.platform)?;
-    let platform_str = platform_str.trim_matches('"');
-    let fingerprint = console
-        .fingerprint
-        .as_ref()
-        .map(|fp| fp.name_hash.clone())
-        .unwrap_or_else(|| compute_fingerprint(&console.folder_path).name_hash);
-    let dat_game_count = match &console.dat_status {
-        DatStatus::Loaded { game_count } => *game_count as i64,
-        _ => 0,
-    };
-    let entries: Vec<LibraryEntryRow> = console
-        .entries
-        .iter()
-        .map(entry_to_row)
-        .collect::<Result<Vec<_>, _>>()?;
-
-    retro_junk_db::save_console_bulk(
-        conn,
-        root_id,
-        platform_str,
-        &console.folder_name,
-        &console.folder_path.to_string_lossy(),
-        &fingerprint,
-        dat_game_count,
-        &entries,
-    )?;
-    Ok(())
+    ensure_console_id(conn, root_id, console).map(|_| ())
 }
 
 // ── Row ↔ Domain Conversion ─────────────────────────────────────────────────
@@ -722,11 +696,10 @@ fn status_to_str(status: EntryStatus) -> (&'static str, Option<&'static str>) {
 
 fn str_to_status(s: &str) -> EntryStatus {
     match s {
-        "unknown" => EntryStatus::Unknown,
         "unrecognized" => EntryStatus::Unrecognized,
         "ambiguous" => EntryStatus::Ambiguous,
         "matched" => EntryStatus::Matched,
-        "tagged" => EntryStatus::Unknown, // tag column provides the real tag
+        // "unknown", "tagged" (tag column provides the real tag), and anything else
         _ => EntryStatus::Unknown,
     }
 }
@@ -750,8 +723,8 @@ fn match_method_to_str(m: &MatchMethod) -> &'static str {
 fn str_to_match_method(s: &str) -> MatchMethod {
     match s {
         "serial" => MatchMethod::Serial,
-        "crc32" => MatchMethod::Crc32,
         "sha1" => MatchMethod::Sha1,
+        // "crc32" and anything else default to CRC32
         _ => MatchMethod::Crc32,
     }
 }

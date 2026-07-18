@@ -50,12 +50,14 @@ fn save_and_load_console_bulk() {
 
     let console_id = save_console_bulk(
         &conn,
-        root_id,
-        "NES",
-        "nes",
-        "/roms/nes",
-        "abc123",
-        500,
+        &ConsoleRecord {
+            root_id,
+            platform: "NES",
+            folder_name: "nes",
+            folder_path: "/roms/nes",
+            fingerprint_hash: "abc123",
+            dat_game_count: 500,
+        },
         &entries,
     )
     .unwrap();
@@ -89,12 +91,14 @@ fn save_console_bulk_replaces_entries() {
     let entries_v1 = vec![make_entry("old.nes", "unknown")];
     let console_id = save_console_bulk(
         &conn,
-        root_id,
-        "NES",
-        "nes",
-        "/roms/nes",
-        "fp1",
-        0,
+        &ConsoleRecord {
+            root_id,
+            platform: "NES",
+            folder_name: "nes",
+            folder_path: "/roms/nes",
+            fingerprint_hash: "fp1",
+            dat_game_count: 0,
+        },
         &entries_v1,
     )
     .unwrap();
@@ -106,12 +110,14 @@ fn save_console_bulk_replaces_entries() {
     ];
     let console_id2 = save_console_bulk(
         &conn,
-        root_id,
-        "NES",
-        "nes",
-        "/roms/nes",
-        "fp2",
-        100,
+        &ConsoleRecord {
+            root_id,
+            platform: "NES",
+            folder_name: "nes",
+            folder_path: "/roms/nes",
+            fingerprint_hash: "fp2",
+            dat_game_count: 100,
+        },
         &entries_v2,
     )
     .unwrap();
@@ -129,12 +135,14 @@ fn upsert_single_entry() {
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
     let console_id = save_console_bulk(
         &conn,
-        root_id,
-        "NES",
-        "nes",
-        "/roms/nes",
-        "fp",
-        0,
+        &ConsoleRecord {
+            root_id,
+            platform: "NES",
+            folder_name: "nes",
+            folder_path: "/roms/nes",
+            fingerprint_hash: "fp",
+            dat_game_count: 0,
+        },
         &[make_entry("game.nes", "unknown")],
     )
     .unwrap();
@@ -156,12 +164,14 @@ fn upsert_entries_batch() {
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
     let console_id = save_console_bulk(
         &conn,
-        root_id,
-        "NES",
-        "nes",
-        "/roms/nes",
-        "fp",
-        0,
+        &ConsoleRecord {
+            root_id,
+            platform: "NES",
+            folder_name: "nes",
+            folder_path: "/roms/nes",
+            fingerprint_hash: "fp",
+            dat_game_count: 0,
+        },
         &[
             make_entry("game1.nes", "unknown"),
             make_entry("game2.nes", "unknown"),
@@ -186,12 +196,14 @@ fn delete_root_cascades() {
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
     save_console_bulk(
         &conn,
-        root_id,
-        "NES",
-        "nes",
-        "/roms/nes",
-        "fp",
-        0,
+        &ConsoleRecord {
+            root_id,
+            platform: "NES",
+            folder_name: "nes",
+            folder_path: "/roms/nes",
+            fingerprint_hash: "fp",
+            dat_game_count: 0,
+        },
         &[make_entry("game.nes", "unknown")],
     )
     .unwrap();
@@ -211,23 +223,27 @@ fn multiple_roots_independent() {
 
     save_console_bulk(
         &conn,
-        root1,
-        "NES",
-        "nes",
-        "/roms1/nes",
-        "fp1",
-        0,
+        &ConsoleRecord {
+            root_id: root1,
+            platform: "NES",
+            folder_name: "nes",
+            folder_path: "/roms1/nes",
+            fingerprint_hash: "fp1",
+            dat_game_count: 0,
+        },
         &[make_entry("game1.nes", "matched")],
     )
     .unwrap();
     save_console_bulk(
         &conn,
-        root2,
-        "SNES",
-        "snes",
-        "/roms2/snes",
-        "fp2",
-        0,
+        &ConsoleRecord {
+            root_id: root2,
+            platform: "SNES",
+            folder_name: "snes",
+            folder_path: "/roms2/snes",
+            fingerprint_hash: "fp2",
+            dat_game_count: 0,
+        },
         &[make_entry("game2.sfc", "unknown")],
     )
     .unwrap();

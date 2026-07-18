@@ -24,7 +24,7 @@ fn ring_buffer_caps_at_max() {
             timestamp: Local::now(),
             level: log::Level::Info,
             target: "test".to_string(),
-            message: format!("msg {}", i),
+            message: format!("msg {i}"),
         });
     }
     assert_eq!(buf.len(), MAX_ENTRIES);

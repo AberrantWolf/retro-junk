@@ -2,10 +2,10 @@ use crate::chd::*;
 
 #[test]
 fn test_parse_meta_field_basic() {
-    let text = "TRACK:1 TYPE:MODE2_RAW SUBTYPE:NONE FRAMES:229020 PREFRAMES:150";
+    let text = "TRACK:1 TYPE:MODE2_RAW SUBTYPE:NONE FRAMES:229_020 PREFRAMES:150";
     assert_eq!(parse_meta_field(text, "TRACK"), Some("1"));
     assert_eq!(parse_meta_field(text, "TYPE"), Some("MODE2_RAW"));
-    assert_eq!(parse_meta_field(text, "FRAMES"), Some("229020"));
+    assert_eq!(parse_meta_field(text, "FRAMES"), Some("229_020"));
     assert_eq!(parse_meta_field(text, "PREFRAMES"), Some("150"));
     assert_eq!(parse_meta_field(text, "SUBTYPE"), Some("NONE"));
 }
@@ -86,19 +86,19 @@ fn test_select_largest_data_track_single_data() {
         ChdTrackInfo {
             track_number: 1,
             track_type: "MODE2_RAW".to_string(),
-            frames: 229020,
+            frames: 229_020,
             start_sector: 0,
         },
         ChdTrackInfo {
             track_number: 2,
             track_type: "AUDIO".to_string(),
             frames: 18995,
-            start_sector: 229020,
+            start_sector: 229_020,
         },
     ];
     let selected = select_largest_data_track(&tracks).unwrap();
     assert_eq!(selected.track_number, 1);
-    assert_eq!(selected.frames, 229020);
+    assert_eq!(selected.frames, 229_020);
     assert_eq!(selected.start_sector, 0);
 }
 

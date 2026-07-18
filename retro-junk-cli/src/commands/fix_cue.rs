@@ -1,24 +1,28 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::Path;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use retro_junk_lib::AnalysisContext;
 use retro_junk_lib::cue_fix::{CueFixPlan, CueFixProgress, execute_cue_fixes, plan_cue_fixes};
-use retro_junk_lib::{AnalysisContext, Platform};
 
 use crate::CliError;
+use crate::cli_types::FixCueArgs;
 
 /// Run the fix-cue command.
+// Linear per-console cue-fix orchestration (plan, report, execute, summarize).
+#[allow(clippy::too_many_lines)]
 pub(crate) fn run_fix_cue(
     ctx: &AnalysisContext,
-    dry_run: bool,
-    no_backup: bool,
-    consoles: Option<Vec<Platform>>,
-    library_path: PathBuf,
+    args: &FixCueArgs,
+    library_path: &Path,
     quiet: bool,
 ) -> Result<(), CliError> {
+    let dry_run = args.dry_run;
+    let no_backup = args.no_backup;
+    let consoles = &args.roms.consoles;
     let root_path = library_path;
 
     log::info!(
@@ -39,9 +43,8 @@ pub(crate) fn run_fix_cue(
     }
     crate::log_blank();
 
-    let scan = match crate::scan_folders(ctx, &root_path, &consoles) {
-        Some(s) => s,
-        None => return Ok(()),
+    let Some(scan) = crate::scan_folders(ctx, root_path, consoles.as_deref()) else {
+        return Ok(());
     };
 
     let mut total_fixed = 0usize;

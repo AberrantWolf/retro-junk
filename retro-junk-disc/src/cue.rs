@@ -42,17 +42,18 @@ pub struct CueIndex {
 impl CueIndex {
     /// Convert MSF (minutes:seconds:frames) to an absolute sector offset.
     /// CD audio uses 75 frames per second.
+    #[must_use]
     pub fn to_sector_offset(&self) -> u64 {
-        (self.minutes as u64 * 60 + self.seconds as u64) * 75 + self.frames as u64
+        (u64::from(self.minutes) * 60 + u64::from(self.seconds)) * 75 + u64::from(self.frames)
     }
 }
 
 /// Parse a CUE sheet from its text content.
 ///
 /// Supports both standard CUE format (`FILE`/`TRACK <num> <mode>`) and
-/// CDRWin extended format (`DATAFILE`/`TRACK <mode>` without track numbers).
+/// `CDRWin` extended format (`DATAFILE`/`TRACK <mode>` without track numbers).
 ///
-/// In CDRWin format, `TRACK` lines may appear *before* their `DATAFILE`/`FILE`
+/// In `CDRWin` format, `TRACK` lines may appear *before* their `DATAFILE`/`FILE`
 /// directive (the opposite of standard CUE). Orphan tracks are buffered and
 /// attached to the next file entry.
 pub fn parse_cue(content: &str) -> Result<CueSheet, AnalysisError> {
@@ -202,7 +203,7 @@ fn parse_cue_file_line_at(rest: &str) -> Result<(String, String), AnalysisError>
 /// Parse a TRACK line.
 ///
 /// Standard format: `TRACK 01 MODE2/2352` (3 parts)
-/// CDRWin format: `TRACK MODE2_RAW` or `TRACK AUDIO` (2 parts, no track number)
+/// `CDRWin` format: `TRACK MODE2_RAW` or `TRACK AUDIO` (2 parts, no track number)
 ///
 /// When the track number is omitted, `fallback_number` is used instead.
 fn parse_cue_track_line(line: &str, fallback_number: u8) -> Result<(u8, String), AnalysisError> {
@@ -270,10 +271,10 @@ fn parse_msf(s: &str) -> Result<(u32, u32, u32), AnalysisError> {
 
 // -- CDRWin compatibility detection and conversion --
 
-/// CDRWin disc-type headers that are not part of standard CUE format.
+/// `CDRWin` disc-type headers that are not part of standard CUE format.
 const CDRWIN_DISC_TYPES: &[&str] = &["CD_ROM_XA", "CD_ROM", "CD_DA"];
 
-/// CDRWin directives to strip when converting to standard CUE format.
+/// `CDRWin` directives to strip when converting to standard CUE format.
 const CDRWIN_STRIP_DIRECTIVES: &[&str] = &[
     "NO COPY",
     "NO PRE_EMPHASIS",
@@ -294,18 +295,21 @@ pub enum AutoFix {
     Blocked(String),
 }
 
-/// Detected CDRWin compatibility issues in a CUE sheet.
+/// Detected `CDRWin` compatibility issues in a CUE sheet.
+// Independent presence flags of a diagnostic report; a state machine or
+// bitflags would obscure the report without adding safety.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct CueCompatReport {
-    /// CDRWin disc-type header found (e.g., "CD_ROM_XA"). Empty if none found.
+    /// `CDRWin` disc-type header found (e.g., "`CD_ROM_XA`"). Empty if none found.
     pub disc_type_header: String,
-    /// Tracks using CDRWin mode syntax: (track number, CDRWin mode).
+    /// Tracks using `CDRWin` mode syntax: (track number, `CDRWin` mode).
     pub cdwin_track_modes: Vec<(u8, String)>,
     /// Whether DATAFILE directives are present.
     pub has_datafile: bool,
     /// Whether AUDIOFILE directives are present.
     pub has_audiofile: bool,
-    /// Whether extra CDRWin directives (NO COPY, SILENCE, etc.) are present.
+    /// Whether extra `CDRWin` directives (NO COPY, SILENCE, etc.) are present.
     pub has_extra_directives: bool,
     /// Whether `//` comments are present.
     pub has_comments: bool,
@@ -315,6 +319,7 @@ pub struct CueCompatReport {
 
 impl CueCompatReport {
     /// Returns true if the CUE file uses only standard format (no CDRWin-isms).
+    #[must_use]
     pub fn is_standard(&self) -> bool {
         self.disc_type_header.is_empty()
             && self.cdwin_track_modes.is_empty()
@@ -325,11 +330,13 @@ impl CueCompatReport {
     }
 
     /// Returns true if auto-conversion to standard format is possible.
+    #[must_use]
     pub fn can_auto_fix(&self) -> bool {
         !self.is_standard() && matches!(self.auto_fix, AutoFix::Possible)
     }
 
     /// If auto-conversion is blocked, returns the reason.
+    #[must_use]
     pub fn blocked_reason(&self) -> Option<&str> {
         match &self.auto_fix {
             AutoFix::Possible => None,
@@ -338,6 +345,7 @@ impl CueCompatReport {
     }
 
     /// Short human-readable summary of what was detected.
+    #[must_use]
     pub fn summary(&self) -> String {
         let mut parts = Vec::new();
         if !self.disc_type_header.is_empty() {
@@ -365,10 +373,11 @@ impl CueCompatReport {
     }
 }
 
-/// Scan CUE text and report CDRWin compatibility issues.
+/// Scan CUE text and report `CDRWin` compatibility issues.
 ///
 /// This is a lightweight line-by-line scan that does not fully parse the CUE
-/// structure. It identifies which CDRWin features are present.
+/// structure. It identifies which `CDRWin` features are present.
+#[must_use]
 pub fn check_cue_compat(content: &str) -> CueCompatReport {
     let mut report = CueCompatReport {
         disc_type_header: String::new(),
@@ -466,7 +475,7 @@ pub fn check_cue_compat(content: &str) -> CueCompatReport {
     report
 }
 
-/// Map a CDRWin track mode to its standard CUE equivalent.
+/// Map a `CDRWin` track mode to its standard CUE equivalent.
 /// Returns `None` if the mode is already standard or unknown.
 fn convert_track_mode(mode: &str) -> Option<&'static str> {
     match mode.to_uppercase().as_str() {
@@ -480,14 +489,15 @@ fn convert_track_mode(mode: &str) -> Option<&'static str> {
     }
 }
 
-/// Sector size in bytes for a cue TRACK mode string (standard or CDRWin).
+/// Sector size in bytes for a cue TRACK mode string (standard or `CDRWin`).
 ///
 /// Standard modes carry the size after the slash (`MODE1/2352`, `MODE2/2336`);
-/// CDRWin modes are looked up by name. Unknown modes default to raw (2352).
+/// `CDRWin` modes are looked up by name. Unknown modes default to raw (2352).
 ///
-/// CDRWin bare mode names (`MODE1`, `MODE2`, `MODE2_FORM1`, `MODE2_FORM2`,
+/// `CDRWin` bare mode names (`MODE1`, `MODE2`, `MODE2_FORM1`, `MODE2_FORM2`,
 /// `MODE2_FORM_MIX`, `MODE1_RAW`, `MODE2_RAW`) are CDRWin/cdrdao TOC-format
 /// knowledge; see `.claude/skills/retro-archive/formats/CUE.md` for sourcing.
+#[must_use]
 pub fn sector_size_for_mode(mode: &str) -> u64 {
     // A slash suffix is a standard-CUE explicit size (`MODE1/2352`); when
     // present but not numeric (e.g. a malformed `MODE2/abc`), fall back to
@@ -506,7 +516,7 @@ pub fn sector_size_for_mode(mode: &str) -> u64 {
         "MODE1" | "MODE2_FORM1" => 2048, // CDRWin cooked
         "MODE2_FORM2" => 2324,
         "MODE2" | "MODE2_FORM_MIX" => 2336,
-        "MODE1_RAW" | "MODE2_RAW" | "AUDIO" => 2352,
+        // MODE1_RAW, MODE2_RAW, AUDIO, and anything unrecognized: raw 2352.
         _ => 2352,
     }
 }
@@ -514,7 +524,7 @@ pub fn sector_size_for_mode(mode: &str) -> u64 {
 /// Convert an MSF timestamp string "MM:SS:FF" to a sector count.
 fn msf_to_sectors(msf: &str) -> Result<u64, AnalysisError> {
     let (minutes, seconds, frames) = parse_msf(msf)?;
-    Ok((minutes as u64 * 60 + seconds as u64) * 75 + frames as u64)
+    Ok((u64::from(minutes) * 60 + u64::from(seconds)) * 75 + u64::from(frames))
 }
 
 /// Convert a sector offset back to MSF "MM:SS:FF" format.
@@ -523,7 +533,7 @@ fn sectors_to_msf(sectors: u64) -> String {
     let total_seconds = sectors / 75;
     let seconds = total_seconds % 60;
     let minutes = total_seconds / 60;
-    format!("{:02}:{:02}:{:02}", minutes, seconds, frames)
+    format!("{minutes:02}:{seconds:02}:{frames:02}")
 }
 
 /// Convert a CDRWin-format CUE sheet to standard CUE format.
@@ -587,93 +597,17 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
             last_datafile = None;
             cumulative_byte_offset = 0;
         } else if upper.starts_with("DATAFILE ") {
-            let rest = trimmed["DATAFILE".len()..].trim_start();
-            let (filename, remainder) = parse_cue_file_line_at(rest)?;
-
-            // Check if this DATAFILE has an MSF length
-            let msf_length = extract_msf_from_remainder(&remainder);
-
-            // If this is a different BIN than the last DATAFILE, reset offset
-            if last_datafile.as_deref() != Some(&filename) {
-                cumulative_byte_offset = 0;
-            }
-
-            // Flush pending tracks, computing INDEX from cumulative offset
-            if !pending_tracks.is_empty() {
-                // If there are pending tracks and we have a cumulative offset,
-                // ensure the first pending track gets the right INDEX
-                if cumulative_byte_offset > 0 && !pending_tracks.is_empty() {
-                    let mode = &pending_tracks[0].1;
-                    let sector_sz = sector_size_for_mode(mode);
-                    let sector_offset = cumulative_byte_offset / sector_sz;
-                    let msf = sectors_to_msf(sector_offset);
-                    // Only add INDEX if the track doesn't already have one
-                    if pending_tracks[0].2.is_empty() {
-                        pending_tracks[0].2.push(format!("    INDEX 01 {msf}"));
-                    }
-                }
-
-                // Only emit FILE line if it's different from the current file
-                // being built in output
-                let need_file_line = !output_lines
-                    .iter()
-                    .rev()
-                    .any(|l| l.starts_with("FILE ") && l.contains(&format!("\"{filename}\"")));
-                if need_file_line {
-                    output_lines.push(format!("FILE \"{filename}\" BINARY"));
-                }
-                flush_pending_tracks_raw(&mut output_lines, &mut pending_tracks);
-            } else {
-                output_lines.push(format!("FILE \"{filename}\" BINARY"));
-            }
-
-            // Advance cumulative offset if MSF length was specified
-            if let Some(ref msf) = msf_length {
-                if let Ok(sectors) = msf_to_sectors(msf) {
-                    // Determine sector size from the most recent track mode
-                    let mode = pending_tracks
-                        .last()
-                        .map(|(_, m, _)| m.as_str())
-                        .or_else(|| {
-                            // Look at the last TRACK line we emitted
-                            output_lines.iter().rev().find_map(|l| {
-                                let lt = l.trim();
-                                if lt.starts_with("TRACK ") {
-                                    lt.split_whitespace().nth(2)
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .unwrap_or("MODE2/2352");
-                    let sector_sz = sector_size_for_mode(mode);
-                    cumulative_byte_offset += sectors * sector_sz;
-                }
-            }
-
-            last_datafile = Some(filename);
+            convert_datafile_line(
+                trimmed,
+                &mut output_lines,
+                &mut pending_tracks,
+                &mut cumulative_byte_offset,
+                &mut last_datafile,
+            )?;
         } else if upper.starts_with("FILE ") {
             // Standard FILE directive — pass through as-is, but flush pending tracks first
             flush_pending_tracks(&mut output_lines, &mut pending_tracks);
-            let rest = trimmed["FILE".len()..].trim_start();
-            let (filename, file_type) = parse_cue_file_line_at(rest)?;
-            // Strip any CDRWin-style #offset or MSF from FILE lines
-            let clean_type = if file_type.starts_with('#') || file_type.is_empty() {
-                // CDRWin FILE with #offset — determine type from context
-                if upper.contains(".WAV") || upper.contains(".WAVE") {
-                    "WAVE"
-                } else {
-                    "BINARY"
-                }
-            } else {
-                // Check if the file_type itself is a standard type or has extra params
-                let first_word = file_type.split_whitespace().next().unwrap_or(&file_type);
-                match first_word.to_uppercase().as_str() {
-                    "BINARY" | "MOTOROLA" | "AIFF" | "WAVE" | "MP3" => first_word,
-                    _ => "BINARY",
-                }
-            };
-            output_lines.push(format!("FILE \"{filename}\" {clean_type}"));
+            output_lines.push(convert_file_line(trimmed, &upper)?);
             last_datafile = None;
             cumulative_byte_offset = 0;
         } else if upper.starts_with("TRACK ") {
@@ -690,7 +624,7 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
 
             // Convert CDRWin mode to standard if needed
             let standard_mode = convert_track_mode(&mode)
-                .map(|s| s.to_string())
+                .map(std::string::ToString::to_string)
                 .unwrap_or(mode);
 
             pending_tracks.push((track_num, standard_mode, Vec::new()));
@@ -725,6 +659,107 @@ pub fn convert_cue_to_standard(content: &str, _cue_dir: &Path) -> Result<String,
     Ok(output_lines.join("\n") + "\n")
 }
 
+/// Normalize a standard `FILE` directive line, stripping `CDRWin`-style
+/// `#offset`/MSF suffixes and mapping unknown file types to `BINARY`.
+fn convert_file_line(trimmed: &str, upper: &str) -> Result<String, AnalysisError> {
+    let rest = trimmed["FILE".len()..].trim_start();
+    let (filename, file_type) = parse_cue_file_line_at(rest)?;
+    let clean_type = if file_type.starts_with('#') || file_type.is_empty() {
+        // CDRWin FILE with #offset — determine type from context
+        if upper.contains(".WAV") || upper.contains(".WAVE") {
+            "WAVE"
+        } else {
+            "BINARY"
+        }
+    } else {
+        // Check if the file_type itself is a standard type or has extra params
+        let first_word = file_type.split_whitespace().next().unwrap_or(&file_type);
+        match first_word.to_uppercase().as_str() {
+            "BINARY" | "MOTOROLA" | "AIFF" | "WAVE" | "MP3" => first_word,
+            _ => "BINARY",
+        }
+    };
+    Ok(format!("FILE \"{filename}\" {clean_type}"))
+}
+
+/// Convert a single `CDRWin` `DATAFILE` line to standard-CUE output, flushing
+/// any tracks buffered before it and maintaining the cumulative byte offset
+/// used to synthesize `INDEX 01` entries within a shared BIN.
+fn convert_datafile_line(
+    trimmed: &str,
+    output_lines: &mut Vec<String>,
+    pending_tracks: &mut Vec<(u8, String, Vec<String>)>,
+    cumulative_byte_offset: &mut u64,
+    last_datafile: &mut Option<String>,
+) -> Result<(), AnalysisError> {
+    let rest = trimmed["DATAFILE".len()..].trim_start();
+    let (filename, remainder) = parse_cue_file_line_at(rest)?;
+
+    // Check if this DATAFILE has an MSF length
+    let msf_length = extract_msf_from_remainder(&remainder);
+
+    // If this is a different BIN than the last DATAFILE, reset offset
+    if last_datafile.as_deref() != Some(&filename) {
+        *cumulative_byte_offset = 0;
+    }
+
+    // Flush pending tracks, computing INDEX from cumulative offset
+    if pending_tracks.is_empty() {
+        output_lines.push(format!("FILE \"{filename}\" BINARY"));
+    } else {
+        // If there are pending tracks and we have a cumulative offset,
+        // ensure the first pending track gets the right INDEX
+        if *cumulative_byte_offset > 0 {
+            let mode = &pending_tracks[0].1;
+            let sector_sz = sector_size_for_mode(mode);
+            let sector_offset = *cumulative_byte_offset / sector_sz;
+            let msf = sectors_to_msf(sector_offset);
+            // Only add INDEX if the track doesn't already have one
+            if pending_tracks[0].2.is_empty() {
+                pending_tracks[0].2.push(format!("    INDEX 01 {msf}"));
+            }
+        }
+
+        // Only emit FILE line if it's different from the current file
+        // being built in output
+        let need_file_line = !output_lines
+            .iter()
+            .rev()
+            .any(|l| l.starts_with("FILE ") && l.contains(&format!("\"{filename}\"")));
+        if need_file_line {
+            output_lines.push(format!("FILE \"{filename}\" BINARY"));
+        }
+        flush_pending_tracks_raw(output_lines, pending_tracks);
+    }
+
+    // Advance cumulative offset if MSF length was specified
+    if let Some(ref msf) = msf_length
+        && let Ok(sectors) = msf_to_sectors(msf)
+    {
+        // Determine sector size from the most recent track mode
+        let mode = pending_tracks
+            .last()
+            .map(|(_, m, _)| m.as_str())
+            .or_else(|| {
+                // Look at the last TRACK line we emitted
+                output_lines.iter().rev().find_map(|l| {
+                    let lt = l.trim();
+                    if lt.starts_with("TRACK ") {
+                        lt.split_whitespace().nth(2)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or("MODE2/2352");
+        let sector_sz = sector_size_for_mode(mode);
+        *cumulative_byte_offset += sectors * sector_sz;
+    }
+
+    *last_datafile = Some(filename);
+    Ok(())
+}
+
 /// Extract an MSF timestamp from a DATAFILE remainder string.
 /// The remainder might look like `01:32:21 // comment` or just `01:32:21`.
 fn extract_msf_from_remainder(remainder: &str) -> Option<String> {
@@ -748,14 +783,14 @@ fn extract_msf_from_remainder(remainder: &str) -> Option<String> {
     }
 }
 
-/// Flush pending tracks into output_lines, ensuring each track gets an INDEX 01
+/// Flush pending tracks into `output_lines`, ensuring each track gets an INDEX 01
 /// if it doesn't already have one.
 fn flush_pending_tracks(
     output_lines: &mut Vec<String>,
     pending_tracks: &mut Vec<(u8, String, Vec<String>)>,
 ) {
     for (num, mode, indexes) in pending_tracks.drain(..) {
-        output_lines.push(format!("  TRACK {:02} {mode}", num));
+        output_lines.push(format!("  TRACK {num:02} {mode}"));
         if indexes.is_empty() {
             output_lines.push("    INDEX 01 00:00:00".to_string());
         } else {
@@ -764,14 +799,14 @@ fn flush_pending_tracks(
     }
 }
 
-/// Flush pending tracks into output_lines without adding default INDEX entries.
+/// Flush pending tracks into `output_lines` without adding default INDEX entries.
 /// Used when the caller manages INDEX generation from byte offsets.
 fn flush_pending_tracks_raw(
     output_lines: &mut Vec<String>,
     pending_tracks: &mut Vec<(u8, String, Vec<String>)>,
 ) {
     for (num, mode, indexes) in pending_tracks.drain(..) {
-        output_lines.push(format!("  TRACK {:02} {mode}", num));
+        output_lines.push(format!("  TRACK {num:02} {mode}"));
         if indexes.is_empty() {
             output_lines.push("    INDEX 01 00:00:00".to_string());
         } else {

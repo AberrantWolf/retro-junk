@@ -28,7 +28,7 @@ fn test_parse_xml_dat() {
     let smw = &dat.games[0];
     assert_eq!(smw.name, "Super Mario World (USA)");
     assert_eq!(smw.roms[0].name, "Super Mario World (USA).sfc");
-    assert_eq!(smw.roms[0].size, 524288);
+    assert_eq!(smw.roms[0].size, 524_288);
     assert_eq!(smw.roms[0].crc, "b19ed489");
     assert_eq!(
         smw.roms[0].sha1.as_deref(),
@@ -88,7 +88,7 @@ fn test_parse_clrmamepro_dat() {
     assert_eq!(game0.name, "'89 Dennou Kyuusei Uranai (Japan)");
     assert_eq!(game0.roms.len(), 1);
     assert_eq!(game0.roms[0].name, "'89 Dennou Kyuusei Uranai (Japan).nes");
-    assert_eq!(game0.roms[0].size, 262144);
+    assert_eq!(game0.roms[0].size, 262_144);
     assert_eq!(game0.roms[0].crc, "ba58ed29");
     assert_eq!(
         game0.roms[0].md5.as_deref(),
@@ -130,7 +130,7 @@ fn test_tokenize_quoted_rom() {
 fn test_auto_detect_xml() {
     // Should auto-detect XML from leading '<'
     let dat = parse_dat(SAMPLE_XML_DAT.as_bytes()).unwrap();
-    assert!(dat.games.len() > 0);
+    assert!(!dat.games.is_empty());
 }
 
 #[test]
@@ -197,7 +197,7 @@ game (
 fn test_auto_detect_clrmamepro() {
     // Should auto-detect ClrMamePro from leading 'c'
     let dat = parse_dat(SAMPLE_CLR_DAT.as_bytes()).unwrap();
-    assert!(dat.games.len() > 0);
+    assert!(!dat.games.is_empty());
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn test_xml_redump_full_dat_fields() {
         "NiGHTS into Dreams... (Japan) (Track 02).bin"
     );
     assert_eq!(nights.roms[2].crc, "aabb0002");
-    assert_eq!(nights.roms[2].size, 492720000);
+    assert_eq!(nights.roms[2].size, 492_720_000);
 
     // Demo game: verify category
     let demo = &dat.games[1];

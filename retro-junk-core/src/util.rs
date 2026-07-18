@@ -2,19 +2,21 @@
 ///
 /// Uses exact integer division — values that aren't clean multiples of KB/MB
 /// are shown in bytes. For approximate/fractional display, see [`format_bytes_approx`].
+#[must_use]
 pub fn format_bytes(bytes: u64) -> String {
     if bytes >= 1024 * 1024 && bytes.is_multiple_of(1024 * 1024) {
         format!("{} MB", bytes / (1024 * 1024))
     } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
         format!("{} KB", bytes / 1024)
     } else {
-        format!("{} bytes", bytes)
+        format!("{bytes} bytes")
     }
 }
 
 /// Format a byte count with fractional KB/MB (e.g., "1.5 KB", "2.3 MB").
 ///
 /// Better for cache/file sizes where exact binary alignment isn't guaranteed.
+#[must_use]
 pub fn format_bytes_approx(bytes: u64) -> String {
     if bytes >= 1024 * 1024 * 1024 {
         format!("{:.1} GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
@@ -23,7 +25,7 @@ pub fn format_bytes_approx(bytes: u64) -> String {
     } else if bytes >= 1024 {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 
@@ -40,6 +42,7 @@ pub fn file_size(reader: &mut dyn crate::ReadSeek) -> Result<u64, crate::Analysi
 ///
 /// Stops at the first null byte, filters out non-printable characters,
 /// and returns the result. No trimming is performed.
+#[must_use]
 pub fn read_ascii(buf: &[u8]) -> String {
     buf.iter()
         .take_while(|&&b| b != 0)
@@ -54,6 +57,7 @@ pub fn read_ascii(buf: &[u8]) -> String {
 /// Unlike [`read_ascii`], this does NOT stop at null bytes — it processes
 /// the entire buffer. Useful for ROM headers where fields are padded
 /// with 0x00 or 0xFF rather than null-terminated.
+#[must_use]
 pub fn read_ascii_fixed(buf: &[u8]) -> String {
     let s: String = buf
         .iter()
@@ -79,9 +83,9 @@ mod tests {
         assert_eq!(format_bytes(1024), "1 KB");
         assert_eq!(format_bytes(4096), "4 KB");
         assert_eq!(format_bytes(16384), "16 KB");
-        assert_eq!(format_bytes(262144), "256 KB");
-        assert_eq!(format_bytes(1048576), "1 MB");
-        assert_eq!(format_bytes(4194304), "4 MB");
+        assert_eq!(format_bytes(262_144), "256 KB");
+        assert_eq!(format_bytes(1_048_576), "1 MB");
+        assert_eq!(format_bytes(4_194_304), "4 MB");
         assert_eq!(format_bytes(1025), "1025 bytes");
     }
 
@@ -106,8 +110,8 @@ mod tests {
         assert_eq!(format_bytes_approx(512), "512 B");
         assert_eq!(format_bytes_approx(1024), "1.0 KB");
         assert_eq!(format_bytes_approx(1536), "1.5 KB");
-        assert_eq!(format_bytes_approx(1048576), "1.0 MB");
-        assert_eq!(format_bytes_approx(1073741824), "1.0 GB");
+        assert_eq!(format_bytes_approx(1_048_576), "1.0 MB");
+        assert_eq!(format_bytes_approx(1_073_741_824), "1.0 GB");
         assert_eq!(format_bytes_approx(5 * 1024 * 1024 * 1024), "5.0 GB");
     }
 }

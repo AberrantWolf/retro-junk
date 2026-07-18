@@ -4,7 +4,7 @@ use super::*;
 fn canonical_names_round_trip() {
     for &platform in Platform::all() {
         let parsed: Platform = platform.short_name().parse().unwrap();
-        assert_eq!(parsed, platform, "round-trip failed for {:?}", platform);
+        assert_eq!(parsed, platform, "round-trip failed for {platform:?}");
     }
 }
 
@@ -32,8 +32,7 @@ fn aliases_resolve_correctly() {
         let parsed: Platform = input.parse().unwrap();
         assert_eq!(
             parsed, expected,
-            "alias '{}' should parse to {:?}",
-            input, expected
+            "alias '{input}' should parse to {expected:?}"
         );
     }
 }
@@ -60,8 +59,7 @@ fn short_name_is_first_alias() {
         assert_eq!(
             platform.short_name(),
             platform.aliases()[0],
-            "short_name should be first alias for {:?}",
-            platform,
+            "short_name should be first alias for {platform:?}",
         );
     }
 }

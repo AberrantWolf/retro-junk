@@ -166,7 +166,7 @@ fn collection_counts_by_platform_works() {
         tag: None,
         dat_name: "Final Fantasy VII (USA) (Disc 1).bin".to_string(),
         dat_source: "redump".to_string(),
-        file_size: 700000000,
+        file_size: 700_000_000,
         crc32: "aabb0001".to_string(),
         sha1: String::new(),
         md5: String::new(),

@@ -19,7 +19,7 @@ pub enum MatchMethod {
 /// Result of matching a file against the DAT index.
 #[derive(Debug, Clone)]
 pub struct MatchResult {
-    /// Index into the DatIndex's games Vec
+    /// Index into the `DatIndex`'s games Vec
     pub game_index: usize,
     /// Index of the matching ROM within the game
     pub rom_index: usize,
@@ -43,13 +43,13 @@ pub enum SerialLookupResult {
 
 /// An indexed view of a DAT file for fast lookups.
 pub struct DatIndex {
-    /// File size → list of (game_index, rom_index)
+    /// File size → list of (`game_index`, `rom_index`)
     by_size: HashMap<u64, Vec<(usize, usize)>>,
-    /// CRC32 (lowercase hex) → list of (game_index, rom_index)
+    /// CRC32 (lowercase hex) → list of (`game_index`, `rom_index`)
     by_crc32: HashMap<String, Vec<(usize, usize)>>,
-    /// SHA1 (lowercase hex) → list of (game_index, rom_index)
+    /// SHA1 (lowercase hex) → list of (`game_index`, `rom_index`)
     by_sha1: HashMap<String, Vec<(usize, usize)>>,
-    /// Serial (uppercase, stripped of spaces/hyphens) → list of (game_index, rom_index)
+    /// Serial (uppercase, stripped of spaces/hyphens) → list of (`game_index`, `rom_index`)
     by_serial: HashMap<String, Vec<(usize, usize)>>,
     /// Backing store of games
     pub games: Vec<DatGame>,
@@ -67,8 +67,9 @@ impl DatIndex {
     /// Build an index by merging multiple parsed DAT files into one.
     ///
     /// All games from every DAT are combined into a single index, so
-    /// downstream consumers (rename, match_by_serial, match_by_hash)
+    /// downstream consumers (rename, `match_by_serial`, `match_by_hash`)
     /// see one unified set of entries.
+    #[must_use]
     pub fn from_dats(dats: Vec<DatFile>) -> Self {
         let all_games: Vec<DatGame> = dats.into_iter().flat_map(|d| d.games).collect();
         Self::from_dat(DatFile {
@@ -80,6 +81,7 @@ impl DatIndex {
     }
 
     /// Build an index from a parsed DAT file.
+    #[must_use]
     pub fn from_dat(dat: DatFile) -> Self {
         let mut by_size: HashMap<u64, Vec<(usize, usize)>> = HashMap::new();
         let mut by_crc32: HashMap<String, Vec<(usize, usize)>> = HashMap::new();
@@ -145,6 +147,7 @@ impl DatIndex {
     /// hash when regional variants have identical data (e.g., USA and Japan
     /// versions of a disc game with the same data track). Callers can use
     /// detected region info to pick the best match.
+    #[must_use]
     pub fn match_by_hash(&self, size: u64, hashes: &FileHashes) -> Vec<MatchResult> {
         // Try CRC32 first
         if let Some(entries) = self.by_crc32.get(&hashes.crc32) {
@@ -188,7 +191,7 @@ impl DatIndex {
     /// - Analyzer may produce `NUS-NSME-USA`, DAT may have `NSME`
     /// - Tries exact match first, then tries with the pre-extracted game code
     /// - For multi-disc games, tries disc suffixes (`-0` through `-9`) to match
-    ///   LibRetro Redump DAT entries that use suffixed serials
+    ///   `LibRetro` Redump DAT entries that use suffixed serials
     ///
     /// Returns `SerialLookupResult::Ambiguous` when multiple games share the
     /// same serial (e.g., alternate versions, Greatest Hits re-releases, or
@@ -197,6 +200,7 @@ impl DatIndex {
     /// The `game_code` parameter is the platform-specific extracted code
     /// (e.g., `NSME` from `NUS-NSME-USA`), provided by the analyzer's
     /// `extract_dat_game_code()` method.
+    #[must_use]
     pub fn match_by_serial(&self, serial: &str, game_code: Option<&str>) -> SerialLookupResult {
         let norm = normalize_serial(serial);
 
@@ -302,13 +306,15 @@ impl DatIndex {
     }
 
     /// Number of games in the index.
+    #[must_use]
     pub fn game_count(&self) -> usize {
         self.games.len()
     }
 
     /// Get entries matching a given file size (for pre-filtering before hashing).
+    #[must_use]
     pub fn candidates_by_size(&self, size: u64) -> Option<&[(usize, usize)]> {
-        self.by_size.get(&size).map(|v| v.as_slice())
+        self.by_size.get(&size).map(std::vec::Vec::as_slice)
     }
 }
 

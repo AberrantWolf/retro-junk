@@ -17,7 +17,7 @@ pub fn organize_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::
     let platform = console.platform;
     let context = app.context.clone();
 
-    let description = format!("Organizing disc files in {}", folder_name);
+    let description = format!("Organizing disc files in {folder_name}");
     let ctx = ctx.clone();
     let scope = folder_name.clone();
 
@@ -28,20 +28,17 @@ pub fn organize_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::
         scope,
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
-            let registered = match context.get_by_platform(platform) {
-                Some(r) => r,
-                None => {
-                    let _ = tx.send(AppMessage::OrganizeComplete {
-                        folder_name,
-                        jobs_executed: 0,
-                        files_moved: 0,
-                        unmatched: 0,
-                        errors: vec!["No analyzer registered for platform".to_string()],
-                    });
-                    let _ = tx.send(AppMessage::OperationComplete { op_id });
-                    ctx.request_repaint();
-                    return;
-                }
+            let Some(registered) = context.get_by_platform(platform) else {
+                let _ = tx.send(AppMessage::OrganizeComplete {
+                    folder_name,
+                    jobs_executed: 0,
+                    files_moved: 0,
+                    unmatched: 0,
+                    errors: vec!["No analyzer registered for platform".to_string()],
+                });
+                let _ = tx.send(AppMessage::OperationComplete { op_id });
+                ctx.request_repaint();
+                return;
             };
 
             let options = OrganizeOptions {
@@ -117,7 +114,7 @@ pub fn execute_organize_plan(
     plan: OrganizePlan,
     ctx: &egui::Context,
 ) {
-    let description = format!("Moving disc files in {}", folder_name);
+    let description = format!("Moving disc files in {folder_name}");
     let ctx = ctx.clone();
     let scope = folder_name.clone();
 

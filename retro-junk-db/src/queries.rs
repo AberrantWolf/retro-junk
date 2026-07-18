@@ -2,7 +2,10 @@
 //!
 //! Provides lookup by hash, serial, platform, search, and listing.
 
-use retro_junk_catalog::types::*;
+use retro_junk_catalog::types::{
+    Asset, AssetOwner, CatalogTag, CollectionEntry, Disagreement, ImportLog, Media, MediaStatus,
+    Release,
+};
 use rusqlite::{Connection, params};
 
 use crate::operations::OperationError;
@@ -91,7 +94,7 @@ pub fn releases_for_platform(
 
 /// Search releases by title (case-insensitive LIKE).
 pub fn search_releases(conn: &Connection, query: &str) -> Result<Vec<Release>, OperationError> {
-    let pattern = format!("%{}%", query);
+    let pattern = format!("%{query}%");
     query_releases(conn, "title LIKE ?1 ORDER BY title LIMIT 100", &pattern)
 }
 
@@ -102,7 +105,7 @@ pub fn search_releases_filtered(
     platform_id: Option<&str>,
     limit: u32,
 ) -> Result<Vec<Release>, OperationError> {
-    let pattern = format!("%{}%", query);
+    let pattern = format!("%{query}%");
     let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match platform_id {
         Some(pid) => (
             format!(
@@ -121,8 +124,10 @@ pub fn search_releases_filtered(
         ),
     };
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values
+        .iter()
+        .map(std::convert::AsRef::as_ref)
+        .collect();
     let rows = stmt.query_map(params.as_slice(), row_to_release)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
@@ -135,11 +140,11 @@ pub fn find_release_by_serial(
     query_releases(conn, "game_serial = ?1", serial)
 }
 
-/// Find releases that need ScreenScraper enrichment.
+/// Find releases that need `ScreenScraper` enrichment.
 ///
 /// Returns releases for the given platform that have at least one media entry
 /// (needed for lookup) and optionally filters to only those without a
-/// screenscraper_id.
+/// `screenscraper_id`.
 pub fn releases_to_enrich(
     conn: &Connection,
     platform_id: &str,
@@ -169,7 +174,7 @@ pub fn releases_to_enrich(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
-/// Count releases that need ScreenScraper enrichment.
+/// Count releases that need `ScreenScraper` enrichment.
 ///
 /// Same filtering logic as `releases_to_enrich` but returns just the count,
 /// used for progress reporting before batched processing begins.
@@ -419,8 +424,10 @@ pub fn list_unresolved_disagreements(
     );
 
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values
+        .iter()
+        .map(std::convert::AsRef::as_ref)
+        .collect();
     let rows = stmt.query_map(params.as_slice(), |row| {
         Ok(Disagreement {
             id: row.get(0)?,
@@ -529,8 +536,10 @@ pub fn list_collection(
     };
 
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values
+        .iter()
+        .map(std::convert::AsRef::as_ref)
+        .collect();
     let rows = stmt.query_map(params.as_slice(), |row| {
         Ok(CollectionRow {
             collection_id: row.get(0)?,
@@ -647,7 +656,7 @@ pub fn assets_for_release(
 
 /// Count assets per type for a platform, optionally restricted to collection.
 ///
-/// Returns rows of (asset_type, count).
+/// Returns rows of (`asset_type`, count).
 pub fn asset_counts_by_type(
     conn: &Connection,
     platform_id: &str,
@@ -679,7 +688,7 @@ pub fn asset_counts_by_type(
 
 /// Find releases missing a specific asset type.
 ///
-/// Returns (release_id, title, region) for releases that have no asset of the
+/// Returns (`release_id`, title, region) for releases that have no asset of the
 /// given type. Optionally filtered to collection-only releases.
 pub fn releases_missing_asset_type(
     conn: &Connection,
@@ -730,7 +739,7 @@ pub fn releases_missing_asset_type(
 
 /// Find releases with no assets at all.
 ///
-/// Returns (release_id, title, region).
+/// Returns (`release_id`, title, region).
 pub fn releases_with_no_assets(
     conn: &Connection,
     platform_id: &str,
@@ -777,7 +786,7 @@ pub fn releases_with_no_assets(
 
 /// Asset coverage summary for a platform.
 ///
-/// Returns (total_releases, releases_with_any_asset, total_assets).
+/// Returns (`total_releases`, `releases_with_any_asset`, `total_assets`).
 pub fn asset_coverage_summary(
     conn: &Connection,
     platform_id: &str,
@@ -833,7 +842,7 @@ pub fn search_works(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<WorkRow>, OperationError> {
-    let pattern = format!("%{}%", query);
+    let pattern = format!("%{query}%");
     let sql = format!(
         "SELECT id, canonical_name, tag FROM works \
          WHERE canonical_name LIKE ?1 \
@@ -844,7 +853,7 @@ pub fn search_works(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
-/// Search media by dat_name with optional platform filter and pagination.
+/// Search media by `dat_name` with optional platform filter and pagination.
 pub fn search_media(
     conn: &Connection,
     query: &str,
@@ -852,7 +861,7 @@ pub fn search_media(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<Media>, OperationError> {
-    let pattern = format!("%{}%", query);
+    let pattern = format!("%{query}%");
     let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match platform_id {
         Some(pid) => (
             format!(
@@ -873,8 +882,10 @@ pub fn search_media(
         ),
     };
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values
+        .iter()
+        .map(std::convert::AsRef::as_ref)
+        .collect();
     let rows = stmt.query_map(params.as_slice(), row_to_media)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
@@ -887,7 +898,7 @@ pub fn search_releases_paged(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<Release>, OperationError> {
-    let pattern = format!("%{}%", query);
+    let pattern = format!("%{query}%");
     let (sql, param_values): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match platform_id {
         Some(pid) => (
             format!(
@@ -906,8 +917,10 @@ pub fn search_releases_paged(
         ),
     };
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values
+        .iter()
+        .map(std::convert::AsRef::as_ref)
+        .collect();
     let rows = stmt.query_map(params.as_slice(), row_to_release)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
@@ -1024,7 +1037,7 @@ pub fn platform_media_counts(conn: &Connection) -> Result<Vec<(String, i64)>, Op
 
 // ── Reconciliation Queries ───────────────────────────────────────────────────
 
-/// A group of works that share the same ScreenScraper ID on one platform.
+/// A group of works that share the same `ScreenScraper` ID on one platform.
 #[derive(Debug)]
 pub struct ReconcileGroup {
     pub screenscraper_id: String,
@@ -1042,7 +1055,7 @@ pub struct ReleaseCollision {
     pub variant: String,
 }
 
-/// Find groups of releases sharing a screenscraper_id on the same platform
+/// Find groups of releases sharing a `screenscraper_id` on the same platform
 /// but belonging to different works.
 pub fn find_reconcilable_works(conn: &Connection) -> Result<Vec<ReconcileGroup>, OperationError> {
     let mut stmt = conn.prepare(
@@ -1058,14 +1071,17 @@ pub fn find_reconcilable_works(conn: &Connection) -> Result<Vec<ReconcileGroup>,
         Ok(ReconcileGroup {
             screenscraper_id: row.get(0)?,
             platform_id: row.get(1)?,
-            work_ids: work_ids_str.split(',').map(|s| s.to_string()).collect(),
+            work_ids: work_ids_str
+                .split(',')
+                .map(std::string::ToString::to_string)
+                .collect(),
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 /// Check for release collisions between two works — releases that share the
-/// same (platform_id, region, revision, variant) natural key.
+/// same (`platform_id`, region, revision, variant) natural key.
 pub fn check_release_collision(
     conn: &Connection,
     absorbed_work_id: &str,
@@ -1100,7 +1116,7 @@ pub fn count_releases_for_work(conn: &Connection, work_id: &str) -> Result<i64, 
     Ok(count)
 }
 
-/// Count enriched releases for a platform (have screenscraper_id or scraper_not_found).
+/// Count enriched releases for a platform (have `screenscraper_id` or `scraper_not_found`).
 ///
 /// If `after_title` is provided, only counts releases whose title sorts at or after
 /// that value (case-insensitive).
@@ -1138,7 +1154,7 @@ pub fn count_releases_search(
     query: &str,
     platform_id: Option<&str>,
 ) -> Result<i64, OperationError> {
-    let pattern = format!("%{}%", query);
+    let pattern = format!("%{query}%");
     let count: i64 = match platform_id {
         Some(pid) => conn.query_row(
             "SELECT COUNT(*) FROM releases WHERE title LIKE ?1 AND platform_id = ?2",
@@ -1154,13 +1170,13 @@ pub fn count_releases_search(
     Ok(count)
 }
 
-/// Count media matching a dat_name search with optional platform filter.
+/// Count media matching a `dat_name` search with optional platform filter.
 pub fn count_media_search(
     conn: &Connection,
     query: &str,
     platform_id: Option<&str>,
 ) -> Result<i64, OperationError> {
-    let pattern = format!("%{}%", query);
+    let pattern = format!("%{query}%");
     let count: i64 = match platform_id {
         Some(pid) => conn.query_row(
             "SELECT COUNT(*) FROM media m \
@@ -1178,9 +1194,9 @@ pub fn count_media_search(
     Ok(count)
 }
 
-/// Count works matching a canonical_name search.
+/// Count works matching a `canonical_name` search.
 pub fn count_works_search(conn: &Connection, query: &str) -> Result<i64, OperationError> {
-    let pattern = format!("%{}%", query);
+    let pattern = format!("%{query}%");
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM works WHERE canonical_name LIKE ?1",
         params![pattern],
@@ -1226,7 +1242,7 @@ pub fn search_companies(
     limit: u32,
     offset: u32,
 ) -> Result<Vec<CompanyRow>, OperationError> {
-    let pattern = format!("%{}%", query);
+    let pattern = format!("%{query}%");
     let sql = format!(
         "SELECT c.id, c.name, c.country, \
                 (SELECT COUNT(*) FROM company_aliases ca WHERE ca.company_id = c.id) as alias_count \
@@ -1248,7 +1264,7 @@ pub fn search_companies(
 
 /// Count companies matching a name search.
 pub fn count_companies_search(conn: &Connection, query: &str) -> Result<i64, OperationError> {
-    let pattern = format!("%{}%", query);
+    let pattern = format!("%{query}%");
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM companies WHERE name LIKE ?1",
         params![pattern],
@@ -1293,8 +1309,10 @@ pub fn list_collection_paged(
     };
 
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<&dyn rusqlite::types::ToSql> =
-        param_values.iter().map(|v| v.as_ref()).collect();
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values
+        .iter()
+        .map(std::convert::AsRef::as_ref)
+        .collect();
     let rows = stmt.query_map(params.as_slice(), |row| {
         Ok(CollectionRow {
             collection_id: row.get(0)?,

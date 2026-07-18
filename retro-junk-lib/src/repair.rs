@@ -24,6 +24,7 @@ pub enum RepairMethod {
 
 impl RepairMethod {
     /// Human-readable description of the repair.
+    #[must_use]
     pub fn description(&self) -> String {
         match self {
             RepairMethod::AppendPadding {
@@ -78,11 +79,13 @@ pub struct RepairPlan {
 
 impl RepairPlan {
     /// Whether this plan has any repair actions to perform.
+    #[must_use]
     pub fn has_actions(&self) -> bool {
         !self.repairable.is_empty()
     }
 
     /// Whether this plan has any problems (no-match files, errors).
+    #[must_use]
     pub fn has_problems(&self) -> bool {
         !self.no_match.is_empty() || !self.errors.is_empty()
     }
@@ -251,6 +254,8 @@ impl RepairMethod {
 }
 
 /// Plan repairs for a single console folder.
+// Single planning pass over a folder; stages share loop-local state, so extraction adds noise.
+#[allow(clippy::too_many_lines)]
 pub fn plan_repairs(
     folder: &Path,
     analyzer: &dyn RomAnalyzer,
@@ -284,7 +289,7 @@ pub fn plan_repairs(
 
     let mut files: Vec<PathBuf> = game_entries
         .iter()
-        .flat_map(|entry| entry.all_files())
+        .flat_map(super::scanner::GameEntry::all_files)
         .cloned()
         .collect();
     if let Some(max) = options.limit {
@@ -448,7 +453,7 @@ fn hash_and_match(
     Ok(None)
 }
 
-/// Get the data size of a file (file_size - header_size).
+/// Get the data size of a file (`file_size` - `header_size`).
 fn get_data_size(file_path: &Path, analyzer: &dyn RomAnalyzer) -> Result<u64, DatError> {
     let mut file = fs::File::open(file_path)?;
     let file_size = file.seek(io::SeekFrom::End(0))?;
@@ -458,7 +463,7 @@ fn get_data_size(file_path: &Path, analyzer: &dyn RomAnalyzer) -> Result<u64, Da
     Ok(file_size - skip)
 }
 
-/// Try to get expected data size from the analyzer (expected_size - header_size).
+/// Try to get expected data size from the analyzer (`expected_size` - `header_size`).
 fn get_expected_data_size(
     file_path: &Path,
     analyzer: &dyn RomAnalyzer,
@@ -480,6 +485,7 @@ fn get_expected_data_size(
 }
 
 /// Execute a repair plan, modifying files on disk.
+#[must_use]
 pub fn execute_repairs(plan: &RepairPlan, create_backup: bool) -> RepairSummary {
     let mut summary = RepairSummary {
         already_correct: plan.already_correct.len(),
@@ -586,7 +592,7 @@ fn prepend_to_file(path: &Path, fill_byte: u8, count: u64) -> io::Result<()> {
 }
 
 fn is_power_of_two(n: u64) -> bool {
-    n > 0 && (n & (n - 1)) == 0
+    n > 0 && n.is_power_of_two()
 }
 
 #[cfg(test)]

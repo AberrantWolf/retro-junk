@@ -1,11 +1,11 @@
-//! GameDataBase (GDB) CSV parser.
+//! `GameDataBase` (GDB) CSV parser.
 //!
-//! Parses CSV files from PigSaint's GameDataBase repository, which provides
+//! Parses CSV files from `PigSaint`'s `GameDataBase` repository, which provides
 //! rich metadata (Japanese titles, developer/publisher, genre, player count)
 //! indexed by SHA1 hash.
 //!
 //! Repository: <https://github.com/PigSaint/GameDataBase>
-//! License: CC BY 4.0 — Attribution to PigSaint required.
+//! License: CC BY 4.0 — Attribution to `PigSaint` required.
 
 use std::io::Read;
 use std::path::Path;
@@ -73,6 +73,7 @@ pub struct GdbFile {
 ///
 /// Returns `(romanized, Option<native>)`. If there's no `@`, the entire
 /// string is returned as the romanized title with `None` for native.
+#[must_use]
 pub fn split_title(s: &str) -> (&str, Option<&str>) {
     match s.find('@') {
         Some(pos) => {
@@ -92,6 +93,7 @@ pub fn split_title(s: &str) -> (&str, Option<&str>) {
 ///
 /// Tag format: `#players:2:coop #genre:action>platformer #lang:ja #input:zapper`
 /// Tags are space-separated, each starting with `#`.
+#[must_use]
 pub fn parse_tags(tag_str: &str) -> GdbTags {
     let mut tags = GdbTags::default();
 
@@ -111,7 +113,10 @@ pub fn parse_tags(tag_str: &str) -> GdbTags {
 
         match key {
             "genre" => {
-                let path: Vec<String> = value.split('>').map(|s| s.to_string()).collect();
+                let path: Vec<String> = value
+                    .split('>')
+                    .map(std::string::ToString::to_string)
+                    .collect();
                 tags.genres.push(path);
             }
             "players" => {
@@ -124,10 +129,8 @@ pub fn parse_tags(tag_str: &str) -> GdbTags {
                     }
                 }
             }
-            "input" => {
-                if !value.is_empty() {
-                    tags.inputs.push(value.to_string());
-                }
+            "input" if !value.is_empty() => {
+                tags.inputs.push(value.to_string());
             }
             _ => {}
         }

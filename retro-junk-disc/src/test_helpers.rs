@@ -5,6 +5,7 @@
 use crate::sector::CD_SYNC_PATTERN;
 
 /// Build a minimal 2048-byte PVD sector with a given system identifier.
+#[must_use]
 pub fn make_pvd_sector(system_id: &str) -> [u8; 2048] {
     let mut sector = [0u8; 2048];
     sector[0] = 0x01; // PVD type
@@ -41,6 +42,7 @@ pub fn make_pvd_sector(system_id: &str) -> [u8; 2048] {
 }
 
 /// Build a minimal ISO: 16 sectors of padding + PVD at sector 16.
+#[must_use]
 pub fn make_iso(system_id: &str) -> Vec<u8> {
     let mut data = vec![0u8; 16 * 2048]; // 16 empty sectors
     let pvd = make_pvd_sector(system_id);
@@ -49,6 +51,7 @@ pub fn make_iso(system_id: &str) -> Vec<u8> {
 }
 
 /// Wrap 2048 bytes of user data into a raw 2352-byte Mode 2 Form 1 sector.
+#[must_use]
 pub fn make_raw_sector_mode2(user_data: &[u8; 2048]) -> [u8; 2352] {
     let mut sector = [0u8; 2352];
     // 12 bytes sync
@@ -63,6 +66,7 @@ pub fn make_raw_sector_mode2(user_data: &[u8; 2048]) -> [u8; 2352] {
 }
 
 /// Wrap 2048 bytes of user data into a raw 2352-byte Mode 1 sector.
+#[must_use]
 pub fn make_raw_sector_mode1(user_data: &[u8; 2048]) -> [u8; 2352] {
     let mut sector = [0u8; 2352];
     // 12 bytes sync
@@ -76,6 +80,7 @@ pub fn make_raw_sector_mode1(user_data: &[u8; 2048]) -> [u8; 2352] {
 }
 
 /// Build a raw BIN with Mode 2 Form 1 sectors: 16 raw empty sectors + raw PVD sector.
+#[must_use]
 pub fn make_raw_bin(system_id: &str) -> Vec<u8> {
     let empty_user = [0u8; 2048];
     let mut data = Vec::new();
@@ -88,6 +93,7 @@ pub fn make_raw_bin(system_id: &str) -> Vec<u8> {
 }
 
 /// Build a raw BIN with Mode 1 sectors: 16 raw empty sectors + raw PVD sector.
+#[must_use]
 pub fn make_raw_bin_mode1(system_id: &str) -> Vec<u8> {
     let empty_user = [0u8; 2048];
     let mut data = Vec::new();
@@ -100,6 +106,7 @@ pub fn make_raw_bin_mode1(system_id: &str) -> Vec<u8> {
 }
 
 /// Build a directory record for a file.
+#[must_use]
 pub fn make_dir_record(filename: &str, extent_lba: u32, data_length: u32) -> Vec<u8> {
     let id_bytes = filename.as_bytes();
     let id_len = id_bytes.len();
@@ -118,6 +125,7 @@ pub fn make_dir_record(filename: &str, extent_lba: u32, data_length: u32) -> Vec
 ///
 /// The file contents are placed at sector 19, and the root directory
 /// at sector 18 contains the dot entries plus a record for the file.
+#[must_use]
 pub fn make_iso_with_file(system_id: &str, filename: &str, content: &[u8]) -> Vec<u8> {
     // Layout:
     // Sectors 0-15: empty padding
@@ -149,7 +157,7 @@ pub fn make_iso_with_file(system_id: &str, filename: &str, content: &[u8]) -> Ve
     dir_sector[pos..pos + dotdot_record.len()].copy_from_slice(&dotdot_record);
     pos += dotdot_record.len();
 
-    let file_record = make_dir_record(&format!("{};1", filename), 19, content.len() as u32);
+    let file_record = make_dir_record(&format!("{filename};1"), 19, content.len() as u32);
     dir_sector[pos..pos + file_record.len()].copy_from_slice(&file_record);
 
     data.extend_from_slice(&dir_sector);

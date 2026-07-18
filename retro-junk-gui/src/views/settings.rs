@@ -82,7 +82,7 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     if let Some(ref conn) = app.catalog_db
                         && let Err(e) = crate::cache::delete_cache(conn, &path)
                     {
-                        log::warn!("Failed to clear cache: {}", e);
+                        log::warn!("Failed to clear cache: {e}");
                     }
                 }
                 RecentAction::Remove(idx) => {
@@ -334,7 +334,7 @@ fn show_scraper_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     let sources = &app.credential_status.as_ref().expect("just refreshed").1;
     let mut open_info = None;
 
-    for meta in CREDENTIAL_FIELDS.iter() {
+    for meta in &CREDENTIAL_FIELDS {
         let source = sources.by_key(meta.key).expect("known field key");
 
         let (color, source_text) = match source {
@@ -349,7 +349,7 @@ fn show_scraper_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.horizontal(|ui| {
             ui.colored_label(color, "●");
             ui.label(meta.label);
-            ui.weak(format!("({})", source_text));
+            ui.weak(format!("({source_text})"));
             if ui
                 .small_button("ℹ")
                 .on_hover_text(format!("What is {}?", meta.label))
@@ -416,12 +416,11 @@ fn show_cache_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // Library cache (stored in SQLite)
     ui.horizontal(|ui| {
         ui.label("Library cache: stored in catalog DB");
-        if ui.small_button("Clear All").clicked() {
-            if let Some(ref conn) = app.catalog_db
-                && let Err(e) = crate::cache::clear_all_caches(conn)
-            {
-                log::warn!("Failed to clear library caches: {}", e);
-            }
+        if ui.small_button("Clear All").clicked()
+            && let Some(ref conn) = app.catalog_db
+            && let Err(e) = crate::cache::clear_all_caches(conn)
+        {
+            log::warn!("Failed to clear library caches: {e}");
         }
     });
 
@@ -435,7 +434,7 @@ fn show_cache_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         if ui.small_button("Clear All").clicked()
             && let Err(e) = retro_junk_dat::cache::clear()
         {
-            log::warn!("Failed to clear DAT cache: {}", e);
+            log::warn!("Failed to clear DAT cache: {e}");
         }
     });
 }

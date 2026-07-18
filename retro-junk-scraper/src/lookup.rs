@@ -12,14 +12,14 @@ use crate::types::GameInfo;
 /// Each individual API call has a 30s timeout with retries, but the overall
 /// lookup across all tiers should not exceed this. Covers ~2 full tiers with
 /// retries; if the server is this slow, continuing is unlikely to help.
-const LOOKUP_TIMEOUT: Duration = Duration::from_secs(60);
+const LOOKUP_TIMEOUT: Duration = Duration::from_mins(1);
 
-/// How a game was matched in ScreenScraper.
+/// How a game was matched in `ScreenScraper`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LookupMethod {
     /// Matched by serial number from ROM header
     Serial,
-    /// Matched by filename (NoIntro name)
+    /// Matched by filename (`NoIntro` name)
     Filename,
     /// Matched by hash (CRC32 + MD5 + SHA1)
     Hash,
@@ -43,7 +43,7 @@ pub struct LookupResult {
     pub warnings: Vec<String>,
 }
 
-/// The full hash triple required for a ScreenScraper hash lookup.
+/// The full hash triple required for a `ScreenScraper` hash lookup.
 ///
 /// The API's hash tier needs CRC32, MD5, and SHA1 together, so partial
 /// combinations are unrepresentable by construction.
@@ -62,7 +62,7 @@ pub struct RomHashes {
 pub struct RomInfo {
     /// Serial number from ROM header analysis (empty = none)
     pub serial: String,
-    /// Serial adapted for ScreenScraper lookups (from `extract_scraper_serial()`;
+    /// Serial adapted for `ScreenScraper` lookups (from `extract_scraper_serial()`;
     /// empty = none)
     pub scraper_serial: String,
     /// ROM filename with extension
@@ -83,7 +83,7 @@ pub struct RomInfo {
 /// 2. Hash match — if CRC32 + MD5 + SHA1 are available (e.g., from DAT entries).
 ///    Skipped naturally when hashes are None (e.g., scrape path for serial
 ///    consoles that skip hashing for speed).
-/// 3. Filename match — last resort using NoIntro filename + system ID + file size
+/// 3. Filename match — last resort using `NoIntro` filename + system ID + file size
 ///
 /// Each tier validates that the returned game belongs to the expected platform.
 /// If a result comes back for the wrong platform (e.g., a serial collision),
@@ -101,112 +101,189 @@ pub async fn lookup_game(
         LOOKUP_TIMEOUT.as_secs(),
     );
 
-    tokio::time::timeout(LOOKUP_TIMEOUT, async {
-        let mut warnings = Vec::new();
+    tokio::time::timeout(
+        LOOKUP_TIMEOUT,
+        lookup_game_tiers(client, system_id, rom_info),
+    )
+    .await
+    .map_err(|_| {
+        ScrapeError::Api(format!(
+            "Lookup timed out after {}s",
+            LOOKUP_TIMEOUT.as_secs()
+        ))
+    })?
+}
 
-        // Tier 1: Serial match — try scraper serial first, then raw serial
-        let attempts = serial_attempts(&rom_info.serial, &rom_info.scraper_serial);
-        if !attempts.is_empty() {
-            log::debug!("Tier 1 (serial): trying {} attempt(s) for '{}'", attempts.len(), filename);
-            for attempt in &attempts {
-                match try_serial_lookup(client, system_id, attempt).await {
-                    Ok(game) => {
-                        if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
-                            warnings.push(format!(
-                                "Serial '{}' matched wrong platform: {}; skipping to next lookup method",
-                                attempt, warning,
-                            ));
-                        } else {
-                            return Ok(LookupResult {
-                                game,
-                                method: LookupMethod::Serial,
-                                warnings,
-                            });
-                        }
-                    }
-                    Err(ScrapeError::NotFound { .. }) => {
-                        warnings.push(format!("Serial '{}' not found in ScreenScraper", attempt));
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
+/// Accept a tier's matched game unless it belongs to the wrong platform.
+///
+/// On a platform mismatch, records a warning (built from the mismatch text by
+/// `mismatch_msg`) and returns `None` so the caller falls through to the next
+/// tier. Otherwise returns the finished [`LookupResult`], taking ownership of
+/// the accumulated warnings.
+fn accept_tier_match(
+    game: GameInfo,
+    method: LookupMethod,
+    system_id: u32,
+    platform: Platform,
+    warnings: &mut Vec<String>,
+    mismatch_msg: impl FnOnce(&str) -> String,
+) -> Option<LookupResult> {
+    if let Some(warning) = check_platform_mismatch(&game, system_id, platform) {
+        warnings.push(mismatch_msg(&warning));
+        None
+    } else {
+        Some(LookupResult {
+            game,
+            method,
+            warnings: std::mem::take(warnings),
+        })
+    }
+}
 
-            // All serial attempts failed — add summary warning with ROM serial and tried values
-            if !rom_info.serial.is_empty() {
-                let tried: Vec<&str> = attempts.iter().map(|s| s.as_str()).collect();
-                warnings.push(format!(
-                    "Serial lookup failed \u{2014} ROM serial: \"{}\", tried: [{}]",
-                    rom_info.serial,
-                    tried.join(", "),
-                ));
-            }
-        } else if rom_info.expects_serial {
+/// Tier 1: Serial match — try scraper serial first, then raw serial.
+///
+/// Returns the accepted match, or `Ok(None)` (with warnings recorded) to fall
+/// through to the next tier.
+async fn serial_tier(
+    client: &ScreenScraperClient,
+    system_id: u32,
+    rom_info: &RomInfo,
+    warnings: &mut Vec<String>,
+) -> Result<Option<LookupResult>, ScrapeError> {
+    let attempts = serial_attempts(&rom_info.serial, &rom_info.scraper_serial);
+    if attempts.is_empty() {
+        if rom_info.expects_serial {
             warnings.push(format!(
                 "Expected serial not found in ROM header for {}",
                 rom_info.filename
             ));
         }
+        return Ok(None);
+    }
 
-        // Tier 2: Hash match — most reliable when hashes are available (e.g.,
-        // from DAT entries). Skipped naturally when hashes are None (e.g., scrape
-        // path for serial consoles that skip hashing for speed).
-        if let Some(hashes) = &rom_info.hashes {
-            log::debug!("Tier 2 (hash): trying for '{}'", filename);
-            match try_hash_lookup(client, system_id, hashes, &rom_info.filename, rom_info.file_size).await {
-                Ok(game) => {
-                    if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
-                        warnings.push(format!(
-                            "Hash matched wrong platform: {}; skipping to next lookup method",
-                            warning,
-                        ));
-                    } else {
-                        return Ok(LookupResult {
-                            game,
-                            method: LookupMethod::Hash,
-                            warnings,
-                        });
-                    }
-                }
-                Err(ScrapeError::NotFound { .. }) => {
-                    warnings.push("Hash not found in ScreenScraper".to_string());
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        // Tier 3: Filename match — last resort fallback when serial and hash
-        // lookups fail or aren't available.
-        log::debug!("Tier 3 (filename): trying for '{}'", filename);
-        match try_filename_lookup(client, system_id, &rom_info.filename, rom_info.file_size).await {
+    log::debug!(
+        "Tier 1 (serial): trying {} attempt(s) for '{}'",
+        attempts.len(),
+        rom_info.filename
+    );
+    for attempt in &attempts {
+        match try_serial_lookup(client, system_id, attempt).await {
             Ok(game) => {
-                if let Some(warning) = check_platform_mismatch(&game, system_id, rom_info.platform) {
-                    warnings.push(format!(
-                        "Filename '{}' matched wrong platform: {}; no more lookup methods available",
-                        rom_info.filename, warning,
-                    ));
-                } else {
-                    return Ok(LookupResult {
-                        game,
-                        method: LookupMethod::Filename,
-                        warnings,
-                    });
+                if let Some(result) = accept_tier_match(
+                    game,
+                    LookupMethod::Serial,
+                    system_id,
+                    rom_info.platform,
+                    warnings,
+                    |warning| {
+                        format!(
+                            "Serial '{attempt}' matched wrong platform: {warning}; skipping to next lookup method",
+                        )
+                    },
+                ) {
+                    return Ok(Some(result));
                 }
             }
             Err(ScrapeError::NotFound { .. }) => {
-                warnings.push(format!(
-                    "Filename '{}' not found in ScreenScraper",
-                    rom_info.filename
-                ));
+                warnings.push(format!("Serial '{attempt}' not found in ScreenScraper"));
             }
             Err(e) => return Err(e),
         }
+    }
 
-        Err(ScrapeError::NotFound { warnings })
-    })
-    .await
-    .map_err(|_| ScrapeError::Api(format!(
-        "Lookup timed out after {}s", LOOKUP_TIMEOUT.as_secs()
-    )))?
+    // All serial attempts failed — add summary warning with ROM serial and tried values
+    if !rom_info.serial.is_empty() {
+        let tried: Vec<&str> = attempts.iter().map(std::string::String::as_str).collect();
+        warnings.push(format!(
+            "Serial lookup failed \u{2014} ROM serial: \"{}\", tried: [{}]",
+            rom_info.serial,
+            tried.join(", "),
+        ));
+    }
+    Ok(None)
+}
+
+/// The tiered lookup body of [`lookup_game`], without the overall timeout.
+async fn lookup_game_tiers(
+    client: &ScreenScraperClient,
+    system_id: u32,
+    rom_info: &RomInfo,
+) -> Result<LookupResult, ScrapeError> {
+    let filename = &rom_info.filename;
+    let mut warnings = Vec::new();
+
+    if let Some(result) = serial_tier(client, system_id, rom_info, &mut warnings).await? {
+        return Ok(result);
+    }
+
+    // Tier 2: Hash match — most reliable when hashes are available (e.g.,
+    // from DAT entries). Skipped naturally when hashes are None (e.g., scrape
+    // path for serial consoles that skip hashing for speed).
+    if let Some(hashes) = &rom_info.hashes {
+        log::debug!("Tier 2 (hash): trying for '{filename}'");
+        match try_hash_lookup(
+            client,
+            system_id,
+            hashes,
+            &rom_info.filename,
+            rom_info.file_size,
+        )
+        .await
+        {
+            Ok(game) => {
+                if let Some(result) = accept_tier_match(
+                    game,
+                    LookupMethod::Hash,
+                    system_id,
+                    rom_info.platform,
+                    &mut warnings,
+                    |warning| {
+                        format!(
+                            "Hash matched wrong platform: {warning}; skipping to next lookup method"
+                        )
+                    },
+                ) {
+                    return Ok(result);
+                }
+            }
+            Err(ScrapeError::NotFound { .. }) => {
+                warnings.push("Hash not found in ScreenScraper".to_string());
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    // Tier 3: Filename match — last resort fallback when serial and hash
+    // lookups fail or aren't available.
+    log::debug!("Tier 3 (filename): trying for '{filename}'");
+    match try_filename_lookup(client, system_id, &rom_info.filename, rom_info.file_size).await {
+        Ok(game) => {
+            if let Some(result) = accept_tier_match(
+                game,
+                LookupMethod::Filename,
+                system_id,
+                rom_info.platform,
+                &mut warnings,
+                |warning| {
+                    format!(
+                        "Filename '{}' matched wrong platform: {warning}; no more lookup methods available",
+                        rom_info.filename,
+                    )
+                },
+            ) {
+                return Ok(result);
+            }
+        }
+        Err(ScrapeError::NotFound { .. }) => {
+            warnings.push(format!(
+                "Filename '{}' not found in ScreenScraper",
+                rom_info.filename
+            ));
+        }
+        Err(e) => return Err(e),
+    }
+
+    Err(ScrapeError::NotFound { warnings })
 }
 
 /// Check if the returned game's platform matches the expected system ID.

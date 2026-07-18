@@ -50,7 +50,7 @@ fn rom_for(name: &str, data: &[u8], serial: Option<&str>) -> DatRom {
         crc: h.crc32,
         sha1: h.sha1,
         md5: None,
-        serial: serial.map(|s| s.to_string()),
+        serial: serial.map(std::string::ToString::to_string),
     }
 }
 

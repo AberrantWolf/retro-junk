@@ -4,8 +4,8 @@ use tempfile::TempDir;
 
 const GAME: &str = "Cool Game (USA)";
 
-/// Build a DiscSetPlan by hand for executor tests (planning logic is
-/// covered by disc_set_tests).
+/// Build a `DiscSetPlan` by hand for executor tests (planning logic is
+/// covered by `disc_set_tests`).
 fn make_plan(dir: &Path) -> DiscSetPlan {
     DiscSetPlan {
         cue: dir.join("dump.cue"),

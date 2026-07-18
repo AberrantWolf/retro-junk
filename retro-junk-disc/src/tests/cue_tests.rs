@@ -81,7 +81,7 @@ fn test_cue_index_to_sector_offset() {
         seconds: 4,
         frames: 52,
     };
-    assert_eq!(index.to_sector_offset(), 243352);
+    assert_eq!(index.to_sector_offset(), 243_352);
 }
 
 #[test]
@@ -436,7 +436,7 @@ fn test_to_sector_offset_does_not_overflow_u32() {
         seconds: 59,
         frames: 74,
     };
-    let expected = (u32::MAX as u64 * 60 + 59) * 75 + 74;
+    let expected = (u64::from(u32::MAX) * 60 + 59) * 75 + 74;
     assert_eq!(index.to_sector_offset(), expected);
 }
 

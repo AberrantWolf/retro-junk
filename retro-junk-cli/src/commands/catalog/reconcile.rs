@@ -9,7 +9,7 @@ use super::default_catalog_db_path;
 
 /// Run the `catalog reconcile` command.
 pub(crate) fn run_catalog_reconcile(
-    systems: Vec<String>,
+    systems: &[String],
     db_path: Option<PathBuf>,
     dry_run: bool,
 ) -> Result<(), CliError> {
@@ -22,9 +22,9 @@ pub(crate) fn run_catalog_reconcile(
     }
 
     let conn = retro_junk_db::open_database(&db_path)
-        .map_err(|e| CliError::database(format!("Failed to open catalog database: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Failed to open catalog database: {e}")))?;
 
-    run_reconcile_on_conn(&conn, &systems, dry_run)
+    run_reconcile_on_conn(&conn, systems, dry_run)
 }
 
 /// Shared reconciliation logic, usable from both standalone command and post-enrich.
@@ -46,7 +46,7 @@ pub(crate) fn run_reconcile_on_conn(
     );
 
     let result = reconcile_works(conn, &options)
-        .map_err(|e| CliError::database(format!("Reconciliation failed: {}", e)))?;
+        .map_err(|e| CliError::database(format!("Reconciliation failed: {e}")))?;
 
     if result.stats.groups_found == 0 {
         log::info!("  No duplicate works found.");
@@ -72,7 +72,11 @@ pub(crate) fn run_reconcile_on_conn(
             details.len(),
         );
         for detail in details {
-            let all_names: Vec<&str> = detail.absorbed_names.iter().map(|s| s.as_str()).collect();
+            let all_names: Vec<&str> = detail
+                .absorbed_names
+                .iter()
+                .map(std::string::String::as_str)
+                .collect();
             log::info!(
                 "    {} \"{}\" + \"{}\" -> \"{}\" ({} releases)",
                 verb,

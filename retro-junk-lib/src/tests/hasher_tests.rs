@@ -131,7 +131,7 @@ fn test_padding_large_append() {
     let append_size: u64 = 128 * 1024; // 128 KB
 
     let mut full_data = file_data.clone();
-    full_data.extend(std::iter::repeat(0xFFu8).take(append_size as usize));
+    full_data.extend(std::iter::repeat_n(0xFFu8, append_size as usize));
 
     let mut full_cursor = Cursor::new(full_data);
     let expected = compute_crc32_sha1(&mut full_cursor, &NullAnalyzer, None).unwrap();

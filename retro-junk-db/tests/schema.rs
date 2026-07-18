@@ -61,7 +61,7 @@ fn all_tables_exist() {
                 |row| row.get(0),
             )
             .unwrap();
-        assert!(exists, "table '{}' should exist", table);
+        assert!(exists, "table '{table}' should exist");
     }
 }
 
@@ -146,7 +146,7 @@ fn overrides_unique_key_includes_pattern_selectors() {
 ///
 /// Column layouts mirror the historical nullable schema. Every table the
 /// v8 → v9 rebuild touches must exist (later migrations create the library
-/// and media_tracks tables themselves).
+/// and `media_tracks` tables themselves).
 fn create_legacy_db(db_path: &std::path::Path, version: i32) {
     assert!(
         (4..=5).contains(&version),
@@ -310,8 +310,7 @@ fn v5_migration_adds_library_tables_and_default_values() {
             .unwrap();
         assert!(
             exists,
-            "table '{}' should exist after v5->v6 migration",
-            table
+            "table '{table}' should exist after v5->v6 migration"
         );
     }
 

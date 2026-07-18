@@ -18,9 +18,8 @@ pub fn load_dat_for_console(
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
-        let registered = match context.get_by_platform(platform) {
-            Some(r) => r,
-            None => return,
+        let Some(registered) = context.get_by_platform(platform) else {
+            return;
         };
 
         let analyzer = registered.analyzer.as_ref();

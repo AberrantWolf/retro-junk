@@ -1,4 +1,4 @@
-//! PlayStation 3 disc image analyzer.
+//! `PlayStation` 3 disc image analyzer.
 //!
 //! Supports:
 //! - ISO images
@@ -9,7 +9,7 @@ use retro_junk_core::ReadSeek;
 
 use retro_junk_core::{AnalysisError, AnalysisOptions, Platform, RomAnalyzer, RomIdentification};
 
-/// Analyzer for PlayStation 3 disc images.
+/// Analyzer for `PlayStation` 3 disc images.
 #[derive(Debug, Default)]
 pub struct Ps3Analyzer;
 

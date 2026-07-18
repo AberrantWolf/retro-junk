@@ -52,7 +52,7 @@ fn sample_dat() -> DatFile {
                 category: None,
                 roms: vec![DatRom {
                     name: "Legend of Zelda, The (USA).nes".to_string(),
-                    size: 131088,
+                    size: 131_088,
                     crc: "a12d74c1".to_string(),
                     sha1: Some("7fcbc2007a277e05f97054153cc850eb47589bcd".to_string()),
                     md5: None,
@@ -67,7 +67,7 @@ fn sample_dat() -> DatFile {
                 category: None,
                 roms: vec![DatRom {
                     name: "Legend of Zelda, The (USA) (Rev A).nes".to_string(),
-                    size: 131088,
+                    size: 131_088,
                     crc: "cebd2a31".to_string(),
                     sha1: Some("4addc7c8bc3ab5ba5421c4f1f6e5bba4fbafc4de".to_string()),
                     md5: None,
@@ -295,7 +295,7 @@ fn disc_number_extracted() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Final Fantasy VII (USA) (Disc 1).bin".to_string(),
-                    size: 700000000,
+                    size: 700_000_000,
                     crc: "aabb0001".to_string(),
                     sha1: None,
                     md5: None,
@@ -310,7 +310,7 @@ fn disc_number_extracted() {
                 category: None,
                 roms: vec![DatRom {
                     name: "Final Fantasy VII (USA) (Disc 2).bin".to_string(),
-                    size: 700000000,
+                    size: 700_000_000,
                     crc: "aabb0002".to_string(),
                     sha1: None,
                     md5: None,

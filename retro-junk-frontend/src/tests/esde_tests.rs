@@ -1,5 +1,5 @@
 use super::*;
-use crate::ScrapedGame;
+use crate::{Frontend, ScrapedGame};
 use std::collections::HashMap;
 
 #[test]
@@ -41,7 +41,6 @@ fn test_cover_title_overrides_name_in_esde() {
     std::fs::create_dir_all(&rom_dir).unwrap();
 
     let esde = EsDeFrontend;
-    use crate::Frontend;
     esde.write_metadata(&games, &rom_dir, &meta_dir, &media_dir)
         .unwrap();
 
@@ -60,7 +59,6 @@ fn test_name_used_when_cover_title_is_empty() {
     std::fs::create_dir_all(&rom_dir).unwrap();
 
     let esde = EsDeFrontend;
-    use crate::Frontend;
     esde.write_metadata(&games, &rom_dir, &meta_dir, &media_dir)
         .unwrap();
 

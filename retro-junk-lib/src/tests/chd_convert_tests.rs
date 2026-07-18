@@ -103,7 +103,7 @@ fn plan_rejects_cue_with_missing_tracks() {
     .unwrap();
     match plan_compression(&cue, &Ps1Analyzer) {
         Err(ChdConvertError::BrokenSource(missing)) => {
-            assert_eq!(missing, vec!["missing.bin".to_string()])
+            assert_eq!(missing, vec!["missing.bin".to_string()]);
         }
         other => panic!("expected BrokenSource, got {other:?}"),
     }

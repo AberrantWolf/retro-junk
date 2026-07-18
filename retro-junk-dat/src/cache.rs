@@ -19,7 +19,7 @@ pub struct CachedDat {
     pub downloaded: String,
     pub dat_version: String,
     pub file_size: u64,
-    /// DAT name (e.g., "Nintendo - Nintendo 64" or "Sony - PlayStation")
+    /// DAT name (e.g., "Nintendo - Nintendo 64" or "Sony - `PlayStation`")
     #[serde(default)]
     pub dat_name: String,
 }
@@ -30,7 +30,7 @@ pub struct CacheMeta {
     /// Cache format version — mismatched versions trigger automatic invalidation.
     #[serde(default)]
     pub version: u32,
-    /// Per-console list of cached DATs (keyed by short_name).
+    /// Per-console list of cached DATs (keyed by `short_name`).
     pub dats: HashMap<String, Vec<CachedDat>>,
 }
 
@@ -103,7 +103,7 @@ fn dat_file_path(short_name: &str, index: usize) -> Result<PathBuf, DatError> {
 
 /// Construct the download URL for a DAT file.
 ///
-/// - No-Intro: LibRetro GitHub raw `.dat` files.
+/// - No-Intro: `LibRetro` GitHub raw `.dat` files.
 ///   e.g., "Nintendo - Nintendo Entertainment System" → `{base}Nintendo%20-%20Nintendo%20Entertainment%20System.dat`
 /// - Redump: redump.info DAT download with serial+version metadata.
 ///   e.g., slug "psx" → `https://redump.info/datfile/psx/serial,version`
@@ -236,7 +236,10 @@ fn extract_dat_from_zip(zip_bytes: &[u8]) -> Result<Vec<u8>, DatError> {
         let mut file = archive
             .by_index(i)
             .map_err(|e| DatError::download(format!("Zip entry error: {e}")))?;
-        if file.name().ends_with(".dat") {
+        if std::path::Path::new(file.name())
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("dat"))
+        {
             let mut content = Vec::new();
             file.read_to_end(&mut content)?;
             return Ok(content);

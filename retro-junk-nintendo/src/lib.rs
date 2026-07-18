@@ -5,7 +5,7 @@
 //! - NES (Famicom)
 //! - SNES (Super Famicom)
 //! - Nintendo 64
-//! - GameCube
+//! - `GameCube`
 //! - Wii
 //! - Wii U
 //! - Game Boy / Game Boy Color

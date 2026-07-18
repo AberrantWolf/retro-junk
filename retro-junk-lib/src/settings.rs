@@ -8,6 +8,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 /// Canonical path to the shared settings file: `~/.config/retro-junk/settings.toml`.
+#[must_use]
 pub fn settings_path() -> PathBuf {
     let config = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     config.join("retro-junk").join("settings.toml")
@@ -18,6 +19,7 @@ pub fn settings_path() -> PathBuf {
 /// 1. CLI override (if `Some`)
 /// 2. Saved `library.current_root` in `settings.toml`
 /// 3. Current working directory
+#[must_use]
 pub fn resolve_library_path(cli_override: Option<PathBuf>) -> PathBuf {
     if let Some(p) = cli_override {
         return p;
@@ -61,9 +63,9 @@ fn update_library_root(path: Option<&Path>) -> io::Result<()> {
     let mut doc: toml::Value = if let Ok(contents) = std::fs::read_to_string(&settings) {
         contents
             .parse()
-            .unwrap_or_else(|_| toml::Value::Table(Default::default()))
+            .unwrap_or_else(|_| toml::Value::Table(toml::map::Map::default()))
     } else {
-        toml::Value::Table(Default::default())
+        toml::Value::Table(toml::map::Map::default())
     };
 
     // Ensure [library] table exists
@@ -72,7 +74,7 @@ fn update_library_root(path: Option<&Path>) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("settings.toml root is not a table"))?;
     let library = table
         .entry("library")
-        .or_insert_with(|| toml::Value::Table(Default::default()));
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::default()));
     let lib_table = library
         .as_table_mut()
         .ok_or_else(|| io::Error::other("[library] is not a table"))?;
@@ -102,6 +104,7 @@ fn update_library_root(path: Option<&Path>) -> io::Result<()> {
 }
 
 /// Load the full settings file as a pretty-printed TOML string for display.
+#[must_use]
 pub fn load_settings_string() -> Option<String> {
     let contents = std::fs::read_to_string(settings_path()).ok()?;
     let doc: toml::Value = contents.parse().ok()?;

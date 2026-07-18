@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use retro_junk_catalog::types::*;
+use retro_junk_catalog::types::{CollectionEntry, Media};
 use retro_junk_core::{Platform, RomAnalyzer};
 use retro_junk_db::{operations, queries};
 use rusqlite::Connection;
@@ -141,43 +141,40 @@ pub fn scan_folder(
         // Try to match by CRC32 first, then SHA1
         let matched_media = find_matching_media(conn, &hashes, platform)?;
 
-        match matched_media {
-            Some((media, title)) => {
-                // Check if already in collection
-                let existing = queries::find_collection_entry(conn, &media.id, &options.user_id)?;
-                if existing.is_some() {
-                    stats.already_owned += 1;
-                } else {
-                    // Create collection entry
-                    let now = chrono::Utc::now().to_rfc3339();
-                    let entry = CollectionEntry {
-                        id: 0,
-                        media_id: media.id.clone(),
-                        user_id: options.user_id.clone(),
-                        owned: true,
-                        condition: String::new(),
-                        notes: String::new(),
-                        date_acquired: String::new(),
-                        rom_path: file_path.to_string_lossy().to_string(),
-                        verified_at: now,
-                    };
-                    operations::upsert_collection_entry(conn, &entry)?;
-                    stats.matched += 1;
-                }
-
-                progress.on_match(&filename, &title);
+        if let Some((media, title)) = matched_media {
+            // Check if already in collection
+            let existing = queries::find_collection_entry(conn, &media.id, &options.user_id)?;
+            if existing.is_some() {
+                stats.already_owned += 1;
+            } else {
+                // Create collection entry
+                let now = chrono::Utc::now().to_rfc3339();
+                let entry = CollectionEntry {
+                    id: 0,
+                    media_id: media.id.clone(),
+                    user_id: options.user_id.clone(),
+                    owned: true,
+                    condition: String::new(),
+                    notes: String::new(),
+                    date_acquired: String::new(),
+                    rom_path: file_path.to_string_lossy().to_string(),
+                    verified_at: now,
+                };
+                operations::upsert_collection_entry(conn, &entry)?;
+                stats.matched += 1;
             }
-            None => {
-                stats.unmatched += 1;
-                unmatched.push(UnmatchedFile {
-                    path: file_path.clone(),
-                    crc32: hashes.crc32,
-                    sha1: hashes.sha1,
-                    file_size: hashes.data_size,
-                });
 
-                progress.on_no_match(&filename);
-            }
+            progress.on_match(&filename, &title);
+        } else {
+            stats.unmatched += 1;
+            unmatched.push(UnmatchedFile {
+                path: file_path.clone(),
+                crc32: hashes.crc32,
+                sha1: hashes.sha1,
+                file_size: hashes.data_size,
+            });
+
+            progress.on_no_match(&filename);
         }
     }
 
@@ -188,7 +185,7 @@ pub fn scan_folder(
 
 /// Re-verify existing collection entries against files on disk.
 ///
-/// For each collection entry with a rom_path, re-hash the file and check
+/// For each collection entry with a `rom_path`, re-hash the file and check
 /// that it still matches the catalog. Returns the number of entries verified
 /// and the number that no longer match or are missing.
 pub fn verify_collection(
@@ -298,9 +295,8 @@ fn find_matching_media(
     let candidates = queries::find_media_by_crc32(conn, &hashes.crc32)?;
     for media in candidates {
         // Verify platform via release
-        let release = match queries::get_release_by_id(conn, &media.release_id)? {
-            Some(r) => r,
-            None => continue,
+        let Some(release) = queries::get_release_by_id(conn, &media.release_id)? else {
+            continue;
         };
         if release.platform_id != platform_id {
             continue;
@@ -321,9 +317,8 @@ fn find_matching_media(
     if let Some(ref sha1) = hashes.sha1 {
         let candidates = queries::find_media_by_sha1(conn, sha1)?;
         for media in candidates {
-            let release = match queries::get_release_by_id(conn, &media.release_id)? {
-                Some(r) => r,
-                None => continue,
+            let Some(release) = queries::get_release_by_id(conn, &media.release_id)? else {
+                continue;
             };
             if release.platform_id != platform_id {
                 continue;

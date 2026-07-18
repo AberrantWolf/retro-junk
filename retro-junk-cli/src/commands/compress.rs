@@ -8,34 +8,37 @@ use indicatif::{ProgressBar, ProgressStyle};
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
+use retro_junk_lib::AnalysisContext;
 use retro_junk_lib::chd_convert::{
     ChdPhase, Chdman, ChdmanUnavailable, VerificationOutcome, compress_to_chd, finalize_verified,
     job_fraction, plan_batch,
 };
 use retro_junk_lib::scanner::{extension_set, scan_game_entries};
 use retro_junk_lib::util::format_bytes_approx;
-use retro_junk_lib::{AnalysisContext, Platform};
 
 use crate::CliError;
+use crate::cli_types::CompressArgs;
 
 #[cfg(test)]
 #[path = "compress_tests.rs"]
 mod tests;
 
 /// Run the compress command.
-#[allow(clippy::too_many_arguments)]
+// Linear per-console compress orchestration (plan, confirm, convert, verify,
+// summarize) with tightly coupled progress state.
+#[allow(clippy::too_many_lines)]
 pub(crate) fn run_compress(
     ctx: &AnalysisContext,
-    dry_run: bool,
-    delete_sources: bool,
-    assume_yes: bool,
-    chdman_override: Option<PathBuf>,
-    consoles: Option<Vec<Platform>>,
-    limit: Option<usize>,
-    library_path: PathBuf,
+    args: &CompressArgs,
+    library_path: &Path,
     quiet: bool,
 ) -> Result<(), CliError> {
-    let chdman = match Chdman::detect(chdman_override.as_deref().unwrap_or(Path::new(""))) {
+    let dry_run = args.dry_run;
+    let delete_sources = args.delete_sources;
+    let assume_yes = args.yes;
+    let consoles = &args.roms.consoles;
+    let limit = args.roms.limit;
+    let chdman = match Chdman::detect(args.chdman.as_deref().unwrap_or(Path::new(""))) {
         Ok(c) => c,
         Err(e) => {
             log::error!("{}", e.to_string().if_supports_color(Stdout, |t| t.red()));
@@ -68,9 +71,8 @@ pub(crate) fn run_compress(
     }
     crate::log_blank();
 
-    let scan = match crate::scan_folders(ctx, &library_path, &consoles) {
-        Some(s) => s,
-        None => return Ok(()),
+    let Some(scan) = crate::scan_folders(ctx, library_path, consoles.as_deref()) else {
+        return Ok(());
     };
 
     let mut total_compressed = 0usize;

@@ -3,7 +3,7 @@
 //! Supports:
 //! - DS ROMs (.nds)
 //! - DSi-enhanced ROMs (.dsi)
-//! - DSiWare
+//! - `DSiWare`
 //!
 //! The NDS cartridge header occupies bytes 0x000–0x1FF (512 bytes). Detection
 //! uses the 156-byte Nintendo logo at 0xC0 (identical to GBA) and the logo
@@ -42,7 +42,7 @@ use crate::constants::{NINTENDO_LOGO_156 as NINTENDO_LOGO, region_from_game_code
 fn crc16(data: &[u8]) -> u16 {
     let mut crc: u16 = 0xFFFF;
     for &byte in data {
-        crc ^= byte as u16;
+        crc ^= u16::from(byte);
         for _ in 0..8 {
             if crc & 1 != 0 {
                 crc = (crc >> 1) ^ 0xA001; // 0xA001 is reflected 0x8005
@@ -158,7 +158,7 @@ enum SecureAreaState {
     Decrypted,
     /// Encrypted (original cartridge form). CRC can be verified.
     Encrypted { computed_crc: u16 },
-    /// No secure area (homebrew: arm9_rom_offset < 0x4000).
+    /// No secure area (homebrew: `arm9_rom_offset` < 0x4000).
     Homebrew,
     /// Not checked (quick mode or file too small).
     Skipped,
@@ -218,70 +218,21 @@ fn unit_code_name(unit_code: u8) -> &'static str {
 /// Calculate expected ROM size from device capacity byte.
 /// Formula: 128 KB << n
 fn expected_rom_size_from_capacity(device_capacity: u8) -> u64 {
-    131_072u64 << (device_capacity as u64)
+    131_072u64 << u64::from(device_capacity)
 }
 
 // ---------------------------------------------------------------------------
 // Identification
 // ---------------------------------------------------------------------------
 
-/// Convert a parsed NDS header into a RomIdentification.
-fn to_identification(
-    header: &NdsHeader,
-    file_size: u64,
-    computed_header_checksum: u16,
-    secure_area: SecureAreaState,
-) -> RomIdentification {
-    let is_dsi = header.unit_code & 0x02 != 0;
-    let platform_variant = if header.unit_code == 0x03 {
-        Some("Nintendo DSi")
-    } else if is_dsi {
-        Some("Nintendo DS (DSi Enhanced)")
-    } else {
-        None
-    };
-
-    let mut id = RomIdentification::new();
-    if let Some(variant) = platform_variant {
-        id.extra.insert("platform_variant".into(), variant.into());
-    }
-
-    // Internal name
-    if !header.title.is_empty() {
-        id.internal_name = header.title.clone();
-    }
-
-    // Serial number: NTR-XXXX for NDS, TWL-XXXX for DSi
-    if header.game_code.len() == 4 {
-        let prefix = if is_dsi { "TWL" } else { "NTR" };
-        id.serial_number = format!("{}-{}", prefix, header.game_code);
-    }
-
-    // Maker code
-    if header.maker_code.len() == 2 {
-        id.maker_code = crate::licensee::maker_code_name(&header.maker_code)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| header.maker_code.clone());
-    }
-
-    // Region from game code
-    if header.game_code.len() == 4
-        && let Some(region) = region_from_game_code(&header.game_code)
-    {
-        id.regions.push(region);
-    }
-
-    // Version
-    id.version = format!("v{}", header.rom_version);
-
-    // File and expected size
-    //
+/// Record file size, expected size, trim status, and cartridge capacity.
+fn record_size_and_trim(id: &mut RomIdentification, header: &NdsHeader, file_size: u64) {
     // NDS ROMs are very commonly "trimmed": the unused 0xFF padding between
     // `total_used_rom_size` and the full cartridge chip capacity is stripped.
     // Both trimmed and untrimmed (full capacity) dumps are valid. Only files
     // smaller than total_used_rom_size are truly truncated.
     id.file_size = file_size;
-    let used_size = header.total_used_rom_size as u64;
+    let used_size = u64::from(header.total_used_rom_size);
     let chip_capacity = if header.device_capacity <= 20 {
         let cap = expected_rom_size_from_capacity(header.device_capacity);
         if cap <= MAX_ROM_SIZE { Some(cap) } else { None }
@@ -326,6 +277,128 @@ fn to_identification(
         };
         id.extra.insert("cartridge_capacity".into(), label);
     }
+}
+
+/// Record a CRC-16 verdict: `checksum_status:<key>` plus the expected checksum.
+/// `stored` is the on-cartridge value pushed as the expected checksum.
+fn record_crc16_check(
+    id: &mut RomIdentification,
+    key: &str,
+    description: &str,
+    expected: u16,
+    actual: u16,
+    stored: u16,
+) {
+    let status = if actual == expected {
+        "OK".into()
+    } else {
+        format!("MISMATCH (expected {expected:04X}, got {actual:04X})")
+    };
+    id.expected_checksums.push(
+        ExpectedChecksum::new(ChecksumAlgorithm::Crc16, stored.to_le_bytes().to_vec())
+            .with_description(description),
+    );
+    id.extra.insert(format!("checksum_status:{key}"), status);
+}
+
+/// Record the secure-area verdict and checksum status.
+fn record_secure_area(
+    id: &mut RomIdentification,
+    header: &NdsHeader,
+    secure_area: &SecureAreaState,
+) {
+    // Secure area checksum
+    match secure_area {
+        SecureAreaState::Decrypted => {
+            // Decrypted dumps are standard. The stored CRC is over the encrypted
+            // form and cannot be verified without BIOS Blowfish keys.
+            id.extra.insert(
+                "checksum_status:Secure Area CRC-16".into(),
+                "OK (decrypted dump, CRC is over encrypted form)".into(),
+            );
+            id.extra.insert("secure_area".into(), "Decrypted".into());
+        }
+        SecureAreaState::Encrypted { computed_crc } => {
+            let secure_status = if *computed_crc == header.secure_area_checksum {
+                "OK".into()
+            } else {
+                format!(
+                    "MISMATCH (expected {:04X}, got {:04X})",
+                    header.secure_area_checksum, computed_crc
+                )
+            };
+            id.expected_checksums.push(
+                ExpectedChecksum::new(
+                    ChecksumAlgorithm::Crc16,
+                    header.secure_area_checksum.to_le_bytes().to_vec(),
+                )
+                .with_description("Secure Area CRC-16 (0x06C)"),
+            );
+            id.extra
+                .insert("checksum_status:Secure Area CRC-16".into(), secure_status);
+            id.extra.insert("secure_area".into(), "Encrypted".into());
+        }
+        SecureAreaState::Homebrew => {
+            id.extra
+                .insert("secure_area".into(), "None (homebrew)".into());
+        }
+        SecureAreaState::Skipped => {
+            // Quick mode or file too small — don't report
+        }
+    }
+}
+
+/// Convert a parsed NDS header into a `RomIdentification`.
+fn to_identification(
+    header: &NdsHeader,
+    file_size: u64,
+    computed_header_checksum: u16,
+    secure_area: &SecureAreaState,
+) -> RomIdentification {
+    let is_dsi = header.unit_code & 0x02 != 0;
+    let platform_variant = if header.unit_code == 0x03 {
+        Some("Nintendo DSi")
+    } else if is_dsi {
+        Some("Nintendo DS (DSi Enhanced)")
+    } else {
+        None
+    };
+
+    let mut id = RomIdentification::new();
+    if let Some(variant) = platform_variant {
+        id.extra.insert("platform_variant".into(), variant.into());
+    }
+
+    // Internal name
+    if !header.title.is_empty() {
+        id.internal_name.clone_from(&header.title);
+    }
+
+    // Serial number: NTR-XXXX for NDS, TWL-XXXX for DSi
+    if header.game_code.len() == 4 {
+        let prefix = if is_dsi { "TWL" } else { "NTR" };
+        id.serial_number = format!("{}-{}", prefix, header.game_code);
+    }
+
+    // Maker code
+    if header.maker_code.len() == 2 {
+        id.maker_code = crate::licensee::maker_code_name(&header.maker_code).map_or_else(
+            || header.maker_code.clone(),
+            std::string::ToString::to_string,
+        );
+    }
+
+    // Region from game code
+    if header.game_code.len() == 4
+        && let Some(region) = region_from_game_code(&header.game_code)
+    {
+        id.regions.push(region);
+    }
+
+    // Version
+    id.version = format!("v{}", header.rom_version);
+
+    record_size_and_trim(&mut id, header, file_size);
 
     // Unit code
     id.extra
@@ -377,83 +450,27 @@ fn to_identification(
 
     // -- Checksums --
 
-    // Logo checksum
-    let logo_status = if header.logo_checksum == EXPECTED_LOGO_CHECKSUM {
-        "OK".into()
-    } else {
-        format!(
-            "MISMATCH (expected {:04X}, got {:04X})",
-            EXPECTED_LOGO_CHECKSUM, header.logo_checksum
-        )
-    };
-    id.expected_checksums.push(
-        ExpectedChecksum::new(
-            ChecksumAlgorithm::Crc16,
-            header.logo_checksum.to_le_bytes().to_vec(),
-        )
-        .with_description("Logo CRC-16 (0x15C)"),
+    // Logo checksum (stored CRC must equal the fixed Nintendo logo CRC)
+    record_crc16_check(
+        &mut id,
+        "Logo CRC-16",
+        "Logo CRC-16 (0x15C)",
+        EXPECTED_LOGO_CHECKSUM,
+        header.logo_checksum,
+        header.logo_checksum,
     );
-    id.extra
-        .insert("checksum_status:Logo CRC-16".into(), logo_status);
 
-    // Header checksum
-    let header_status = if computed_header_checksum == header.header_checksum {
-        "OK".into()
-    } else {
-        format!(
-            "MISMATCH (expected {:04X}, got {:04X})",
-            header.header_checksum, computed_header_checksum
-        )
-    };
-    id.expected_checksums.push(
-        ExpectedChecksum::new(
-            ChecksumAlgorithm::Crc16,
-            header.header_checksum.to_le_bytes().to_vec(),
-        )
-        .with_description("Header CRC-16 (0x15E)"),
+    // Header checksum (computed over the first 0x15E bytes)
+    record_crc16_check(
+        &mut id,
+        "Header CRC-16",
+        "Header CRC-16 (0x15E)",
+        header.header_checksum,
+        computed_header_checksum,
+        header.header_checksum,
     );
-    id.extra
-        .insert("checksum_status:Header CRC-16".into(), header_status);
 
-    // Secure area checksum
-    match &secure_area {
-        SecureAreaState::Decrypted => {
-            // Decrypted dumps are standard. The stored CRC is over the encrypted
-            // form and cannot be verified without BIOS Blowfish keys.
-            id.extra.insert(
-                "checksum_status:Secure Area CRC-16".into(),
-                "OK (decrypted dump, CRC is over encrypted form)".into(),
-            );
-            id.extra.insert("secure_area".into(), "Decrypted".into());
-        }
-        SecureAreaState::Encrypted { computed_crc } => {
-            let secure_status = if *computed_crc == header.secure_area_checksum {
-                "OK".into()
-            } else {
-                format!(
-                    "MISMATCH (expected {:04X}, got {:04X})",
-                    header.secure_area_checksum, computed_crc
-                )
-            };
-            id.expected_checksums.push(
-                ExpectedChecksum::new(
-                    ChecksumAlgorithm::Crc16,
-                    header.secure_area_checksum.to_le_bytes().to_vec(),
-                )
-                .with_description("Secure Area CRC-16 (0x06C)"),
-            );
-            id.extra
-                .insert("checksum_status:Secure Area CRC-16".into(), secure_status);
-            id.extra.insert("secure_area".into(), "Encrypted".into());
-        }
-        SecureAreaState::Homebrew => {
-            id.extra
-                .insert("secure_area".into(), "None (homebrew)".into());
-        }
-        SecureAreaState::Skipped => {
-            // Quick mode or file too small — don't report
-        }
-    }
+    record_secure_area(&mut id, header, secure_area);
 
     // NDS region byte
     let nds_region_str = match header.nds_region {
@@ -509,7 +526,7 @@ impl RomAnalyzer for DsAnalyzer {
             &header,
             file_size,
             computed_header_checksum,
-            secure_area,
+            &secure_area,
         ))
     }
 

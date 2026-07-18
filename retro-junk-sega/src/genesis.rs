@@ -63,10 +63,6 @@ fn parse_header(buf: &[u8; 256]) -> GenesisHeader {
     let serial_number = read_ascii(&buf[0x80..0x8E]);
     let checksum = u16::from_be_bytes([buf[0x8E], buf[0x8F]]);
     let device_support = read_ascii(&buf[0x90..0xA0]);
-    let rom_start = u32::from_be_bytes([buf[0xA0], buf[0xA1], buf[0xA2], buf[0xA3]]);
-    let rom_end = u32::from_be_bytes([buf[0xA4], buf[0xA5], buf[0xA6], buf[0xA7]]);
-    let ram_start = u32::from_be_bytes([buf[0xA8], buf[0xA9], buf[0xAA], buf[0xAB]]);
-    let ram_end = u32::from_be_bytes([buf[0xAC], buf[0xAD], buf[0xAE], buf[0xAF]]);
     let extra_memory = read_ascii(&buf[0xB0..0xBC]);
     let region_codes = read_ascii(&buf[0xF0..0xF3]);
 
@@ -78,10 +74,10 @@ fn parse_header(buf: &[u8; 256]) -> GenesisHeader {
         serial_number,
         checksum,
         device_support,
-        rom_start,
-        rom_end,
-        ram_start,
-        ram_end,
+        rom_start: u32::from_be_bytes([buf[0xA0], buf[0xA1], buf[0xA2], buf[0xA3]]),
+        rom_end: u32::from_be_bytes([buf[0xA4], buf[0xA5], buf[0xA6], buf[0xA7]]),
+        ram_start: u32::from_be_bytes([buf[0xA8], buf[0xA9], buf[0xAA], buf[0xAB]]),
+        ram_end: u32::from_be_bytes([buf[0xAC], buf[0xAD], buf[0xAE], buf[0xAF]]),
         extra_memory,
         region_codes,
     }
@@ -136,7 +132,7 @@ fn compute_checksum(reader: &mut dyn ReadSeek, rom_end: u32) -> Result<u16, Anal
     }
     // If there's an odd trailing byte, treat it as the high byte of a u16
     if i < buf.len() {
-        let word = (buf[i] as u16) << 8;
+        let word = u16::from(buf[i]) << 8;
         sum = sum.wrapping_add(word);
     }
 
@@ -204,7 +200,7 @@ impl RomAnalyzer for GenesisAnalyzer {
         // Genesis dumps are commonly padded to the next power of 2, so a file
         // larger than rom_end+1 is normal. We only flag truncated files.
         let declared_size = if header.rom_end > 0 {
-            header.rom_end as u64 + 1
+            u64::from(header.rom_end) + 1
         } else {
             0
         };

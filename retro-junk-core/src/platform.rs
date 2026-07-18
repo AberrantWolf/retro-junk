@@ -74,6 +74,7 @@ const ALL_PLATFORMS: &[Platform] = &[
 
 impl Platform {
     /// Canonical short name used for CLI, folder paths, and identifiers.
+    #[must_use]
     pub fn short_name(&self) -> &'static str {
         match self {
             Self::Nes => "nes",
@@ -105,6 +106,7 @@ impl Platform {
     }
 
     /// Full display name for the platform.
+    #[must_use]
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Nes => "Nintendo Entertainment System",
@@ -136,6 +138,7 @@ impl Platform {
     }
 
     /// Console manufacturer.
+    #[must_use]
     pub fn manufacturer(&self) -> &'static str {
         match self {
             Self::Nes
@@ -168,6 +171,7 @@ impl Platform {
     ///
     /// Includes the canonical short name plus any common alternatives
     /// used for folder names, CLI arguments, etc.
+    #[must_use]
     pub fn aliases(&self) -> &'static [&'static str] {
         match self {
             Self::Nes => &["nes", "famicom", "fc"],
@@ -206,6 +210,7 @@ impl Platform {
     }
 
     /// All 25 platform variants.
+    #[must_use]
     pub fn all() -> &'static [Platform] {
         ALL_PLATFORMS
     }

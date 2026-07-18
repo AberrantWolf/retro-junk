@@ -19,6 +19,7 @@ pub enum DiscFormat {
 }
 
 impl DiscFormat {
+    #[must_use]
     pub fn name(&self) -> &'static str {
         match self {
             Self::Iso2048 => "ISO 9660",
@@ -28,6 +29,7 @@ impl DiscFormat {
         }
     }
 
+    #[must_use]
     pub fn extension(&self) -> &'static str {
         match self {
             Self::Iso2048 => "iso",

@@ -16,7 +16,7 @@ use chrono::{DateTime, Local};
 /// Maximum number of log entries retained in the ring buffer.
 const MAX_ENTRIES: usize = 10_000;
 
-/// Minimum level always captured to the ring buffer, regardless of RUST_LOG.
+/// Minimum level always captured to the ring buffer, regardless of `RUST_LOG`.
 const RING_BUFFER_LEVEL: log::LevelFilter = log::LevelFilter::Info;
 
 /// A single captured log entry.
