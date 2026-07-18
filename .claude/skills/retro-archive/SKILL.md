@@ -1,6 +1,6 @@
 ---
 name: retro-archive
-description: Knowledge on how retro games are stored and accessed
+description: Use when working on retro game archival formats, console-specific dump structures, Redump verification, or preservation workflows in retro-junk.
 ---
 # Retro Archive
 

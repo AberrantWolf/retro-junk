@@ -1,6 +1,6 @@
 ---
-skill: game-scraping
-description: Knowledge on how to access and use various data sources for identifying games and acquiring various media and metadata relating to those games.
+name: game-scraping
+description: Use when working on ROM identification, DAT files, ScreenScraper, game metadata, media downloads, or checksum-based game matching in retro-junk.
 ---
 
 # ROM Identification, Metadata, & Media

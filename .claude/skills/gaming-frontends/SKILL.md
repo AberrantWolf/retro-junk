@@ -1,6 +1,6 @@
 ---
-skill: gaming-frontends
-description: Knowledge about popular gaming frontends with accurate links to their docs pages.
+name: gaming-frontends
+description: Use when implementing or changing retro gaming frontend metadata, media layout, or exports such as ES-DE, Pegasus, LaunchBox, Playnite, or RetroArch.
 ---
 
 # Gaming Frontends
