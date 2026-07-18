@@ -249,6 +249,40 @@ only the playable tree to frontends.
 
 - [ ] **Re-import after migration v4** — Schema is now at version 4 (`screen_title`, `cover_title` columns added in v3). Run `catalog import all` followed by `catalog enrich` on existing databases to populate `revision`, `variant`, `screen_title`, and `cover_title` fields. This is a one-time user/ops action, not a code gap.
 
+## Deferred from 2026-07-17 Option/clippy cleanup
+
+- [ ] **Split the two remaining god-files into submodules** — pure moves, no
+  behavior change: `retro-junk-gui/src/state.rs` (2,803 lines → `state/`
+  with library.rs / dialogs.rs / operations.rs / messages.rs / browse.rs)
+  and `retro-junk-lib/src/rename.rs` (2,591 lines → `rename/` with
+  types / serial / m3u / plan / execute / ref_files). Keep `mod.rs`
+  re-exports so consumers need no import changes.
+- [ ] **`Override` selector trio → enum** — `entity_id` / `platform_id` /
+  `dat_name_pattern` are alternative targeting modes; an `OverrideTarget`
+  enum would make illegal combinations unrepresentable (types.rs + YAML
+  serde + `apply_overrides`).
+- [ ] **CLI disagreement-resolve choice → enum** — `--source-a` /
+  `--source-b` / `--custom <value>` are clap-ArgGroup-exclusive bools plus
+  an Option; a single value-carrying enum arg would drop the if-chain.
+- [ ] **GUI progressive-analysis state → enum** — `LibraryEntry`'s
+  `identification` / `hashes` / `dat_match` Options track analysis
+  progress alongside `status: EntryStatus`; a full `AnalysisState` enum
+  could encode the progression, but each Option carries independently
+  consumed data, so this needs a real design pass, not a mechanical swap.
+- [ ] **Centralize CLI catalog-db path resolution** — ~25 clap fields
+  repeat `db: Option<PathBuf>` + `unwrap_or_else(default_catalog_db_path)`
+  (runtime default, not clap-expressible). Resolve once in main and pass
+  the resolved path down.
+- [ ] **`scan_import::UnmatchedFile.sha1`** stays `Option<String>` because
+  upstream `retro_junk_dat::matcher::FileHashes.sha1` is Option (CRC-only
+  hashing mode); revisit if FileHashes ever grows an all-or-nothing hash
+  group like the scraper's `RomHashes`.
+- [ ] **`retro-junk-gui-cjk` decision** — kept deliberately: it is a 3-line
+  wrapper binary that exists so cargo-dist ships a second GUI artifact with
+  the `cjk-full` font feature (~65MB of Noto CJK) without bloating the
+  default download. Revisit only if dist grows per-feature artifact
+  support.
+
 ## CLI
 
 - [x] **Flesh out `list` command output** — Resolved: the standalone `list` command was folded into `catalog lookup`. `catalog lookup --type platforms` shows ID, name, manufacturer, year, media type, release/media counts.
