@@ -700,7 +700,7 @@ pub async fn enrich_releases(
 
                             for asset in &downloaded_assets {
                                 let asset_record = Asset {
-                                    id: 0,
+                                    id: retro_junk_catalog::MediaAssetId(0),
                                     owner: AssetOwner::Release(release.id.clone()),
                                     asset_type: asset.asset_type.clone(),
                                     region: asset.region.clone(),

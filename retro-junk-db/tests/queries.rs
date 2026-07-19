@@ -74,7 +74,7 @@ fn test_media(id: &str, release_id: &str) -> Media {
 
 fn test_disagreement(entity_id: &str, field: &str, value_a: &str, value_b: &str) -> Disagreement {
     Disagreement {
-        id: 0,
+        id: DisagreementId(0),
         entity_type: "release".to_string(),
         entity_id: entity_id.to_string(),
         field: field.to_string(),
@@ -284,7 +284,7 @@ fn setup_db_with_assets() -> rusqlite::Connection {
     insert_asset(
         &conn,
         &Asset {
-            id: 0,
+            id: MediaAssetId(0),
             owner: AssetOwner::Release("smb1-nes-usa".to_string()),
             asset_type: "box-front".to_string(),
             region: "usa".to_string(),
@@ -303,7 +303,7 @@ fn setup_db_with_assets() -> rusqlite::Connection {
     insert_asset(
         &conn,
         &Asset {
-            id: 0,
+            id: MediaAssetId(0),
             owner: AssetOwner::Release("smb1-nes-usa".to_string()),
             asset_type: "screenshot".to_string(),
             region: String::new(),
@@ -396,7 +396,7 @@ fn asset_queries_with_collection_filter() {
     upsert_collection_entry(
         &conn,
         &CollectionEntry {
-            id: 0,
+            id: CollectionId(0),
             media_id: "smb1-nes-usa-v1".to_string(),
             user_id: "default".to_string(),
             owned: true,

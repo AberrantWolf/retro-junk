@@ -482,7 +482,7 @@ pub(crate) enum CatalogAction {
     /// Resolve a disagreement by choosing a value
     Resolve {
         /// Disagreement ID to resolve
-        id: i64,
+        id: retro_junk_catalog::DisagreementId,
 
         /// Path to the catalog database file
         #[arg(long)]

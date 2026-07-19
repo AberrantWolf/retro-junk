@@ -81,7 +81,7 @@ pub(crate) fn run_catalog_disagreements(
 
 /// Resolve a disagreement by choosing a value.
 pub(crate) fn run_catalog_resolve(
-    id: i64,
+    id: retro_junk_catalog::DisagreementId,
     db_path: Option<PathBuf>,
     source_a: bool,
     source_b: bool,

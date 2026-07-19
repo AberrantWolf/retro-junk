@@ -468,16 +468,19 @@ fn load_library_from_legacy(
 
 // ── Private Helpers ─────────────────────────────────────────────────────────
 
-fn ensure_root_id(conn: &Connection, root: &Path) -> Result<i64, CacheError> {
+fn ensure_root_id(
+    conn: &Connection,
+    root: &Path,
+) -> Result<retro_junk_db::LibraryRootId, CacheError> {
     let root_str = root.to_string_lossy();
     Ok(retro_junk_db::upsert_library_root(conn, &root_str)?)
 }
 
 fn ensure_console_id(
     conn: &Connection,
-    root_id: i64,
+    root_id: retro_junk_db::LibraryRootId,
     console: &ConsoleState,
-) -> Result<i64, CacheError> {
+) -> Result<retro_junk_db::LibraryConsoleId, CacheError> {
     let platform_str = serde_json::to_string(&console.platform)?;
     // serde_json wraps enums in quotes: "\"NES\"" — strip them
     let platform_str = platform_str.trim_matches('"');
@@ -512,7 +515,7 @@ fn ensure_console_id(
 
 fn save_console_inner(
     conn: &Connection,
-    root_id: i64,
+    root_id: retro_junk_db::LibraryRootId,
     console: &ConsoleState,
 ) -> Result<(), CacheError> {
     ensure_console_id(conn, root_id, console).map(|_| ())

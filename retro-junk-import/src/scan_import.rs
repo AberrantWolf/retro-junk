@@ -150,7 +150,7 @@ pub fn scan_folder(
                 // Create collection entry
                 let now = chrono::Utc::now().to_rfc3339();
                 let entry = CollectionEntry {
-                    id: 0,
+                    id: retro_junk_catalog::CollectionId(0),
                     media_id: media.id.clone(),
                     user_id: options.user_id.clone(),
                     owned: true,

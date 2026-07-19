@@ -4,7 +4,7 @@
 //! and status. These are mapped to Work → Release → Media entities in the database.
 
 use retro_junk_catalog::name_parser::{self, DumpStatus};
-use retro_junk_catalog::types::{ImportLog, Media, MediaStatus, Release};
+use retro_junk_catalog::types::{ImportLog, ImportLogId, Media, MediaStatus, Release};
 use retro_junk_core::Platform;
 use retro_junk_dat::DatFile;
 use retro_junk_db::operations::{self, OperationError};
@@ -292,10 +292,10 @@ pub fn log_import(
     source_name: &str,
     source_version: &str,
     stats: &ImportStats,
-) -> Result<i64, ImportError> {
+) -> Result<ImportLogId, ImportError> {
     let now = chrono::Utc::now().to_rfc3339();
     let log_entry = ImportLog {
-        id: 0,
+        id: ImportLogId(0),
         source_type: source_type.to_string(),
         source_name: source_name.to_string(),
         source_version: source_version.to_string(),

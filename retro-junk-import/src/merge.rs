@@ -4,7 +4,7 @@
 //! this module detects conflicts between existing and new values, creating
 //! disagreement records for manual resolution.
 
-use retro_junk_catalog::types::{Disagreement, Override, Release};
+use retro_junk_catalog::types::{Disagreement, DisagreementId, Override, Release};
 use retro_junk_db::operations;
 use rusqlite::Connection;
 
@@ -41,7 +41,7 @@ pub fn check_field(
 
     // Real conflict — create a disagreement record
     let disagreement = Disagreement {
-        id: 0,
+        id: DisagreementId(0),
         entity_type: field.entity_type.to_string(),
         entity_id: field.entity_id.to_string(),
         field: field.field.to_string(),

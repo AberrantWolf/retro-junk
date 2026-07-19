@@ -13,6 +13,35 @@
 //! zero is meaningful (`rating`), and optional enums (`tag`).
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
+macro_rules! database_id {
+    ($name:ident) => {
+        /// Primary key of a row in the corresponding database table.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(transparent)]
+        pub struct $name(pub u64);
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                self.0.fmt(f)
+            }
+        }
+
+        impl std::str::FromStr for $name {
+            type Err = std::num::ParseIntError;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                value.parse().map(Self)
+            }
+        }
+    };
+}
+
+database_id!(MediaAssetId);
+database_id!(CollectionId);
+database_id!(ImportLogId);
+database_id!(DisagreementId);
 
 // ── Platform ────────────────────────────────────────────────────────────────
 
@@ -274,7 +303,7 @@ impl AssetOwner {
 /// An art/media asset associated with a release or specific media.
 #[derive(Debug, Clone)]
 pub struct Asset {
-    pub id: i64,
+    pub id: MediaAssetId,
     pub owner: AssetOwner,
     pub asset_type: String,
     pub region: String,
@@ -294,7 +323,7 @@ pub struct Asset {
 /// A user's ownership record for a specific media entry.
 #[derive(Debug, Clone)]
 pub struct CollectionEntry {
-    pub id: i64,
+    pub id: CollectionId,
     pub media_id: String,
     pub user_id: String,
     pub owned: bool,
@@ -311,7 +340,7 @@ pub struct CollectionEntry {
 /// Log entry for a data import operation.
 #[derive(Debug, Clone)]
 pub struct ImportLog {
-    pub id: i64,
+    pub id: ImportLogId,
     pub source_type: String,
     pub source_name: String,
     pub source_version: String,
@@ -325,7 +354,7 @@ pub struct ImportLog {
 /// A detected disagreement between two data sources.
 #[derive(Debug, Clone)]
 pub struct Disagreement {
-    pub id: i64,
+    pub id: DisagreementId,
     pub entity_type: String,
     pub entity_id: String,
     pub field: String,

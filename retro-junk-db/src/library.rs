@@ -7,6 +7,18 @@
 use rusqlite::{Connection, params};
 use thiserror::Error;
 
+macro_rules! library_id {
+    ($name:ident) => {
+        /// Primary key of a row in the corresponding library-cache table.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[repr(transparent)]
+        pub struct $name(pub u64);
+    };
+}
+
+library_id!(LibraryRootId);
+library_id!(LibraryConsoleId);
+
 #[derive(Debug, Error)]
 pub enum LibraryError {
     #[error("SQLite error: {0}")]
@@ -16,7 +28,7 @@ pub enum LibraryError {
 // ── Row Types ───────────────────────────────────────────────────────────────
 
 pub struct LibraryConsoleRow {
-    pub id: i64,
+    pub id: LibraryConsoleId,
     pub platform: String,
     pub folder_name: String,
     pub folder_path: String,
@@ -54,35 +66,41 @@ pub struct LibraryEntryRow {
 // ── Root Operations ─────────────────────────────────────────────────────────
 
 /// Insert or find a library root, returning its id.
-pub fn upsert_library_root(conn: &Connection, root_path: &str) -> Result<i64, LibraryError> {
+pub fn upsert_library_root(
+    conn: &Connection,
+    root_path: &str,
+) -> Result<LibraryRootId, LibraryError> {
     conn.execute(
         "INSERT OR IGNORE INTO library_roots (root_path) VALUES (?1)",
         params![root_path],
     )?;
-    let id: i64 = conn.query_row(
+    let id: u64 = conn.query_row(
         "SELECT id FROM library_roots WHERE root_path = ?1",
         params![root_path],
         |row| row.get(0),
     )?;
-    Ok(id)
+    Ok(LibraryRootId(id))
 }
 
 /// Get the id of a library root, if it exists.
 pub fn get_library_root_id(
     conn: &Connection,
     root_path: &str,
-) -> Result<Option<i64>, LibraryError> {
+) -> Result<Option<LibraryRootId>, LibraryError> {
     let mut stmt = conn.prepare("SELECT id FROM library_roots WHERE root_path = ?1")?;
     let mut rows = stmt.query(params![root_path])?;
     match rows.next()? {
-        Some(row) => Ok(Some(row.get(0)?)),
+        Some(row) => Ok(Some(LibraryRootId(row.get(0)?))),
         None => Ok(None),
     }
 }
 
 /// Delete a library root and all its consoles/entries (CASCADE).
-pub fn delete_library_root(conn: &Connection, root_id: i64) -> Result<(), LibraryError> {
-    conn.execute("DELETE FROM library_roots WHERE id = ?1", params![root_id])?;
+pub fn delete_library_root(conn: &Connection, root_id: LibraryRootId) -> Result<(), LibraryError> {
+    conn.execute(
+        "DELETE FROM library_roots WHERE id = ?1",
+        params![root_id.0],
+    )?;
     Ok(())
 }
 
@@ -91,15 +109,15 @@ pub fn delete_library_root(conn: &Connection, root_id: i64) -> Result<(), Librar
 /// Load all consoles for a root.
 pub fn load_consoles_for_root(
     conn: &Connection,
-    root_id: i64,
+    root_id: LibraryRootId,
 ) -> Result<Vec<LibraryConsoleRow>, LibraryError> {
     let mut stmt = conn.prepare(
         "SELECT id, platform, folder_name, folder_path, fingerprint_hash, dat_game_count
          FROM library_consoles WHERE root_id = ?1",
     )?;
-    let rows = stmt.query_map(params![root_id], |row| {
+    let rows = stmt.query_map(params![root_id.0], |row| {
         Ok(LibraryConsoleRow {
-            id: row.get(0)?,
+            id: LibraryConsoleId(row.get(0)?),
             platform: row.get(1)?,
             folder_name: row.get(2)?,
             folder_path: row.get(3)?,
@@ -112,7 +130,7 @@ pub fn load_consoles_for_root(
 
 /// The console-level columns written by [`save_console_bulk`].
 pub struct ConsoleRecord<'a> {
-    pub root_id: i64,
+    pub root_id: LibraryRootId,
     pub platform: &'a str,
     pub folder_name: &'a str,
     pub folder_path: &'a str,
@@ -129,7 +147,7 @@ pub fn save_console_bulk(
     conn: &Connection,
     console: &ConsoleRecord<'_>,
     entries: &[LibraryEntryRow],
-) -> Result<i64, LibraryError> {
+) -> Result<LibraryConsoleId, LibraryError> {
     let tx = conn.unchecked_transaction()?;
 
     // Upsert console row
@@ -142,7 +160,7 @@ pub fn save_console_bulk(
              fingerprint_hash = excluded.fingerprint_hash,
              dat_game_count = excluded.dat_game_count",
         params![
-            console.root_id,
+            console.root_id.0,
             console.platform,
             console.folder_name,
             console.folder_path,
@@ -151,9 +169,9 @@ pub fn save_console_bulk(
         ],
     )?;
 
-    let console_id: i64 = tx.query_row(
+    let console_id: u64 = tx.query_row(
         "SELECT id FROM library_consoles WHERE root_id = ?1 AND folder_name = ?2",
-        params![console.root_id, console.folder_name],
+        params![console.root_id.0, console.folder_name],
         |row| row.get(0),
     )?;
 
@@ -163,10 +181,10 @@ pub fn save_console_bulk(
         params![console_id],
     )?;
 
-    insert_entries_batch(&tx, console_id, entries)?;
+    insert_entries_batch(&tx, LibraryConsoleId(console_id), entries)?;
 
     tx.commit()?;
-    Ok(console_id)
+    Ok(LibraryConsoleId(console_id))
 }
 
 // ── Entry Operations ────────────────────────────────────────────────────────
@@ -174,7 +192,7 @@ pub fn save_console_bulk(
 /// Upsert a single entry by (`console_id`, `display_name`).
 pub fn upsert_entry(
     conn: &Connection,
-    console_id: i64,
+    console_id: LibraryConsoleId,
     entry: &LibraryEntryRow,
 ) -> Result<(), LibraryError> {
     execute_upsert_entry(conn, console_id, entry)
@@ -183,7 +201,7 @@ pub fn upsert_entry(
 /// Batch upsert entries in a transaction.
 pub fn upsert_entries(
     conn: &Connection,
-    console_id: i64,
+    console_id: LibraryConsoleId,
     entries: &[LibraryEntryRow],
 ) -> Result<(), LibraryError> {
     let tx = conn.unchecked_transaction()?;
@@ -197,7 +215,7 @@ pub fn upsert_entries(
 /// Load all entries for a console.
 pub fn load_entries_for_console(
     conn: &Connection,
-    console_id: i64,
+    console_id: LibraryConsoleId,
 ) -> Result<Vec<LibraryEntryRow>, LibraryError> {
     let mut stmt = conn.prepare(
         "SELECT display_name, game_entry_json, status, tag,
@@ -209,7 +227,7 @@ pub fn load_entries_for_console(
                 cue_compat_issues_json
          FROM library_entries WHERE console_id = ?1",
     )?;
-    let rows = stmt.query_map(params![console_id], |row| {
+    let rows = stmt.query_map(params![console_id.0], |row| {
         Ok(LibraryEntryRow {
             display_name: row.get(0)?,
             game_entry_json: row.get(1)?,
@@ -239,7 +257,7 @@ pub fn load_entries_for_console(
 
 fn execute_upsert_entry(
     conn: &Connection,
-    console_id: i64,
+    console_id: LibraryConsoleId,
     e: &LibraryEntryRow,
 ) -> Result<(), LibraryError> {
     conn.execute(
@@ -272,7 +290,7 @@ fn execute_upsert_entry(
              ambiguous_candidates_json = excluded.ambiguous_candidates_json,
              cue_compat_issues_json = excluded.cue_compat_issues_json",
         params![
-            console_id, e.display_name, e.game_entry_json, e.status, e.tag,
+            console_id.0, e.display_name, e.game_entry_json, e.status, e.tag,
             e.crc32, e.sha1, e.md5, e.data_size,
             e.dat_game_name, e.dat_rom_name, e.dat_match_method,
             e.region_override, e.cover_title, e.screen_title,
@@ -286,7 +304,7 @@ fn execute_upsert_entry(
 
 fn insert_entries_batch(
     conn: &Connection,
-    console_id: i64,
+    console_id: LibraryConsoleId,
     entries: &[LibraryEntryRow],
 ) -> Result<(), LibraryError> {
     let mut stmt = conn.prepare(
@@ -302,7 +320,7 @@ fn insert_entries_batch(
     )?;
     for e in entries {
         stmt.execute(params![
-            console_id,
+            console_id.0,
             e.display_name,
             e.game_entry_json,
             e.status,

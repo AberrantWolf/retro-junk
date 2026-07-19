@@ -3,8 +3,8 @@
 //! Provides lookup by hash, serial, platform, search, and listing.
 
 use retro_junk_catalog::types::{
-    Asset, AssetOwner, CatalogTag, CollectionEntry, Disagreement, ImportLog, Media, MediaStatus,
-    Release,
+    Asset, AssetOwner, CatalogTag, CollectionEntry, CollectionId, Disagreement, DisagreementId,
+    ImportLog, ImportLogId, Media, MediaAssetId, MediaStatus, Release,
 };
 use rusqlite::{Connection, params};
 
@@ -430,7 +430,7 @@ pub fn list_unresolved_disagreements(
         .collect();
     let rows = stmt.query_map(params.as_slice(), |row| {
         Ok(Disagreement {
-            id: row.get(0)?,
+            id: DisagreementId(row.get(0)?),
             entity_type: row.get(1)?,
             entity_id: row.get(2)?,
             field: row.get(3)?,
@@ -450,16 +450,16 @@ pub fn list_unresolved_disagreements(
 /// Get a single disagreement by ID.
 pub fn get_disagreement(
     conn: &Connection,
-    id: i64,
+    id: DisagreementId,
 ) -> Result<Option<Disagreement>, OperationError> {
     let mut stmt = conn.prepare(
         "SELECT id, entity_type, entity_id, field, source_a, value_a,
                 source_b, value_b, resolved, resolution, resolved_at, created_at
          FROM disagreements WHERE id = ?1",
     )?;
-    let result = stmt.query_row(rusqlite::params![id], |row| {
+    let result = stmt.query_row(rusqlite::params![id.0], |row| {
         Ok(Disagreement {
-            id: row.get(0)?,
+            id: DisagreementId(row.get(0)?),
             entity_type: row.get(1)?,
             entity_id: row.get(2)?,
             field: row.get(3)?,
@@ -485,7 +485,7 @@ pub fn get_disagreement(
 /// A collection entry joined with its release and media info.
 #[derive(Debug)]
 pub struct CollectionRow {
-    pub collection_id: i64,
+    pub collection_id: CollectionId,
     pub media_id: String,
     pub release_id: String,
     pub platform_id: String,
@@ -542,7 +542,7 @@ pub fn list_collection(
         .collect();
     let rows = stmt.query_map(params.as_slice(), |row| {
         Ok(CollectionRow {
-            collection_id: row.get(0)?,
+            collection_id: CollectionId(row.get(0)?),
             media_id: row.get(1)?,
             release_id: row.get(2)?,
             platform_id: row.get(3)?,
@@ -571,7 +571,7 @@ pub fn find_collection_entry(
     )?;
     let result = stmt.query_row(params![media_id, user_id], |row| {
         Ok(CollectionEntry {
-            id: row.get(0)?,
+            id: CollectionId(row.get(0)?),
             media_id: row.get(1)?,
             user_id: row.get(2)?,
             owned: row.get(3)?,
@@ -623,7 +623,7 @@ pub fn list_import_logs(
     ))?;
     let rows = stmt.query_map([], |row| {
         Ok(ImportLog {
-            id: row.get(0)?,
+            id: ImportLogId(row.get(0)?),
             source_type: row.get(1)?,
             source_name: row.get(2)?,
             source_version: row.get(3)?,
@@ -1315,7 +1315,7 @@ pub fn list_collection_paged(
         .collect();
     let rows = stmt.query_map(params.as_slice(), |row| {
         Ok(CollectionRow {
-            collection_id: row.get(0)?,
+            collection_id: CollectionId(row.get(0)?),
             media_id: row.get(1)?,
             release_id: row.get(2)?,
             platform_id: row.get(3)?,
@@ -1382,7 +1382,7 @@ fn row_to_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<Asset> {
         }
     };
     Ok(Asset {
-        id: row.get(0)?,
+        id: MediaAssetId(row.get(0)?),
         owner,
         asset_type: row.get(3)?,
         region: row.get(4)?,

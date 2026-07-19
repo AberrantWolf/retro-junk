@@ -81,7 +81,7 @@ fn test_media(id: &str, release_id: &str) -> Media {
 
 fn test_disagreement(entity_id: &str, field: &str, value_a: &str, value_b: &str) -> Disagreement {
     Disagreement {
-        id: 0,
+        id: DisagreementId(0),
         entity_type: "release".to_string(),
         entity_id: entity_id.to_string(),
         field: field.to_string(),
@@ -215,14 +215,14 @@ fn disagreement_lifecycle() {
     let conn = open_memory().unwrap();
     let d = test_disagreement("smb1-nes-usa", "release_date", "1985-10-18", "1985-09-13");
     let id = insert_disagreement(&conn, &d).unwrap();
-    assert!(id > 0);
+    assert!(id > DisagreementId(0));
 
     resolve_disagreement(&conn, id, "source_a").unwrap();
 
     let resolved: bool = conn
         .query_row(
             "SELECT resolved FROM disagreements WHERE id = ?1",
-            [id],
+            [id.0],
             |row| row.get(0),
         )
         .unwrap();
@@ -250,7 +250,7 @@ fn get_disagreement_returns_record() {
     assert_eq!(found.resolved_at, "");
 
     // Not found
-    let missing = get_disagreement(&conn, 9999).unwrap();
+    let missing = get_disagreement(&conn, DisagreementId(9999)).unwrap();
     assert!(missing.is_none());
 }
 

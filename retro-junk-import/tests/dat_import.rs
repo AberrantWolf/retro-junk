@@ -193,7 +193,7 @@ fn log_import_records_stats() {
     let stats = import_dat(&conn, &dat, Platform::Nes, "no-intro", &SilentProgress).unwrap();
 
     let log_id = log_import(&conn, "no-intro", "Nintendo - NES", "2024-01-15", &stats).unwrap();
-    assert!(log_id > 0);
+    assert!(log_id > retro_junk_catalog::ImportLogId(0));
 
     let logs = list_import_logs(&conn, None).unwrap();
     assert_eq!(logs.len(), 1);

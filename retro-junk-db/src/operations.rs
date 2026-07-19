@@ -1,8 +1,8 @@
 //! CRUD operations for all catalog entity types.
 
 use retro_junk_catalog::types::{
-    Asset, CatalogPlatform, CatalogTag, CollectionEntry, Company, Disagreement, ImportLog, Media,
-    MediaStatus, MediaType, PlatformRelationship, Release,
+    Asset, CatalogPlatform, CatalogTag, CollectionEntry, Company, Disagreement, DisagreementId,
+    ImportLog, ImportLogId, Media, MediaStatus, MediaType, PlatformRelationship, Release,
 };
 use rusqlite::{Connection, params};
 use thiserror::Error;
@@ -710,7 +710,10 @@ pub fn detach_modded_media(conn: &Connection, media_id: &str) -> Result<(), Oper
 // ── Media Asset Operations ──────────────────────────────────────────────────
 
 /// Insert an asset.
-pub fn insert_asset(conn: &Connection, asset: &Asset) -> Result<i64, OperationError> {
+pub fn insert_asset(
+    conn: &Connection,
+    asset: &Asset,
+) -> Result<retro_junk_catalog::MediaAssetId, OperationError> {
     conn.execute(
         "INSERT INTO media_assets (release_id, media_id, asset_type, region, source,
              file_path, source_url, scraped, file_hash, width, height)
@@ -729,7 +732,9 @@ pub fn insert_asset(conn: &Connection, asset: &Asset) -> Result<i64, OperationEr
             asset.height,
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+    Ok(retro_junk_catalog::MediaAssetId(
+        conn.last_insert_rowid() as u64
+    ))
 }
 
 // ── Collection Operations ───────────────────────────────────────────────────
@@ -766,7 +771,10 @@ pub fn upsert_collection_entry(
 // ── Import Log Operations ───────────────────────────────────────────────────
 
 /// Insert an import log entry. Returns the generated ID.
-pub fn insert_import_log(conn: &Connection, log: &ImportLog) -> Result<i64, OperationError> {
+pub fn insert_import_log(
+    conn: &Connection,
+    log: &ImportLog,
+) -> Result<ImportLogId, OperationError> {
     conn.execute(
         "INSERT INTO import_log (source_type, source_name, source_version, imported_at,
              records_created, records_updated, records_unchanged, disagreements_found)
@@ -782,13 +790,16 @@ pub fn insert_import_log(conn: &Connection, log: &ImportLog) -> Result<i64, Oper
             log.disagreements_found,
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+    Ok(ImportLogId(conn.last_insert_rowid() as u64))
 }
 
 // ── Disagreement Operations ─────────────────────────────────────────────────
 
 /// Insert a disagreement record.
-pub fn insert_disagreement(conn: &Connection, d: &Disagreement) -> Result<i64, OperationError> {
+pub fn insert_disagreement(
+    conn: &Connection,
+    d: &Disagreement,
+) -> Result<DisagreementId, OperationError> {
     conn.execute(
         "INSERT INTO disagreements (entity_type, entity_id, field, source_a, value_a,
              source_b, value_b)
@@ -803,19 +814,19 @@ pub fn insert_disagreement(conn: &Connection, d: &Disagreement) -> Result<i64, O
             d.value_b,
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+    Ok(DisagreementId(conn.last_insert_rowid() as u64))
 }
 
 /// Resolve a disagreement.
 pub fn resolve_disagreement(
     conn: &Connection,
-    id: i64,
+    id: DisagreementId,
     resolution: &str,
 ) -> Result<(), OperationError> {
     let changed = conn.execute(
         "UPDATE disagreements SET resolved = 1, resolution = ?2, resolved_at = datetime('now')
          WHERE id = ?1",
-        params![id, resolution],
+        params![id.0, resolution],
     )?;
     if changed == 0 {
         return Err(OperationError::NotFound {

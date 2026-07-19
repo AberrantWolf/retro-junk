@@ -78,7 +78,7 @@ fn collection_entry_lifecycle() {
 
     // Add to collection
     let entry = CollectionEntry {
-        id: 0,
+        id: retro_junk_catalog::CollectionId(0),
         media_id: "m1".to_string(),
         user_id: "default".to_string(),
         owned: true,
@@ -179,7 +179,7 @@ fn collection_counts_by_platform_works() {
     upsert_collection_entry(
         &conn,
         &CollectionEntry {
-            id: 0,
+            id: retro_junk_catalog::CollectionId(0),
             media_id: "m1".to_string(),
             user_id: "default".to_string(),
             owned: true,
@@ -194,7 +194,7 @@ fn collection_counts_by_platform_works() {
     upsert_collection_entry(
         &conn,
         &CollectionEntry {
-            id: 0,
+            id: retro_junk_catalog::CollectionId(0),
             media_id: "m2".to_string(),
             user_id: "default".to_string(),
             owned: true,
@@ -221,7 +221,7 @@ fn collection_upsert_is_idempotent() {
     let conn = setup_db_with_media();
 
     let entry = CollectionEntry {
-        id: 0,
+        id: retro_junk_catalog::CollectionId(0),
         media_id: "m1".to_string(),
         user_id: "default".to_string(),
         owned: true,
@@ -247,7 +247,7 @@ fn list_collection_without_platform_filter() {
     upsert_collection_entry(
         &conn,
         &CollectionEntry {
-            id: 0,
+            id: retro_junk_catalog::CollectionId(0),
             media_id: "m1".to_string(),
             user_id: "default".to_string(),
             owned: true,
@@ -278,7 +278,7 @@ fn catalog_stats_includes_collection() {
     upsert_collection_entry(
         &conn,
         &CollectionEntry {
-            id: 0,
+            id: retro_junk_catalog::CollectionId(0),
             media_id: "m1".to_string(),
             user_id: "default".to_string(),
             owned: true,

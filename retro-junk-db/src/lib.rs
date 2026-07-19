@@ -9,9 +9,9 @@ pub mod queries;
 pub mod schema;
 
 pub use library::{
-    ConsoleRecord, LibraryConsoleRow, LibraryEntryRow, LibraryError, delete_library_root,
-    get_library_root_id, load_consoles_for_root, load_entries_for_console, save_console_bulk,
-    upsert_entries, upsert_entry, upsert_library_root,
+    ConsoleRecord, LibraryConsoleId, LibraryConsoleRow, LibraryEntryRow, LibraryError,
+    LibraryRootId, delete_library_root, get_library_root_id, load_consoles_for_root,
+    load_entries_for_console, save_console_bulk, upsert_entries, upsert_entry, upsert_library_root,
 };
 pub use operations::{
     MediaHashes, MediaTrack, OperationError, SeedStats, apply_disagreement_resolution,
