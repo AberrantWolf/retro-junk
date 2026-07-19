@@ -1382,3 +1382,28 @@ pub(crate) fn migrate_library_v10(conn: &Connection) -> Result<(), LibraryError>
     conn.execute_batch("DROP TABLE library_entries; ALTER TABLE library_entries_v10 RENAME TO library_entries; CREATE INDEX idx_library_entries_console ON library_entries(console_id); CREATE INDEX idx_library_entries_display ON library_entries(console_id,display_name COLLATE NOCASE,id); COMMIT; PRAGMA foreign_keys=ON;")?;
     Ok(())
 }
+
+/// v10 -> v11 repair for consoles whose derived analysis was lost during the
+/// SQLite-authoritative cutover. Such consoles must not remain `ready`: doing
+/// so presents every entry as gray/unknown indefinitely and prevents the
+/// normal auto-scan queue from rebuilding their derived state.
+pub(crate) fn migrate_library_v11(conn: &Connection) -> Result<(), LibraryError> {
+    conn.execute(
+        "UPDATE library_consoles AS c
+         SET scan_state='stale', revision=revision+1
+         WHERE scan_state='ready'
+           AND EXISTS (
+               SELECT 1 FROM library_entries e WHERE e.console_id=c.id
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM library_entries e
+               WHERE e.console_id=c.id
+                 AND (e.status<>'unknown'
+                      OR e.crc32<>''
+                      OR e.identification_json IS NOT NULL
+                      OR e.disc_identifications_json IS NOT NULL)
+           )",
+        [],
+    )?;
+    Ok(())
+}

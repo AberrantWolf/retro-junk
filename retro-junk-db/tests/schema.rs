@@ -22,6 +22,43 @@ fn schema_is_idempotent() {
 }
 
 #[test]
+fn v11_marks_lossy_all_unknown_library_consoles_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("v10.db");
+    {
+        let conn = open_database(&db_path).unwrap();
+        conn.execute("DELETE FROM schema_version", []).unwrap();
+        conn.execute("INSERT INTO schema_version(version) VALUES (10)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO library_roots(id,root_path) VALUES(1,'/roms')",
+            [],
+        )
+        .unwrap();
+        conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'NES','nes','/roms/nes','fp','ready'),(2,1,'SNES','snes','/roms/snes','fp','ready')", []).unwrap();
+        conn.execute("INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json,status) VALUES(1,'file:a.nes','a.nes','{}','unknown'),(2,'file:b.sfc','b.sfc','{}','matched')", []).unwrap();
+    }
+
+    let conn = open_database(&db_path).unwrap();
+    let stale: String = conn
+        .query_row(
+            "SELECT scan_state FROM library_consoles WHERE id=1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let ready: String = conn
+        .query_row(
+            "SELECT scan_state FROM library_consoles WHERE id=2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stale, "stale");
+    assert_eq!(ready, "ready");
+}
+
+#[test]
 fn foreign_keys_enabled() {
     let conn = open_memory().unwrap();
     let fk: i32 = conn

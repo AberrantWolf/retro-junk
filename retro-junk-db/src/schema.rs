@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 10;
+pub const CURRENT_VERSION: i32 = 11;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -539,6 +539,7 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 conn.execute_batch("PRAGMA foreign_key_check;")?;
             }
             9 => crate::library::migrate_library_v10(conn)?,
+            10 => crate::library::migrate_library_v11(conn)?,
             _ => {}
         }
         version += 1;
