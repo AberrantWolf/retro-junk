@@ -6,6 +6,17 @@ use std::collections::HashSet;
 use retro_junk_lib::scanner::GameEntry;
 
 use super::*;
+
+#[test]
+fn database_stale_consoles_auto_scan_even_when_preference_is_disabled() {
+    assert!(should_queue_auto_scan(ScanStatus::NotScanned, false, true));
+    assert!(!should_queue_auto_scan(
+        ScanStatus::NotScanned,
+        false,
+        false
+    ));
+    assert!(!should_queue_auto_scan(ScanStatus::Scanned, true, true));
+}
 use crate::test_support::{test_console, test_entry};
 
 // -- find_entry_by_file_mut (D4) --

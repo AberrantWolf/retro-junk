@@ -3,7 +3,7 @@
 mod tests;
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -70,6 +70,8 @@ pub struct LibraryBrowserState {
     pub entry_counts: HashMap<retro_junk_db::LibraryConsoleId, u64>,
     /// Worst effective entry status for each console, retained when pages are evicted.
     pub console_statuses: HashMap<retro_junk_db::LibraryConsoleId, EntryStatus>,
+    /// Consoles explicitly marked stale by SQLite and requiring a correctness rebuild.
+    pub stale_consoles: HashSet<retro_junk_db::LibraryConsoleId>,
 }
 
 impl LibraryBrowserState {
@@ -1262,17 +1264,30 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 app.browser.consoles.len()
             );
 
-            // Auto-scan all unscanned consoles if setting is enabled.
+            // Database-stale consoles are always rebuilt: their projections are
+            // known invalid, so this is correctness repair rather than the
+            // optional scan-new-folders preference.
             // Scans run sequentially via the pending_auto_scans queue to avoid
             // stampeding slow filesystems (e.g., network shares).
-            if app.settings.general.auto_scan_on_open {
-                for c in &app.browser.consoles {
-                    if c.scan_status == ScanStatus::NotScanned {
-                        app.ui_state
-                            .pending_auto_scans
-                            .push_back(c.folder_name.clone());
-                    }
+            for console in &app.browser.consoles {
+                let database_stale = console
+                    .id
+                    .is_some_and(|id| app.browser.stale_consoles.contains(&id));
+                if should_queue_auto_scan(
+                    console.scan_status,
+                    app.settings.general.auto_scan_on_open,
+                    database_stale,
+                ) && !app
+                    .ui_state
+                    .pending_auto_scans
+                    .contains(&console.folder_name)
+                {
+                    app.ui_state
+                        .pending_auto_scans
+                        .push_back(console.folder_name.clone());
                 }
+            }
+            if !app.ui_state.pending_auto_scans.is_empty() {
                 start_auto_scan_batch(app, ctx);
             }
         }
@@ -2540,6 +2555,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             };
         }
     }
+}
+
+fn should_queue_auto_scan(
+    status: ScanStatus,
+    auto_scan_on_open: bool,
+    database_stale: bool,
+) -> bool {
+    status == ScanStatus::NotScanned && (auto_scan_on_open || database_stale)
 }
 
 // -- Tools state --

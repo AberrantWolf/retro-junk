@@ -56,6 +56,7 @@ fn long_values_wrap_instead_of_widening_the_panel() {
         active_page: None,
         entry_counts: std::collections::HashMap::new(),
         console_statuses: std::collections::HashMap::new(),
+        stale_consoles: std::collections::HashSet::new(),
     };
     state.ui_state.selected_console = state.browser.consoles[0].id;
     state.ui_state.focused_entry = state.browser.consoles[0].entries[0].id;

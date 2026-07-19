@@ -499,6 +499,11 @@ impl RetroJunkApp {
             } else {
                 self.browser.console_statuses.remove(&summary.id);
             }
+            if summary.scan_state == retro_junk_db::LibraryScanState::Stale {
+                self.browser.stale_consoles.insert(summary.id);
+            } else {
+                self.browser.stale_consoles.remove(&summary.id);
+            }
             if let Some(index) = self
                 .browser
                 .find_by_id(summary.id)
