@@ -1,0 +1,498 @@
+//! Serialized SQLite worker and revision-aware UI projection controller.
+#![allow(dead_code)] // APIs are consumed incrementally as producers cut over.
+
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
+
+use retro_junk_db::{
+    ConsoleScanToken, EntryAnalysisUpdate, LibraryChangeSet, LibraryConsoleId,
+    LibraryConsoleSummary, LibraryEntryDetail, LibraryEntryId, LibraryEntryListPage,
+    LibraryEntryListQuery, LibraryRootId, ScannedLibraryEntry,
+};
+
+pub type UiSessionGeneration = u64;
+pub type StoreRequestId = u64;
+
+#[derive(Debug, Clone)]
+pub struct StoreEnvelope<T> {
+    pub session_generation: UiSessionGeneration,
+    pub request_id: StoreRequestId,
+    pub payload: T,
+}
+
+#[derive(Debug, Clone)]
+pub enum LibraryStoreRequest {
+    ConsoleSummaries(LibraryRootId),
+    EntryList(LibraryEntryListQuery),
+    EntryDetail(LibraryEntryId),
+    BeginConsoleScan(LibraryConsoleId),
+    ReconcileConsoleScan {
+        token: ConsoleScanToken,
+        fingerprint_hash: String,
+        entries: Vec<ScannedLibraryEntry>,
+    },
+    SetRegionOverride {
+        entry_id: LibraryEntryId,
+        value: Option<String>,
+    },
+    SetTag {
+        entry_id: LibraryEntryId,
+        value: Option<String>,
+    },
+    ApplyAnalysis {
+        entry_id: LibraryEntryId,
+        expected_source_revision: u64,
+        update: EntryAnalysisUpdate,
+    },
+    ApplyDiscAnalysis {
+        entry_id: LibraryEntryId,
+        expected_source_revision: u64,
+        json: Option<String>,
+    },
+    ApplyFilesystemTransition {
+        entry_id: LibraryEntryId,
+        expected_source_revision: u64,
+        entry: ScannedLibraryEntry,
+    },
+    MarkConsoleStale(LibraryConsoleId),
+    DeleteRoot(LibraryRootId),
+    ClearCache,
+    Shutdown,
+}
+
+#[derive(Debug, Clone)]
+pub enum LibraryStoreValue {
+    ConsoleSummaries(Vec<LibraryConsoleSummary>),
+    EntryList(LibraryEntryListPage),
+    EntryDetail(Option<LibraryEntryDetail>),
+    ScanToken(ConsoleScanToken),
+    ChangeSet(LibraryChangeSet),
+    ShutdownComplete,
+}
+
+pub type LibraryStoreReply = StoreEnvelope<Result<LibraryStoreValue, String>>;
+
+pub struct LibraryStore {
+    request_tx: mpsc::Sender<StoreEnvelope<LibraryStoreRequest>>,
+    reply_rx: mpsc::Receiver<LibraryStoreReply>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl LibraryStore {
+    pub fn start(path: PathBuf) -> Result<Self, String> {
+        // Open once on the caller to surface schema/migration failures before
+        // returning a worker that can only report asynchronous errors.
+        retro_junk_db::open_database(&path).map_err(|e| e.to_string())?;
+        let (request_tx, request_rx) = mpsc::channel();
+        let (reply_tx, reply_rx) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("library-store".into())
+            .spawn(move || worker_main(path, request_rx, reply_tx))
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            request_tx,
+            reply_rx,
+            thread: Some(thread),
+        })
+    }
+
+    pub fn submit(
+        &self,
+        envelope: StoreEnvelope<LibraryStoreRequest>,
+    ) -> Result<(), mpsc::SendError<StoreEnvelope<LibraryStoreRequest>>> {
+        self.request_tx.send(envelope)
+    }
+
+    pub fn try_recv(&self) -> Result<LibraryStoreReply, mpsc::TryRecvError> {
+        self.reply_rx.try_recv()
+    }
+
+    pub fn recv_timeout(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<LibraryStoreReply, mpsc::RecvTimeoutError> {
+        self.reply_rx.recv_timeout(timeout)
+    }
+
+    /// FIFO channels guarantee that all commands submitted before shutdown
+    /// finish before the worker acknowledges shutdown.
+    pub fn shutdown_and_join(&mut self, generation: UiSessionGeneration) {
+        if self.thread.is_none() {
+            return;
+        }
+        let _ = self.submit(StoreEnvelope {
+            session_generation: generation,
+            request_id: u64::MAX,
+            payload: LibraryStoreRequest::Shutdown,
+        });
+        if let Some(handle) = self.thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for LibraryStore {
+    fn drop(&mut self) {
+        self.shutdown_and_join(0);
+    }
+}
+
+fn worker_main(
+    path: PathBuf,
+    requests: mpsc::Receiver<StoreEnvelope<LibraryStoreRequest>>,
+    replies: mpsc::Sender<LibraryStoreReply>,
+) {
+    let mut conn = match retro_junk_db::open_database(&path) {
+        Ok(conn) => conn,
+        Err(error) => {
+            log::error!("library store failed to open: {error}");
+            return;
+        }
+    };
+    while let Ok(request) = requests.recv() {
+        let stop = matches!(request.payload, LibraryStoreRequest::Shutdown);
+        let payload = execute(&mut conn, request.payload).map_err(|e| e.to_string());
+        let _ = replies.send(StoreEnvelope {
+            session_generation: request.session_generation,
+            request_id: request.request_id,
+            payload,
+        });
+        if stop {
+            break;
+        }
+    }
+}
+
+fn execute(
+    conn: &mut retro_junk_db::Connection,
+    request: LibraryStoreRequest,
+) -> Result<LibraryStoreValue, retro_junk_db::LibraryError> {
+    use LibraryStoreRequest as R;
+    Ok(match request {
+        R::ConsoleSummaries(root) => {
+            LibraryStoreValue::ConsoleSummaries(retro_junk_db::list_console_summaries(conn, root)?)
+        }
+        R::EntryList(query) => {
+            LibraryStoreValue::EntryList(retro_junk_db::query_entry_list(conn, &query)?)
+        }
+        R::EntryDetail(id) => {
+            LibraryStoreValue::EntryDetail(retro_junk_db::load_entry_detail(conn, id)?)
+        }
+        R::BeginConsoleScan(id) => {
+            LibraryStoreValue::ScanToken(retro_junk_db::begin_console_scan(conn, id)?)
+        }
+        R::ReconcileConsoleScan {
+            token,
+            fingerprint_hash,
+            entries,
+        } => LibraryStoreValue::ChangeSet(retro_junk_db::reconcile_console_scan(
+            conn,
+            token,
+            &fingerprint_hash,
+            &entries,
+        )?),
+        R::SetRegionOverride { entry_id, value } => LibraryStoreValue::ChangeSet(
+            retro_junk_db::set_entry_region_override(conn, entry_id, value.as_deref())?,
+        ),
+        R::SetTag { entry_id, value } => LibraryStoreValue::ChangeSet(
+            retro_junk_db::set_entry_tag(conn, entry_id, value.as_deref())?,
+        ),
+        R::ApplyAnalysis {
+            entry_id,
+            expected_source_revision,
+            update,
+        } => LibraryStoreValue::ChangeSet(retro_junk_db::apply_entry_analysis(
+            conn,
+            entry_id,
+            expected_source_revision,
+            &update,
+        )?),
+        R::ApplyDiscAnalysis {
+            entry_id,
+            expected_source_revision,
+            json,
+        } => LibraryStoreValue::ChangeSet(retro_junk_db::apply_disc_analysis(
+            conn,
+            entry_id,
+            expected_source_revision,
+            json.as_deref(),
+        )?),
+        R::ApplyFilesystemTransition {
+            entry_id,
+            expected_source_revision,
+            entry,
+        } => LibraryStoreValue::ChangeSet(retro_junk_db::apply_filesystem_transition(
+            conn,
+            entry_id,
+            expected_source_revision,
+            &entry,
+        )?),
+        R::MarkConsoleStale(id) => {
+            LibraryStoreValue::ChangeSet(retro_junk_db::mark_console_stale(conn, id)?)
+        }
+        R::DeleteRoot(id) => {
+            LibraryStoreValue::ChangeSet(retro_junk_db::delete_library_root(conn, id)?)
+        }
+        R::ClearCache => LibraryStoreValue::ChangeSet(retro_junk_db::clear_library_cache(conn)?),
+        R::Shutdown => LibraryStoreValue::ShutdownComplete,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct Versioned<T> {
+    pub revision: u64,
+    pub value: T,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ProjectionStatus {
+    #[default]
+    Idle,
+    Loading {
+        request_id: StoreRequestId,
+    },
+    Failed {
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AsyncProjection<T> {
+    pub value: Option<Versioned<T>>,
+    pub status: ProjectionStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ProjectionKey {
+    Consoles(LibraryRootId),
+    List(LibraryEntryListQuery),
+    Detail(LibraryEntryId),
+}
+
+/// Testable gate between immediate-mode rendering and the store. It rejects
+/// old-root, superseded, and older-revision replies and preserves safe prior
+/// values while a replacement projection loads.
+#[derive(Debug, Default)]
+pub struct LibraryProjectionController {
+    pub session_generation: UiSessionGeneration,
+    next_request_id: StoreRequestId,
+    latest: HashMap<ProjectionKey, StoreRequestId>,
+    minimum_console_revision: HashMap<LibraryConsoleId, u64>,
+    loaded_pages: HashSet<(LibraryEntryListQuery, u64)>,
+    pub selected_entries: HashSet<LibraryEntryId>,
+    pub focused_entry: Option<LibraryEntryId>,
+}
+
+impl LibraryProjectionController {
+    pub fn switch_root(&mut self) {
+        self.session_generation = self.session_generation.wrapping_add(1);
+        self.latest.clear();
+        self.loaded_pages.clear();
+        self.selected_entries.clear();
+        self.focused_entry = None;
+    }
+
+    pub fn schedule_list(
+        &mut self,
+        query: LibraryEntryListQuery,
+        known_revision: u64,
+    ) -> Option<StoreEnvelope<LibraryStoreRequest>> {
+        if self.loaded_pages.contains(&(query.clone(), known_revision)) {
+            return None;
+        }
+        let key = ProjectionKey::List(query.clone());
+        if self.latest.contains_key(&key) {
+            return None;
+        }
+        Some(self.schedule(key, LibraryStoreRequest::EntryList(query)))
+    }
+
+    pub fn schedule_summaries(
+        &mut self,
+        root: LibraryRootId,
+    ) -> StoreEnvelope<LibraryStoreRequest> {
+        self.schedule(
+            ProjectionKey::Consoles(root),
+            LibraryStoreRequest::ConsoleSummaries(root),
+        )
+    }
+
+    pub fn schedule_detail(&mut self, id: LibraryEntryId) -> StoreEnvelope<LibraryStoreRequest> {
+        self.schedule(
+            ProjectionKey::Detail(id),
+            LibraryStoreRequest::EntryDetail(id),
+        )
+    }
+
+    fn schedule(
+        &mut self,
+        key: ProjectionKey,
+        payload: LibraryStoreRequest,
+    ) -> StoreEnvelope<LibraryStoreRequest> {
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.latest.insert(key, self.next_request_id);
+        StoreEnvelope {
+            session_generation: self.session_generation,
+            request_id: self.next_request_id,
+            payload,
+        }
+    }
+
+    pub fn accept_list_reply(
+        &mut self,
+        envelope: &StoreEnvelope<Result<LibraryStoreValue, String>>,
+        query: &LibraryEntryListQuery,
+    ) -> bool {
+        if envelope.session_generation != self.session_generation
+            || self.latest.get(&ProjectionKey::List(query.clone())) != Some(&envelope.request_id)
+        {
+            return false;
+        }
+        let Ok(LibraryStoreValue::EntryList(page)) = &envelope.payload else {
+            self.latest.remove(&ProjectionKey::List(query.clone()));
+            return true;
+        };
+        if page.console_revision
+            < self
+                .minimum_console_revision
+                .get(&query.console_id)
+                .copied()
+                .unwrap_or(0)
+        {
+            self.latest.remove(&ProjectionKey::List(query.clone()));
+            return false;
+        }
+        self.loaded_pages
+            .insert((query.clone(), page.console_revision));
+        self.latest.remove(&ProjectionKey::List(query.clone()));
+        true
+    }
+
+    pub fn apply_change_set(&mut self, changes: &LibraryChangeSet) {
+        if let Some((id, revision)) = changes.console_revision {
+            self.minimum_console_revision
+                .entry(id)
+                .and_modify(|known| *known = (*known).max(revision))
+                .or_insert(revision);
+            self.loaded_pages.retain(|(query, cached_revision)| {
+                query.console_id != id || *cached_revision >= revision
+            });
+        }
+        for id in &changes.removed_entries {
+            self.selected_entries.remove(id);
+            if self.focused_entry == Some(*id) {
+                self.focused_entry = None;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use retro_junk_db::{LibraryEntryFilter, LibraryEntrySortField, SortDirection};
+
+    fn query() -> LibraryEntryListQuery {
+        LibraryEntryListQuery {
+            console_id: LibraryConsoleId(7),
+            search: String::new(),
+            filter: LibraryEntryFilter::All,
+            sort: LibraryEntrySortField::DisplayName,
+            direction: SortDirection::Ascending,
+            offset: 0,
+            limit: LibraryEntryListQuery::DEFAULT_PAGE_SIZE,
+        }
+    }
+
+    #[test]
+    fn unchanged_frames_schedule_zero_additional_reads() {
+        let mut controller = LibraryProjectionController::default();
+        let request = controller.schedule_list(query(), 4).unwrap();
+        let reply = StoreEnvelope {
+            session_generation: 0,
+            request_id: request.request_id,
+            payload: Ok(LibraryStoreValue::EntryList(LibraryEntryListPage {
+                console_revision: 4,
+                total_count: 0,
+                counts: Default::default(),
+                offset: 0,
+                rows: Vec::new(),
+            })),
+        };
+        assert!(controller.accept_list_reply(&reply, &query()));
+        assert!(controller.schedule_list(query(), 4).is_none());
+    }
+
+    #[test]
+    fn root_session_and_revision_reject_stale_replies() {
+        let mut controller = LibraryProjectionController::default();
+        let request = controller.schedule_list(query(), 1).unwrap();
+        controller.apply_change_set(&LibraryChangeSet {
+            console_revision: Some((LibraryConsoleId(7), 3)),
+            ..Default::default()
+        });
+        let stale = StoreEnvelope {
+            session_generation: 0,
+            request_id: request.request_id,
+            payload: Ok(LibraryStoreValue::EntryList(LibraryEntryListPage {
+                console_revision: 2,
+                total_count: 0,
+                counts: Default::default(),
+                offset: 0,
+                rows: Vec::new(),
+            })),
+        };
+        assert!(!controller.accept_list_reply(&stale, &query()));
+        controller.switch_root();
+        assert!(!controller.accept_list_reply(&stale, &query()));
+    }
+
+    #[test]
+    fn removed_ids_are_cleaned_from_selection_and_focus() {
+        let mut controller = LibraryProjectionController::default();
+        controller
+            .selected_entries
+            .extend([LibraryEntryId(1), LibraryEntryId(2)]);
+        controller.focused_entry = Some(LibraryEntryId(2));
+        controller.apply_change_set(&LibraryChangeSet {
+            removed_entries: vec![LibraryEntryId(2)],
+            ..Default::default()
+        });
+        assert_eq!(
+            controller.selected_entries,
+            HashSet::from([LibraryEntryId(1)])
+        );
+        assert_eq!(controller.focused_entry, None);
+    }
+
+    #[test]
+    fn worker_serializes_requests_and_joins_after_shutdown() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        let conn = retro_junk_db::open_database(&path).unwrap();
+        let root = retro_junk_db::upsert_library_root(&conn, "/roms").unwrap();
+        drop(conn);
+
+        let mut store = LibraryStore::start(path).unwrap();
+        store
+            .submit(StoreEnvelope {
+                session_generation: 8,
+                request_id: 42,
+                payload: LibraryStoreRequest::ConsoleSummaries(root),
+            })
+            .unwrap();
+        let reply = store
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(reply.session_generation, 8);
+        assert_eq!(reply.request_id, 42);
+        assert!(matches!(
+            reply.payload,
+            Ok(LibraryStoreValue::ConsoleSummaries(ref rows)) if rows.is_empty()
+        ));
+        store.shutdown_and_join(8);
+        assert!(store.thread.is_none());
+    }
+}

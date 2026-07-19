@@ -58,14 +58,18 @@ pub enum FocusedPanel {
     ConsoleTree,
 }
 
-// -- Library state --
+// -- In-memory library state --
 
 #[derive(Default)]
-pub struct Library {
+/// The GUI's per-run representation of the scanned ROM library.
+///
+/// This is populated from the persistent SQLite library cache and updated by
+/// scans; it lets the immediate-mode UI render without querying SQLite per frame.
+pub struct LibraryState {
     pub consoles: Vec<ConsoleState>,
 }
 
-impl Library {
+impl LibraryState {
     /// Find a console by `folder_name`. Returns the index.
     pub fn find_by_folder(&self, folder_name: &str) -> Option<usize> {
         self.consoles
@@ -75,6 +79,11 @@ impl Library {
 }
 
 pub struct ConsoleState {
+    /// Durable database identity; absent only before the first reconciliation.
+    #[allow(dead_code)]
+    pub id: Option<retro_junk_db::LibraryConsoleId>,
+    #[allow(dead_code)]
+    pub revision: u64,
     pub platform: Platform,
     pub folder_name: String,
     pub folder_path: PathBuf,
@@ -234,6 +243,10 @@ pub struct DiscIdentification {
 }
 
 pub struct LibraryEntry {
+    /// Durable database identity; absent only for not-yet-reconciled scan rows.
+    pub id: Option<retro_junk_db::LibraryEntryId>,
+    pub revision: u64,
+    pub source_revision: u64,
     pub game_entry: GameEntry,
     pub identification: Option<RomIdentification>,
     pub hashes: Option<FileHashes>,
@@ -868,7 +881,7 @@ pub enum AppMessage {
 
     // -- Cache --
     CacheLoaded {
-        library: Library,
+        library: LibraryState,
     },
 
     /// Sent after the cache load attempt finishes (whether cache existed or not)
@@ -1185,6 +1198,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 return;
             }
             app.library.consoles.push(ConsoleState {
+                id: None,
+                revision: 0,
                 platform,
                 folder_name,
                 folder_path,
@@ -1253,6 +1268,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         if let Some(cached) = existing.get(ge.display_name()) {
                             // File still exists — keep cached analysis data
                             LibraryEntry {
+                                id: cached.id,
+                                revision: cached.revision,
+                                source_revision: cached.source_revision,
                                 game_entry: ge,
                                 identification: cached.identification.clone(),
                                 hashes: cached.hashes.clone(),
@@ -1271,6 +1289,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         } else {
                             // New file — start fresh
                             LibraryEntry {
+                                id: None,
+                                revision: 0,
+                                source_revision: 0,
                                 game_entry: ge,
                                 identification: None,
                                 hashes: None,
@@ -1636,7 +1657,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             if let Some(ci) = app.library.find_by_folder(&folder_name) {
                 let console = &mut app.library.consoles[ci];
                 console.scan_status = ScanStatus::Scanned;
-                // Cache fingerprint so save_library doesn't need to recompute.
+                // Cache the quick folder fingerprint for stale-state checks.
                 // Fingerprint is computed in the scan worker to keep network I/O off the UI thread.
                 console.fingerprint = Some(fingerprint);
             }

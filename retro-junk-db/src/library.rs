@@ -1,15 +1,18 @@
-//! CRUD operations for the GUI library cache tables.
+//! SQLite-authoritative storage for the GUI library.
 //!
-//! Stores per-root, per-console, per-entry library state in `SQLite`
-//! instead of JSON files. Row types use plain Strings at the DB boundary;
-//! the GUI layer handles domain ↔ row conversion.
+//! Catalog tables deliberately remain outside this module.  Library writes are
+//! ID-addressed, revisioned, and transactional; expensive filesystem work is
+//! represented by descriptors produced before a transaction begins.
 
-use rusqlite::{Connection, params};
+use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path};
+
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 macro_rules! library_id {
     ($name:ident) => {
-        /// Primary key of a row in the corresponding library-cache table.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(transparent)]
         pub struct $name(pub u64);
@@ -18,14 +21,336 @@ macro_rules! library_id {
 
 library_id!(LibraryRootId);
 library_id!(LibraryConsoleId);
+library_id!(LibraryEntryId);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LibrarySourceKey(String);
+
+impl LibrarySourceKey {
+    pub fn new(value: impl Into<String>) -> Result<Self, LibraryError> {
+        let value = value.into();
+        let (kind, path) = value
+            .split_once(':')
+            .ok_or(LibraryError::UnsafeSourcePath)?;
+        if !matches!(kind, "file" | "set") || path.is_empty() {
+            return Err(LibraryError::UnsafeSourcePath);
+        }
+        normalize_relative_path(Path::new(path))?;
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    fn invalid(row_id: u64) -> Self {
+        Self(format!("invalid:{row_id}"))
+    }
+}
+
+impl std::fmt::Display for LibrarySourceKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum LibraryError {
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("source path must be relative, Unicode, and contain no parent traversal")]
+    UnsafeSourcePath,
+    #[error("source file error: {0}")]
+    SourceIo(#[from] std::io::Error),
+    #[error("stale library command")]
+    StaleCommand,
+    #[error("library row not found")]
+    NotFound,
+    #[error("invalid persisted scan state: {0}")]
+    InvalidScanState(String),
 }
 
-// ── Row Types ───────────────────────────────────────────────────────────────
+impl From<LibraryError> for crate::schema::SchemaError {
+    fn from(value: LibraryError) -> Self {
+        match value {
+            LibraryError::Sqlite(e) => Self::Sqlite(e),
+            other => Self::LibraryMigration(other.to_string()),
+        }
+    }
+}
+
+pub fn normalize_relative_path(path: &Path) -> Result<String, LibraryError> {
+    let portable = path
+        .to_str()
+        .ok_or(LibraryError::UnsafeSourcePath)?
+        .replace('\\', "/");
+    if portable.starts_with('/')
+        || portable
+            .split('/')
+            .next()
+            .is_some_and(|part| part.ends_with(':'))
+    {
+        return Err(LibraryError::UnsafeSourcePath);
+    }
+    let mut parts = Vec::new();
+    for component in Path::new(&portable).components() {
+        match component {
+            Component::Normal(part) => {
+                parts.push(part.to_str().ok_or(LibraryError::UnsafeSourcePath)?)
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(LibraryError::UnsafeSourcePath);
+            }
+        }
+    }
+    if parts.is_empty() {
+        return Err(LibraryError::UnsafeSourcePath);
+    }
+    Ok(parts.join("/"))
+}
+
+pub fn file_source_key(relative_path: &Path) -> Result<LibrarySourceKey, LibraryError> {
+    LibrarySourceKey::new(format!("file:{}", normalize_relative_path(relative_path)?))
+}
+
+pub fn set_source_key(relative_directory: &Path) -> Result<LibrarySourceKey, LibraryError> {
+    LibrarySourceKey::new(format!(
+        "set:{}",
+        normalize_relative_path(relative_directory)?
+    ))
+}
+
+/// Derive the stable source identity from the serialized legacy `GameEntry`.
+/// This intentionally understands only the migration representation, keeping
+/// the database crate independent from the scanner crate.
+pub fn source_key_from_game_entry_json(
+    json: &str,
+    console_folder: &Path,
+) -> Result<LibrarySourceKey, LibraryError> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| LibraryError::UnsafeSourcePath)?;
+    if let Some(path) = value.get("SingleFile").and_then(serde_json::Value::as_str) {
+        let path = Path::new(path);
+        let relative = if path.is_absolute() {
+            path.strip_prefix(console_folder)
+                .map_err(|_| LibraryError::UnsafeSourcePath)?
+        } else {
+            path
+        };
+        return file_source_key(relative);
+    }
+    if let Some(set) = value.get("MultiDisc") {
+        let name = set
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(LibraryError::UnsafeSourcePath)?;
+        return set_source_key(Path::new(name));
+    }
+    Err(LibraryError::UnsafeSourcePath)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceFileKind {
+    File,
+    Cue,
+    M3u,
+    Other(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceFileDescriptor {
+    pub relative_path: String,
+    pub kind: SourceFileKind,
+    pub size: u64,
+    pub modified_seconds: i64,
+    pub modified_nanos: u32,
+    /// Contents are supplied for small source-defining descriptors (CUE/M3U).
+    pub descriptor_contents: Option<Vec<u8>>,
+}
+
+pub fn source_fingerprint(files: &[SourceFileDescriptor]) -> Result<String, LibraryError> {
+    let mut files = files.to_vec();
+    for file in &mut files {
+        file.relative_path = normalize_relative_path(Path::new(&file.relative_path))?;
+    }
+    files.sort_by(|a, b| {
+        a.relative_path
+            .cmp(&b.relative_path)
+            .then(kind_name(&a.kind).cmp(kind_name(&b.kind)))
+    });
+    let mut hash = Sha256::new();
+    for file in files {
+        hash.update(file.relative_path.as_bytes());
+        hash.update([0]);
+        hash.update(kind_name(&file.kind).as_bytes());
+        hash.update([0]);
+        hash.update(file.size.to_le_bytes());
+        hash.update(file.modified_seconds.to_le_bytes());
+        hash.update(file.modified_nanos.to_le_bytes());
+        if let Some(contents) = file.descriptor_contents {
+            hash.update((contents.len() as u64).to_le_bytes());
+            hash.update(contents);
+        } else {
+            hash.update(0_u64.to_le_bytes());
+        }
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+/// Collect and fingerprint one logical entry. All filesystem I/O happens
+/// before a reconciliation transaction begins.
+pub fn source_fingerprint_from_game_entry_json(
+    json: &str,
+    console_folder: &Path,
+) -> Result<String, LibraryError> {
+    let value: serde_json::Value =
+        serde_json::from_str(json).map_err(|_| LibraryError::UnsafeSourcePath)?;
+    let mut paths = Vec::new();
+    if let Some(path) = value.get("SingleFile").and_then(serde_json::Value::as_str) {
+        paths.push(resolve_source_path(Path::new(path), console_folder)?);
+    } else if let Some(set) = value.get("MultiDisc") {
+        let name = set
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(LibraryError::UnsafeSourcePath)?;
+        let set_dir = console_folder.join(normalize_relative_path(Path::new(name))?);
+        let files = set
+            .get("files")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(LibraryError::UnsafeSourcePath)?;
+        for file in files {
+            paths.push(resolve_source_path(
+                Path::new(file.as_str().ok_or(LibraryError::UnsafeSourcePath)?),
+                console_folder,
+            )?);
+        }
+        if let Ok(children) = std::fs::read_dir(set_dir) {
+            paths.extend(children.flatten().map(|e| e.path()).filter(|p| {
+                p.extension()
+                    .and_then(|v| v.to_str())
+                    .is_some_and(|v| v.eq_ignore_ascii_case("m3u"))
+            }));
+        }
+    } else {
+        return Err(LibraryError::UnsafeSourcePath);
+    }
+    let descriptor_paths = paths.clone();
+    for descriptor in descriptor_paths {
+        if descriptor
+            .extension()
+            .and_then(|v| v.to_str())
+            .is_some_and(|v| v.eq_ignore_ascii_case("cue"))
+        {
+            let contents = std::fs::read_to_string(&descriptor)?;
+            let parent = descriptor.parent().ok_or(LibraryError::UnsafeSourcePath)?;
+            for referenced in cue_file_references(&contents) {
+                paths.push(parent.join(referenced));
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    let descriptors = paths
+        .into_iter()
+        .map(|path| source_descriptor(&path, console_folder))
+        .collect::<Result<Vec<_>, _>>()?;
+    source_fingerprint(&descriptors)
+}
+
+fn cue_file_references(contents: &str) -> Vec<&str> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let rest = line
+                .strip_prefix("FILE ")
+                .or_else(|| line.strip_prefix("file "))?
+                .trim_start();
+            if let Some(rest) = rest.strip_prefix('"') {
+                return rest.split_once('"').map(|(name, _)| name);
+            }
+            rest.split_whitespace().next()
+        })
+        .collect()
+}
+
+fn resolve_source_path(
+    path: &Path,
+    console_folder: &Path,
+) -> Result<std::path::PathBuf, LibraryError> {
+    if path.is_absolute() {
+        path.strip_prefix(console_folder)
+            .map_err(|_| LibraryError::UnsafeSourcePath)?;
+        Ok(path.to_path_buf())
+    } else {
+        Ok(console_folder.join(normalize_relative_path(path)?))
+    }
+}
+
+fn source_descriptor(
+    path: &Path,
+    console_folder: &Path,
+) -> Result<SourceFileDescriptor, LibraryError> {
+    let relative = path
+        .strip_prefix(console_folder)
+        .map_err(|_| LibraryError::UnsafeSourcePath)?;
+    let relative_path = normalize_relative_path(relative)?;
+    let metadata = path.metadata()?;
+    let extension = path.extension().and_then(|v| v.to_str()).unwrap_or("");
+    let kind = if extension.eq_ignore_ascii_case("cue") {
+        SourceFileKind::Cue
+    } else if extension.eq_ignore_ascii_case("m3u") {
+        SourceFileKind::M3u
+    } else {
+        SourceFileKind::File
+    };
+    let descriptor_contents = if matches!(kind, SourceFileKind::Cue | SourceFileKind::M3u)
+        && metadata.len() <= 1024 * 1024
+    {
+        Some(std::fs::read(path)?)
+    } else {
+        None
+    };
+    let duration = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+    Ok(SourceFileDescriptor {
+        relative_path,
+        kind,
+        size: metadata.len(),
+        modified_seconds: duration.map_or(0, |v| v.as_secs() as i64),
+        modified_nanos: duration.map_or(0, |v| v.subsec_nanos()),
+        descriptor_contents,
+    })
+}
+
+fn kind_name(kind: &SourceFileKind) -> &str {
+    match kind {
+        SourceFileKind::File => "file",
+        SourceFileKind::Cue => "cue",
+        SourceFileKind::M3u => "m3u",
+        SourceFileKind::Other(v) => v,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LibraryScanState {
+    Unscanned,
+    Ready,
+    Stale,
+}
+impl LibraryScanState {
+    fn parse(s: String) -> Result<Self, LibraryError> {
+        match s.as_str() {
+            "unscanned" => Ok(Self::Unscanned),
+            "ready" => Ok(Self::Ready),
+            "stale" => Ok(Self::Stale),
+            _ => Err(LibraryError::InvalidScanState(s)),
+        }
+    }
+}
 
 pub struct LibraryConsoleRow {
     pub id: LibraryConsoleId,
@@ -33,13 +358,14 @@ pub struct LibraryConsoleRow {
     pub folder_name: String,
     pub folder_path: String,
     pub fingerprint_hash: String,
-    /// Number of games in the matched DAT. 0 = no DAT loaded.
     pub dat_game_count: i64,
+    pub revision: u64,
+    pub scan_generation: u64,
+    pub scan_state: LibraryScanState,
 }
 
-/// One library entry row. Text fields use `""` for "not set"; the `*_json`
-/// blob columns stay `Option` because NULL ("never computed") is distinct
-/// from a present-but-empty serialized list.
+/// Compatibility row used by legacy conversion and full-detail serialization.
+#[derive(Debug, Clone)]
 pub struct LibraryEntryRow {
     pub display_name: String,
     pub game_entry_json: String,
@@ -48,7 +374,6 @@ pub struct LibraryEntryRow {
     pub crc32: String,
     pub sha1: String,
     pub md5: String,
-    /// Size in bytes. 0 = unknown.
     pub data_size: i64,
     pub dat_game_name: String,
     pub dat_rom_name: String,
@@ -63,284 +388,939 @@ pub struct LibraryEntryRow {
     pub cue_compat_issues_json: Option<String>,
 }
 
-// ── Root Operations ─────────────────────────────────────────────────────────
-
-/// Insert or find a library root, returning its id.
-pub fn upsert_library_root(
-    conn: &Connection,
-    root_path: &str,
-) -> Result<LibraryRootId, LibraryError> {
-    conn.execute(
-        "INSERT OR IGNORE INTO library_roots (root_path) VALUES (?1)",
-        params![root_path],
-    )?;
-    let id: u64 = conn.query_row(
-        "SELECT id FROM library_roots WHERE root_path = ?1",
-        params![root_path],
-        |row| row.get(0),
-    )?;
-    Ok(LibraryRootId(id))
-}
-
-/// Get the id of a library root, if it exists.
-pub fn get_library_root_id(
-    conn: &Connection,
-    root_path: &str,
-) -> Result<Option<LibraryRootId>, LibraryError> {
-    let mut stmt = conn.prepare("SELECT id FROM library_roots WHERE root_path = ?1")?;
-    let mut rows = stmt.query(params![root_path])?;
-    match rows.next()? {
-        Some(row) => Ok(Some(LibraryRootId(row.get(0)?))),
-        None => Ok(None),
-    }
-}
-
-/// Delete a library root and all its consoles/entries (CASCADE).
-pub fn delete_library_root(conn: &Connection, root_id: LibraryRootId) -> Result<(), LibraryError> {
-    conn.execute(
-        "DELETE FROM library_roots WHERE id = ?1",
-        params![root_id.0],
-    )?;
-    Ok(())
-}
-
-// ── Console Operations ──────────────────────────────────────────────────────
-
-/// Load all consoles for a root.
-pub fn load_consoles_for_root(
-    conn: &Connection,
-    root_id: LibraryRootId,
-) -> Result<Vec<LibraryConsoleRow>, LibraryError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, platform, folder_name, folder_path, fingerprint_hash, dat_game_count
-         FROM library_consoles WHERE root_id = ?1",
-    )?;
-    let rows = stmt.query_map(params![root_id.0], |row| {
-        Ok(LibraryConsoleRow {
-            id: LibraryConsoleId(row.get(0)?),
-            platform: row.get(1)?,
-            folder_name: row.get(2)?,
-            folder_path: row.get(3)?,
-            fingerprint_hash: row.get(4)?,
-            dat_game_count: row.get(5)?,
-        })
-    })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-/// The console-level columns written by [`save_console_bulk`].
 pub struct ConsoleRecord<'a> {
     pub root_id: LibraryRootId,
     pub platform: &'a str,
     pub folder_name: &'a str,
     pub folder_path: &'a str,
     pub fingerprint_hash: &'a str,
-    /// Number of games in the matched DAT. 0 = no DAT loaded.
     pub dat_game_count: i64,
 }
 
-/// Save a console and all its entries in a single transaction.
-///
-/// Upserts the console row, deletes all existing entries for it, then
-/// inserts all new entries. Returns the console id.
+#[derive(Debug, Clone)]
+pub struct LibraryConsoleSummary {
+    pub id: LibraryConsoleId,
+    pub root_id: LibraryRootId,
+    pub platform: String,
+    pub folder_name: String,
+    pub folder_path: String,
+    pub scan_state: LibraryScanState,
+    pub dat_game_count: u64,
+    pub entry_count: u64,
+    pub matched_count: u64,
+    pub unknown_count: u64,
+    pub revision: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LibraryEntryFilter {
+    All,
+    Matched,
+    Unmatched,
+    Ambiguous,
+    Error,
+    Tagged,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LibraryEntrySortField {
+    DisplayName,
+    Status,
+    Region,
+    Size,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LibraryEntryListQuery {
+    pub console_id: LibraryConsoleId,
+    pub search: String,
+    pub filter: LibraryEntryFilter,
+    pub sort: LibraryEntrySortField,
+    pub direction: SortDirection,
+    pub offset: u64,
+    pub limit: u64,
+}
+impl LibraryEntryListQuery {
+    pub const DEFAULT_PAGE_SIZE: u64 = 300;
+}
+
+#[derive(Debug, Clone)]
+pub struct LibraryEntryListItem {
+    pub id: LibraryEntryId,
+    pub display_name: String,
+    pub status: String,
+    pub tag: String,
+    pub region_override: String,
+    pub data_size: u64,
+    pub revision: u64,
+    pub source_revision: u64,
+}
+#[derive(Debug, Clone, Default)]
+pub struct LibraryEntryCounts {
+    pub total: u64,
+    pub matched: u64,
+    pub unknown: u64,
+    pub ambiguous: u64,
+    pub errors: u64,
+    pub tagged: u64,
+}
+#[derive(Debug, Clone)]
+pub struct LibraryEntryListPage {
+    pub console_revision: u64,
+    pub total_count: u64,
+    pub counts: LibraryEntryCounts,
+    pub offset: u64,
+    pub rows: Vec<LibraryEntryListItem>,
+}
+#[derive(Debug, Clone)]
+pub struct LibraryEntryDetail {
+    pub id: LibraryEntryId,
+    pub console_id: LibraryConsoleId,
+    pub entry_key: LibrarySourceKey,
+    pub revision: u64,
+    pub source_revision: u64,
+    pub source_fingerprint: String,
+    pub row: LibraryEntryRow,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LibraryChangeSet {
+    pub affected_entries: Vec<LibraryEntryId>,
+    pub removed_entries: Vec<LibraryEntryId>,
+    pub root_revision: Option<(LibraryRootId, u64)>,
+    pub console_revision: Option<(LibraryConsoleId, u64)>,
+    pub entry_revisions: Vec<(LibraryEntryId, u64, u64)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConsoleScanToken {
+    pub console_id: LibraryConsoleId,
+    pub generation: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ScannedLibraryEntry {
+    pub entry_key: LibrarySourceKey,
+    pub source_fingerprint: String,
+    pub row: LibraryEntryRow,
+}
+
+pub fn upsert_library_root(
+    conn: &Connection,
+    root_path: &str,
+) -> Result<LibraryRootId, LibraryError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO library_roots (root_path) VALUES (?1)",
+        [root_path],
+    )?;
+    Ok(LibraryRootId(conn.query_row(
+        "SELECT id FROM library_roots WHERE root_path=?1",
+        [root_path],
+        |r| r.get(0),
+    )?))
+}
+pub fn get_library_root_id(
+    conn: &Connection,
+    root_path: &str,
+) -> Result<Option<LibraryRootId>, LibraryError> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM library_roots WHERE root_path=?1",
+            [root_path],
+            |r| r.get::<_, u64>(0).map(LibraryRootId),
+        )
+        .optional()?)
+}
+
+pub fn delete_library_root(
+    conn: &Connection,
+    root_id: LibraryRootId,
+) -> Result<LibraryChangeSet, LibraryError> {
+    let removed = entry_ids_for_root(conn, root_id)?;
+    conn.execute("DELETE FROM library_roots WHERE id=?1", [root_id.0])?;
+    Ok(LibraryChangeSet {
+        removed_entries: removed,
+        ..Default::default()
+    })
+}
+
+pub fn clear_library_cache(conn: &Connection) -> Result<LibraryChangeSet, LibraryError> {
+    let removed = conn
+        .prepare("SELECT id FROM library_entries")?
+        .query_map([], |r| r.get::<_, u64>(0).map(LibraryEntryId))?
+        .collect::<Result<Vec<_>, _>>()?;
+    conn.execute("DELETE FROM library_roots", [])?;
+    Ok(LibraryChangeSet {
+        removed_entries: removed,
+        ..Default::default()
+    })
+}
+
+pub fn load_consoles_for_root(
+    conn: &Connection,
+    root_id: LibraryRootId,
+) -> Result<Vec<LibraryConsoleRow>, LibraryError> {
+    let mut stmt = conn.prepare("SELECT id,platform,folder_name,folder_path,fingerprint_hash,dat_game_count,revision,scan_generation,scan_state FROM library_consoles WHERE root_id=?1 ORDER BY folder_name COLLATE NOCASE,id")?;
+    let rows = stmt.query_map([root_id.0], |r| {
+        Ok((
+            r.get::<_, u64>(0)?,
+            r.get(1)?,
+            r.get(2)?,
+            r.get(3)?,
+            r.get(4)?,
+            r.get(5)?,
+            r.get::<_, u64>(6)?,
+            r.get::<_, u64>(7)?,
+            r.get::<_, String>(8)?,
+        ))
+    })?;
+    rows.map(|r| {
+        let (
+            id,
+            platform,
+            folder_name,
+            folder_path,
+            fingerprint_hash,
+            dat_game_count,
+            revision,
+            scan_generation,
+            state,
+        ) = r?;
+        Ok(LibraryConsoleRow {
+            id: LibraryConsoleId(id),
+            platform,
+            folder_name,
+            folder_path,
+            fingerprint_hash,
+            dat_game_count,
+            revision,
+            scan_generation,
+            scan_state: LibraryScanState::parse(state)?,
+        })
+    })
+    .collect()
+}
+
+pub fn begin_console_scan(
+    conn: &Connection,
+    console_id: LibraryConsoleId,
+) -> Result<ConsoleScanToken, LibraryError> {
+    if conn.execute(
+        "UPDATE library_consoles SET scan_generation=scan_generation+1 WHERE id=?1",
+        [console_id.0],
+    )? == 0
+    {
+        return Err(LibraryError::NotFound);
+    }
+    let generation = conn.query_row(
+        "SELECT scan_generation FROM library_consoles WHERE id=?1",
+        [console_id.0],
+        |r| r.get(0),
+    )?;
+    Ok(ConsoleScanToken {
+        console_id,
+        generation,
+    })
+}
+
+pub fn reconcile_console_scan(
+    conn: &mut Connection,
+    token: ConsoleScanToken,
+    fingerprint_hash: &str,
+    entries: &[ScannedLibraryEntry],
+) -> Result<LibraryChangeSet, LibraryError> {
+    let tx = conn.transaction()?;
+    let (root_id, generation): (u64, u64) = tx
+        .query_row(
+            "SELECT root_id,scan_generation FROM library_consoles WHERE id=?1",
+            [token.console_id.0],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or(LibraryError::NotFound)?;
+    if generation != token.generation {
+        return Err(LibraryError::StaleCommand);
+    }
+    let mut keys = HashSet::new();
+    if entries.iter().any(|e| !keys.insert(e.entry_key.as_str())) {
+        return Err(LibraryError::UnsafeSourcePath);
+    }
+    let mut affected = Vec::new();
+    let mut revisions = Vec::new();
+    for entry in entries {
+        let existing: Option<(u64,String,u64,u64)> = tx.query_row("SELECT id,source_fingerprint,revision,source_revision FROM library_entries WHERE console_id=?1 AND entry_key=?2", params![token.console_id.0,entry.entry_key.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        match existing {
+            Some((id, old_fp, revision, source_revision)) if old_fp == entry.source_fingerprint => {
+                tx.execute("UPDATE library_entries SET display_name=?1,game_entry_json=?2,revision=revision+1 WHERE id=?3", params![entry.row.display_name,entry.row.game_entry_json,id])?;
+                affected.push(LibraryEntryId(id));
+                revisions.push((LibraryEntryId(id), revision + 1, source_revision));
+            }
+            Some((id, _, revision, source_revision)) => {
+                update_changed_source(&tx, id, entry, revision + 1, source_revision + 1)?;
+                affected.push(LibraryEntryId(id));
+                revisions.push((LibraryEntryId(id), revision + 1, source_revision + 1));
+            }
+            None => {
+                insert_scanned_entry(&tx, token.console_id, entry)?;
+                let id = tx.last_insert_rowid() as u64;
+                affected.push(LibraryEntryId(id));
+                revisions.push((LibraryEntryId(id), 0, 0));
+            }
+        }
+    }
+    let existing = tx
+        .prepare("SELECT id,entry_key FROM library_entries WHERE console_id=?1")?
+        .query_map([token.console_id.0], |r| {
+            Ok((LibraryEntryId(r.get(0)?), r.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let removed: Vec<_> = existing
+        .into_iter()
+        .filter(|(_, k)| !keys.contains(k.as_str()))
+        .map(|(id, _)| id)
+        .collect();
+    for id in &removed {
+        tx.execute("DELETE FROM library_entries WHERE id=?1", [id.0])?;
+    }
+    tx.execute("UPDATE library_consoles SET fingerprint_hash=?1,scan_state='ready',revision=revision+1 WHERE id=?2", params![fingerprint_hash,token.console_id.0])?;
+    tx.execute(
+        "UPDATE library_roots SET revision=revision+1 WHERE id=?1",
+        [root_id],
+    )?;
+    let cr = revision_of(&tx, "library_consoles", token.console_id.0)?;
+    let rr = revision_of(&tx, "library_roots", root_id)?;
+    tx.commit()?;
+    Ok(LibraryChangeSet {
+        affected_entries: affected,
+        removed_entries: removed,
+        root_revision: Some((LibraryRootId(root_id), rr)),
+        console_revision: Some((token.console_id, cr)),
+        entry_revisions: revisions,
+    })
+}
+
+pub fn mark_console_stale(
+    conn: &mut Connection,
+    console_id: LibraryConsoleId,
+) -> Result<LibraryChangeSet, LibraryError> {
+    mutate_console(conn, console_id, |tx| {
+        tx.execute(
+            "UPDATE library_consoles SET scan_state='stale',revision=revision+1 WHERE id=?1",
+            [console_id.0],
+        )?;
+        Ok(Vec::new())
+    })
+}
+
+pub fn set_entry_region_override(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    value: Option<&str>,
+) -> Result<LibraryChangeSet, LibraryError> {
+    set_user_field(conn, id, "region_override", value.unwrap_or(""))
+}
+pub fn set_entry_tag(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    value: Option<&str>,
+) -> Result<LibraryChangeSet, LibraryError> {
+    set_user_field(conn, id, "tag", value.unwrap_or(""))
+}
+
+#[derive(Debug, Clone)]
+pub struct EntryAnalysisUpdate {
+    pub status: String,
+    pub crc32: String,
+    pub sha1: String,
+    pub md5: String,
+    pub data_size: i64,
+    pub dat_game_name: String,
+    pub dat_rom_name: String,
+    pub dat_match_method: String,
+    pub cover_title: String,
+    pub screen_title: String,
+    pub identification_json: Option<String>,
+    pub disc_identifications_json: Option<String>,
+    pub broken_references_json: Option<String>,
+    pub ambiguous_candidates_json: Option<String>,
+    pub cue_compat_issues_json: Option<String>,
+}
+
+pub fn apply_entry_analysis(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    expected_source_revision: u64,
+    a: &EntryAnalysisUpdate,
+) -> Result<LibraryChangeSet, LibraryError> {
+    mutate_entry(conn, id, expected_source_revision, |tx| {
+        tx.execute("UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,dat_game_name=?6,dat_rom_name=?7,dat_match_method=?8,cover_title=?9,screen_title=?10,identification_json=?11,disc_identifications_json=?12,broken_references_json=?13,ambiguous_candidates_json=?14,cue_compat_issues_json=?15,revision=revision+1 WHERE id=?16",params![a.status,a.crc32,a.sha1,a.md5,a.data_size,a.dat_game_name,a.dat_rom_name,a.dat_match_method,a.cover_title,a.screen_title,a.identification_json,a.disc_identifications_json,a.broken_references_json,a.ambiguous_candidates_json,a.cue_compat_issues_json,id.0])?;
+        Ok(())
+    })
+}
+pub fn apply_disc_analysis(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    expected_source_revision: u64,
+    json: Option<&str>,
+) -> Result<LibraryChangeSet, LibraryError> {
+    mutate_entry(conn, id, expected_source_revision, |tx| {
+        tx.execute("UPDATE library_entries SET disc_identifications_json=?1,revision=revision+1 WHERE id=?2",params![json,id.0])?;
+        Ok(())
+    })
+}
+
+pub fn apply_filesystem_transition(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    expected_source_revision: u64,
+    new_entry: &ScannedLibraryEntry,
+) -> Result<LibraryChangeSet, LibraryError> {
+    mutate_entry(conn, id, expected_source_revision, |tx| {
+        let revision = revision_of(tx, "library_entries", id.0)?;
+        update_changed_source(
+            tx,
+            id.0,
+            new_entry,
+            revision + 1,
+            expected_source_revision + 1,
+        )
+    })
+}
+
+pub fn list_console_summaries(
+    conn: &Connection,
+    root_id: LibraryRootId,
+) -> Result<Vec<LibraryConsoleSummary>, LibraryError> {
+    let mut stmt=conn.prepare("SELECT c.id,c.platform,c.folder_name,c.folder_path,c.scan_state,c.dat_game_count,c.revision,COUNT(e.id),SUM(CASE WHEN e.status='matched' THEN 1 ELSE 0 END),SUM(CASE WHEN e.status='unknown' THEN 1 ELSE 0 END) FROM library_consoles c LEFT JOIN library_entries e ON e.console_id=c.id WHERE c.root_id=?1 GROUP BY c.id ORDER BY c.folder_name COLLATE NOCASE,c.id")?;
+    let rows = stmt.query_map([root_id.0], |r| {
+        Ok((
+            r.get::<_, u64>(0)?,
+            r.get(1)?,
+            r.get(2)?,
+            r.get(3)?,
+            r.get::<_, String>(4)?,
+            r.get::<_, u64>(5)?,
+            r.get::<_, u64>(6)?,
+            r.get::<_, u64>(7)?,
+            r.get::<_, u64>(8)?,
+            r.get::<_, u64>(9)?,
+        ))
+    })?;
+    rows.map(|r| {
+        let (id, platform, folder_name, folder_path, state, dat, rev, count, matched, unknown) = r?;
+        Ok(LibraryConsoleSummary {
+            id: LibraryConsoleId(id),
+            root_id,
+            platform,
+            folder_name,
+            folder_path,
+            scan_state: LibraryScanState::parse(state)?,
+            dat_game_count: dat,
+            entry_count: count,
+            matched_count: matched,
+            unknown_count: unknown,
+            revision: rev,
+        })
+    })
+    .collect()
+}
+
+pub fn query_entry_list(
+    conn: &Connection,
+    q: &LibraryEntryListQuery,
+) -> Result<LibraryEntryListPage, LibraryError> {
+    let revision = revision_of(conn, "library_consoles", q.console_id.0)?;
+    let filter = filter_sql(q.filter);
+    let pattern = format!("%{}%", q.search.replace('%', "\\%").replace('_', "\\_"));
+    let where_sql =
+        format!("console_id=?1 AND display_name LIKE ?2 ESCAPE '\\' COLLATE NOCASE {filter}");
+    let total = conn.query_row(
+        &format!("SELECT COUNT(*) FROM library_entries WHERE {where_sql}"),
+        params![q.console_id.0, pattern],
+        |r| r.get(0),
+    )?;
+    let counts = entry_counts(conn, q.console_id)?;
+    let order = order_sql(q.sort, q.direction);
+    let sql = format!(
+        "SELECT id,display_name,status,tag,region_override,data_size,revision,source_revision FROM library_entries WHERE {where_sql} ORDER BY {order} LIMIT ?3 OFFSET ?4"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(
+            params![q.console_id.0, pattern, q.limit.clamp(1, 2000), q.offset],
+            |r| {
+                Ok(LibraryEntryListItem {
+                    id: LibraryEntryId(r.get(0)?),
+                    display_name: r.get(1)?,
+                    status: r.get(2)?,
+                    tag: r.get(3)?,
+                    region_override: r.get(4)?,
+                    data_size: r.get::<_, u64>(5)?,
+                    revision: r.get(6)?,
+                    source_revision: r.get(7)?,
+                })
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(LibraryEntryListPage {
+        console_revision: revision,
+        total_count: total,
+        counts,
+        offset: q.offset,
+        rows,
+    })
+}
+
+pub fn load_entry_detail(
+    conn: &Connection,
+    id: LibraryEntryId,
+) -> Result<Option<LibraryEntryDetail>, LibraryError> {
+    let sql = "SELECT console_id,entry_key,revision,source_revision,source_fingerprint,display_name,game_entry_json,status,tag,crc32,sha1,md5,data_size,dat_game_name,dat_rom_name,dat_match_method,region_override,cover_title,screen_title,identification_json,disc_identifications_json,broken_references_json,ambiguous_candidates_json,cue_compat_issues_json FROM library_entries WHERE id=?1";
+    Ok(conn
+        .query_row(sql, [id.0], |r| {
+            Ok(LibraryEntryDetail {
+                id,
+                console_id: LibraryConsoleId(r.get(0)?),
+                entry_key: LibrarySourceKey(r.get(1)?),
+                revision: r.get(2)?,
+                source_revision: r.get(3)?,
+                source_fingerprint: r.get(4)?,
+                row: LibraryEntryRow {
+                    display_name: r.get(5)?,
+                    game_entry_json: r.get(6)?,
+                    status: r.get(7)?,
+                    tag: r.get(8)?,
+                    crc32: r.get(9)?,
+                    sha1: r.get(10)?,
+                    md5: r.get(11)?,
+                    data_size: r.get(12)?,
+                    dat_game_name: r.get(13)?,
+                    dat_rom_name: r.get(14)?,
+                    dat_match_method: r.get(15)?,
+                    region_override: r.get(16)?,
+                    cover_title: r.get(17)?,
+                    screen_title: r.get(18)?,
+                    identification_json: r.get(19)?,
+                    disc_identifications_json: r.get(20)?,
+                    broken_references_json: r.get(21)?,
+                    ambiguous_candidates_json: r.get(22)?,
+                    cue_compat_issues_json: r.get(23)?,
+                },
+            })
+        })
+        .optional()?)
+}
+
+pub fn load_entries_for_console(
+    conn: &Connection,
+    console_id: LibraryConsoleId,
+) -> Result<Vec<LibraryEntryRow>, LibraryError> {
+    load_entry_details_for_console(conn, console_id)?
+        .into_iter()
+        .map(|detail| Ok(detail.row))
+        .collect()
+}
+
+pub fn load_entry_details_for_console(
+    conn: &Connection,
+    console_id: LibraryConsoleId,
+) -> Result<Vec<LibraryEntryDetail>, LibraryError> {
+    let ids = conn
+        .prepare(
+            "SELECT id FROM library_entries WHERE console_id=?1 ORDER BY display_name COLLATE NOCASE,id",
+        )?
+        .query_map([console_id.0], |r| r.get::<_, u64>(0).map(LibraryEntryId))?
+        .collect::<Result<Vec<_>, _>>()?;
+    ids.into_iter()
+        .map(|id| load_entry_detail(conn, id)?.ok_or(LibraryError::NotFound))
+        .collect()
+}
+
+/// Temporary compatibility wrapper. It derives the same keys as scans and
+/// reconciles rather than deleting/reinserting, preserving durable IDs.
 pub fn save_console_bulk(
     conn: &Connection,
     console: &ConsoleRecord<'_>,
     entries: &[LibraryEntryRow],
 ) -> Result<LibraryConsoleId, LibraryError> {
-    let tx = conn.unchecked_transaction()?;
-
-    // Upsert console row
-    tx.execute(
-        "INSERT INTO library_consoles (root_id, platform, folder_name, folder_path, fingerprint_hash, dat_game_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-         ON CONFLICT(root_id, folder_name) DO UPDATE SET
-             platform = excluded.platform,
-             folder_path = excluded.folder_path,
-             fingerprint_hash = excluded.fingerprint_hash,
-             dat_game_count = excluded.dat_game_count",
-        params![
-            console.root_id.0,
-            console.platform,
-            console.folder_name,
-            console.folder_path,
-            console.fingerprint_hash,
-            console.dat_game_count
-        ],
-    )?;
-
-    let console_id: u64 = tx.query_row(
-        "SELECT id FROM library_consoles WHERE root_id = ?1 AND folder_name = ?2",
+    conn.execute("INSERT INTO library_consoles(root_id,platform,folder_name,folder_path,fingerprint_hash,dat_game_count) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(root_id,folder_name) DO UPDATE SET platform=excluded.platform,folder_path=excluded.folder_path,dat_game_count=excluded.dat_game_count",params![console.root_id.0,console.platform,console.folder_name,console.folder_path,console.fingerprint_hash,console.dat_game_count])?;
+    let id = LibraryConsoleId(conn.query_row(
+        "SELECT id FROM library_consoles WHERE root_id=?1 AND folder_name=?2",
         params![console.root_id.0, console.folder_name],
-        |row| row.get(0),
-    )?;
-
-    // Delete existing entries and re-insert
-    tx.execute(
-        "DELETE FROM library_entries WHERE console_id = ?1",
-        params![console_id],
-    )?;
-
-    insert_entries_batch(&tx, LibraryConsoleId(console_id), entries)?;
-
-    tx.commit()?;
-    Ok(LibraryConsoleId(console_id))
+        |r| r.get(0),
+    )?);
+    let token = begin_console_scan(conn, id)?;
+    let scanned = entries
+        .iter()
+        .map(|row| {
+            Ok(ScannedLibraryEntry {
+                entry_key: source_key_from_game_entry_json(
+                    &row.game_entry_json,
+                    Path::new(console.folder_path),
+                )?,
+                source_fingerprint: String::new(),
+                row: row.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, LibraryError>>()?;
+    // The public API predates mutable Connection. `unchecked_transaction` is
+    // safe here because callers serialize compatibility saves.
+    reconcile_console_scan_unchecked(conn, token, console.fingerprint_hash, &scanned)?;
+    for entry in &scanned {
+        update_compat_row(conn, id, entry)?;
+    }
+    Ok(id)
 }
 
-// ── Entry Operations ────────────────────────────────────────────────────────
-
-/// Upsert a single entry by (`console_id`, `display_name`).
+/// Transitional caller-facing scan publication for code that has already
+/// built source keys and fingerprints outside SQLite.
+pub fn save_console_reconciled(
+    conn: &Connection,
+    console: &ConsoleRecord<'_>,
+    entries: &[ScannedLibraryEntry],
+) -> Result<LibraryConsoleId, LibraryError> {
+    conn.execute("INSERT INTO library_consoles(root_id,platform,folder_name,folder_path,fingerprint_hash,dat_game_count) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(root_id,folder_name) DO UPDATE SET platform=excluded.platform,folder_path=excluded.folder_path,dat_game_count=excluded.dat_game_count",params![console.root_id.0,console.platform,console.folder_name,console.folder_path,console.fingerprint_hash,console.dat_game_count])?;
+    let id = LibraryConsoleId(conn.query_row(
+        "SELECT id FROM library_consoles WHERE root_id=?1 AND folder_name=?2",
+        params![console.root_id.0, console.folder_name],
+        |r| r.get(0),
+    )?);
+    let token = begin_console_scan(conn, id)?;
+    reconcile_console_scan_unchecked(conn, token, console.fingerprint_hash, entries)?;
+    for entry in entries {
+        update_compat_row(conn, id, entry)?;
+    }
+    Ok(id)
+}
 pub fn upsert_entry(
     conn: &Connection,
     console_id: LibraryConsoleId,
-    entry: &LibraryEntryRow,
+    e: &LibraryEntryRow,
 ) -> Result<(), LibraryError> {
-    execute_upsert_entry(conn, console_id, entry)
+    let folder: String = conn.query_row(
+        "SELECT folder_path FROM library_consoles WHERE id=?1",
+        [console_id.0],
+        |r| r.get(0),
+    )?;
+    let entry = ScannedLibraryEntry {
+        entry_key: source_key_from_game_entry_json(&e.game_entry_json, Path::new(&folder))?,
+        source_fingerprint: String::new(),
+        row: e.clone(),
+    };
+    update_compat_row(conn, console_id, &entry)
 }
-
-/// Batch upsert entries in a transaction.
 pub fn upsert_entries(
     conn: &Connection,
     console_id: LibraryConsoleId,
     entries: &[LibraryEntryRow],
 ) -> Result<(), LibraryError> {
-    let tx = conn.unchecked_transaction()?;
-    for entry in entries {
-        execute_upsert_entry(&tx, console_id, entry)?;
-    }
-    tx.commit()?;
-    Ok(())
-}
-
-/// Load all entries for a console.
-pub fn load_entries_for_console(
-    conn: &Connection,
-    console_id: LibraryConsoleId,
-) -> Result<Vec<LibraryEntryRow>, LibraryError> {
-    let mut stmt = conn.prepare(
-        "SELECT display_name, game_entry_json, status, tag,
-                crc32, sha1, md5, data_size,
-                dat_game_name, dat_rom_name, dat_match_method,
-                region_override, cover_title, screen_title,
-                identification_json, disc_identifications_json,
-                broken_references_json, ambiguous_candidates_json,
-                cue_compat_issues_json
-         FROM library_entries WHERE console_id = ?1",
-    )?;
-    let rows = stmt.query_map(params![console_id.0], |row| {
-        Ok(LibraryEntryRow {
-            display_name: row.get(0)?,
-            game_entry_json: row.get(1)?,
-            status: row.get(2)?,
-            tag: row.get(3)?,
-            crc32: row.get(4)?,
-            sha1: row.get(5)?,
-            md5: row.get(6)?,
-            data_size: row.get(7)?,
-            dat_game_name: row.get(8)?,
-            dat_rom_name: row.get(9)?,
-            dat_match_method: row.get(10)?,
-            region_override: row.get(11)?,
-            cover_title: row.get(12)?,
-            screen_title: row.get(13)?,
-            identification_json: row.get(14)?,
-            disc_identifications_json: row.get(15)?,
-            broken_references_json: row.get(16)?,
-            ambiguous_candidates_json: row.get(17)?,
-            cue_compat_issues_json: row.get(18)?,
-        })
-    })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
-}
-
-// ── Shared Helpers ──────────────────────────────────────────────────────────
-
-fn execute_upsert_entry(
-    conn: &Connection,
-    console_id: LibraryConsoleId,
-    e: &LibraryEntryRow,
-) -> Result<(), LibraryError> {
-    conn.execute(
-        "INSERT INTO library_entries (
-             console_id, display_name, game_entry_json, status, tag,
-             crc32, sha1, md5, data_size,
-             dat_game_name, dat_rom_name, dat_match_method,
-             region_override, cover_title, screen_title,
-             identification_json, disc_identifications_json,
-             broken_references_json, ambiguous_candidates_json,
-             cue_compat_issues_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)
-         ON CONFLICT(console_id, display_name) DO UPDATE SET
-             game_entry_json = excluded.game_entry_json,
-             status = excluded.status,
-             tag = excluded.tag,
-             crc32 = excluded.crc32,
-             sha1 = excluded.sha1,
-             md5 = excluded.md5,
-             data_size = excluded.data_size,
-             dat_game_name = excluded.dat_game_name,
-             dat_rom_name = excluded.dat_rom_name,
-             dat_match_method = excluded.dat_match_method,
-             region_override = excluded.region_override,
-             cover_title = excluded.cover_title,
-             screen_title = excluded.screen_title,
-             identification_json = excluded.identification_json,
-             disc_identifications_json = excluded.disc_identifications_json,
-             broken_references_json = excluded.broken_references_json,
-             ambiguous_candidates_json = excluded.ambiguous_candidates_json,
-             cue_compat_issues_json = excluded.cue_compat_issues_json",
-        params![
-            console_id.0, e.display_name, e.game_entry_json, e.status, e.tag,
-            e.crc32, e.sha1, e.md5, e.data_size,
-            e.dat_game_name, e.dat_rom_name, e.dat_match_method,
-            e.region_override, e.cover_title, e.screen_title,
-            e.identification_json, e.disc_identifications_json,
-            e.broken_references_json, e.ambiguous_candidates_json,
-            e.cue_compat_issues_json,
-        ],
-    )?;
-    Ok(())
-}
-
-fn insert_entries_batch(
-    conn: &Connection,
-    console_id: LibraryConsoleId,
-    entries: &[LibraryEntryRow],
-) -> Result<(), LibraryError> {
-    let mut stmt = conn.prepare(
-        "INSERT INTO library_entries (
-             console_id, display_name, game_entry_json, status, tag,
-             crc32, sha1, md5, data_size,
-             dat_game_name, dat_rom_name, dat_match_method,
-             region_override, cover_title, screen_title,
-             identification_json, disc_identifications_json,
-             broken_references_json, ambiguous_candidates_json,
-             cue_compat_issues_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
-    )?;
     for e in entries {
-        stmt.execute(params![
-            console_id.0,
-            e.display_name,
-            e.game_entry_json,
-            e.status,
-            e.tag,
-            e.crc32,
-            e.sha1,
-            e.md5,
-            e.data_size,
-            e.dat_game_name,
-            e.dat_rom_name,
-            e.dat_match_method,
-            e.region_override,
-            e.cover_title,
-            e.screen_title,
-            e.identification_json,
-            e.disc_identifications_json,
-            e.broken_references_json,
-            e.ambiguous_candidates_json,
-            e.cue_compat_issues_json,
-        ])?;
+        upsert_entry(conn, console_id, e)?;
     }
+    Ok(())
+}
+
+fn reconcile_console_scan_unchecked(
+    conn: &Connection,
+    token: ConsoleScanToken,
+    fingerprint: &str,
+    entries: &[ScannedLibraryEntry],
+) -> Result<LibraryChangeSet, LibraryError> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    let result = reconcile_body(conn, token, fingerprint, entries);
+    if result.is_ok() {
+        conn.execute_batch("COMMIT")?
+    } else {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    result
+}
+fn reconcile_body(
+    conn: &Connection,
+    token: ConsoleScanToken,
+    fingerprint: &str,
+    entries: &[ScannedLibraryEntry],
+) -> Result<LibraryChangeSet, LibraryError> {
+    let (root, g): (u64, u64) = conn.query_row(
+        "SELECT root_id,scan_generation FROM library_consoles WHERE id=?1",
+        [token.console_id.0],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if g != token.generation {
+        return Err(LibraryError::StaleCommand);
+    }
+    let keys: HashSet<_> = entries.iter().map(|e| e.entry_key.as_str()).collect();
+    if keys.len() != entries.len() {
+        return Err(LibraryError::UnsafeSourcePath);
+    }
+    let mut affected = Vec::new();
+    let mut revs = Vec::new();
+    for e in entries {
+        let old:Option<(u64,String,u64,u64)>=conn.query_row("SELECT id,source_fingerprint,revision,source_revision FROM library_entries WHERE console_id=?1 AND entry_key=?2",params![token.console_id.0,e.entry_key.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        match old {
+            Some((id, fp, r, s)) if fp == e.source_fingerprint => {
+                conn.execute("UPDATE library_entries SET display_name=?1,game_entry_json=?2,revision=revision+1 WHERE id=?3",params![e.row.display_name,e.row.game_entry_json,id])?;
+                affected.push(LibraryEntryId(id));
+                revs.push((LibraryEntryId(id), r + 1, s));
+            }
+            Some((id, _, r, s)) => {
+                update_changed_source(conn, id, e, r + 1, s + 1)?;
+                affected.push(LibraryEntryId(id));
+                revs.push((LibraryEntryId(id), r + 1, s + 1));
+            }
+            None => {
+                insert_scanned_entry(conn, token.console_id, e)?;
+                let id = conn.last_insert_rowid() as u64;
+                affected.push(LibraryEntryId(id));
+                revs.push((LibraryEntryId(id), 0, 0));
+            }
+        }
+    }
+    let all = conn
+        .prepare("SELECT id,entry_key FROM library_entries WHERE console_id=?1")?
+        .query_map([token.console_id.0], |r| {
+            Ok((LibraryEntryId(r.get(0)?), r.get::<_, String>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let removed: Vec<_> = all
+        .into_iter()
+        .filter(|(_, k)| !keys.contains(k.as_str()))
+        .map(|v| v.0)
+        .collect();
+    for id in &removed {
+        conn.execute("DELETE FROM library_entries WHERE id=?1", [id.0])?;
+    }
+    conn.execute("UPDATE library_consoles SET fingerprint_hash=?1,scan_state='ready',revision=revision+1 WHERE id=?2",params![fingerprint,token.console_id.0])?;
+    conn.execute(
+        "UPDATE library_roots SET revision=revision+1 WHERE id=?1",
+        [root],
+    )?;
+    Ok(LibraryChangeSet {
+        affected_entries: affected,
+        removed_entries: removed,
+        root_revision: Some((
+            LibraryRootId(root),
+            revision_of(conn, "library_roots", root)?,
+        )),
+        console_revision: Some((
+            token.console_id,
+            revision_of(conn, "library_consoles", token.console_id.0)?,
+        )),
+        entry_revisions: revs,
+    })
+}
+
+fn insert_scanned_entry(
+    conn: &Connection,
+    cid: LibraryConsoleId,
+    e: &ScannedLibraryEntry,
+) -> Result<(), LibraryError> {
+    conn.execute("INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json,source_fingerprint,status,tag,region_override)VALUES(?1,?2,?3,?4,?5,'unknown',?6,?7)",params![cid.0,e.entry_key.as_str(),e.row.display_name,e.row.game_entry_json,e.source_fingerprint,e.row.tag,e.row.region_override])?;
+    Ok(())
+}
+fn update_changed_source(
+    conn: &Connection,
+    id: u64,
+    e: &ScannedLibraryEntry,
+    revision: u64,
+    source_revision: u64,
+) -> Result<(), LibraryError> {
+    conn.execute("UPDATE library_entries SET entry_key=?1,display_name=?2,game_entry_json=?3,revision=?4,source_revision=?5,source_fingerprint=?6,status='unknown',crc32='',sha1='',md5='',data_size=0,dat_game_name='',dat_rom_name='',dat_match_method='',cover_title='',screen_title='',identification_json=NULL,disc_identifications_json=NULL,broken_references_json=NULL,ambiguous_candidates_json=NULL,cue_compat_issues_json=NULL WHERE id=?7",params![e.entry_key.as_str(),e.row.display_name,e.row.game_entry_json,revision,source_revision,e.source_fingerprint,id])?;
+    Ok(())
+}
+fn update_compat_row(
+    conn: &Connection,
+    cid: LibraryConsoleId,
+    e: &ScannedLibraryEntry,
+) -> Result<(), LibraryError> {
+    conn.execute("UPDATE library_entries SET display_name=?1,game_entry_json=?2,status=?3,tag=?4,crc32=?5,sha1=?6,md5=?7,data_size=?8,dat_game_name=?9,dat_rom_name=?10,dat_match_method=?11,region_override=?12,cover_title=?13,screen_title=?14,identification_json=?15,disc_identifications_json=?16,broken_references_json=?17,ambiguous_candidates_json=?18,cue_compat_issues_json=?19,revision=revision+1 WHERE console_id=?20 AND entry_key=?21",params![e.row.display_name,e.row.game_entry_json,e.row.status,e.row.tag,e.row.crc32,e.row.sha1,e.row.md5,e.row.data_size,e.row.dat_game_name,e.row.dat_rom_name,e.row.dat_match_method,e.row.region_override,e.row.cover_title,e.row.screen_title,e.row.identification_json,e.row.disc_identifications_json,e.row.broken_references_json,e.row.ambiguous_candidates_json,e.row.cue_compat_issues_json,cid.0,e.entry_key.as_str()])?;
+    Ok(())
+}
+
+fn set_user_field(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    column: &str,
+    value: &str,
+) -> Result<LibraryChangeSet, LibraryError> {
+    let sql = format!("UPDATE library_entries SET {column}=?1,revision=revision+1 WHERE id=?2");
+    mutate_entry_any(conn, id, |tx| {
+        tx.execute(&sql, params![value, id.0])?;
+        Ok(())
+    })
+}
+fn mutate_entry<F>(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    expected: u64,
+    f: F,
+) -> Result<LibraryChangeSet, LibraryError>
+where
+    F: FnOnce(&Transaction<'_>) -> Result<(), LibraryError>,
+{
+    let current: u64 = conn
+        .query_row(
+            "SELECT source_revision FROM library_entries WHERE id=?1",
+            [id.0],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or(LibraryError::NotFound)?;
+    if current != expected {
+        return Err(LibraryError::StaleCommand);
+    }
+    mutate_entry_any(conn, id, f)
+}
+fn mutate_entry_any<F>(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    f: F,
+) -> Result<LibraryChangeSet, LibraryError>
+where
+    F: FnOnce(&Transaction<'_>) -> Result<(), LibraryError>,
+{
+    let tx = conn.transaction()?;
+    let(cid,rid):(u64,u64)=tx.query_row("SELECT console_id,(SELECT root_id FROM library_consoles WHERE id=console_id) FROM library_entries WHERE id=?1",[id.0],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or(LibraryError::NotFound)?;
+    f(&tx)?;
+    tx.execute(
+        "UPDATE library_consoles SET revision=revision+1 WHERE id=?1",
+        [cid],
+    )?;
+    tx.execute(
+        "UPDATE library_roots SET revision=revision+1 WHERE id=?1",
+        [rid],
+    )?;
+    let er = revision_of(&tx, "library_entries", id.0)?;
+    let sr = tx.query_row(
+        "SELECT source_revision FROM library_entries WHERE id=?1",
+        [id.0],
+        |r| r.get(0),
+    )?;
+    let cr = revision_of(&tx, "library_consoles", cid)?;
+    let rr = revision_of(&tx, "library_roots", rid)?;
+    tx.commit()?;
+    Ok(LibraryChangeSet {
+        affected_entries: vec![id],
+        root_revision: Some((LibraryRootId(rid), rr)),
+        console_revision: Some((LibraryConsoleId(cid), cr)),
+        entry_revisions: vec![(id, er, sr)],
+        ..Default::default()
+    })
+}
+fn mutate_console<F>(
+    conn: &mut Connection,
+    cid: LibraryConsoleId,
+    f: F,
+) -> Result<LibraryChangeSet, LibraryError>
+where
+    F: FnOnce(&Transaction<'_>) -> Result<Vec<LibraryEntryId>, LibraryError>,
+{
+    let tx = conn.transaction()?;
+    let rid: u64 = tx
+        .query_row(
+            "SELECT root_id FROM library_consoles WHERE id=?1",
+            [cid.0],
+            |r| r.get(0),
+        )
+        .optional()?
+        .ok_or(LibraryError::NotFound)?;
+    let affected = f(&tx)?;
+    tx.execute(
+        "UPDATE library_roots SET revision=revision+1 WHERE id=?1",
+        [rid],
+    )?;
+    let cr = revision_of(&tx, "library_consoles", cid.0)?;
+    let rr = revision_of(&tx, "library_roots", rid)?;
+    tx.commit()?;
+    Ok(LibraryChangeSet {
+        affected_entries: affected,
+        root_revision: Some((LibraryRootId(rid), rr)),
+        console_revision: Some((cid, cr)),
+        ..Default::default()
+    })
+}
+fn revision_of(conn: &Connection, table: &str, id: u64) -> Result<u64, LibraryError> {
+    debug_assert!(matches!(
+        table,
+        "library_roots" | "library_consoles" | "library_entries"
+    ));
+    Ok(conn.query_row(
+        &format!("SELECT revision FROM {table} WHERE id=?1"),
+        [id],
+        |r| r.get(0),
+    )?)
+}
+fn entry_ids_for_root(
+    conn: &Connection,
+    rid: LibraryRootId,
+) -> Result<Vec<LibraryEntryId>, LibraryError> {
+    Ok(conn.prepare("SELECT e.id FROM library_entries e JOIN library_consoles c ON c.id=e.console_id WHERE c.root_id=?1")?.query_map([rid.0],|r|r.get::<_,u64>(0).map(LibraryEntryId))?.collect::<Result<Vec<_>,_>>()?)
+}
+fn filter_sql(f: LibraryEntryFilter) -> &'static str {
+    match f {
+        LibraryEntryFilter::All => "",
+        LibraryEntryFilter::Matched => "AND status='matched'",
+        LibraryEntryFilter::Unmatched => "AND status='unknown'",
+        LibraryEntryFilter::Ambiguous => "AND status='ambiguous'",
+        LibraryEntryFilter::Error => "AND status='error'",
+        LibraryEntryFilter::Tagged => "AND tag<>''",
+    }
+}
+fn order_sql(field: LibraryEntrySortField, dir: SortDirection) -> String {
+    let col = match field {
+        LibraryEntrySortField::DisplayName => "display_name COLLATE NOCASE",
+        LibraryEntrySortField::Status => "status",
+        LibraryEntrySortField::Region => "region_override",
+        LibraryEntrySortField::Size => "data_size",
+    };
+    let d = if dir == SortDirection::Ascending {
+        "ASC"
+    } else {
+        "DESC"
+    };
+    format!("{col} {d}, id {d}")
+}
+fn entry_counts(
+    conn: &Connection,
+    cid: LibraryConsoleId,
+) -> Result<LibraryEntryCounts, LibraryError> {
+    Ok(conn.query_row("SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='matched' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='unknown' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='ambiguous' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='error' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN tag<>'' THEN 1 ELSE 0 END),0) FROM library_entries WHERE console_id=?1",[cid.0],|r|Ok(LibraryEntryCounts{total:r.get(0)?,matched:r.get(1)?,unknown:r.get(2)?,ambiguous:r.get(3)?,errors:r.get(4)?,tagged:r.get(5)?}))?)
+}
+
+/// v9 -> v10 library migration. It never touches the ROM filesystem.
+pub(crate) fn migrate_library_v10(conn: &Connection) -> Result<(), LibraryError> {
+    if conn
+        .prepare("SELECT entry_key FROM library_entries LIMIT 0")
+        .is_ok()
+    {
+        return Ok(());
+    }
+    conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE; ALTER TABLE library_roots ADD COLUMN revision INTEGER NOT NULL DEFAULT 0; ALTER TABLE library_consoles ADD COLUMN revision INTEGER NOT NULL DEFAULT 0; ALTER TABLE library_consoles ADD COLUMN scan_generation INTEGER NOT NULL DEFAULT 0; ALTER TABLE library_consoles ADD COLUMN scan_state TEXT NOT NULL DEFAULT 'stale'; CREATE TABLE library_entries_v10(id INTEGER PRIMARY KEY AUTOINCREMENT,console_id INTEGER NOT NULL REFERENCES library_consoles(id) ON DELETE CASCADE,entry_key TEXT NOT NULL,display_name TEXT NOT NULL,game_entry_json TEXT NOT NULL,revision INTEGER NOT NULL DEFAULT 0,source_revision INTEGER NOT NULL DEFAULT 0,source_fingerprint TEXT NOT NULL DEFAULT '',status TEXT NOT NULL DEFAULT 'unknown',tag TEXT NOT NULL DEFAULT '',crc32 TEXT NOT NULL DEFAULT '',sha1 TEXT NOT NULL DEFAULT '',md5 TEXT NOT NULL DEFAULT '',data_size INTEGER NOT NULL DEFAULT 0,dat_game_name TEXT NOT NULL DEFAULT '',dat_rom_name TEXT NOT NULL DEFAULT '',dat_match_method TEXT NOT NULL DEFAULT '',region_override TEXT NOT NULL DEFAULT '',cover_title TEXT NOT NULL DEFAULT '',screen_title TEXT NOT NULL DEFAULT '',identification_json TEXT,disc_identifications_json TEXT,broken_references_json TEXT,ambiguous_candidates_json TEXT,cue_compat_issues_json TEXT,UNIQUE(console_id,entry_key));")?;
+    let rows=conn.prepare("SELECT e.id,e.console_id,e.display_name,e.game_entry_json,COALESCE(e.tag,''),COALESCE(e.region_override,''),c.folder_path FROM library_entries e JOIN library_consoles c ON c.id=e.console_id ORDER BY e.id")?.query_map([],|r|Ok((r.get::<_,u64>(0)?,r.get::<_,u64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?)))?.collect::<Result<Vec<_>,_>>()?;
+    let mut derived = Vec::new();
+    let mut groups: HashMap<(u64, String), Vec<usize>> = HashMap::new();
+    for (row_id, cid, _, json, _, _, folder) in &rows {
+        let key = source_key_from_game_entry_json(json, Path::new(folder))
+            .unwrap_or_else(|_| LibrarySourceKey::invalid(*row_id));
+        let idx = derived.len();
+        groups.entry((*cid, key.to_string())).or_default().push(idx);
+        derived.push(key)
+    }
+    for indices in groups.values().filter(|v| v.len() > 1) {
+        for &i in indices {
+            derived[i] = LibrarySourceKey::invalid(rows[i].0);
+        }
+    }
+    {
+        let mut stmt=conn.prepare("INSERT INTO library_entries_v10(id,console_id,entry_key,display_name,game_entry_json,tag,region_override)VALUES(?1,?2,?3,?4,?5,?6,?7)")?;
+        for ((id, cid, name, json, tag, region, _), key) in rows.iter().zip(&derived) {
+            stmt.execute(params![id, cid, key.as_str(), name, json, tag, region])?;
+        }
+    }
+    conn.execute_batch("DROP TABLE library_entries; ALTER TABLE library_entries_v10 RENAME TO library_entries; CREATE INDEX idx_library_entries_console ON library_entries(console_id); CREATE INDEX idx_library_entries_display ON library_entries(console_id,display_name COLLATE NOCASE,id); COMMIT; PRAGMA foreign_keys=ON;")?;
     Ok(())
 }

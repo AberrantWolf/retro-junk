@@ -165,13 +165,11 @@ pub fn switch_to_root_unchecked(
     new_root: std::path::PathBuf,
     ctx: &egui::Context,
 ) {
-    // Save current library cache before switching
-    app.save_library_cache();
-
     // Reset UI state
     app.ui_state.selected_console = None;
     app.ui_state.focused_entry = None;
     app.ui_state.selected_entries.clear();
+    app.library_controller.switch_root();
     app.dat_indices.clear();
     app.ui_state.pending_auto_scans.clear();
     app.ui_state.auto_scan_in_flight = None;
@@ -208,7 +206,7 @@ pub fn switch_to_root_unchecked(
             }
         }
     } else {
-        app.library = crate::state::Library::default();
+        app.library = crate::state::LibraryState::default();
     }
 
     // Always scan disk to discover new/removed console folders.

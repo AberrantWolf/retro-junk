@@ -17,7 +17,7 @@ use retro_junk_lib::AnalysisContext;
 
 use crate::settings::AppSettings;
 use crate::state::{
-    AppMessage, BackgroundOperation, CueFixOutcome, CueFixResult, FocusedPanel, Library,
+    AppMessage, BackgroundOperation, CueFixOutcome, CueFixResult, FocusedPanel, LibraryState,
     RenameOutcome, RenameResult, ToolsState, View,
 };
 use crate::util;
@@ -152,8 +152,8 @@ pub struct RetroJunkApp {
     /// Root path for the ROM library.
     pub root_path: Option<std::path::PathBuf>,
 
-    /// ROM library state.
-    pub library: Library,
+    /// Per-run ROM library state used by the GUI between frames.
+    pub library: LibraryState,
 
     /// Loaded DAT indices, keyed by `folder_name`.
     /// Stored separately from `ConsoleState` because hash matching needs
@@ -181,6 +181,12 @@ pub struct RetroJunkApp {
 
     /// Path to the catalog database file (for opening separate connections in background threads).
     pub db_path: Option<std::path::PathBuf>,
+
+    /// Serialized owner of all revisioned library-table reads and writes.
+    pub library_store: Option<crate::backend::library_store::LibraryStore>,
+
+    /// Rejects stale/superseded projections and tracks durable UI identity.
+    pub library_controller: crate::backend::library_store::LibraryProjectionController,
 
     /// `JoinHandle`s for every spawned background-operation thread, keyed by
     /// `op_id`. Joined (and removed) when the operation completes, or all at
@@ -280,11 +286,21 @@ impl RetroJunkApp {
         crate::fonts::configure_fonts(egui_ctx);
         let (tx, rx) = mpsc::channel();
         let context = Arc::new(retro_junk_lib::create_default_context());
+        let library_store =
+            db_path.clone().and_then(
+                |path| match crate::backend::library_store::LibraryStore::start(path) {
+                    Ok(store) => Some(store),
+                    Err(error) => {
+                        log::warn!("Failed to start library store: {error}");
+                        None
+                    }
+                },
+            );
 
         Self {
             context,
             root_path: None,
-            library: Library::default(),
+            library: LibraryState::default(),
             dat_indices: HashMap::new(),
             operations: Vec::new(),
             message_rx: rx,
@@ -293,6 +309,8 @@ impl RetroJunkApp {
             settings,
             catalog_db,
             db_path,
+            library_store,
+            library_controller: Default::default(),
             op_threads: HashMap::new(),
         }
     }
@@ -340,35 +358,35 @@ impl RetroJunkApp {
         !self.operations.is_empty()
     }
 
-    /// Save the full library state to the database.
-    pub fn save_library_cache(&self) {
-        if let Some(ref root) = self.root_path
-            && let Some(ref conn) = self.catalog_db
-            && let Err(e) = crate::cache::save_library(conn, root, &self.library)
-        {
-            log::warn!("Failed to save library cache: {e}");
-        }
-    }
-
     /// Save one console's entries to the database.
-    pub fn save_console_cache(&self, console_idx: usize) {
-        if let Some(ref root) = self.root_path
-            && let Some(ref conn) = self.catalog_db
-            && let Some(console) = self.library.consoles.get(console_idx)
-            && let Err(e) = crate::cache::save_console(conn, root, console)
-        {
-            log::warn!("Failed to save console cache: {e}");
+    pub fn save_console_cache(&mut self, console_idx: usize) {
+        let error = self
+            .root_path
+            .as_ref()
+            .zip(self.catalog_db.as_ref())
+            .zip(self.library.consoles.get(console_idx))
+            .and_then(|((root, conn), console)| {
+                crate::cache::save_console(conn, root, console).err()
+            });
+        if let Some(error) = error {
+            log::warn!("Failed to publish console scan: {error}");
+            self.push_error("Library scan", error.to_string());
         }
     }
 
     /// Save specific entries within a console to the database.
-    pub fn save_entry_cache(&self, console_idx: usize, entry_indices: &[usize]) {
-        if let Some(ref root) = self.root_path
-            && let Some(ref conn) = self.catalog_db
-            && let Some(console) = self.library.consoles.get(console_idx)
-            && let Err(e) = crate::cache::save_entries(conn, root, console, entry_indices)
-        {
-            log::warn!("Failed to save entry cache: {e}");
+    pub fn save_entry_cache(&mut self, console_idx: usize, entry_indices: &[usize]) {
+        let error = self
+            .root_path
+            .as_ref()
+            .zip(self.catalog_db.as_ref())
+            .zip(self.library.consoles.get(console_idx))
+            .and_then(|((root, conn), console)| {
+                crate::cache::save_entries(conn, root, console, entry_indices).err()
+            });
+        if let Some(error) = error {
+            log::warn!("Failed to publish entry edit: {error}");
+            self.push_error("Library update", error.to_string());
         }
     }
 
@@ -497,10 +515,7 @@ impl eframe::App for RetroJunkApp {
     }
 
     fn on_exit(&mut self) {
-        log::info!(
-            "on_exit: saving state ({} consoles)",
-            self.library.consoles.len()
-        );
+        log::info!("on_exit: stopping background work");
 
         // Cancel every in-flight background operation and join its thread
         // before saving (D2).
@@ -511,9 +526,11 @@ impl eframe::App for RetroJunkApp {
         let ctx = egui::Context::default();
         self.process_pending_messages(&ctx);
 
-        // Save library cache first — if the process is killed between the two,
-        // we'd rather lose settings than lose the library cache.
-        self.save_library_cache();
+        // Commands already queued by completed producers are committed before
+        // the store worker acknowledges shutdown.
+        if let Some(store) = &mut self.library_store {
+            store.shutdown_and_join(self.library_controller.session_generation);
+        }
 
         // Save settings
         self.settings.library.current_root = self.root_path.clone();

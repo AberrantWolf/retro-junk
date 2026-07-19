@@ -15,6 +15,9 @@ use crate::state::{ConsoleState, DatStatus, EntryStatus, LibraryEntry, ScanStatu
 /// irrelevant to most tests and start empty.
 pub fn test_entry(game_entry: GameEntry) -> LibraryEntry {
     LibraryEntry {
+        id: None,
+        revision: 0,
+        source_revision: 0,
         game_entry,
         identification: None,
         hashes: None,
@@ -35,6 +38,8 @@ pub fn test_entry(game_entry: GameEntry) -> LibraryEntry {
 /// Build a minimal `PlayStation` `ConsoleState` holding the given entries.
 pub fn test_console(folder_name: &str, entries: Vec<LibraryEntry>) -> ConsoleState {
     ConsoleState {
+        id: None,
+        revision: 0,
         platform: Platform::Ps1,
         folder_name: folder_name.to_string(),
         folder_path: PathBuf::from("/roms").join(folder_name),

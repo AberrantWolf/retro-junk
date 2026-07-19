@@ -7,7 +7,7 @@ use retro_junk_db::{Connection, LibraryEntryRow};
 use retro_junk_lib::{AnalysisContext, Platform, Region};
 
 use crate::state::{
-    ConsoleState, DatMatchInfo, DatStatus, EntryStatus, Library, LibraryEntry, ScanStatus,
+    ConsoleState, DatMatchInfo, DatStatus, EntryStatus, LibraryEntry, LibraryState, ScanStatus,
 };
 
 // ── Error Type ──────────────────────────────────────────────────────────────
@@ -87,8 +87,12 @@ pub fn compute_fingerprint(path: &Path) -> FolderFingerprint {
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
-/// Full library save — used on exit and root switch.
-pub fn save_library(conn: &Connection, root: &Path, library: &Library) -> Result<(), CacheError> {
+/// One-time full import used only while converting the legacy JSON cache.
+fn import_legacy_library(
+    conn: &Connection,
+    root: &Path,
+    library: &LibraryState,
+) -> Result<(), CacheError> {
     let scanned_count = library
         .consoles
         .iter()
@@ -126,7 +130,7 @@ pub fn load_library(
     conn: &Connection,
     root: &Path,
     context: &AnalysisContext,
-) -> Option<(Library, Vec<String>)> {
+) -> Option<(LibraryState, Vec<String>)> {
     let root_str = root.to_string_lossy();
     let root_id = retro_junk_db::get_library_root_id(conn, &root_str).ok()??;
 
@@ -159,8 +163,17 @@ pub fn load_library(
             continue;
         };
 
-        let entry_rows = retro_junk_db::load_entries_for_console(conn, cr.id).ok()?;
-        let entries: Vec<LibraryEntry> = entry_rows.into_iter().filter_map(row_to_entry).collect();
+        let entry_details = retro_junk_db::load_entry_details_for_console(conn, cr.id).ok()?;
+        let entries: Vec<LibraryEntry> = entry_details
+            .into_iter()
+            .filter_map(|detail| {
+                let mut entry = row_to_entry(detail.row)?;
+                entry.id = Some(detail.id);
+                entry.revision = detail.revision;
+                entry.source_revision = detail.source_revision;
+                Some(entry)
+            })
+            .collect();
 
         let folder_path = PathBuf::from(&cr.folder_path);
         let current_fp = compute_fingerprint(&folder_path);
@@ -177,6 +190,8 @@ pub fn load_library(
         if is_stale {
             stale_folders.push(cr.folder_name.clone());
             consoles.push(ConsoleState {
+                id: Some(cr.id),
+                revision: cr.revision,
                 platform,
                 folder_name: cr.folder_name,
                 folder_path,
@@ -190,6 +205,8 @@ pub fn load_library(
             });
         } else {
             consoles.push(ConsoleState {
+                id: Some(cr.id),
+                revision: cr.revision,
                 platform,
                 folder_name: cr.folder_name,
                 folder_path,
@@ -216,7 +233,7 @@ pub fn load_library(
         return None;
     }
 
-    Some((Library { consoles }, stale_folders))
+    Some((LibraryState { consoles }, stale_folders))
 }
 
 /// Save all entries for one console — used after scan/DAT/hash complete.
@@ -260,12 +277,7 @@ pub fn delete_cache(conn: &Connection, root: &Path) -> Result<(), CacheError> {
 
 /// Delete all library cache data from the database.
 pub fn clear_all_caches(conn: &Connection) -> Result<(), CacheError> {
-    conn.execute_batch(
-        "DELETE FROM library_entries;
-         DELETE FROM library_consoles;
-         DELETE FROM library_roots;",
-    )
-    .map_err(|e| CacheError::Db(retro_junk_db::LibraryError::from(e)))?;
+    retro_junk_db::clear_library_cache(conn)?;
     Ok(())
 }
 
@@ -299,9 +311,9 @@ pub fn migrate_json_cache(conn: &Connection, root: &Path, context: &AnalysisCont
         }
     };
 
-    // Load via the old code path to get a Library, then save to DB
+    // Load via the old code path to get in-memory library state, then save to DB
     if let Some((library, _stale)) = load_library_from_legacy(&cached, context)
-        && let Err(e) = save_library(conn, root, &library)
+        && let Err(e) = import_legacy_library(conn, root, &library)
     {
         log::warn!("Failed to save migrated cache to DB: {e}");
         return;
@@ -382,7 +394,7 @@ fn legacy_cache_path(root: &Path) -> PathBuf {
 fn load_library_from_legacy(
     cached: &LegacyLibraryCache,
     context: &AnalysisContext,
-) -> Option<(Library, Vec<String>)> {
+) -> Option<(LibraryState, Vec<String>)> {
     if cached.version != LEGACY_CACHE_VERSION {
         log::info!(
             "Legacy cache version mismatch ({}), skipping migration",
@@ -408,6 +420,9 @@ fn load_library_from_legacy(
             .entries
             .iter()
             .map(|ce| LibraryEntry {
+                id: None,
+                revision: 0,
+                source_revision: 0,
                 game_entry: ce.game_entry.clone(),
                 identification: ce.identification.clone(),
                 hashes: ce.hashes.clone(),
@@ -435,6 +450,8 @@ fn load_library_from_legacy(
         }
 
         consoles.push(ConsoleState {
+            id: None,
+            revision: 0,
             platform: cc.platform,
             folder_name: cc.folder_name.clone(),
             folder_path: cc.folder_path.clone(),
@@ -463,7 +480,7 @@ fn load_library_from_legacy(
         return None;
     }
 
-    Some((Library { consoles }, stale_folders))
+    Some((LibraryState { consoles }, stale_folders))
 }
 
 // ── Private Helpers ─────────────────────────────────────────────────────────
@@ -492,13 +509,33 @@ fn ensure_console_id(
         DatStatus::Loaded { game_count } => *game_count as i64,
         _ => 0,
     };
-    let entries: Vec<LibraryEntryRow> = console
+    let rows: Vec<LibraryEntryRow> = console
         .entries
         .iter()
         .map(entry_to_row)
         .collect::<Result<Vec<_>, _>>()?;
 
-    let console_id = retro_junk_db::save_console_bulk(
+    // Source identity and fingerprinting happen before the reconciliation
+    // transaction. Unsupported/non-Unicode/out-of-root paths remain visible
+    // errors instead of being lossy-normalized.
+    let entries = rows
+        .into_iter()
+        .map(|row| {
+            Ok(retro_junk_db::ScannedLibraryEntry {
+                entry_key: retro_junk_db::source_key_from_game_entry_json(
+                    &row.game_entry_json,
+                    &console.folder_path,
+                )?,
+                source_fingerprint: retro_junk_db::source_fingerprint_from_game_entry_json(
+                    &row.game_entry_json,
+                    &console.folder_path,
+                )?,
+                row,
+            })
+        })
+        .collect::<Result<Vec<_>, retro_junk_db::LibraryError>>()?;
+
+    let console_id = retro_junk_db::save_console_reconciled(
         conn,
         &retro_junk_db::ConsoleRecord {
             root_id,
@@ -669,6 +706,9 @@ fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
         .unwrap_or_default();
 
     Some(LibraryEntry {
+        id: None,
+        revision: 0,
+        source_revision: 0,
         game_entry,
         identification,
         hashes,

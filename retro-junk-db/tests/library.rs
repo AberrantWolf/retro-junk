@@ -3,7 +3,7 @@ use retro_junk_db::*;
 fn make_entry(name: &str, status: &str) -> LibraryEntryRow {
     LibraryEntryRow {
         display_name: name.to_string(),
-        game_entry_json: format!(r#"{{"SingleFile":"/roms/{name}"}}"#),
+        game_entry_json: format!(r#"{{"SingleFile":"{name}"}}"#),
         status: status.to_string(),
         tag: String::new(),
         crc32: "aabbccdd".to_string(),

@@ -4413,6 +4413,8 @@ version = "0.2.0"
 dependencies = [
  "retro-junk-catalog",
  "rusqlite",
+ "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.18",
 ]

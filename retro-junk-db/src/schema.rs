@@ -15,10 +15,12 @@ pub enum SchemaError {
     VersionMismatch { expected: i32, found: i32 },
     #[error("Unknown table in migration: {0}")]
     UnknownTable(&'static str),
+    #[error("Library migration error: {0}")]
+    LibraryMigration(String),
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 9;
+pub const CURRENT_VERSION: i32 = 10;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -214,6 +216,7 @@ const TABLES: &[(&str, &str)] = &[
         "library_roots",
         "(id INTEGER PRIMARY KEY AUTOINCREMENT,
           root_path TEXT NOT NULL UNIQUE,
+          revision INTEGER NOT NULL DEFAULT 0,
           created_at TEXT NOT NULL DEFAULT (datetime('now')))",
     ),
     (
@@ -225,6 +228,10 @@ const TABLES: &[(&str, &str)] = &[
           folder_path TEXT NOT NULL,
           fingerprint_hash TEXT NOT NULL,
           dat_game_count INTEGER NOT NULL DEFAULT 0,
+          revision INTEGER NOT NULL DEFAULT 0,
+          scan_generation INTEGER NOT NULL DEFAULT 0,
+          scan_state TEXT NOT NULL DEFAULT 'unscanned'
+              CHECK (scan_state IN ('unscanned', 'ready', 'stale')),
           UNIQUE(root_id, folder_name))",
     ),
     // The *_json columns hold serialized blobs where NULL = "never computed"
@@ -234,8 +241,12 @@ const TABLES: &[(&str, &str)] = &[
         "library_entries",
         "(id INTEGER PRIMARY KEY AUTOINCREMENT,
           console_id INTEGER NOT NULL REFERENCES library_consoles(id) ON DELETE CASCADE,
+          entry_key TEXT NOT NULL,
           display_name TEXT NOT NULL,
           game_entry_json TEXT NOT NULL,
+          revision INTEGER NOT NULL DEFAULT 0,
+          source_revision INTEGER NOT NULL DEFAULT 0,
+          source_fingerprint TEXT NOT NULL DEFAULT '',
           status TEXT NOT NULL DEFAULT 'unknown',
           tag TEXT NOT NULL DEFAULT '',
           crc32 TEXT NOT NULL DEFAULT '',
@@ -253,7 +264,7 @@ const TABLES: &[(&str, &str)] = &[
           broken_references_json TEXT,
           ambiguous_candidates_json TEXT,
           cue_compat_issues_json TEXT,
-          UNIQUE(console_id, display_name))",
+          UNIQUE(console_id, entry_key))",
     ),
 ];
 
@@ -270,6 +281,7 @@ CREATE INDEX IF NOT EXISTS idx_disagreements_unresolved ON disagreements(resolve
 CREATE INDEX IF NOT EXISTS idx_media_tracks_crc32 ON media_tracks(crc32);
 CREATE INDEX IF NOT EXISTS idx_media_tracks_sha1 ON media_tracks(sha1);
 CREATE INDEX IF NOT EXISTS idx_library_entries_console ON library_entries(console_id);
+CREATE INDEX IF NOT EXISTS idx_library_entries_display ON library_entries(console_id, display_name COLLATE NOCASE, id);
 ";
 
 /// Tables rebuilt by the v8 → v9 migration, with the SELECT expressions that
@@ -333,21 +345,6 @@ const V9_REBUILDS: &[(&str, &str)] = &[
         "id, media_id, track_number, track_name, COALESCE(file_size, 0),
          COALESCE(crc32, ''), COALESCE(sha1, ''), COALESCE(md5, '')",
     ),
-    (
-        "library_consoles",
-        "id, root_id, platform, folder_name, folder_path, fingerprint_hash,
-         COALESCE(dat_game_count, 0)",
-    ),
-    (
-        "library_entries",
-        "id, console_id, display_name, game_entry_json, status, COALESCE(tag, ''),
-         COALESCE(crc32, ''), COALESCE(sha1, ''), COALESCE(md5, ''), COALESCE(data_size, 0),
-         COALESCE(dat_game_name, ''), COALESCE(dat_rom_name, ''),
-         COALESCE(dat_match_method, ''), COALESCE(region_override, ''),
-         COALESCE(cover_title, ''), COALESCE(screen_title, ''), identification_json,
-         disc_identifications_json, broken_references_json, ambiguous_candidates_json,
-         cue_compat_issues_json",
-    ),
 ];
 
 /// Create all tables and indexes if they don't exist.
@@ -365,7 +362,7 @@ pub fn create_schema(conn: &Connection) -> Result<(), SchemaError> {
 /// Open or create a catalog database at the given path.
 pub fn open_database(path: &std::path::Path) -> Result<Connection, SchemaError> {
     let conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+    configure_connection(&conn, true)?;
 
     let version = get_schema_version(&conn)?;
     if version == 0 {
@@ -380,9 +377,18 @@ pub fn open_database(path: &std::path::Path) -> Result<Connection, SchemaError> 
 /// Open an in-memory database with the full schema. Useful for testing.
 pub fn open_memory() -> Result<Connection, SchemaError> {
     let conn = Connection::open_in_memory()?;
-    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+    configure_connection(&conn, false)?;
     create_schema(&conn)?;
     Ok(conn)
+}
+
+/// Configure a connection used by either the catalog or library APIs.
+pub fn configure_connection(conn: &Connection, wal: bool) -> Result<(), SchemaError> {
+    if wal {
+        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    }
+    conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    Ok(())
 }
 
 /// Get the current schema version, or 0 if no schema exists.
@@ -532,6 +538,7 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 result?;
                 conn.execute_batch("PRAGMA foreign_key_check;")?;
             }
+            9 => crate::library::migrate_library_v10(conn)?,
             _ => {}
         }
         version += 1;

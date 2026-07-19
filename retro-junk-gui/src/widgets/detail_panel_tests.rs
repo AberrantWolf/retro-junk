@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use egui_kittest::Harness;
 
 use crate::app::RetroJunkApp;
-use crate::state::{Library, View};
+use crate::state::{LibraryState, View};
 use crate::test_support::{test_console, test_entry};
 
 #[test]
@@ -50,7 +50,7 @@ fn long_values_wrap_instead_of_widening_the_panel() {
     let state = harness.state_mut();
     state.ui_state.current_view = View::Library;
     state.root_path = Some(PathBuf::from("/roms"));
-    state.library = Library {
+    state.library = LibraryState {
         consoles: vec![test_console("psx", vec![entry])],
     };
     state.ui_state.selected_console = Some(0);
