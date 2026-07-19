@@ -377,6 +377,7 @@ fn load_library_from_legacy(
             root_id: None,
             active_page: None,
             entry_counts: HashMap::new(),
+            console_statuses: HashMap::new(),
         },
         stale_folders,
     ))

@@ -406,7 +406,11 @@ impl RetroJunkApp {
                     if self.ui_state.selected_console == Some(console_id) {
                         self.request_console_page(console_id, ctx);
                     }
+                    self.refresh_console_summaries(ctx);
                 }
+                Ok(crate::backend::library_store::LibraryStoreValue::ConsoleSummaries(
+                    summaries,
+                )) => self.merge_console_summaries(summaries),
                 Ok(crate::backend::library_store::LibraryStoreValue::EntryList(page)) => {
                     if self.pending_page_request != Some(request_id)
                         || self.ui_state.selected_console != Some(page.console_id)
@@ -462,6 +466,7 @@ impl RetroJunkApp {
                     if let Some(console_id) = self.ui_state.selected_console {
                         self.request_console_page(console_id, ctx);
                     }
+                    self.refresh_console_summaries(ctx);
                 }
                 _ => {}
             }
@@ -473,6 +478,27 @@ impl RetroJunkApp {
             self.browser
                 .entry_counts
                 .insert(summary.id, summary.entry_count);
+            let worst_status = if summary.unrecognized_count > 0 {
+                Some(crate::state::EntryStatus::Unrecognized)
+            } else if summary.unknown_count > 0 {
+                Some(crate::state::EntryStatus::Unknown)
+            } else if summary.ambiguous_count > 0 {
+                Some(crate::state::EntryStatus::Ambiguous)
+            } else if summary.matched_count > 0 {
+                Some(crate::state::EntryStatus::Matched)
+            } else if summary.tagged_count > 0 {
+                // Tag variants share their console-badge severity and color.
+                Some(crate::state::EntryStatus::Tagged(
+                    retro_junk_catalog::CatalogTag::Homebrew,
+                ))
+            } else {
+                None
+            };
+            if let Some(status) = worst_status {
+                self.browser.console_statuses.insert(summary.id, status);
+            } else {
+                self.browser.console_statuses.remove(&summary.id);
+            }
             if let Some(index) = self
                 .browser
                 .find_by_id(summary.id)
@@ -480,6 +506,10 @@ impl RetroJunkApp {
             {
                 self.browser.consoles[index].id = Some(summary.id);
                 self.browser.consoles[index].revision = summary.revision;
+                self.browser.consoles[index].scan_status = match summary.scan_state {
+                    retro_junk_db::LibraryScanState::Ready => crate::state::ScanStatus::Scanned,
+                    _ => crate::state::ScanStatus::NotScanned,
+                };
                 continue;
             }
             let Ok(platform) = serde_json::from_str(&format!("\"{}\"", summary.platform)) else {
@@ -511,6 +541,15 @@ impl RetroJunkApp {
                 fingerprint: None,
                 loose_disc_files: Vec::new(),
             });
+        }
+    }
+
+    fn refresh_console_summaries(&mut self, ctx: &egui::Context) {
+        if let Some(root_id) = self.browser.root_id {
+            self.submit_store(
+                crate::backend::library_store::LibraryStoreRequest::ConsoleSummaries(root_id),
+                ctx,
+            );
         }
     }
 

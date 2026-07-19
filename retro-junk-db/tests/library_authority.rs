@@ -134,6 +134,69 @@ fn duplicate_display_names_have_distinct_durable_ids_and_deterministic_pages() {
 }
 
 #[test]
+fn console_summaries_report_complete_effective_status_aggregates() {
+    let mut matched = row("matched.nes", "matched.nes");
+    matched.status = "matched".into();
+    let mut unknown = row("unknown.nes", "unknown.nes");
+    unknown.status = "unknown".into();
+    let mut unrecognized = row("bad.nes", "bad.nes");
+    unrecognized.status = "unrecognized".into();
+    let mut ambiguous = row("maybe.nes", "maybe.nes");
+    ambiguous.status = "ambiguous".into();
+    let mut tagged = row("homebrew.nes", "homebrew.nes");
+    tagged.status = "unrecognized".into();
+    tagged.tag = "homebrew".into();
+
+    let (conn, root, _) = setup(&[matched, unknown, unrecognized, ambiguous, tagged]);
+    let summaries = list_console_summaries(&conn, root).unwrap();
+    let summary = &summaries[0];
+
+    assert_eq!(summary.entry_count, 5);
+    assert_eq!(summary.matched_count, 1);
+    assert_eq!(summary.unknown_count, 1);
+    assert_eq!(summary.unrecognized_count, 1);
+    assert_eq!(summary.ambiguous_count, 1);
+    assert_eq!(summary.tagged_count, 1);
+
+    let page = query_entry_list(
+        &conn,
+        &LibraryEntryListQuery {
+            console_id: summary.id,
+            search: String::new(),
+            filter: LibraryEntryFilter::All,
+            sort: LibraryEntrySortField::DisplayName,
+            direction: SortDirection::Ascending,
+            offset: 0,
+            limit: 300,
+        },
+    )
+    .unwrap();
+    assert_eq!(page.counts.matched, 1);
+    assert_eq!(page.counts.unknown, 1);
+    assert_eq!(page.counts.unrecognized, 1);
+    assert_eq!(page.counts.ambiguous, 1);
+    assert_eq!(page.counts.tagged, 1);
+
+    let unrecognized = query_entry_list(
+        &conn,
+        &LibraryEntryListQuery {
+            filter: LibraryEntryFilter::Error,
+            ..LibraryEntryListQuery {
+                console_id: summary.id,
+                search: String::new(),
+                filter: LibraryEntryFilter::All,
+                sort: LibraryEntrySortField::DisplayName,
+                direction: SortDirection::Ascending,
+                offset: 0,
+                limit: 300,
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(unrecognized.rows.len(), 1);
+}
+
+#[test]
 fn unchanged_and_changed_scans_preserve_identity_but_invalidate_only_when_needed() {
     let (mut conn, _, console) = setup(&[row("game.nes", "game.nes")]);
     let original = query_entry_list(

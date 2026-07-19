@@ -68,6 +68,8 @@ pub struct LibraryBrowserState {
     pub root_id: Option<retro_junk_db::LibraryRootId>,
     pub active_page: Option<retro_junk_db::LibraryEntryListPage>,
     pub entry_counts: HashMap<retro_junk_db::LibraryConsoleId, u64>,
+    /// Worst effective entry status for each console, retained when pages are evicted.
+    pub console_statuses: HashMap<retro_junk_db::LibraryConsoleId, EntryStatus>,
 }
 
 impl LibraryBrowserState {
@@ -438,16 +440,6 @@ impl EntryStatus {
             EntryStatus::Matched => "Verified match in database",
             EntryStatus::Tagged(CatalogTag::Homebrew) => "Homebrew game",
             EntryStatus::Tagged(CatalogTag::Modded) => "Modded ROM",
-        }
-    }
-
-    /// Severity ranking (higher = worse). Used to find the worst status in a folder.
-    pub fn severity(self) -> u8 {
-        match self {
-            EntryStatus::Matched | EntryStatus::Tagged(_) => 0,
-            EntryStatus::Ambiguous => 1,
-            EntryStatus::Unknown => 2,
-            EntryStatus::Unrecognized => 3,
         }
     }
 }

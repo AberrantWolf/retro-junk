@@ -96,18 +96,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         }
                     };
 
-                    // Compute worst status across all entries (only for scanned consoles)
-                    let worst_status = if console.scan_status == ScanStatus::Scanned
-                        && !console.entries.is_empty()
-                    {
-                        console
-                            .entries
-                            .iter()
-                            .map(super::super::state::LibraryEntry::effective_status)
-                            .max_by_key(|status| status.severity())
-                    } else {
-                        None
-                    };
+                    // Inactive entry pages are deliberately evicted; the summary
+                    // projection retains the console's aggregate status.
+                    let worst_status =
+                        console_id.and_then(|id| app.browser.console_statuses.get(&id).copied());
 
                     let folder_path = console.folder_path.clone();
                     let entry_count = persisted_entry_count;

@@ -54,7 +54,8 @@ fn long_values_wrap_instead_of_widening_the_panel() {
         consoles: vec![test_console("psx", vec![entry])],
         root_id: None,
         active_page: None,
-        entry_counts: Default::default(),
+        entry_counts: std::collections::HashMap::new(),
+        console_statuses: std::collections::HashMap::new(),
     };
     state.ui_state.selected_console = state.browser.consoles[0].id;
     state.ui_state.focused_entry = state.browser.consoles[0].entries[0].id;

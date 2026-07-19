@@ -19,56 +19,28 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     };
 
     let console = &app.browser.consoles[console_idx];
-    let filter = app.ui_state.filter_text.to_lowercase();
-
-    // Build filtered index list
-    let filtered_indices: Vec<usize> = console
-        .entries
-        .iter()
-        .enumerate()
-        .filter(|(_, entry)| {
-            if entry.id.is_none() {
-                return false;
-            }
-            if filter.is_empty() {
-                return true;
-            }
-            let name = entry.game_entry.display_name().to_lowercase();
-            if name.contains(&filter) {
-                return true;
-            }
-            // `filter` is non-empty here, so empty fields can never match.
-            if let Some(ref id) = entry.identification {
-                if id.serial_number.to_lowercase().contains(&filter) {
-                    return true;
-                }
-                if id.internal_name.to_lowercase().contains(&filter) {
-                    return true;
-                }
-            }
-            if let Some(ref dm) = entry.dat_match
-                && dm.game_name.to_lowercase().contains(&filter)
-            {
-                return true;
-            }
-            false
-        })
-        .map(|(i, _)| i)
-        .collect();
+    let Some(console_id) = console.id else { return };
+    let Some(page) = app
+        .browser
+        .active_page
+        .as_ref()
+        .filter(|page| page.console_id == console_id)
+    else {
+        ui.label("Loading library entries…");
+        return;
+    };
+    let visible_ids: Vec<_> = page.rows.iter().map(|row| row.id).collect();
 
     // Cmd+A / Ctrl+A: select all visible entries
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
-        app.ui_state.selected_entries = filtered_indices
-            .iter()
-            .filter_map(|&index| console.entries[index].id)
-            .collect();
+        app.ui_state.selected_entries = visible_ids.iter().copied().collect();
     }
 
     // Keyboard navigation (only when game table has focus)
     if app.ui_state.focused_panel == FocusedPanel::GameTable {
-        let current_filtered_pos = filtered_indices
+        let current_filtered_pos = visible_ids
             .iter()
-            .position(|&i| console.entries[i].id == app.ui_state.focused_entry);
+            .position(|id| Some(*id) == app.ui_state.focused_entry);
 
         let text_height_estimate = egui::TextStyle::Body
             .resolve(ui.style())
@@ -76,26 +48,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             .max(ui.spacing().interact_size.y);
         let page_size = (ui.available_height() / text_height_estimate).max(1.0) as usize;
 
-        if let Some(action) = keyboard_nav::process_list_nav(
-            ui,
-            current_filtered_pos,
-            filtered_indices.len(),
-            page_size,
-        ) {
-            let entry_idx = filtered_indices[action.new_index];
-            let Some(entry_id) = console.entries[entry_idx].id else {
-                return;
-            };
+        if let Some(action) =
+            keyboard_nav::process_list_nav(ui, current_filtered_pos, visible_ids.len(), page_size)
+        {
+            let entry_id = visible_ids[action.new_index];
 
             if action.extend_selection {
                 // Shift: extend selection from focused to new position
                 if let Some(focused_pos) = current_filtered_pos {
                     let start = focused_pos.min(action.new_index);
                     let end = focused_pos.max(action.new_index);
-                    for &index in &filtered_indices[start..=end] {
-                        if let Some(id) = console.entries[index].id {
-                            app.ui_state.selected_entries.insert(id);
-                        }
+                    for &id in &visible_ids[start..=end] {
+                        app.ui_state.selected_entries.insert(id);
                     }
                 } else {
                     app.ui_state.selected_entries.insert(entry_id);
@@ -111,78 +75,69 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     }
 
     // Status summary
-    let total = console.entries.len();
-    let matched = console
-        .entries
-        .iter()
-        .filter(|e| e.effective_status() == EntryStatus::Matched)
-        .count();
-    let ambiguous = console
-        .entries
-        .iter()
-        .filter(|e| e.effective_status() == EntryStatus::Ambiguous)
-        .count();
-    let unrecognized = console
-        .entries
-        .iter()
-        .filter(|e| e.effective_status() == EntryStatus::Unrecognized)
-        .count();
-    let tagged = console
-        .entries
-        .iter()
-        .filter(|e| matches!(e.effective_status(), EntryStatus::Tagged(_)))
-        .count();
-    let showing = filtered_indices.len();
+    let total = page.counts.total;
+    let matched = page.counts.matched;
+    let ambiguous = page.counts.ambiguous;
+    let unrecognized = page.counts.unrecognized;
+    let tagged = page.counts.tagged;
+    let showing = page.rows.len();
 
     // Pre-extract row data to avoid borrowing issues
-    let row_data: Vec<RowData> = filtered_indices
+    let row_data: Vec<RowData> = page
+        .rows
         .iter()
-        .map(|&i| {
-            let entry = &console.entries[i];
+        .map(|projection| {
+            let entry = console.entry_by_id(projection.id);
             RowData {
-                entry_id: entry.id.expect("paged entries have durable IDs"),
-                status: entry.effective_status(),
-                has_broken_refs: entry.has_broken_refs(),
+                entry_id: projection.id,
+                status: projection_status(&projection.status, &projection.tag),
+                has_broken_refs: entry.is_some_and(crate::state::LibraryEntry::has_broken_refs),
                 has_hash_warnings: entry
-                    .hashes
+                    .and_then(|entry| entry.hashes.as_ref())
                     .as_ref()
                     .is_some_and(|h| !h.warnings.is_empty())
-                    || entry.disc_identifications.as_ref().is_some_and(|discs| {
-                        discs
-                            .iter()
-                            .any(|d| d.hashes.as_ref().is_some_and(|h| !h.warnings.is_empty()))
-                    }),
-                has_cue_compat_issues: entry.has_cue_compat_issues(),
-                asset_status: entry.asset_status(),
-                name: entry.game_entry.display_name().to_string(),
-                file_path: entry.game_entry.analysis_path().to_path_buf(),
-                serial: entry_serial(entry),
+                    || entry
+                        .and_then(|entry| entry.disc_identifications.as_ref())
+                        .is_some_and(|discs| {
+                            discs
+                                .iter()
+                                .any(|d| d.hashes.as_ref().is_some_and(|h| !h.warnings.is_empty()))
+                        }),
+                has_cue_compat_issues: entry
+                    .is_some_and(crate::state::LibraryEntry::has_cue_compat_issues),
+                asset_status: entry.map_or(
+                    AssetStatus::Unknown,
+                    crate::state::LibraryEntry::asset_status,
+                ),
+                name: projection.display_name.clone(),
+                file_path: entry.map(|entry| entry.game_entry.analysis_path().to_path_buf()),
+                serial: entry.map(entry_serial).unwrap_or_default(),
                 internal_name: entry
-                    .identification
-                    .as_ref()
+                    .and_then(|entry| entry.identification.as_ref())
                     .map(|id| id.internal_name.clone())
                     .unwrap_or_default(),
-                regions: {
-                    let codes: Vec<&str> = entry
-                        .effective_regions()
-                        .iter()
-                        .map(retro_junk_core::Region::code)
-                        .collect();
-                    let text = codes.join(", ");
-                    if entry.region_override.is_some() && !text.is_empty() {
-                        format!("{text}*")
-                    } else {
-                        text
-                    }
-                },
+                regions: entry.map_or_else(
+                    || projection.region_override.clone(),
+                    |entry| {
+                        let codes: Vec<&str> = entry
+                            .effective_regions()
+                            .iter()
+                            .map(retro_junk_core::Region::code)
+                            .collect();
+                        let text = codes.join(", ");
+                        if entry.region_override.is_some() && !text.is_empty() {
+                            format!("{text}*")
+                        } else {
+                            text
+                        }
+                    },
+                ),
                 crc32: entry
-                    .hashes
-                    .as_ref()
+                    .and_then(|entry| entry.hashes.as_ref())
                     .map(|h| h.crc32.clone())
                     .unwrap_or_default(),
                 dat_match: entry
-                    .dat_match
-                    .as_ref()
+                    .and_then(|entry| entry.dat_match.as_ref())
                     .map(|dm| dm.game_name.clone())
                     .unwrap_or_default(),
             }
@@ -370,6 +325,10 @@ fn show_row_context_menu(
     console_idx: usize,
     data: &RowData,
 ) {
+    let Some(file_path) = data.file_path.as_ref() else {
+        ui.label("Loading entry details…");
+        return;
+    };
     if ui.button("Rescan").clicked() {
         backend::scan::rescan_selected_entries(app, console_idx, ctx);
         ui.close();
@@ -491,7 +450,7 @@ fn show_row_context_menu(
     ui.separator();
 
     if ui.button(util::REVEAL_LABEL).clicked() {
-        util::reveal_in_file_manager(&data.file_path);
+        util::reveal_in_file_manager(file_path);
         ui.close();
     }
 
@@ -675,12 +634,25 @@ struct RowData {
     has_cue_compat_issues: bool,
     asset_status: AssetStatus,
     name: String,
-    file_path: PathBuf,
+    file_path: Option<PathBuf>,
     serial: String,
     internal_name: String,
     regions: String,
     crc32: String,
     dat_match: String,
+}
+
+fn projection_status(status: &str, tag: &str) -> EntryStatus {
+    match tag {
+        "homebrew" => EntryStatus::Tagged(retro_junk_catalog::CatalogTag::Homebrew),
+        "modded" => EntryStatus::Tagged(retro_junk_catalog::CatalogTag::Modded),
+        _ => match status {
+            "matched" => EntryStatus::Matched,
+            "ambiguous" => EntryStatus::Ambiguous,
+            "unrecognized" => EntryStatus::Unrecognized,
+            _ => EntryStatus::Unknown,
+        },
+    }
 }
 
 fn handle_row_click(
@@ -800,4 +772,24 @@ fn paint_cell_text(ui: &mut egui::Ui, text: &str) {
         font_id,
         color,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::projection_status;
+    use crate::state::EntryStatus;
+    use retro_junk_catalog::CatalogTag;
+
+    #[test]
+    fn projected_tags_override_stored_analysis_status() {
+        assert_eq!(
+            projection_status("unrecognized", "homebrew"),
+            EntryStatus::Tagged(CatalogTag::Homebrew)
+        );
+        assert_eq!(
+            projection_status("matched", "modded"),
+            EntryStatus::Tagged(CatalogTag::Modded)
+        );
+        assert_eq!(projection_status("ambiguous", ""), EntryStatus::Ambiguous);
+    }
 }

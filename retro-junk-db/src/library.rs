@@ -442,6 +442,9 @@ pub struct LibraryConsoleSummary {
     pub entry_count: u64,
     pub matched_count: u64,
     pub unknown_count: u64,
+    pub unrecognized_count: u64,
+    pub ambiguous_count: u64,
+    pub tagged_count: u64,
     pub revision: u64,
 }
 
@@ -498,7 +501,7 @@ pub struct LibraryEntryCounts {
     pub matched: u64,
     pub unknown: u64,
     pub ambiguous: u64,
-    pub errors: u64,
+    pub unrecognized: u64,
     pub tagged: u64,
 }
 #[derive(Debug, Clone)]
@@ -829,7 +832,7 @@ pub fn list_console_summaries(
     conn: &Connection,
     root_id: LibraryRootId,
 ) -> Result<Vec<LibraryConsoleSummary>, LibraryError> {
-    let mut stmt=conn.prepare("SELECT c.id,c.platform,c.folder_name,c.folder_path,c.scan_state,c.dat_game_count,c.revision,COUNT(e.id),SUM(CASE WHEN e.status='matched' THEN 1 ELSE 0 END),SUM(CASE WHEN e.status='unknown' THEN 1 ELSE 0 END) FROM library_consoles c LEFT JOIN library_entries e ON e.console_id=c.id WHERE c.root_id=?1 GROUP BY c.id ORDER BY c.folder_name COLLATE NOCASE,c.id")?;
+    let mut stmt=conn.prepare("SELECT c.id,c.platform,c.folder_name,c.folder_path,c.scan_state,c.dat_game_count,c.revision,COUNT(e.id),COALESCE(SUM(CASE WHEN e.status='matched' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='unknown' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='unrecognized' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='ambiguous' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.tag<>'' THEN 1 ELSE 0 END),0) FROM library_consoles c LEFT JOIN library_entries e ON e.console_id=c.id WHERE c.root_id=?1 GROUP BY c.id ORDER BY c.folder_name COLLATE NOCASE,c.id")?;
     let rows = stmt.query_map([root_id.0], |r| {
         Ok((
             r.get::<_, u64>(0)?,
@@ -842,10 +845,27 @@ pub fn list_console_summaries(
             r.get::<_, u64>(7)?,
             r.get::<_, u64>(8)?,
             r.get::<_, u64>(9)?,
+            r.get::<_, u64>(10)?,
+            r.get::<_, u64>(11)?,
+            r.get::<_, u64>(12)?,
         ))
     })?;
     rows.map(|r| {
-        let (id, platform, folder_name, folder_path, state, dat, rev, count, matched, unknown) = r?;
+        let (
+            id,
+            platform,
+            folder_name,
+            folder_path,
+            state,
+            dat,
+            rev,
+            count,
+            matched,
+            unknown,
+            unrecognized,
+            ambiguous,
+            tagged,
+        ) = r?;
         Ok(LibraryConsoleSummary {
             id: LibraryConsoleId(id),
             root_id,
@@ -857,6 +877,9 @@ pub fn list_console_summaries(
             entry_count: count,
             matched_count: matched,
             unknown_count: unknown,
+            unrecognized_count: unrecognized,
+            ambiguous_count: ambiguous,
+            tagged_count: tagged,
             revision: rev,
         })
     })
@@ -1301,7 +1324,7 @@ fn filter_sql(f: LibraryEntryFilter) -> &'static str {
         LibraryEntryFilter::Matched => "AND status='matched'",
         LibraryEntryFilter::Unmatched => "AND status='unknown'",
         LibraryEntryFilter::Ambiguous => "AND status='ambiguous'",
-        LibraryEntryFilter::Error => "AND status='error'",
+        LibraryEntryFilter::Error => "AND status='unrecognized' AND tag=''",
         LibraryEntryFilter::Tagged => "AND tag<>''",
     }
 }
@@ -1323,7 +1346,7 @@ fn entry_counts(
     conn: &Connection,
     cid: LibraryConsoleId,
 ) -> Result<LibraryEntryCounts, LibraryError> {
-    Ok(conn.query_row("SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='matched' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='unknown' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='ambiguous' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='error' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN tag<>'' THEN 1 ELSE 0 END),0) FROM library_entries WHERE console_id=?1",[cid.0],|r|Ok(LibraryEntryCounts{total:r.get(0)?,matched:r.get(1)?,unknown:r.get(2)?,ambiguous:r.get(3)?,errors:r.get(4)?,tagged:r.get(5)?}))?)
+    Ok(conn.query_row("SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='matched' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='unknown' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='ambiguous' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='unrecognized' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN tag<>'' THEN 1 ELSE 0 END),0) FROM library_entries WHERE console_id=?1",[cid.0],|r|Ok(LibraryEntryCounts{total:r.get(0)?,matched:r.get(1)?,unknown:r.get(2)?,ambiguous:r.get(3)?,unrecognized:r.get(4)?,tagged:r.get(5)?}))?)
 }
 
 /// v9 -> v10 library migration. It never touches the ROM filesystem.
