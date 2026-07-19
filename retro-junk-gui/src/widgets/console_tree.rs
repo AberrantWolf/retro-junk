@@ -195,13 +195,7 @@ fn show_console_context_menu(
         )
         .clicked()
     {
-        // Select all entries, then compute hashes
-        app.ui_state.selected_entries = app.browser.consoles[console_idx]
-            .entries
-            .iter()
-            .filter_map(|entry| entry.id)
-            .collect();
-        backend::hash::compute_hashes_for_selection(app, console_idx);
+        app.calculate_all_hashes(console_idx, ctx);
         ui.close();
     }
 

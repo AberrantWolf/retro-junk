@@ -194,6 +194,7 @@ pub struct RetroJunkApp {
     next_store_request_id: u64,
     pending_page_request: Option<u64>,
     pending_details_request: Option<u64>,
+    pending_all_hashes_request: Option<(u64, retro_junk_db::LibraryConsoleId)>,
 
     /// `JoinHandle`s for every spawned background-operation thread, keyed by
     /// `op_id`. Joined (and removed) when the operation completes, or all at
@@ -291,6 +292,7 @@ impl RetroJunkApp {
             next_store_request_id: 0,
             pending_page_request: None,
             pending_details_request: None,
+            pending_all_hashes_request: None,
             op_threads: HashMap::new(),
         }
     }
@@ -351,7 +353,15 @@ impl RetroJunkApp {
             }
             let request_id = reply.request_id;
             match reply.payload {
-                Err(error) => self.push_error("Library database", error),
+                Err(error) => {
+                    if self
+                        .pending_all_hashes_request
+                        .is_some_and(|(pending, _)| pending == request_id)
+                    {
+                        self.pending_all_hashes_request = None;
+                    }
+                    self.push_error("Library database", error);
+                }
                 Ok(crate::backend::library_store::LibraryStoreValue::RootOpened {
                     root_id,
                     summaries,
@@ -429,6 +439,26 @@ impl RetroJunkApp {
                     ctx.request_repaint_after(Duration::from_millis(20));
                 }
                 Ok(crate::backend::library_store::LibraryStoreValue::EntryDetails(details)) => {
+                    if let Some((pending_request, console_id)) = self.pending_all_hashes_request
+                        && pending_request == request_id
+                    {
+                        self.pending_all_hashes_request = None;
+                        let Some(console_index) = self.browser.find_by_id(console_id) else {
+                            continue;
+                        };
+                        self.browser.consoles[console_index].entries = details
+                            .into_iter()
+                            .filter(|detail| detail.console_id == console_id)
+                            .filter_map(detail_to_entry)
+                            .collect();
+                        self.ui_state.selected_entries = self.browser.consoles[console_index]
+                            .entries
+                            .iter()
+                            .filter_map(|entry| entry.id)
+                            .collect();
+                        crate::backend::hash::compute_hashes_for_selection(self, console_index);
+                        continue;
+                    }
                     if self.pending_details_request != Some(request_id) {
                         continue;
                     }
@@ -442,13 +472,7 @@ impl RetroJunkApp {
                     self.browser.consoles[console_index].entries = details
                         .into_iter()
                         .filter(|detail| detail.console_id == console_id)
-                        .filter_map(|detail| {
-                            let mut entry = crate::cache::row_to_entry(detail.row)?;
-                            entry.id = Some(detail.id);
-                            entry.revision = detail.revision;
-                            entry.source_revision = detail.source_revision;
-                            Some(entry)
-                        })
+                        .filter_map(detail_to_entry)
                         .collect();
                     self.discover_assets_for_page(console_index, ctx);
                 }
@@ -632,6 +656,26 @@ impl RetroJunkApp {
         self.ui_state
             .selected_console
             .and_then(|id| self.browser.find_by_id(id))
+    }
+
+    pub fn calculate_all_hashes(&mut self, console_idx: usize, ctx: &egui::Context) {
+        let Some(console_id) = self
+            .browser
+            .consoles
+            .get(console_idx)
+            .and_then(|console| console.id)
+        else {
+            return;
+        };
+        if self.pending_all_hashes_request.is_some() {
+            return;
+        }
+        if let Some(request_id) = self.queue_store(
+            crate::backend::library_store::LibraryStoreRequest::ConsoleEntryDetails(console_id),
+        ) {
+            self.pending_all_hashes_request = Some((request_id, console_id));
+            ctx.request_repaint_after(Duration::from_millis(20));
+        }
     }
 
     pub fn selected_entry_indices(&self) -> Vec<usize> {
@@ -832,6 +876,16 @@ impl RetroJunkApp {
             message: message.into(),
         });
     }
+}
+
+fn detail_to_entry(
+    detail: retro_junk_db::LibraryEntryDetail,
+) -> Option<crate::state::LibraryEntry> {
+    let mut entry = crate::cache::row_to_entry(detail.row)?;
+    entry.id = Some(detail.id);
+    entry.revision = detail.revision;
+    entry.source_revision = detail.source_revision;
+    Some(entry)
 }
 
 impl eframe::App for RetroJunkApp {

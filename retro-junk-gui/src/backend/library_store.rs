@@ -43,6 +43,7 @@ pub enum LibraryStoreRequest {
     EntryList(LibraryEntryListQuery),
     EntryDetail(LibraryEntryId),
     EntryDetails(Vec<LibraryEntryId>),
+    ConsoleEntryDetails(LibraryConsoleId),
     BeginConsoleScan(LibraryConsoleId),
     ReconcileConsoleScan {
         token: ConsoleScanToken,
@@ -248,6 +249,9 @@ fn execute(
             ids.into_iter()
                 .filter_map(|id| retro_junk_db::load_entry_detail(conn, id).transpose())
                 .collect::<Result<Vec<_>, _>>()?,
+        ),
+        R::ConsoleEntryDetails(console_id) => LibraryStoreValue::EntryDetails(
+            retro_junk_db::load_entry_details_for_console(conn, console_id)?,
         ),
         R::BeginConsoleScan(id) => {
             LibraryStoreValue::ScanToken(retro_junk_db::begin_console_scan(conn, id)?)
@@ -572,5 +576,52 @@ mod tests {
         ));
         store.shutdown_and_join(8);
         assert!(store.thread.is_none());
+    }
+
+    #[test]
+    fn worker_loads_every_console_detail_without_pagination() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        let conn = retro_junk_db::open_database(&path).unwrap();
+        let root = retro_junk_db::upsert_library_root(&conn, "/roms").unwrap();
+        let console = retro_junk_db::ensure_library_console(
+            &conn,
+            &LibraryConsoleDescriptor {
+                root_id: root,
+                platform: "Genesis".into(),
+                folder_name: "genesis".into(),
+                folder_path: "/roms/genesis".into(),
+            },
+        )
+        .unwrap();
+        for index in 0..350 {
+            let entry_key = format!("file:{index}.md");
+            let display_name = format!("{index}.md");
+            let game_entry_json = format!(r#"{{"SingleFile":"/roms/genesis/{index}.md"}}"#);
+            conn.execute(
+                "INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json)
+                 VALUES(?1,?2,?3,?4)",
+                (console.0, entry_key, display_name, game_entry_json),
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let mut store = LibraryStore::start(path).unwrap();
+        store
+            .submit(StoreEnvelope {
+                session_generation: 3,
+                request_id: 9,
+                payload: LibraryStoreRequest::ConsoleEntryDetails(console),
+            })
+            .unwrap();
+        let reply = store
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert!(matches!(
+            reply.payload,
+            Ok(LibraryStoreValue::EntryDetails(ref rows)) if rows.len() == 350
+        ));
+        store.shutdown_and_join(3);
     }
 }
