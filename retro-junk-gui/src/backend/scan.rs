@@ -57,7 +57,7 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
 /// Identified by `console_idx` (position in `library.consoles`) to avoid
 /// ambiguity when multiple folders map to the same platform.
 pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
-    let console = &mut app.library.consoles[console_idx];
+    let console = &mut app.browser.consoles[console_idx];
     if console.scan_status != crate::state::ScanStatus::NotScanned {
         return;
     }
@@ -155,13 +155,13 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
 
 /// Re-analyze selected entries without rediscovering the folder.
 pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
-    let console = &app.library.consoles[console_idx];
+    let console = &app.browser.consoles[console_idx];
     let selected: Vec<scanner::GameEntry> = app
         .ui_state
         .selected_entries
         .iter()
         .copied()
-        .filter_map(|i| console.entries.get(i).map(|e| e.game_entry.clone()))
+        .filter_map(|id| console.entry_by_id(id).map(|e| e.game_entry.clone()))
         .collect();
 
     if selected.is_empty() {

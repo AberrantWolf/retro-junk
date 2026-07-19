@@ -233,7 +233,7 @@ fn chd_compress_complete_updates_single_file_entry_and_invalidates_checks() {
     });
     entry.broken_references = Some(Vec::new());
     entry.cue_compat_issues = Some(Vec::new());
-    app.library.consoles.push(test_console("psx", vec![entry]));
+    app.browser.consoles.push(test_console("psx", vec![entry]));
 
     let job = retro_junk_lib::chd_convert::CompressionJob {
         input: input.clone(),
@@ -264,7 +264,7 @@ fn chd_compress_complete_updates_single_file_entry_and_invalidates_checks() {
         &dummy_ctx(),
     );
 
-    let console = &app.library.consoles[0];
+    let console = &app.browser.consoles[0];
     assert_eq!(console.entries.len(), 1);
     let GameEntry::SingleFile(ref path) = console.entries[0].game_entry else {
         panic!("expected SingleFile");
@@ -303,7 +303,7 @@ fn chd_compress_complete_without_source_deletion_leaves_entry_untouched_but_clea
     console.fingerprint = Some(crate::cache::FolderFingerprint {
         name_hash: "stale".to_string(),
     });
-    app.library.consoles.push(console);
+    app.browser.consoles.push(console);
 
     let job = retro_junk_lib::chd_convert::CompressionJob {
         input: input.clone(),
@@ -334,7 +334,7 @@ fn chd_compress_complete_without_source_deletion_leaves_entry_untouched_but_clea
         &dummy_ctx(),
     );
 
-    let console = &app.library.consoles[0];
+    let console = &app.browser.consoles[0];
     // Entry untouched: still SingleFile at the original cue path, hashes kept.
     let GameEntry::SingleFile(ref path) = console.entries[0].game_entry else {
         panic!("expected SingleFile");
@@ -362,7 +362,7 @@ fn chd_compress_complete_drops_ghost_entries_whose_files_were_all_deleted() {
     // entry for a track bin alongside the real cue entry.
     let cue_entry = test_entry(GameEntry::SingleFile(cue.clone()));
     let ghost_entry = test_entry(GameEntry::SingleFile(track_bin.clone()));
-    app.library
+    app.browser
         .consoles
         .push(test_console("psx", vec![cue_entry, ghost_entry]));
 
@@ -395,7 +395,7 @@ fn chd_compress_complete_drops_ghost_entries_whose_files_were_all_deleted() {
         &dummy_ctx(),
     );
 
-    let console = &app.library.consoles[0];
+    let console = &app.browser.consoles[0];
     assert_eq!(
         console.entries.len(),
         1,

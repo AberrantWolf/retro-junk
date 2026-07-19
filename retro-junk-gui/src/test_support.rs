@@ -5,17 +5,23 @@
 //! doesn't have to repeat the full struct literal.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use retro_junk_lib::Platform;
 use retro_junk_lib::scanner::GameEntry;
 
 use crate::state::{ConsoleState, DatStatus, EntryStatus, LibraryEntry, ScanStatus};
 
+static NEXT_ENTRY_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_CONSOLE_ID: AtomicU64 = AtomicU64::new(1);
+
 /// Build a minimal `LibraryEntry` around a `GameEntry` — the other fields are
 /// irrelevant to most tests and start empty.
 pub fn test_entry(game_entry: GameEntry) -> LibraryEntry {
     LibraryEntry {
-        id: None,
+        id: Some(retro_junk_db::LibraryEntryId(
+            NEXT_ENTRY_ID.fetch_add(1, Ordering::Relaxed),
+        )),
         revision: 0,
         source_revision: 0,
         game_entry,
@@ -38,7 +44,9 @@ pub fn test_entry(game_entry: GameEntry) -> LibraryEntry {
 /// Build a minimal `PlayStation` `ConsoleState` holding the given entries.
 pub fn test_console(folder_name: &str, entries: Vec<LibraryEntry>) -> ConsoleState {
     ConsoleState {
-        id: None,
+        id: Some(retro_junk_db::LibraryConsoleId(
+            NEXT_CONSOLE_ID.fetch_add(1, Ordering::Relaxed),
+        )),
         revision: 0,
         platform: Platform::Ps1,
         folder_name: folder_name.to_string(),

@@ -17,8 +17,8 @@ use retro_junk_lib::AnalysisContext;
 
 use crate::settings::AppSettings;
 use crate::state::{
-    AppMessage, BackgroundOperation, CueFixOutcome, CueFixResult, FocusedPanel, LibraryState,
-    RenameOutcome, RenameResult, ToolsState, View,
+    AppMessage, BackgroundOperation, CueFixOutcome, CueFixResult, FocusedPanel,
+    LibraryBrowserState, RenameOutcome, RenameResult, ToolsState, View,
 };
 use crate::util;
 use crate::views;
@@ -65,16 +65,18 @@ pub enum ChdmanProbe {
 pub struct UiState {
     /// Current sidebar navigation selection.
     pub current_view: View,
-    /// Index of the currently selected console in `library.consoles`.
-    pub selected_console: Option<usize>,
+    /// Durable identity of the currently selected console.
+    pub selected_console: Option<retro_junk_db::LibraryConsoleId>,
     /// One-shot request to scroll the console tree to an index.
     pub scroll_to_console: Option<usize>,
-    /// Index of the focused entry in the selected console's entries list.
-    pub focused_entry: Option<usize>,
-    /// Selected entry indices for multi-select.
-    pub selected_entries: HashSet<usize>,
+    /// Durable identity of the focused entry.
+    pub focused_entry: Option<retro_junk_db::LibraryEntryId>,
+    /// Durable entry identities for multi-select.
+    pub selected_entries: HashSet<retro_junk_db::LibraryEntryId>,
     /// Text filter for the game table.
     pub filter_text: String,
+    /// Offset of the active 300-row SQL page.
+    pub page_offset: u64,
     /// Whether the detail panel is visible.
     pub detail_panel_open: bool,
     /// Which batch-results dialog is open, if any.
@@ -122,6 +124,7 @@ impl Default for UiState {
             focused_entry: None,
             selected_entries: HashSet::new(),
             filter_text: String::new(),
+            page_offset: 0,
             detail_panel_open: true,
             results_dialog: ResultsDialog::None,
             chd_compress_prompt: None,
@@ -153,7 +156,7 @@ pub struct RetroJunkApp {
     pub root_path: Option<std::path::PathBuf>,
 
     /// Per-run ROM library state used by the GUI between frames.
-    pub library: LibraryState,
+    pub browser: LibraryBrowserState,
 
     /// Loaded DAT indices, keyed by `folder_name`.
     /// Stored separately from `ConsoleState` because hash matching needs
@@ -175,7 +178,7 @@ pub struct RetroJunkApp {
     /// Persistent settings (library roots, preferences).
     pub settings: AppSettings,
 
-    /// Connection to the catalog database (for enrichment + library cache).
+    /// Catalog connection used for enrichment and catalog-management screens.
     /// `None` only if the database file could not be opened.
     pub catalog_db: Option<retro_junk_db::Connection>,
 
@@ -188,6 +191,10 @@ pub struct RetroJunkApp {
     /// Rejects stale/superseded projections and tracks durable UI identity.
     pub library_controller: crate::backend::library_store::LibraryProjectionController,
 
+    next_store_request_id: u64,
+    pending_page_request: Option<u64>,
+    pending_details_request: Option<u64>,
+
     /// `JoinHandle`s for every spawned background-operation thread, keyed by
     /// `op_id`. Joined (and removed) when the operation completes, or all at
     /// once in `on_exit` so the process never dies mid-write (D2).
@@ -198,7 +205,8 @@ impl RetroJunkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = crate::settings::load_settings();
 
-        // Always open (or create) the catalog DB — used for enrichment + library cache
+        // Always open (or create) the catalog DB. The library worker opens its
+        // own serialized connection to the same file.
         let db_path = retro_junk_dat::cache::cache_dir()
             .ok()
             .map(|p| p.join("catalog.db"));
@@ -230,44 +238,13 @@ impl RetroJunkApp {
             }
             app.root_path = Some(root.clone());
             app.ui_state.loading_library = true;
-
-            // Load cache first, then scan. The cache thread sends CacheLoaded
-            // (if a cache exists) followed by StartFolderScan. This ordering
-            // ensures cached data (hashes, status, dat_match) is fully merged
-            // before any scan can overwrite it.
-            let tx = app.message_tx.clone();
-            let context = app.context.clone();
-            let root_bg = root.clone();
-            let db_path_bg = app.db_path.clone();
-            let ctx_bg = cc.egui_ctx.clone();
-            std::thread::spawn(move || {
-                // Open a separate DB connection for this thread (WAL allows concurrent readers)
-                let bg_conn = db_path_bg
-                    .as_ref()
-                    .and_then(|p| retro_junk_db::open_database(p).ok());
-
-                if let Some(ref conn) = bg_conn {
-                    // Migrate legacy JSON cache if it exists
-                    crate::cache::migrate_json_cache(conn, &root_bg, &context);
-
-                    if let Some((library, stale)) =
-                        crate::cache::load_library(conn, &root_bg, &context)
-                    {
-                        log::info!(
-                            "Restored {} consoles from cache ({} stale)",
-                            library.consoles.len(),
-                            stale.len()
-                        );
-                        let _ = tx.send(crate::state::AppMessage::CacheLoaded { library });
-                        // Repaint immediately so cached entries are visible before
-                        // the folder scan starts (which may take a moment).
-                        ctx_bg.request_repaint();
-                    }
-                }
-                // Always trigger a folder scan to discover new/removed consoles.
-                let _ = tx.send(crate::state::AppMessage::StartFolderScan);
-                ctx_bg.request_repaint();
-            });
+            if let Some(conn) = app.catalog_db.as_ref() {
+                crate::cache::migrate_json_cache(conn, root, &app.context);
+            }
+            app.open_browser_root(root, &cc.egui_ctx);
+            let _ = app
+                .message_tx
+                .send(crate::state::AppMessage::StartFolderScan);
         }
 
         app
@@ -300,7 +277,7 @@ impl RetroJunkApp {
         Self {
             context,
             root_path: None,
-            library: LibraryState::default(),
+            browser: LibraryBrowserState::default(),
             dat_indices: HashMap::new(),
             operations: Vec::new(),
             message_rx: rx,
@@ -311,15 +288,280 @@ impl RetroJunkApp {
             db_path,
             library_store,
             library_controller: Default::default(),
+            next_store_request_id: 0,
+            pending_page_request: None,
+            pending_details_request: None,
             op_threads: HashMap::new(),
         }
     }
 
     /// Drain all pending messages from background threads.
     fn process_pending_messages(&mut self, ctx: &egui::Context) {
+        self.process_store_replies(ctx);
         while let Ok(msg) = self.message_rx.try_recv() {
             crate::state::handle_message(self, msg, ctx);
         }
+    }
+
+    pub fn submit_store(
+        &mut self,
+        payload: crate::backend::library_store::LibraryStoreRequest,
+        ctx: &egui::Context,
+    ) {
+        self.queue_store(payload);
+        ctx.request_repaint_after(Duration::from_millis(20));
+    }
+
+    fn queue_store(
+        &mut self,
+        payload: crate::backend::library_store::LibraryStoreRequest,
+    ) -> Option<u64> {
+        let Some(store) = self.library_store.as_ref() else {
+            return None;
+        };
+        self.next_store_request_id = self.next_store_request_id.wrapping_add(1);
+        let request_id = self.next_store_request_id;
+        let _ = store.submit(crate::backend::library_store::StoreEnvelope {
+            session_generation: self.library_controller.session_generation,
+            request_id,
+            payload,
+        });
+        Some(request_id)
+    }
+
+    pub fn open_browser_root(&mut self, root: &std::path::Path, ctx: &egui::Context) {
+        self.submit_store(
+            crate::backend::library_store::LibraryStoreRequest::OpenRoot(
+                root.to_string_lossy().into_owned(),
+            ),
+            ctx,
+        );
+    }
+
+    fn process_store_replies(&mut self, ctx: &egui::Context) {
+        let mut replies = Vec::new();
+        if let Some(store) = self.library_store.as_ref() {
+            while let Ok(reply) = store.try_recv() {
+                replies.push(reply);
+            }
+        }
+        for reply in replies {
+            if reply.session_generation != self.library_controller.session_generation {
+                continue;
+            }
+            let request_id = reply.request_id;
+            match reply.payload {
+                Err(error) => self.push_error("Library database", error),
+                Ok(crate::backend::library_store::LibraryStoreValue::RootOpened {
+                    root_id,
+                    summaries,
+                }) => {
+                    self.browser.root_id = Some(root_id);
+                    self.merge_console_summaries(summaries);
+                    let missing: Vec<_> = self
+                        .browser
+                        .consoles
+                        .iter()
+                        .filter(|console| console.id.is_none())
+                        .filter_map(|console| {
+                            let platform = serde_json::to_string(&console.platform).ok()?;
+                            Some(retro_junk_db::LibraryConsoleDescriptor {
+                                root_id,
+                                platform: platform.trim_matches('"').to_owned(),
+                                folder_name: console.folder_name.clone(),
+                                folder_path: console.folder_path.to_string_lossy().into_owned(),
+                            })
+                        })
+                        .collect();
+                    for descriptor in missing {
+                        self.submit_store(
+                            crate::backend::library_store::LibraryStoreRequest::EnsureConsole(
+                                descriptor,
+                            ),
+                            ctx,
+                        );
+                    }
+                    self.ui_state.loading_library = false;
+                }
+                Ok(crate::backend::library_store::LibraryStoreValue::ConsoleEnsured {
+                    folder_name,
+                    console_id,
+                }) => {
+                    if let Some(index) = self.browser.find_by_folder(&folder_name) {
+                        self.browser.consoles[index].id = Some(console_id);
+                        if self.ui_state.selected_console != Some(console_id) {
+                            self.browser.consoles[index].entries.clear();
+                        }
+                    }
+                }
+                Ok(crate::backend::library_store::LibraryStoreValue::ConsolePublished {
+                    folder_name,
+                    console_id,
+                    entry_count,
+                }) => {
+                    self.browser.entry_counts.insert(console_id, entry_count);
+                    if let Some(index) = self.browser.find_by_folder(&folder_name) {
+                        self.browser.consoles[index].id = Some(console_id);
+                    }
+                    if self.ui_state.selected_console == Some(console_id) {
+                        self.request_console_page(console_id, ctx);
+                    }
+                }
+                Ok(crate::backend::library_store::LibraryStoreValue::EntryList(page)) => {
+                    if self.pending_page_request != Some(request_id)
+                        || self.ui_state.selected_console != Some(page.console_id)
+                    {
+                        continue;
+                    }
+                    self.pending_page_request = None;
+                    self.browser
+                        .entry_counts
+                        .insert(page.console_id, page.total_count);
+                    let ids = page.rows.iter().map(|row| row.id).collect();
+                    self.browser.active_page = Some(page);
+                    self.pending_details_request = self.queue_store(
+                        crate::backend::library_store::LibraryStoreRequest::EntryDetails(ids),
+                    );
+                    ctx.request_repaint_after(Duration::from_millis(20));
+                }
+                Ok(crate::backend::library_store::LibraryStoreValue::EntryDetails(details)) => {
+                    if self.pending_details_request != Some(request_id) {
+                        continue;
+                    }
+                    self.pending_details_request = None;
+                    let Some(console_id) = self.ui_state.selected_console else {
+                        continue;
+                    };
+                    let Some(console_index) = self.browser.find_by_id(console_id) else {
+                        continue;
+                    };
+                    self.browser.consoles[console_index].entries = details
+                        .into_iter()
+                        .filter(|detail| detail.console_id == console_id)
+                        .filter_map(|detail| {
+                            let mut entry = crate::cache::row_to_entry(detail.row)?;
+                            entry.id = Some(detail.id);
+                            entry.revision = detail.revision;
+                            entry.source_revision = detail.source_revision;
+                            Some(entry)
+                        })
+                        .collect();
+                }
+                Ok(crate::backend::library_store::LibraryStoreValue::ChangeSet(changes)) => {
+                    self.library_controller.apply_change_set(&changes);
+                    self.ui_state
+                        .selected_entries
+                        .retain(|id| !changes.removed_entries.contains(id));
+                    if self
+                        .ui_state
+                        .focused_entry
+                        .is_some_and(|id| changes.removed_entries.contains(&id))
+                    {
+                        self.ui_state.focused_entry = None;
+                    }
+                    if let Some(console_id) = self.ui_state.selected_console {
+                        self.request_console_page(console_id, ctx);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn merge_console_summaries(&mut self, summaries: Vec<retro_junk_db::LibraryConsoleSummary>) {
+        for summary in summaries {
+            self.browser
+                .entry_counts
+                .insert(summary.id, summary.entry_count);
+            if let Some(index) = self
+                .browser
+                .find_by_id(summary.id)
+                .or_else(|| self.browser.find_by_folder(&summary.folder_name))
+            {
+                self.browser.consoles[index].id = Some(summary.id);
+                self.browser.consoles[index].revision = summary.revision;
+                continue;
+            }
+            let Ok(platform) = serde_json::from_str(&format!("\"{}\"", summary.platform)) else {
+                continue;
+            };
+            let Some(registered) = self.context.get_by_platform(platform) else {
+                continue;
+            };
+            self.browser.consoles.push(crate::state::ConsoleState {
+                id: Some(summary.id),
+                revision: summary.revision,
+                platform,
+                folder_name: summary.folder_name,
+                folder_path: summary.folder_path.into(),
+                manufacturer: registered.metadata.manufacturer,
+                platform_name: registered.metadata.platform_name,
+                scan_status: match summary.scan_state {
+                    retro_junk_db::LibraryScanState::Ready => crate::state::ScanStatus::Scanned,
+                    _ => crate::state::ScanStatus::NotScanned,
+                },
+                entries: Vec::new(),
+                dat_status: if summary.dat_game_count > 0 {
+                    crate::state::DatStatus::Loaded {
+                        game_count: summary.dat_game_count as usize,
+                    }
+                } else {
+                    crate::state::DatStatus::NotLoaded
+                },
+                fingerprint: None,
+                loose_disc_files: Vec::new(),
+            });
+        }
+    }
+
+    pub fn request_console_page(
+        &mut self,
+        console_id: retro_junk_db::LibraryConsoleId,
+        ctx: &egui::Context,
+    ) {
+        self.browser.evict_inactive_entries(Some(console_id));
+        self.queue_console_page(console_id);
+        ctx.request_repaint_after(Duration::from_millis(20));
+    }
+
+    fn queue_console_page(&mut self, console_id: retro_junk_db::LibraryConsoleId) {
+        self.pending_page_request = self.queue_store(
+            crate::backend::library_store::LibraryStoreRequest::EntryList(
+                retro_junk_db::LibraryEntryListQuery {
+                    console_id,
+                    search: self.ui_state.filter_text.clone(),
+                    filter: retro_junk_db::LibraryEntryFilter::All,
+                    sort: retro_junk_db::LibraryEntrySortField::DisplayName,
+                    direction: retro_junk_db::SortDirection::Ascending,
+                    offset: self.ui_state.page_offset,
+                    limit: retro_junk_db::LibraryEntryListQuery::DEFAULT_PAGE_SIZE,
+                },
+            ),
+        );
+        self.pending_details_request = None;
+    }
+
+    pub fn selected_console_index(&self) -> Option<usize> {
+        self.ui_state
+            .selected_console
+            .and_then(|id| self.browser.find_by_id(id))
+    }
+
+    pub fn selected_entry_indices(&self) -> Vec<usize> {
+        let Some(console_index) = self.selected_console_index() else {
+            return Vec::new();
+        };
+        self.browser.consoles[console_index]
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry
+                    .id
+                    .is_some_and(|id| self.ui_state.selected_entries.contains(&id))
+            })
+            .map(|(index, _)| index)
+            .collect()
     }
 
     /// Cancel every in-flight background operation and join its thread (D2).
@@ -359,35 +601,106 @@ impl RetroJunkApp {
     }
 
     /// Save one console's entries to the database.
-    pub fn save_console_cache(&mut self, console_idx: usize) {
-        let error = self
+    pub fn save_console_cache(&mut self, console_idx: usize, ctx: &egui::Context) {
+        let result = self
             .root_path
             .as_ref()
-            .zip(self.catalog_db.as_ref())
-            .zip(self.library.consoles.get(console_idx))
-            .and_then(|((root, conn), console)| {
-                crate::cache::save_console(conn, root, console).err()
-            });
-        if let Some(error) = error {
-            log::warn!("Failed to publish console scan: {error}");
-            self.push_error("Library scan", error.to_string());
+            .zip(self.browser.consoles.get(console_idx))
+            .map(|(root, console)| crate::cache::console_snapshot(root, console));
+        match result {
+            Some(Ok(snapshot)) => {
+                let console_id = self.browser.consoles[console_idx].id;
+                let count = snapshot.entries.len() as u64;
+                if let Some(console_id) = console_id {
+                    self.browser.entry_counts.insert(console_id, count);
+                }
+                self.submit_store(
+                    crate::backend::library_store::LibraryStoreRequest::PublishConsole(snapshot),
+                    ctx,
+                );
+            }
+            Some(Err(error)) => {
+                log::warn!("Failed to publish console scan: {error}");
+                self.push_error("Library scan", error.to_string());
+            }
+            None => {}
         }
     }
 
     /// Save specific entries within a console to the database.
-    pub fn save_entry_cache(&mut self, console_idx: usize, entry_indices: &[usize]) {
-        let error = self
-            .root_path
-            .as_ref()
-            .zip(self.catalog_db.as_ref())
-            .zip(self.library.consoles.get(console_idx))
-            .and_then(|((root, conn), console)| {
-                crate::cache::save_entries(conn, root, console, entry_indices).err()
-            });
-        if let Some(error) = error {
-            log::warn!("Failed to publish entry edit: {error}");
-            self.push_error("Library update", error.to_string());
+    pub fn save_entry_cache(
+        &mut self,
+        console_idx: usize,
+        entry_indices: &[usize],
+        ctx: &egui::Context,
+    ) {
+        let commands: Vec<_> = entry_indices
+            .iter()
+            .filter_map(|&index| self.browser.consoles.get(console_idx)?.entries.get(index))
+            .filter_map(|entry| {
+                let id = entry.id?;
+                let region = entry.region_override.map(|value| value.name().to_owned());
+                let tag = entry.tag.map(|value| match value {
+                    retro_junk_catalog::CatalogTag::Homebrew => "homebrew".to_owned(),
+                    retro_junk_catalog::CatalogTag::Modded => "modded".to_owned(),
+                });
+                Some((id, region, tag))
+            })
+            .collect();
+        for (entry_id, region, tag) in commands {
+            self.submit_store(
+                crate::backend::library_store::LibraryStoreRequest::SetRegionOverride {
+                    entry_id,
+                    value: region,
+                },
+                ctx,
+            );
+            self.submit_store(
+                crate::backend::library_store::LibraryStoreRequest::SetTag {
+                    entry_id,
+                    value: tag,
+                },
+                ctx,
+            );
         }
+    }
+
+    pub fn delete_library_cache(&mut self, root: &std::path::Path, ctx: &egui::Context) {
+        let reopen_current = self.root_path.as_deref() == Some(root);
+        self.submit_store(
+            crate::backend::library_store::LibraryStoreRequest::DeleteRootPath(
+                root.to_string_lossy().into_owned(),
+            ),
+            ctx,
+        );
+        if reopen_current {
+            self.reopen_current_root_after_cache_clear(ctx);
+        }
+    }
+
+    pub fn clear_library_caches(&mut self, ctx: &egui::Context) {
+        self.submit_store(
+            crate::backend::library_store::LibraryStoreRequest::ClearCache,
+            ctx,
+        );
+        self.reopen_current_root_after_cache_clear(ctx);
+    }
+
+    fn reopen_current_root_after_cache_clear(&mut self, ctx: &egui::Context) {
+        let Some(root) = self.root_path.clone() else {
+            return;
+        };
+        self.library_controller.switch_root();
+        self.browser = LibraryBrowserState::default();
+        self.ui_state.selected_console = None;
+        self.ui_state.focused_entry = None;
+        self.ui_state.selected_entries.clear();
+        self.ui_state.page_offset = 0;
+        self.ui_state.loading_library = true;
+        self.pending_page_request = None;
+        self.pending_details_request = None;
+        self.open_browser_root(&root, ctx);
+        let _ = self.message_tx.send(AppMessage::StartFolderScan);
     }
 
     /// Push an error that will be shown to the user in a modal dialog.
@@ -517,12 +830,10 @@ impl eframe::App for RetroJunkApp {
     fn on_exit(&mut self) {
         log::info!("on_exit: stopping background work");
 
-        // Cancel every in-flight background operation and join its thread
-        // before saving (D2).
+        // Cancel every in-flight background operation and join its thread.
         self.cancel_and_join_all_operations();
         // Apply whatever completion messages those threads sent (e.g.
-        // ChdCompressComplete) before saving, so the persisted cache
-        // reflects the final post-cancellation state.
+        // ChdCompressComplete), queuing their final store commands.
         let ctx = egui::Context::default();
         self.process_pending_messages(&ctx);
 

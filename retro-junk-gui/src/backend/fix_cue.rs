@@ -11,13 +11,13 @@ use crate::state::{AppMessage, CueFixOutcome, CueFixResult, OperationKind, Progr
 /// For each selected entry whose analysis path is a `.cue` file, checks for
 /// `CDRWin` compatibility issues and converts to standard CUE format.
 pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
-    let console = &app.library.consoles[console_idx];
+    let console = &app.browser.consoles[console_idx];
     let folder_name = console.folder_name.clone();
 
     // Collect CUE file paths from selected entries
     let mut cue_files: Vec<(String, PathBuf)> = Vec::new();
     for &i in &app.ui_state.selected_entries {
-        let Some(entry) = console.entries.get(i) else {
+        let Some(entry) = console.entry_by_id(i) else {
             continue;
         };
         let entry_name = entry.game_entry.display_name().to_string();

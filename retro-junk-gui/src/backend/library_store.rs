@@ -7,13 +7,25 @@ use std::sync::mpsc;
 use std::thread;
 
 use retro_junk_db::{
-    ConsoleScanToken, EntryAnalysisUpdate, LibraryChangeSet, LibraryConsoleId,
-    LibraryConsoleSummary, LibraryEntryDetail, LibraryEntryId, LibraryEntryListPage,
-    LibraryEntryListQuery, LibraryRootId, ScannedLibraryEntry,
+    ConsoleRecord, ConsoleScanToken, EntryAnalysisUpdate, LibraryChangeSet,
+    LibraryConsoleDescriptor, LibraryConsoleId, LibraryConsoleSummary, LibraryEntryDetail,
+    LibraryEntryId, LibraryEntryListPage, LibraryEntryListQuery, LibraryRootId,
+    ScannedLibraryEntry,
 };
 
 pub type UiSessionGeneration = u64;
 pub type StoreRequestId = u64;
+
+#[derive(Debug, Clone)]
+pub struct LibraryConsoleSnapshot {
+    pub root_path: String,
+    pub platform: String,
+    pub folder_name: String,
+    pub folder_path: String,
+    pub fingerprint_hash: String,
+    pub dat_game_count: i64,
+    pub entries: Vec<ScannedLibraryEntry>,
+}
 
 #[derive(Debug, Clone)]
 pub struct StoreEnvelope<T> {
@@ -24,9 +36,13 @@ pub struct StoreEnvelope<T> {
 
 #[derive(Debug, Clone)]
 pub enum LibraryStoreRequest {
+    OpenRoot(String),
+    EnsureConsole(LibraryConsoleDescriptor),
+    PublishConsole(LibraryConsoleSnapshot),
     ConsoleSummaries(LibraryRootId),
     EntryList(LibraryEntryListQuery),
     EntryDetail(LibraryEntryId),
+    EntryDetails(Vec<LibraryEntryId>),
     BeginConsoleScan(LibraryConsoleId),
     ReconcileConsoleScan {
         token: ConsoleScanToken,
@@ -58,15 +74,30 @@ pub enum LibraryStoreRequest {
     },
     MarkConsoleStale(LibraryConsoleId),
     DeleteRoot(LibraryRootId),
+    DeleteRootPath(String),
     ClearCache,
     Shutdown,
 }
 
 #[derive(Debug, Clone)]
 pub enum LibraryStoreValue {
+    RootOpened {
+        root_id: LibraryRootId,
+        summaries: Vec<LibraryConsoleSummary>,
+    },
+    ConsoleEnsured {
+        folder_name: String,
+        console_id: LibraryConsoleId,
+    },
+    ConsolePublished {
+        folder_name: String,
+        console_id: LibraryConsoleId,
+        entry_count: u64,
+    },
     ConsoleSummaries(Vec<LibraryConsoleSummary>),
     EntryList(LibraryEntryListPage),
     EntryDetail(Option<LibraryEntryDetail>),
+    EntryDetails(Vec<LibraryEntryDetail>),
     ScanToken(ConsoleScanToken),
     ChangeSet(LibraryChangeSet),
     ShutdownComplete,
@@ -171,6 +202,39 @@ fn execute(
 ) -> Result<LibraryStoreValue, retro_junk_db::LibraryError> {
     use LibraryStoreRequest as R;
     Ok(match request {
+        R::OpenRoot(path) => {
+            let root_id = retro_junk_db::upsert_library_root(conn, &path)?;
+            let summaries = retro_junk_db::list_console_summaries(conn, root_id)?;
+            LibraryStoreValue::RootOpened { root_id, summaries }
+        }
+        R::EnsureConsole(descriptor) => {
+            let folder_name = descriptor.folder_name.clone();
+            let console_id = retro_junk_db::ensure_library_console(conn, &descriptor)?;
+            LibraryStoreValue::ConsoleEnsured {
+                folder_name,
+                console_id,
+            }
+        }
+        R::PublishConsole(snapshot) => {
+            let root_id = retro_junk_db::upsert_library_root(conn, &snapshot.root_path)?;
+            let console_id = retro_junk_db::save_console_reconciled(
+                conn,
+                &ConsoleRecord {
+                    root_id,
+                    platform: &snapshot.platform,
+                    folder_name: &snapshot.folder_name,
+                    folder_path: &snapshot.folder_path,
+                    fingerprint_hash: &snapshot.fingerprint_hash,
+                    dat_game_count: snapshot.dat_game_count,
+                },
+                &snapshot.entries,
+            )?;
+            LibraryStoreValue::ConsolePublished {
+                folder_name: snapshot.folder_name,
+                console_id,
+                entry_count: snapshot.entries.len() as u64,
+            }
+        }
         R::ConsoleSummaries(root) => {
             LibraryStoreValue::ConsoleSummaries(retro_junk_db::list_console_summaries(conn, root)?)
         }
@@ -180,6 +244,11 @@ fn execute(
         R::EntryDetail(id) => {
             LibraryStoreValue::EntryDetail(retro_junk_db::load_entry_detail(conn, id)?)
         }
+        R::EntryDetails(ids) => LibraryStoreValue::EntryDetails(
+            ids.into_iter()
+                .filter_map(|id| retro_junk_db::load_entry_detail(conn, id).transpose())
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
         R::BeginConsoleScan(id) => {
             LibraryStoreValue::ScanToken(retro_junk_db::begin_console_scan(conn, id)?)
         }
@@ -234,6 +303,13 @@ fn execute(
         }
         R::DeleteRoot(id) => {
             LibraryStoreValue::ChangeSet(retro_junk_db::delete_library_root(conn, id)?)
+        }
+        R::DeleteRootPath(root_path) => {
+            let changes = match retro_junk_db::get_library_root_id(conn, &root_path)? {
+                Some(id) => retro_junk_db::delete_library_root(conn, id)?,
+                None => LibraryChangeSet::default(),
+            };
+            LibraryStoreValue::ChangeSet(changes)
         }
         R::ClearCache => LibraryStoreValue::ChangeSet(retro_junk_db::clear_library_cache(conn)?),
         R::Shutdown => LibraryStoreValue::ShutdownComplete,
@@ -414,6 +490,7 @@ mod tests {
             session_generation: 0,
             request_id: request.request_id,
             payload: Ok(LibraryStoreValue::EntryList(LibraryEntryListPage {
+                console_id: LibraryConsoleId(7),
                 console_revision: 4,
                 total_count: 0,
                 counts: Default::default(),
@@ -437,6 +514,7 @@ mod tests {
             session_generation: 0,
             request_id: request.request_id,
             payload: Ok(LibraryStoreValue::EntryList(LibraryEntryListPage {
+                console_id: LibraryConsoleId(7),
                 console_revision: 2,
                 total_count: 0,
                 counts: Default::default(),

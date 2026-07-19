@@ -112,7 +112,7 @@ fn scrape_media_for_selection(
     ctx: &egui::Context,
     force_redownload: bool,
 ) {
-    let console = &app.library.consoles[console_idx];
+    let console = &app.browser.consoles[console_idx];
     let platform = console.platform;
     let folder_name = console.folder_name.clone();
 
@@ -130,7 +130,7 @@ fn scrape_media_for_selection(
         .iter()
         .copied()
         .filter_map(|i| {
-            let entry = console.entries.get(i)?;
+            let entry = console.entry_by_id(i)?;
             let analysis_path = entry.game_entry.analysis_path();
             let filename = analysis_path
                 .file_name()
@@ -183,7 +183,7 @@ fn scrape_media_for_selection(
     // When scraping missing only, keep paths visible during the operation.
     if force_redownload {
         for item in &work {
-            if let Some(entry) = app.library.consoles[console_idx].find_entry_mut(&item.entry_name)
+            if let Some(entry) = app.browser.consoles[console_idx].find_entry_mut(&item.entry_name)
             {
                 entry.asset_paths = None;
             }
@@ -405,7 +405,7 @@ pub fn regenerate_miximages_for_selection(
     console_idx: usize,
     ctx: &egui::Context,
 ) {
-    let console = &app.library.consoles[console_idx];
+    let console = &app.browser.consoles[console_idx];
     let folder_name = console.folder_name.clone();
 
     let Some(root_path) = app.root_path.clone() else {
@@ -419,7 +419,7 @@ pub fn regenerate_miximages_for_selection(
         .iter()
         .copied()
         .filter_map(|i| {
-            let entry = console.entries.get(i)?;
+            let entry = console.entry_by_id(i)?;
             Some((
                 entry.game_entry.display_name().to_string(),
                 entry.game_entry.rom_stem().to_string(),

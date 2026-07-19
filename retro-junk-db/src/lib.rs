@@ -9,19 +9,19 @@ pub mod queries;
 pub mod schema;
 
 pub use library::{
-    ConsoleRecord, ConsoleScanToken, EntryAnalysisUpdate, LibraryChangeSet, LibraryConsoleId,
-    LibraryConsoleRow, LibraryConsoleSummary, LibraryEntryCounts, LibraryEntryDetail,
-    LibraryEntryFilter, LibraryEntryId, LibraryEntryListItem, LibraryEntryListPage,
-    LibraryEntryListQuery, LibraryEntryRow, LibraryEntrySortField, LibraryError, LibraryRootId,
-    LibraryScanState, LibrarySourceKey, ScannedLibraryEntry, SortDirection, SourceFileDescriptor,
-    SourceFileKind, apply_disc_analysis, apply_entry_analysis, apply_filesystem_transition,
-    begin_console_scan, clear_library_cache, delete_library_root, file_source_key,
-    get_library_root_id, list_console_summaries, load_consoles_for_root, load_entries_for_console,
-    load_entry_detail, load_entry_details_for_console, mark_console_stale, normalize_relative_path,
-    query_entry_list, reconcile_console_scan, save_console_bulk, save_console_reconciled,
-    set_entry_region_override, set_entry_tag, set_source_key, source_fingerprint,
-    source_fingerprint_from_game_entry_json, source_key_from_game_entry_json, upsert_entries,
-    upsert_entry, upsert_library_root,
+    ConsoleRecord, ConsoleScanToken, EntryAnalysisUpdate, LibraryChangeSet,
+    LibraryConsoleDescriptor, LibraryConsoleId, LibraryConsoleRow, LibraryConsoleSummary,
+    LibraryEntryCounts, LibraryEntryDetail, LibraryEntryFilter, LibraryEntryId,
+    LibraryEntryListItem, LibraryEntryListPage, LibraryEntryListQuery, LibraryEntryRow,
+    LibraryEntrySortField, LibraryError, LibraryRootId, LibraryScanState, LibrarySourceKey,
+    ScannedLibraryEntry, SortDirection, SourceFileDescriptor, SourceFileKind, apply_disc_analysis,
+    apply_entry_analysis, apply_filesystem_transition, begin_console_scan, clear_library_cache,
+    delete_library_root, ensure_library_console, file_source_key, get_library_root_id,
+    list_console_summaries, load_consoles_for_root, load_entries_for_console, load_entry_detail,
+    load_entry_details_for_console, mark_console_stale, normalize_relative_path, query_entry_list,
+    reconcile_console_scan, save_console_bulk, save_console_reconciled, set_entry_region_override,
+    set_entry_tag, set_source_key, source_fingerprint, source_fingerprint_from_game_entry_json,
+    source_key_from_game_entry_json, upsert_entries, upsert_entry, upsert_library_root,
 };
 pub use operations::{
     MediaHashes, MediaTrack, OperationError, SeedStats, apply_disagreement_resolution,

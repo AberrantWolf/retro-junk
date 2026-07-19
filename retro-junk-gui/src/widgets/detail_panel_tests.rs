@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use egui_kittest::Harness;
 
 use crate::app::RetroJunkApp;
-use crate::state::{LibraryState, View};
+use crate::state::{LibraryBrowserState, View};
 use crate::test_support::{test_console, test_entry};
 
 #[test]
@@ -50,11 +50,14 @@ fn long_values_wrap_instead_of_widening_the_panel() {
     let state = harness.state_mut();
     state.ui_state.current_view = View::Library;
     state.root_path = Some(PathBuf::from("/roms"));
-    state.library = LibraryState {
+    state.browser = LibraryBrowserState {
         consoles: vec![test_console("psx", vec![entry])],
+        root_id: None,
+        active_page: None,
+        entry_counts: Default::default(),
     };
-    state.ui_state.selected_console = Some(0);
-    state.ui_state.focused_entry = Some(0);
+    state.ui_state.selected_console = state.browser.consoles[0].id;
+    state.ui_state.focused_entry = state.browser.consoles[0].entries[0].id;
     state.ui_state.detail_panel_open = true;
 
     // Give the panel several frames: the buggy feedback loop (content lays

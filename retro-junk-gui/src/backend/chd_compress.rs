@@ -26,7 +26,7 @@ const JOB_PROGRESS_UNITS: u64 = 1000;
 /// Whether a console's analyzer supports CHD compression for any source kind.
 /// Gates the context-menu entries so cartridge consoles never see them.
 pub fn console_supports_chd(app: &RetroJunkApp, console_idx: usize) -> bool {
-    let console = &app.library.consoles[console_idx];
+    let console = &app.browser.consoles[console_idx];
     app.context
         .get_by_platform(console.platform)
         .is_some_and(|rc| {
@@ -46,7 +46,7 @@ pub fn console_supports_chd(app: &RetroJunkApp, console_idx: usize) -> bool {
 /// analyzer looked up again inside the closure. The dialog only appears once
 /// `AppMessage::ChdCompressPromptReady` arrives.
 pub fn open_compress_dialog(app: &mut RetroJunkApp, console_idx: usize, entry_indices: &[usize]) {
-    let console = &app.library.consoles[console_idx];
+    let console = &app.browser.consoles[console_idx];
     let folder_name = console.folder_name.clone();
     let platform = console.platform;
 

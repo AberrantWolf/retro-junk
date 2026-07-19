@@ -48,15 +48,23 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
     if confirmed {
         if let TagDialog::Homebrew {
             ref name,
-            console_idx,
-            entry_idx,
+            console_id,
+            entry_id,
         } = app.ui_state.tag_dialog
         {
             let name = name.clone();
+            let Some(console_idx) = app.browser.find_by_id(console_id) else {
+                app.ui_state.tag_dialog = TagDialog::None;
+                return;
+            };
+            let Some(entry_idx) = app.browser.consoles[console_idx].entry_index(entry_id) else {
+                app.ui_state.tag_dialog = TagDialog::None;
+                return;
+            };
 
             // Create in DB if available
             if let Some(ref conn) = app.catalog_db
-                && let Some(console) = app.library.consoles.get(console_idx)
+                && let Some(console) = app.browser.consoles.get(console_idx)
             {
                 let platform_id = console.folder_name.as_str();
                 let region = console
@@ -80,14 +88,14 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
 
             // Set tag on the entry
             if let Some(entry) = app
-                .library
+                .browser
                 .consoles
                 .get_mut(console_idx)
                 .and_then(|c| c.entries.get_mut(entry_idx))
             {
                 entry.tag = Some(CatalogTag::Homebrew);
             }
-            app.save_entry_cache(console_idx, &[entry_idx]);
+            app.save_entry_cache(console_idx, &[entry_idx], ctx);
         }
         app.ui_state.tag_dialog = TagDialog::None;
     } else if cancelled {
@@ -172,17 +180,25 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
         if let TagDialog::ModSearch {
             ref results,
             selected: Some(sel_idx),
-            console_idx,
-            entry_idx,
+            console_id,
+            entry_id,
             ..
         } = app.ui_state.tag_dialog
             && let Some(work) = results.get(sel_idx)
         {
             let work_id = work.id.clone();
+            let Some(console_idx) = app.browser.find_by_id(console_id) else {
+                app.ui_state.tag_dialog = TagDialog::None;
+                return;
+            };
+            let Some(entry_idx) = app.browser.consoles[console_idx].entry_index(entry_id) else {
+                app.ui_state.tag_dialog = TagDialog::None;
+                return;
+            };
 
             // Create in DB if available
             if let Some(ref conn) = app.catalog_db
-                && let Some(console) = app.library.consoles.get(console_idx)
+                && let Some(console) = app.browser.consoles.get(console_idx)
             {
                 let platform_id = console.folder_name.as_str();
                 let entry_ref = console.entries.get(entry_idx);
@@ -220,14 +236,14 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
 
             // Set tag on the entry
             if let Some(entry) = app
-                .library
+                .browser
                 .consoles
                 .get_mut(console_idx)
                 .and_then(|c| c.entries.get_mut(entry_idx))
             {
                 entry.tag = Some(CatalogTag::Modded);
             }
-            app.save_entry_cache(console_idx, &[entry_idx]);
+            app.save_entry_cache(console_idx, &[entry_idx], ctx);
         }
         app.ui_state.tag_dialog = TagDialog::None;
     } else if cancelled {

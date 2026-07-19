@@ -398,6 +398,39 @@ pub struct ConsoleRecord<'a> {
 }
 
 #[derive(Debug, Clone)]
+pub struct LibraryConsoleDescriptor {
+    pub root_id: LibraryRootId,
+    pub platform: String,
+    pub folder_name: String,
+    pub folder_path: String,
+}
+
+/// Ensure a lightweight console shell exists without starting or completing a
+/// scan. This is used when folder discovery precedes entry reconciliation.
+pub fn ensure_library_console(
+    conn: &Connection,
+    descriptor: &LibraryConsoleDescriptor,
+) -> Result<LibraryConsoleId, LibraryError> {
+    conn.execute(
+        "INSERT INTO library_consoles(root_id,platform,folder_name,folder_path,fingerprint_hash)
+         VALUES(?1,?2,?3,?4,'')
+         ON CONFLICT(root_id,folder_name) DO UPDATE SET
+             platform=excluded.platform,folder_path=excluded.folder_path",
+        params![
+            descriptor.root_id.0,
+            descriptor.platform,
+            descriptor.folder_name,
+            descriptor.folder_path
+        ],
+    )?;
+    Ok(LibraryConsoleId(conn.query_row(
+        "SELECT id FROM library_consoles WHERE root_id=?1 AND folder_name=?2",
+        params![descriptor.root_id.0, descriptor.folder_name],
+        |row| row.get(0),
+    )?))
+}
+
+#[derive(Debug, Clone)]
 pub struct LibraryConsoleSummary {
     pub id: LibraryConsoleId,
     pub root_id: LibraryRootId,
@@ -470,6 +503,7 @@ pub struct LibraryEntryCounts {
 }
 #[derive(Debug, Clone)]
 pub struct LibraryEntryListPage {
+    pub console_id: LibraryConsoleId,
     pub console_revision: u64,
     pub total_count: u64,
     pub counts: LibraryEntryCounts,
@@ -867,6 +901,7 @@ pub fn query_entry_list(
         )?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(LibraryEntryListPage {
+        console_id: q.console_id,
         console_revision: revision,
         total_count: total,
         counts,

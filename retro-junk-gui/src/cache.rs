@@ -1,4 +1,5 @@
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use retro_junk_catalog::CatalogTag;
@@ -7,7 +8,8 @@ use retro_junk_db::{Connection, LibraryEntryRow};
 use retro_junk_lib::{AnalysisContext, Platform, Region};
 
 use crate::state::{
-    ConsoleState, DatMatchInfo, DatStatus, EntryStatus, LibraryEntry, LibraryState, ScanStatus,
+    ConsoleState, DatMatchInfo, DatStatus, EntryStatus, LibraryBrowserState, LibraryEntry,
+    ScanStatus,
 };
 
 // ── Error Type ──────────────────────────────────────────────────────────────
@@ -91,7 +93,7 @@ pub fn compute_fingerprint(path: &Path) -> FolderFingerprint {
 fn import_legacy_library(
     conn: &Connection,
     root: &Path,
-    library: &LibraryState,
+    library: &LibraryBrowserState,
 ) -> Result<(), CacheError> {
     let scanned_count = library
         .consoles
@@ -125,160 +127,49 @@ fn import_legacy_library(
     Ok(())
 }
 
-/// Full library load — returns library + stale folder names.
-pub fn load_library(
-    conn: &Connection,
-    root: &Path,
-    context: &AnalysisContext,
-) -> Option<(LibraryState, Vec<String>)> {
-    let root_str = root.to_string_lossy();
-    let root_id = retro_junk_db::get_library_root_id(conn, &root_str).ok()??;
-
-    let console_rows = retro_junk_db::load_consoles_for_root(conn, root_id).ok()?;
-    if console_rows.is_empty() {
-        return None;
-    }
-
-    let mut consoles = Vec::new();
-    let mut stale_folders = Vec::new();
-
-    for cr in console_rows {
-        let platform: Platform = match serde_json::from_str(&format!("\"{}\"", cr.platform)) {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("Unknown platform '{}' in cache: {}", cr.platform, e);
-                continue;
-            }
-        };
-
-        let registered = context.get_by_platform(platform);
-        let (manufacturer, platform_name) = if let Some(r) = registered {
-            (r.metadata.manufacturer, r.metadata.platform_name)
-        } else {
-            log::warn!(
-                "Platform {:?} not registered, skipping cached console {}",
-                platform,
-                cr.folder_name
-            );
-            continue;
-        };
-
-        let entry_details = retro_junk_db::load_entry_details_for_console(conn, cr.id).ok()?;
-        let entries: Vec<LibraryEntry> = entry_details
-            .into_iter()
-            .filter_map(|detail| {
-                let mut entry = row_to_entry(detail.row)?;
-                entry.id = Some(detail.id);
-                entry.revision = detail.revision;
-                entry.source_revision = detail.source_revision;
-                Some(entry)
-            })
-            .collect();
-
-        let folder_path = PathBuf::from(&cr.folder_path);
-        let current_fp = compute_fingerprint(&folder_path);
-        let is_stale = current_fp.name_hash != cr.fingerprint_hash;
-
-        let dat_status = if cr.dat_game_count > 0 {
-            DatStatus::Loaded {
-                game_count: cr.dat_game_count as usize,
-            }
-        } else {
-            DatStatus::NotLoaded
-        };
-
-        if is_stale {
-            stale_folders.push(cr.folder_name.clone());
-            consoles.push(ConsoleState {
-                id: Some(cr.id),
-                revision: cr.revision,
-                platform,
-                folder_name: cr.folder_name,
-                folder_path,
-                manufacturer,
-                platform_name,
-                scan_status: ScanStatus::NotScanned,
-                entries,
-                dat_status,
-                fingerprint: None,
-                loose_disc_files: Vec::new(),
-            });
-        } else {
-            consoles.push(ConsoleState {
-                id: Some(cr.id),
-                revision: cr.revision,
-                platform,
-                folder_name: cr.folder_name,
-                folder_path,
-                manufacturer,
-                platform_name,
-                scan_status: ScanStatus::Scanned,
-                entries,
-                dat_status,
-                fingerprint: Some(current_fp),
-                loose_disc_files: Vec::new(),
-            });
-        }
-    }
-
-    // Sort same as handle_message does
-    consoles.sort_by(|a, b| {
-        a.manufacturer
-            .cmp(b.manufacturer)
-            .then(a.platform_name.cmp(b.platform_name))
-            .then(a.folder_name.cmp(&b.folder_name))
-    });
-
-    if consoles.is_empty() {
-        return None;
-    }
-
-    Some((LibraryState { consoles }, stale_folders))
-}
-
-/// Save all entries for one console — used after scan/DAT/hash complete.
-pub fn save_console(
-    conn: &Connection,
+/// Build the source-aware payload published by the serialized library store.
+pub fn console_snapshot(
     root: &Path,
     console: &ConsoleState,
-) -> Result<(), CacheError> {
-    let root_id = ensure_root_id(conn, root)?;
-    save_console_inner(conn, root_id, console)
-}
-
-/// Save specific entries within a console — used for tag, region override, etc.
-pub fn save_entries(
-    conn: &Connection,
-    root: &Path,
-    console: &ConsoleState,
-    entry_indices: &[usize],
-) -> Result<(), CacheError> {
-    let root_id = ensure_root_id(conn, root)?;
-    let console_id = ensure_console_id(conn, root_id, console)?;
-    let rows: Vec<LibraryEntryRow> = entry_indices
+) -> Result<crate::backend::library_store::LibraryConsoleSnapshot, CacheError> {
+    let platform = serde_json::to_string(&console.platform)?;
+    let fingerprint_hash = console.fingerprint.as_ref().map_or_else(
+        || compute_fingerprint(&console.folder_path).name_hash,
+        |fingerprint| fingerprint.name_hash.clone(),
+    );
+    let dat_game_count = match &console.dat_status {
+        DatStatus::Loaded { game_count } => *game_count as i64,
+        _ => 0,
+    };
+    let entries = console
+        .entries
         .iter()
-        .filter_map(|&i| console.entries.get(i))
         .map(entry_to_row)
-        .collect::<Result<Vec<_>, _>>()?;
-    retro_junk_db::upsert_entries(conn, console_id, &rows)?;
-    Ok(())
-}
+        .map(|row| {
+            let row = row?;
+            Ok(retro_junk_db::ScannedLibraryEntry {
+                entry_key: retro_junk_db::source_key_from_game_entry_json(
+                    &row.game_entry_json,
+                    &console.folder_path,
+                )?,
+                source_fingerprint: retro_junk_db::source_fingerprint_from_game_entry_json(
+                    &row.game_entry_json,
+                    &console.folder_path,
+                )?,
+                row,
+            })
+        })
+        .collect::<Result<Vec<_>, CacheError>>()?;
 
-// ── Cache Management ────────────────────────────────────────────────────────
-
-/// Delete the cached library data for a given root path.
-pub fn delete_cache(conn: &Connection, root: &Path) -> Result<(), CacheError> {
-    let root_str = root.to_string_lossy();
-    if let Some(root_id) = retro_junk_db::get_library_root_id(conn, &root_str)? {
-        retro_junk_db::delete_library_root(conn, root_id)?;
-    }
-    Ok(())
-}
-
-/// Delete all library cache data from the database.
-pub fn clear_all_caches(conn: &Connection) -> Result<(), CacheError> {
-    retro_junk_db::clear_library_cache(conn)?;
-    Ok(())
+    Ok(crate::backend::library_store::LibraryConsoleSnapshot {
+        root_path: root.to_string_lossy().into_owned(),
+        platform: platform.trim_matches('"').to_owned(),
+        folder_name: console.folder_name.clone(),
+        folder_path: console.folder_path.to_string_lossy().into_owned(),
+        fingerprint_hash,
+        dat_game_count,
+        entries,
+    })
 }
 
 // ── JSON Migration ──────────────────────────────────────────────────────────
@@ -394,7 +285,7 @@ fn legacy_cache_path(root: &Path) -> PathBuf {
 fn load_library_from_legacy(
     cached: &LegacyLibraryCache,
     context: &AnalysisContext,
-) -> Option<(LibraryState, Vec<String>)> {
+) -> Option<(LibraryBrowserState, Vec<String>)> {
     if cached.version != LEGACY_CACHE_VERSION {
         log::info!(
             "Legacy cache version mismatch ({}), skipping migration",
@@ -480,18 +371,18 @@ fn load_library_from_legacy(
         return None;
     }
 
-    Some((LibraryState { consoles }, stale_folders))
+    Some((
+        LibraryBrowserState {
+            consoles,
+            root_id: None,
+            active_page: None,
+            entry_counts: HashMap::new(),
+        },
+        stale_folders,
+    ))
 }
 
 // ── Private Helpers ─────────────────────────────────────────────────────────
-
-fn ensure_root_id(
-    conn: &Connection,
-    root: &Path,
-) -> Result<retro_junk_db::LibraryRootId, CacheError> {
-    let root_str = root.to_string_lossy();
-    Ok(retro_junk_db::upsert_library_root(conn, &root_str)?)
-}
 
 fn ensure_console_id(
     conn: &Connection,
@@ -643,7 +534,7 @@ fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Err
     })
 }
 
-fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
+pub(crate) fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
     let game_entry = serde_json::from_str(&row.game_entry_json).ok()?;
 
     let status = str_to_status(&row.status);

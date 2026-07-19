@@ -107,7 +107,7 @@ fn hash_one(
 
 /// Compute hashes for selected entries in the active console.
 pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) {
-    let console = &app.library.consoles[console_idx];
+    let console = &app.browser.consoles[console_idx];
     let platform = console.platform;
     let folder_name = console.folder_name.clone();
 
@@ -123,7 +123,7 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
             .selected_entries
             .iter()
             .copied()
-            .filter_map(|i| console.entries.get(i)),
+            .filter_map(|id| console.entry_by_id(id)),
     );
 
     if work.is_empty() {

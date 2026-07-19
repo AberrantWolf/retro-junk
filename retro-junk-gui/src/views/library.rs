@@ -49,11 +49,39 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     crate::util::stable_central_panel(ui, "library_center", |ui| {
         // Toolbar
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut app.ui_state.filter_text)
-                    .hint_text("Filter...")
-                    .desired_width(200.0),
-            );
+            let filter_changed = ui
+                .add(
+                    egui::TextEdit::singleline(&mut app.ui_state.filter_text)
+                        .hint_text("Filter...")
+                        .desired_width(200.0),
+                )
+                .changed();
+            if filter_changed && let Some(console_id) = app.ui_state.selected_console {
+                app.ui_state.page_offset = 0;
+                app.request_console_page(console_id, ctx);
+            }
+
+            if let Some(page) = app.browser.active_page.as_ref() {
+                let offset = page.offset;
+                let total = page.total_count;
+                let page_size = retro_junk_db::LibraryEntryListQuery::DEFAULT_PAGE_SIZE;
+                if ui
+                    .add_enabled(offset > 0, egui::Button::new("Previous"))
+                    .clicked()
+                    && let Some(console_id) = app.ui_state.selected_console
+                {
+                    app.ui_state.page_offset = offset.saturating_sub(page_size);
+                    app.request_console_page(console_id, ctx);
+                }
+                if ui
+                    .add_enabled(offset + page_size < total, egui::Button::new("Next"))
+                    .clicked()
+                    && let Some(console_id) = app.ui_state.selected_console
+                {
+                    app.ui_state.page_offset = offset + page_size;
+                    app.request_console_page(console_id, ctx);
+                }
+            }
 
             ui.separator();
 
@@ -61,7 +89,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             if ui
                 .add_enabled(has_selection, egui::Button::new("Calculate Hashes"))
                 .clicked()
-                && let Some(ci) = app.ui_state.selected_console
+                && let Some(ci) = app.selected_console_index()
             {
                 backend::hash::compute_hashes_for_selection(app, ci);
             }
@@ -180,34 +208,12 @@ pub fn switch_to_root_unchecked(
     // Set new root
     app.root_path = Some(new_root.clone());
 
-    // Load cache to restore previously computed work (hashes, DAT matches, etc.)
-    let loaded = app
-        .catalog_db
-        .as_ref()
-        .and_then(|conn| crate::cache::load_library(conn, &new_root, &app.context));
-    if let Some((library, stale)) = loaded {
-        log::info!(
-            "Restored {} consoles from cache ({} stale)",
-            library.consoles.len(),
-            stale.len()
-        );
-        app.library = library;
-
-        // Auto-trigger DAT loads for consoles that had DATs loaded
-        for console in &app.library.consoles {
-            if matches!(console.dat_status, crate::state::DatStatus::Loaded { .. }) {
-                crate::backend::dat::load_dat_for_console(
-                    app.message_tx.clone(),
-                    app.context.clone(),
-                    console.platform,
-                    console.folder_name.clone(),
-                    ctx.clone(),
-                );
-            }
-        }
-    } else {
-        app.library = crate::state::LibraryState::default();
+    app.browser = crate::state::LibraryBrowserState::default();
+    app.ui_state.loading_library = true;
+    if let Some(conn) = app.catalog_db.as_ref() {
+        crate::cache::migrate_json_cache(conn, &new_root, &app.context);
     }
+    app.open_browser_root(&new_root, ctx);
 
     // Always scan disk to discover new/removed console folders.
     // ConsoleFolderFound handler deduplicates, so cached consoles keep their data.
@@ -235,7 +241,7 @@ fn update_recent_roots(app: &mut RetroJunkApp, root: &std::path::Path) {
         crate::settings::RecentRoot {
             path: root.to_path_buf(),
             last_opened: chrono::Utc::now().to_rfc3339(),
-            console_count: app.library.consoles.len(),
+            console_count: app.browser.consoles.len(),
         },
     );
 

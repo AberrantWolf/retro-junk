@@ -7,7 +7,7 @@ use crate::state::{self, AppMessage, OperationKind, ProgressDisplay};
 
 /// Generate a gamelist.xml (ES-DE format) for a console on a background thread.
 pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
-    let console = &app.library.consoles[console_idx];
+    let console = &app.browser.consoles[console_idx];
     let folder_name = console.folder_name.clone();
 
     let Some(root_path) = app.root_path.clone() else {

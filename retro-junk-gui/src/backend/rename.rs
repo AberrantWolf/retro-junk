@@ -51,7 +51,7 @@ struct M3uJob {
 /// `retro_junk_lib::rename` — companion media files and gamelist.xml entries
 /// move inside each game's transaction.
 pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
-    let console = &app.library.consoles[console_idx];
+    let console = &app.browser.consoles[console_idx];
     let folder_name = console.folder_name.clone();
 
     let mut jobs: Vec<RenameJob> = Vec::new();
@@ -67,7 +67,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
         .ui_state
         .selected_entries
         .iter()
-        .filter_map(|&i| console.entries.get(i))
+        .filter_map(|&id| console.entry_by_id(id))
         .filter_map(|e| match &e.game_entry {
             GameEntry::SingleFile(p) if is_cue(p) => Some(p.clone()),
             _ => None,
@@ -80,7 +80,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let mut dir_membership: HashMap<PathBuf, HashMap<PathBuf, PathBuf>> = HashMap::new();
 
     for &i in &app.ui_state.selected_entries {
-        let Some(entry) = console.entries.get(i) else {
+        let Some(entry) = console.entry_by_id(i) else {
             continue;
         };
 
@@ -681,7 +681,7 @@ fn get_target_rom_name(
         let serial = &id.serial_number;
         if !serial.is_empty() {
             let console = app
-                .library
+                .browser
                 .consoles
                 .iter()
                 .find(|c| c.folder_name == folder_name)?;

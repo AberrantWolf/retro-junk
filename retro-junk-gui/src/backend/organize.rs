@@ -11,7 +11,7 @@ use crate::state::{AppMessage, OperationKind, ProgressDisplay};
 /// Phase 1: plan on background thread, send plan to UI for preview.
 /// Phase 2 (after user confirmation): execute jobs on background thread.
 pub fn organize_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
-    let console = &app.library.consoles[console_idx];
+    let console = &app.browser.consoles[console_idx];
     let folder_name = console.folder_name.clone();
     let folder_path = console.folder_path.clone();
     let platform = console.platform;

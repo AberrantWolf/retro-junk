@@ -79,17 +79,11 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     crate::views::library::switch_to_root(app, path, &ctx);
                 }
                 RecentAction::ClearCache(path) => {
-                    if let Some(ref conn) = app.catalog_db
-                        && let Err(e) = crate::cache::delete_cache(conn, &path)
-                    {
-                        log::warn!("Failed to clear cache: {e}");
-                    }
+                    app.delete_library_cache(&path, ui.ctx());
                 }
                 RecentAction::Remove(idx) => {
                     let path = app.settings.library.recent_roots[idx].path.clone();
-                    if let Some(ref conn) = app.catalog_db {
-                        let _ = crate::cache::delete_cache(conn, &path);
-                    }
+                    app.delete_library_cache(&path, ui.ctx());
                     app.settings.library.recent_roots.remove(idx);
                     let _ = crate::settings::save_settings(&app.settings);
                 }
@@ -422,11 +416,8 @@ fn show_cache_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // Library cache (stored in SQLite)
     ui.horizontal(|ui| {
         ui.label("Library cache: stored in catalog DB");
-        if ui.small_button("Clear All").clicked()
-            && let Some(ref conn) = app.catalog_db
-            && let Err(e) = crate::cache::clear_all_caches(conn)
-        {
-            log::warn!("Failed to clear library caches: {e}");
+        if ui.small_button("Clear All").clicked() {
+            app.clear_library_caches(ui.ctx());
         }
     });
 

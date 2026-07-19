@@ -7,7 +7,7 @@ use crate::widgets::status_badge;
 
 /// Render the manufacturer-grouped console tree.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
-    if app.library.consoles.is_empty() {
+    if app.browser.consoles.is_empty() {
         if app.ui_state.loading_library {
             ui.label("Loading library...");
         } else {
@@ -19,7 +19,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     // Collect unique manufacturers in order
     let manufacturers: Vec<&str> = {
         let mut seen = Vec::new();
-        for c in &app.library.consoles {
+        for c in &app.browser.consoles {
             if !seen.contains(&c.manufacturer) {
                 seen.push(c.manufacturer);
             }
@@ -29,7 +29,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     // Build ordered console indices (manufacturer-grouped, matching render order)
     let ordered_console_indices: Vec<usize> = {
-        let consoles = &app.library.consoles;
+        let consoles = &app.browser.consoles;
         manufacturers
             .iter()
             .flat_map(|&mfr| (0..consoles.len()).filter(move |&i| consoles[i].manufacturer == mfr))
@@ -38,10 +38,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     // Keyboard navigation (only when console tree has focus)
     if app.ui_state.focused_panel == FocusedPanel::ConsoleTree {
-        let current_pos = app
-            .ui_state
-            .selected_console
-            .and_then(|sel| ordered_console_indices.iter().position(|&i| i == sel));
+        let current_pos = app.ui_state.selected_console.and_then(|selected| {
+            ordered_console_indices
+                .iter()
+                .position(|&i| app.browser.consoles[i].id == Some(selected))
+        });
 
         if let Some(action) = keyboard_nav::process_list_nav(
             ui,
@@ -50,15 +51,19 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             10, // page size for console tree
         ) {
             let new_console_idx = ordered_console_indices[action.new_index];
-            if app.ui_state.selected_console != Some(new_console_idx) {
-                app.ui_state.selected_console = Some(new_console_idx);
+            let new_console_id = app.browser.consoles[new_console_idx].id;
+            if new_console_id.is_some() && app.ui_state.selected_console != new_console_id {
+                app.ui_state.selected_console = new_console_id;
                 app.ui_state.scroll_to_console = Some(new_console_idx);
                 app.ui_state.focused_entry = None;
                 app.ui_state.selected_entries.clear();
                 app.ui_state.filter_text.clear();
+                app.ui_state.page_offset = 0;
 
-                if app.library.consoles[new_console_idx].scan_status == ScanStatus::NotScanned {
+                if app.browser.consoles[new_console_idx].scan_status == ScanStatus::NotScanned {
                     backend::scan::quick_scan_console(app, new_console_idx, ctx);
+                } else if let Some(id) = new_console_id {
+                    app.request_console_page(id, ctx);
                 }
             }
         }
@@ -69,22 +74,24 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             .id_salt(format!("mfr_{mfr}"))
             .default_open(true)
             .show(ui, |ui| {
-                for i in 0..app.library.consoles.len() {
-                    if app.library.consoles[i].manufacturer != mfr {
+                for i in 0..app.browser.consoles.len() {
+                    if app.browser.consoles[i].manufacturer != mfr {
                         continue;
                     }
 
-                    let console = &app.library.consoles[i];
-                    let is_selected = app.ui_state.selected_console == Some(i);
+                    let console = &app.browser.consoles[i];
+                    let persisted_entry_count = app.browser.entry_count(console);
+                    let console_id = console.id;
+                    let is_selected = app.ui_state.selected_console == console_id;
 
                     let label = match console.scan_status {
                         ScanStatus::NotScanned => console.folder_name.clone(),
                         ScanStatus::Scanning => format!("{} (...)", console.folder_name),
                         ScanStatus::Scanned => {
                             if console.loose_disc_files.is_empty() {
-                                format!("{} ({})", console.folder_name, console.entries.len())
+                                format!("{} ({})", console.folder_name, persisted_entry_count)
                             } else {
-                                format!("{}  ({}*)", console.folder_name, console.entries.len())
+                                format!("{}  ({}*)", console.folder_name, persisted_entry_count)
                             }
                         }
                     };
@@ -103,7 +110,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     };
 
                     let folder_path = console.folder_path.clone();
-                    let entry_count = console.entries.len();
+                    let entry_count = persisted_entry_count;
                     let is_scanned = console.scan_status == ScanStatus::Scanned;
 
                     // Pin the row id to the stable console index so the
@@ -125,15 +132,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         .inner;
 
                     if label_resp.clicked() && !is_selected {
-                        app.ui_state.selected_console = Some(i);
+                        let Some(console_id) = app.browser.consoles[i].id else {
+                            continue;
+                        };
+                        app.ui_state.selected_console = Some(console_id);
                         app.ui_state.focused_entry = None;
                         app.ui_state.selected_entries.clear();
                         app.ui_state.filter_text.clear();
+                        app.ui_state.page_offset = 0;
                         app.ui_state.focused_panel = FocusedPanel::ConsoleTree;
 
                         // Trigger quick-scan if not already scanned
-                        if app.library.consoles[i].scan_status == ScanStatus::NotScanned {
+                        if app.browser.consoles[i].scan_status == ScanStatus::NotScanned {
                             backend::scan::quick_scan_console(app, i, ctx);
+                        } else {
+                            app.request_console_page(console_id, ctx);
                         }
                     }
 
@@ -178,7 +191,7 @@ fn show_console_context_menu(
 ) {
     if ui.button("Rescan").clicked() {
         // Reset scan status to allow re-scanning
-        app.library.consoles[console_idx].scan_status = ScanStatus::NotScanned;
+        app.browser.consoles[console_idx].scan_status = ScanStatus::NotScanned;
         backend::scan::quick_scan_console(app, console_idx, ctx);
         ui.close();
     }
@@ -191,7 +204,11 @@ fn show_console_context_menu(
         .clicked()
     {
         // Select all entries, then compute hashes
-        app.ui_state.selected_entries = (0..entry_count).collect();
+        app.ui_state.selected_entries = app.browser.consoles[console_idx]
+            .entries
+            .iter()
+            .filter_map(|entry| entry.id)
+            .collect();
         backend::hash::compute_hashes_for_selection(app, console_idx);
         ui.close();
     }
@@ -203,14 +220,18 @@ fn show_console_context_menu(
         )
         .clicked()
     {
-        app.ui_state.selected_entries = (0..entry_count).collect();
+        app.ui_state.selected_entries = app.browser.consoles[console_idx]
+            .entries
+            .iter()
+            .filter_map(|entry| entry.id)
+            .collect();
         backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
         ui.close();
     }
 
     // Organize: only for disc-based consoles with loose disc files
     {
-        let console = &app.library.consoles[console_idx];
+        let console = &app.browser.consoles[console_idx];
         let has_loose = !console.loose_disc_files.is_empty();
         let is_disc_based = app
             .context
@@ -236,7 +257,7 @@ fn show_console_context_menu(
     // (advisory — start_compression and the D1 planning op hold the actual
     // guarantee) while a compression is already running for this console.
     if backend::chd_compress::console_supports_chd(app, console_idx) {
-        let busy = app.chd_compress_busy(&app.library.consoles[console_idx].folder_name);
+        let busy = app.chd_compress_busy(&app.browser.consoles[console_idx].folder_name);
         let button = ui
             .add_enabled(
                 is_scanned && entry_count > 0 && !busy,

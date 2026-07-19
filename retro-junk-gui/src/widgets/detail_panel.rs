@@ -31,37 +31,35 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.heading("Details");
     ui.separator();
 
-    let (Some(console_idx), Some(entry_idx)) =
+    let (Some(console_id), Some(entry_id)) =
         (app.ui_state.selected_console, app.ui_state.focused_entry)
     else {
         ui.label("Select an entry to view details.");
         return;
     };
 
-    if app
-        .library
-        .consoles
-        .get(console_idx)
-        .and_then(|c| c.entries.get(entry_idx))
-        .is_none()
-    {
+    let Some(console_idx) = app.browser.find_by_id(console_id) else {
+        ui.label("Console not found.");
+        return;
+    };
+    let Some(entry_idx) = app.browser.consoles[console_idx].entry_index(entry_id) else {
         ui.label("Entry not found.");
         return;
-    }
+    };
 
     // Lazy media discovery: kick off background load on first focus.
     // Sets an empty sentinel immediately to prevent re-triggering.
-    if app.library.consoles[console_idx].entries[entry_idx]
+    if app.browser.consoles[console_idx].entries[entry_idx]
         .asset_paths
         .is_none()
     {
         // Sentinel: mark as "loading" so we don't spawn again next frame
-        app.library.consoles[console_idx].entries[entry_idx].asset_paths =
+        app.browser.consoles[console_idx].entries[entry_idx].asset_paths =
             Some(std::collections::HashMap::new());
 
         if let Some(ref root_path) = app.root_path {
-            let folder_name = app.library.consoles[console_idx].folder_name.clone();
-            let entry = &app.library.consoles[console_idx].entries[entry_idx];
+            let folder_name = app.browser.consoles[console_idx].folder_name.clone();
+            let entry = &app.browser.consoles[console_idx].entries[entry_idx];
             let entry_name = entry.game_entry.display_name().to_string();
             let rom_stem = entry.game_entry.rom_stem().to_owned();
 
@@ -79,7 +77,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         // Borrow console/entry for the read-only section before the region ComboBox.
-        let console = &app.library.consoles[console_idx];
+        let console = &app.browser.consoles[console_idx];
         let entry = &console.entries[entry_idx];
 
         // Status
@@ -247,8 +245,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
         // Apply override change
         if new_override != current_override {
-            app.library.consoles[console_idx].entries[entry_idx].region_override = new_override;
-            app.save_entry_cache(console_idx, &[entry_idx]);
+            app.browser.consoles[console_idx].entries[entry_idx].region_override = new_override;
+            app.save_entry_cache(console_idx, &[entry_idx], ui.ctx());
         }
 
         // Warning text
@@ -281,7 +279,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
 
         // Re-borrow after potential mutation
-        let console = &app.library.consoles[console_idx];
+        let console = &app.browser.consoles[console_idx];
         let entry = &console.entries[entry_idx];
 
         // Folder

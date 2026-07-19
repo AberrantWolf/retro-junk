@@ -87,6 +87,32 @@ fn chd_compress_busy_scopes_to_operation_kind_and_folder() {
 }
 
 #[test]
+fn selected_entry_identity_survives_entry_reorder() {
+    use std::path::PathBuf;
+
+    use retro_junk_lib::scanner::GameEntry;
+
+    let mut app = RetroJunkApp::with_parts(
+        &egui::Context::default(),
+        crate::settings::AppSettings::default(),
+        None,
+        None,
+    );
+    let first = crate::test_support::test_entry(GameEntry::SingleFile(PathBuf::from("a.rom")));
+    let second = crate::test_support::test_entry(GameEntry::SingleFile(PathBuf::from("b.rom")));
+    let selected_id = second.id.expect("test entries have durable IDs");
+    let console = crate::test_support::test_console("psx", vec![first, second]);
+    app.ui_state.selected_console = console.id;
+    app.ui_state.selected_entries.insert(selected_id);
+    app.browser.consoles.push(console);
+
+    assert_eq!(app.selected_entry_indices(), vec![1]);
+    app.browser.consoles[0].entries.reverse();
+    assert_eq!(app.selected_entry_indices(), vec![0]);
+    assert!(app.ui_state.selected_entries.contains(&selected_id));
+}
+
+#[test]
 fn on_exit_cancels_and_joins_all_operation_threads() {
     // Exercises `RetroJunkApp::cancel_and_join_all_operations`, the part of
     // `on_exit` under test (D2). Calling `on_exit()` itself would write the

@@ -61,20 +61,42 @@ pub enum FocusedPanel {
 // -- In-memory library state --
 
 #[derive(Default)]
-/// The GUI's per-run representation of the scanned ROM library.
-///
-/// This is populated from the persistent SQLite library cache and updated by
-/// scans; it lets the immediate-mode UI render without querying SQLite per frame.
-pub struct LibraryState {
+/// Bounded browser read model. Console rows are lightweight shells and only
+/// the active console's current page may contain entries.
+pub struct LibraryBrowserState {
     pub consoles: Vec<ConsoleState>,
+    pub root_id: Option<retro_junk_db::LibraryRootId>,
+    pub active_page: Option<retro_junk_db::LibraryEntryListPage>,
+    pub entry_counts: HashMap<retro_junk_db::LibraryConsoleId, u64>,
 }
 
-impl LibraryState {
+impl LibraryBrowserState {
     /// Find a console by `folder_name`. Returns the index.
     pub fn find_by_folder(&self, folder_name: &str) -> Option<usize> {
         self.consoles
             .iter()
             .position(|c| c.folder_name == folder_name)
+    }
+
+    pub fn find_by_id(&self, id: retro_junk_db::LibraryConsoleId) -> Option<usize> {
+        self.consoles
+            .iter()
+            .position(|console| console.id == Some(id))
+    }
+
+    pub fn evict_inactive_entries(&mut self, active: Option<retro_junk_db::LibraryConsoleId>) {
+        for console in &mut self.consoles {
+            if console.id != active {
+                console.entries.clear();
+            }
+        }
+    }
+
+    pub fn entry_count(&self, console: &ConsoleState) -> usize {
+        console
+            .id
+            .and_then(|id| self.entry_counts.get(&id).copied())
+            .unwrap_or(console.entries.len() as u64) as usize
     }
 }
 
@@ -101,7 +123,16 @@ pub struct ConsoleState {
 }
 
 impl ConsoleState {
-    /// Look up an entry by its display name (the stable identity key).
+    pub fn entry_index(&self, id: retro_junk_db::LibraryEntryId) -> Option<usize> {
+        self.entries.iter().position(|entry| entry.id == Some(id))
+    }
+
+    pub fn entry_by_id(&self, id: retro_junk_db::LibraryEntryId) -> Option<&LibraryEntry> {
+        self.entry_index(id)
+            .and_then(|index| self.entries.get(index))
+    }
+
+    /// Compatibility lookup for background messages not yet converted to IDs.
     pub fn find_entry_mut(&mut self, name: &str) -> Option<&mut LibraryEntry> {
         self.entries
             .iter_mut()
@@ -441,15 +472,15 @@ pub enum TagDialog {
     None,
     Homebrew {
         name: String,
-        console_idx: usize,
-        entry_idx: usize,
+        console_id: retro_junk_db::LibraryConsoleId,
+        entry_id: retro_junk_db::LibraryEntryId,
     },
     ModSearch {
         query: String,
         results: Vec<retro_junk_db::WorkRow>,
         selected: Option<usize>,
-        console_idx: usize,
-        entry_idx: usize,
+        console_id: retro_junk_db::LibraryConsoleId,
+        entry_id: retro_junk_db::LibraryEntryId,
     },
 }
 
@@ -879,14 +910,7 @@ pub enum AppMessage {
         op_id: u64,
     },
 
-    // -- Cache --
-    CacheLoaded {
-        library: LibraryState,
-    },
-
-    /// Sent after the cache load attempt finishes (whether cache existed or not)
-    /// to kick off the folder scan. This ensures the cache is merged before
-    /// any scan can overwrite it.
+    // -- Library discovery --
     StartFolderScan,
 
     // -- Export --
@@ -1008,8 +1032,8 @@ fn start_next_auto_scan(app: &mut crate::app::RetroJunkApp, ctx: &egui::Context)
         app.ui_state.pending_auto_scans.clear();
     }
     while let Some(folder_name) = app.ui_state.pending_auto_scans.pop_front() {
-        if let Some(ci) = app.library.find_by_folder(&folder_name)
-            && app.library.consoles[ci].scan_status == ScanStatus::NotScanned
+        if let Some(ci) = app.browser.find_by_folder(&folder_name)
+            && app.browser.consoles[ci].scan_status == ScanStatus::NotScanned
         {
             app.ui_state.auto_scan_in_flight = Some(folder_name);
             crate::backend::scan::quick_scan_console(app, ci, ctx);
@@ -1032,7 +1056,7 @@ fn recheck_invalidated_entries(
     folder_name: &str,
     ctx: &egui::Context,
 ) {
-    let unchecked: Vec<_> = app.library.consoles[console_idx]
+    let unchecked: Vec<_> = app.browser.consoles[console_idx]
         .entries
         .iter()
         .filter(|e| e.broken_references.is_none())
@@ -1190,19 +1214,19 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         } => {
             // Avoid duplicates (keyed on folder_name, which is unique per directory)
             if app
-                .library
+                .browser
                 .consoles
                 .iter()
                 .any(|c| c.folder_name == folder_name)
             {
                 return;
             }
-            app.library.consoles.push(ConsoleState {
+            app.browser.consoles.push(ConsoleState {
                 id: None,
                 revision: 0,
                 platform,
-                folder_name,
-                folder_path,
+                folder_name: folder_name.clone(),
+                folder_path: folder_path.clone(),
                 manufacturer,
                 platform_name,
                 scan_status: ScanStatus::NotScanned,
@@ -1211,8 +1235,25 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 fingerprint: None,
                 loose_disc_files: Vec::new(),
             });
+            if let Some(root_id) = app.browser.root_id {
+                let platform = serde_json::to_string(&platform)
+                    .unwrap_or_default()
+                    .trim_matches('"')
+                    .to_owned();
+                app.submit_store(
+                    crate::backend::library_store::LibraryStoreRequest::EnsureConsole(
+                        retro_junk_db::LibraryConsoleDescriptor {
+                            root_id,
+                            platform,
+                            folder_name: folder_name.clone(),
+                            folder_path: folder_path.to_string_lossy().into_owned(),
+                        },
+                    ),
+                    ctx,
+                );
+            }
             // Sort by manufacturer then platform name then folder name
-            app.library.consoles.sort_by(|a, b| {
+            app.browser.consoles.sort_by(|a, b| {
                 a.manufacturer
                     .cmp(b.manufacturer)
                     .then(a.platform_name.cmp(b.platform_name))
@@ -1226,14 +1267,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
             log::info!(
                 "Folder scan complete: {} consoles discovered",
-                app.library.consoles.len()
+                app.browser.consoles.len()
             );
 
             // Auto-scan all unscanned consoles if setting is enabled.
             // Scans run sequentially via the pending_auto_scans queue to avoid
             // stampeding slow filesystems (e.g., network shares).
             if app.settings.general.auto_scan_on_open {
-                for c in &app.library.consoles {
+                for c in &app.browser.consoles {
                     if c.scan_status == ScanStatus::NotScanned {
                         app.ui_state
                             .pending_auto_scans
@@ -1249,8 +1290,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entries,
             loose_disc_files,
         } => {
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                let console = &mut app.library.consoles[ci];
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                let console = &mut app.browser.consoles[ci];
                 console.loose_disc_files = loose_disc_files;
 
                 // Build a lookup from display_name to existing entry so we can
@@ -1320,16 +1361,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             result,
         } => {
             // Pre-fetch DAT context before mutably borrowing library entries.
-            // Cloning avoids borrow conflicts when we mutate app.library below.
+            // Cloning avoids borrow conflicts when we mutate app.browser below.
             let platform = app
-                .library
+                .browser
                 .find_by_folder(&folder_name)
-                .map(|ci| app.library.consoles[ci].platform);
+                .map(|ci| app.browser.consoles[ci].platform);
             let dat_index = app.dat_indices.get(&folder_name).cloned();
             let context = app.context.clone();
 
-            if let Some(ci) = app.library.find_by_folder(&folder_name)
-                && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
+            if let Some(ci) = app.browser.find_by_folder(&folder_name)
+                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
             {
                 let prior_status = entry.status;
                 let had_prior_dat_match = entry.dat_match.is_some();
@@ -1421,14 +1462,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         } => {
             // Pre-fetch DAT context before mutably borrowing library entries.
             let console_platform = app
-                .library
+                .browser
                 .find_by_folder(&folder_name)
-                .map(|ci| app.library.consoles[ci].platform);
+                .map(|ci| app.browser.consoles[ci].platform);
             let dat_index = app.dat_indices.get(&folder_name).cloned();
             let context = app.context.clone();
 
-            if let Some(ci) = app.library.find_by_folder(&folder_name)
-                && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
+            if let Some(ci) = app.browser.find_by_folder(&folder_name)
+                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
             {
                 // Save old per-disc hashes so we can carry them forward.
                 // Analysis doesn't produce hashes, so without this a rescan
@@ -1631,8 +1672,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_name,
             broken_refs,
         } => {
-            if let Some(ci) = app.library.find_by_folder(&folder_name)
-                && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
+            if let Some(ci) = app.browser.find_by_folder(&folder_name)
+                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
             {
                 entry.broken_references = Some(broken_refs);
             }
@@ -1643,8 +1684,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_name,
             issues,
         } => {
-            if let Some(ci) = app.library.find_by_folder(&folder_name)
-                && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
+            if let Some(ci) = app.browser.find_by_folder(&folder_name)
+                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
             {
                 entry.cue_compat_issues = Some(issues);
             }
@@ -1654,8 +1695,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             folder_name,
             fingerprint,
         } => {
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                let console = &mut app.library.consoles[ci];
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                let console = &mut app.browser.consoles[ci];
                 console.scan_status = ScanStatus::Scanned;
                 // Cache the quick folder fingerprint for stale-state checks.
                 // Fingerprint is computed in the scan worker to keep network I/O off the UI thread.
@@ -1665,20 +1706,20 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             app.operations.retain(|op| {
                 // Match operations like "Scanning Super Nintendo..."
                 !(op.description.starts_with(&desc_match))
-                    || !app.library.find_by_folder(&folder_name).is_some_and(|ci| {
+                    || !app.browser.find_by_folder(&folder_name).is_some_and(|ci| {
                         op.description
-                            .contains(app.library.consoles[ci].platform_name)
+                            .contains(app.browser.consoles[ci].platform_name)
                     })
             });
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                app.save_console_cache(ci);
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                app.save_console_cache(ci, ctx);
             }
 
             // Discover media for newly scanned entries so the table shows media indicators.
-            if let Some(ci) = app.library.find_by_folder(&folder_name)
+            if let Some(ci) = app.browser.find_by_folder(&folder_name)
                 && let Some(ref root) = app.root_path.clone()
             {
-                let entries: Vec<(String, String)> = app.library.consoles[ci]
+                let entries: Vec<(String, String)> = app.browser.consoles[ci]
                     .entries
                     .iter()
                     .filter(|e| e.asset_paths.is_none())
@@ -1722,13 +1763,13 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             let game_count = index.game_count();
 
             // Run serial matching for this specific console's entries
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                app.library.consoles[ci].dat_status = DatStatus::Loaded { game_count };
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                app.browser.consoles[ci].dat_status = DatStatus::Loaded { game_count };
 
                 let context = app.context.clone();
                 if let Some(registered) = context.get_by_platform(platform) {
                     // Single-entry serial matching (skip multi-disc entries)
-                    for entry in &mut app.library.consoles[ci].entries {
+                    for entry in &mut app.browser.consoles[ci].entries {
                         if entry.disc_identifications.is_some() {
                             continue;
                         }
@@ -1764,7 +1805,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     }
 
                     // Multi-disc serial+hash matching: resolve each disc, derive game name
-                    for entry in &mut app.library.consoles[ci].entries {
+                    for entry in &mut app.browser.consoles[ci].entries {
                         let discs = match entry.disc_identifications.as_mut() {
                             Some(d) if !d.is_empty() => d,
                             _ => continue,
@@ -1909,7 +1950,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 // Re-check hash matches for entries that have cached hashes
                 // but weren't resolved by serial alone (e.g. Ambiguous or Unrecognized).
                 // Skip multi-disc entries — their game-level match is handled above.
-                for entry in &mut app.library.consoles[ci].entries {
+                for entry in &mut app.browser.consoles[ci].entries {
                     if entry.disc_identifications.is_some() {
                         continue;
                     }
@@ -1932,7 +1973,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
                 // Enrich entries with catalog titles
                 if let Some(ref conn) = app.catalog_db {
-                    for entry in &mut app.library.consoles[ci].entries {
+                    for entry in &mut app.browser.consoles[ci].entries {
                         if entry.hashes.is_some() {
                             try_catalog_enrich(entry, conn);
                         }
@@ -1946,15 +1987,15 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
             app.operations
                 .retain(|op| !op.description.contains("Loading DAT"));
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                app.save_console_cache(ci);
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                app.save_console_cache(ci, ctx);
             }
         }
 
         AppMessage::DatLoadFailed { folder_name, error } => {
             app.push_error("DAT Load Failed", format!("{folder_name}: {error}"));
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                app.library.consoles[ci].dat_status = DatStatus::Unavailable { reason: error };
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                app.browser.consoles[ci].dat_status = DatStatus::Unavailable { reason: error };
             }
             app.operations
                 .retain(|op| !op.description.contains("Loading DAT"));
@@ -1965,8 +2006,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_name,
             hashes,
         } => {
-            if let Some(ci) = app.library.find_by_folder(&folder_name)
-                && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
+            if let Some(ci) = app.browser.find_by_folder(&folder_name)
+                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
             {
                 // Try hash matching against the loaded DAT.
                 // Skip multi-disc entries — their game-level match is handled by
@@ -1994,8 +2035,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     try_catalog_enrich_by_serial(entry, conn);
                 }
             }
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                app.save_console_cache(ci);
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                app.save_console_cache(ci, ctx);
             }
         }
 
@@ -2005,8 +2046,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             disc_path,
             hashes,
         } => {
-            if let Some(ci) = app.library.find_by_folder(&folder_name)
-                && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
+            if let Some(ci) = app.browser.find_by_folder(&folder_name)
+                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
                 && let Some(ref mut discs) = entry.disc_identifications
             {
                 // Find the matching disc and store its hashes
@@ -2072,8 +2113,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     try_catalog_enrich_by_serial(entry, conn);
                 }
             }
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                app.save_console_cache(ci);
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                app.save_console_cache(ci, ctx);
             }
         }
 
@@ -2094,8 +2135,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_name,
             assets,
         } => {
-            if let Some(ci) = app.library.find_by_folder(&folder_name)
-                && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
+            if let Some(ci) = app.browser.find_by_folder(&folder_name)
+                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
             {
                 // Invalidate stale cached textures when an asset path changes
                 if let Some(ref old_assets) = entry.asset_paths {
@@ -2121,8 +2162,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 "Scrape Failed",
                 format!("{entry_name} ({folder_name}): {error}"),
             );
-            if let Some(ci) = app.library.find_by_folder(&folder_name)
-                && let Some(entry) = app.library.consoles[ci].find_entry_mut(&entry_name)
+            if let Some(ci) = app.browser.find_by_folder(&folder_name)
+                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
             {
                 // Only clear asset_paths if they haven't been discovered yet.
                 // If media was already known (e.g. scraping missing media for a game
@@ -2140,109 +2181,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             app.operations.retain(|op| op.id != op_id);
         }
 
-        AppMessage::CacheLoaded { library } => {
-            // Merge cached consoles with any already discovered from folder scan.
-            // Consoles that have already started scanning are not replaced.
-            for cached_console in library.consoles {
-                if let Some(ci) = app.library.find_by_folder(&cached_console.folder_name) {
-                    if app.library.consoles[ci].scan_status == ScanStatus::NotScanned {
-                        app.library.consoles[ci] = cached_console;
-                    }
-                } else {
-                    app.library.consoles.push(cached_console);
-                }
-            }
-            app.library.consoles.sort_by(|a, b| {
-                a.manufacturer
-                    .cmp(b.manufacturer)
-                    .then(a.platform_name.cmp(b.platform_name))
-                    .then(a.folder_name.cmp(&b.folder_name))
-            });
-
-            // Enrich cached entries with catalog titles
-            if let Some(ref conn) = app.catalog_db {
-                for console in &mut app.library.consoles {
-                    for entry in &mut console.entries {
-                        if entry.hashes.is_some() {
-                            try_catalog_enrich(entry, conn);
-                        }
-                        try_catalog_enrich_by_serial(entry, conn);
-                    }
-                }
-            }
-
-            // Trigger DAT loads for consoles that previously had DATs loaded
-            for console in &app.library.consoles {
-                if matches!(console.dat_status, DatStatus::Loaded { .. }) {
-                    crate::backend::dat::load_dat_for_console(
-                        app.message_tx.clone(),
-                        app.context.clone(),
-                        console.platform,
-                        console.folder_name.clone(),
-                        ctx.clone(),
-                    );
-                }
-            }
-
-            // Check broken references on a background thread for any entries
-            // that haven't been checked yet (old caches, or first load).
-            let unchecked: Vec<(String, String, GameEntry)> = app
-                .library
-                .consoles
-                .iter()
-                .flat_map(|c| {
-                    c.entries
-                        .iter()
-                        .filter(|e| e.broken_references.is_none())
-                        .map(|e| {
-                            (
-                                c.folder_name.clone(),
-                                e.game_entry.display_name().to_string(),
-                                e.game_entry.clone(),
-                            )
-                        })
-                })
-                .collect();
-            if !unchecked.is_empty() {
-                crate::backend::scan::check_broken_refs_background(
-                    app.message_tx.clone(),
-                    unchecked,
-                    ctx.clone(),
-                );
-            }
-
-            // Discover media for cached consoles so the table shows media indicators
-            // on first load (before the user opens any detail panel).
-            if let Some(ref root) = app.root_path.clone() {
-                for console in &app.library.consoles {
-                    let entries: Vec<(String, String)> = console
-                        .entries
-                        .iter()
-                        .filter(|e| e.asset_paths.is_none())
-                        .map(|e| {
-                            (
-                                e.game_entry.display_name().to_string(),
-                                e.game_entry.rom_stem().to_string(),
-                            )
-                        })
-                        .collect();
-                    if !entries.is_empty() {
-                        crate::backend::assets::discover_assets_for_console(
-                            app.message_tx.clone(),
-                            ctx.clone(),
-                            root.clone(),
-                            console.folder_name.clone(),
-                            app.settings.general.assets_dir.clone(),
-                            entries,
-                        );
-                    }
-                }
-            }
-        }
-
         AppMessage::StartFolderScan => {
-            // Cache loading is complete (whether or not a cache existed).
-            app.ui_state.loading_library = false;
             if let Some(ref root) = app.root_path.clone() {
                 crate::backend::scan::scan_root_folder(app, root.clone(), ctx);
             }
@@ -2273,23 +2212,23 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             // `refresh_multidisc_files` (D5) to re-collect a renamed
             // multi-disc folder's contents via the scanner's playlist logic.
             let extensions = app
-                .library
+                .browser
                 .find_by_folder(&folder_name)
                 .and_then(|ci| {
                     app.context
-                        .get_by_platform(app.library.consoles[ci].platform)
+                        .get_by_platform(app.browser.consoles[ci].platform)
                 })
                 .map(|r| retro_junk_lib::scanner::extension_set(r.analyzer.file_extensions()))
                 .unwrap_or_default();
 
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
                 for r in &results {
                     match &r.outcome {
                         RenameOutcome::Renamed { target, .. } => {
                             renamed += 1;
                             // Update the GameEntry path to reflect the new filename
                             if let Some(entry) =
-                                app.library.consoles[ci].find_entry_mut(&r.entry_name)
+                                app.browser.consoles[ci].find_entry_mut(&r.entry_name)
                             {
                                 entry.game_entry =
                                     retro_junk_lib::scanner::GameEntry::SingleFile(target.clone());
@@ -2308,7 +2247,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             failed += m3u_errors.len();
                             // Update the MultiDisc GameEntry to reflect the new folder
                             if let Some(entry) =
-                                app.library.consoles[ci].find_entry_mut(&r.entry_name)
+                                app.browser.consoles[ci].find_entry_mut(&r.entry_name)
                             {
                                 // Update folder name from the target folder
                                 if let retro_junk_lib::scanner::GameEntry::MultiDisc {
@@ -2341,12 +2280,12 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             // Invalidate fingerprint so the next save recomputes it from the
             // actual (post-rename) file names on disk.
             if renamed > 0
-                && let Some(ci) = app.library.find_by_folder(&folder_name)
+                && let Some(ci) = app.browser.find_by_folder(&folder_name)
             {
-                app.library.consoles[ci].fingerprint = None;
+                app.browser.consoles[ci].fingerprint = None;
             }
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                app.save_console_cache(ci);
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                app.save_console_cache(ci, ctx);
                 if renamed > 0 {
                     recheck_invalidated_entries(app, ci, &folder_name, ctx);
                 }
@@ -2375,8 +2314,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     "Organized {folder_name}: created {jobs_executed} folders, moved {files_moved} files",
                 );
                 // Trigger rescan since folder structure changed
-                if let Some(ci) = app.library.find_by_folder(&folder_name) {
-                    let console = &mut app.library.consoles[ci];
+                if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                    let console = &mut app.browser.consoles[ci];
                     console.scan_status = ScanStatus::NotScanned;
                     console.loose_disc_files.clear();
                     crate::backend::scan::quick_scan_console(app, ci, ctx);
@@ -2416,14 +2355,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             );
             // Invalidate cached checks on affected entries and re-check
             if fixed > 0
-                && let Some(ci) = app.library.find_by_folder(&folder_name)
+                && let Some(ci) = app.browser.find_by_folder(&folder_name)
             {
                 let fixed_files: std::collections::HashSet<&str> = results
                     .iter()
                     .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
                     .map(|r| r.file_name.as_str())
                     .collect();
-                for entry in &mut app.library.consoles[ci].entries {
+                for entry in &mut app.browser.consoles[ci].entries {
                     let dominated = entry.cue_compat_issues.as_ref().is_some_and(|issues| {
                         issues
                             .iter()
@@ -2441,7 +2380,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         entry.cue_compat_issues = None;
                     }
                 }
-                app.save_console_cache(ci);
+                app.save_console_cache(ci, ctx);
                 recheck_invalidated_entries(app, ci, &folder_name, ctx);
             }
             app.ui_state.results_dialog = crate::app::ResultsDialog::CueFix(results);
@@ -2464,16 +2403,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             // `refresh_multidisc_files` (D5) when a compressed disc belongs
             // to a MultiDisc entry.
             let extensions = app
-                .library
+                .browser
                 .find_by_folder(&folder_name)
                 .and_then(|ci| {
                     app.context
-                        .get_by_platform(app.library.consoles[ci].platform)
+                        .get_by_platform(app.browser.consoles[ci].platform)
                 })
                 .map(|r| retro_junk_lib::scanner::extension_set(r.analyzer.file_extensions()))
                 .unwrap_or_default();
 
-            if let Some(ci) = app.library.find_by_folder(&folder_name) {
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
                 let mut changed = false;
                 let mut deleted_files: std::collections::HashSet<PathBuf> =
                     std::collections::HashSet::new();
@@ -2497,7 +2436,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     // holds its pre-compression path even after the file is
                     // deleted, so matching this job's input against
                     // `all_files()` is exact and rename-proof for this batch.
-                    let Some(entry) = app.library.consoles[ci].find_entry_by_file_mut(&r.job.input)
+                    let Some(entry) = app.browser.consoles[ci].find_entry_by_file_mut(&r.job.input)
                     else {
                         log::warn!(
                             "CHD compress complete: no library entry found for input {}",
@@ -2539,7 +2478,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     // kept as separate entries (stem-only dedup). Entries
                     // updated above now point at the .chd, so they survive
                     // this filter.
-                    app.library.consoles[ci].entries.retain(|e| {
+                    app.browser.consoles[ci].entries.retain(|e| {
                         !e.game_entry
                             .all_files()
                             .iter()
@@ -2548,8 +2487,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
 
                 if changed {
-                    app.library.consoles[ci].fingerprint = None;
-                    app.save_console_cache(ci);
+                    app.browser.consoles[ci].fingerprint = None;
+                    app.save_console_cache(ci, ctx);
                     recheck_invalidated_entries(app, ci, &folder_name, ctx);
                 }
             }
