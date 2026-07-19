@@ -535,6 +535,31 @@ fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Err
     })
 }
 
+/// Build the intent-specific database payload for derived analysis fields.
+/// Source identity and user-owned fields are deliberately excluded.
+pub(crate) fn entry_analysis_update(
+    entry: &LibraryEntry,
+) -> Result<retro_junk_db::EntryAnalysisUpdate, serde_json::Error> {
+    let row = entry_to_row(entry)?;
+    Ok(retro_junk_db::EntryAnalysisUpdate {
+        status: row.status,
+        crc32: row.crc32,
+        sha1: row.sha1,
+        md5: row.md5,
+        data_size: row.data_size,
+        dat_game_name: row.dat_game_name,
+        dat_rom_name: row.dat_rom_name,
+        dat_match_method: row.dat_match_method,
+        cover_title: row.cover_title,
+        screen_title: row.screen_title,
+        identification_json: row.identification_json,
+        disc_identifications_json: row.disc_identifications_json,
+        broken_references_json: row.broken_references_json,
+        ambiguous_candidates_json: row.ambiguous_candidates_json,
+        cue_compat_issues_json: row.cue_compat_issues_json,
+    })
+}
+
 pub(crate) fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
     let game_entry = serde_json::from_str(&row.game_entry_json).ok()?;
 

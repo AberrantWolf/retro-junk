@@ -2028,7 +2028,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
             }
             if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.save_console_cache(ci, ctx);
+                app.save_entry_analysis(ci, &entry_name, ctx);
             }
         }
 
@@ -2106,7 +2106,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
             }
             if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.save_console_cache(ci, ctx);
+                app.save_entry_analysis(ci, &entry_name, ctx);
             }
         }
 

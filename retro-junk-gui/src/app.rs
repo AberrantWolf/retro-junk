@@ -704,6 +704,41 @@ impl RetroJunkApp {
         }
     }
 
+    /// Publish derived analysis for one durable entry without reconciling or
+    /// rewriting the rest of its console.
+    pub fn save_entry_analysis(
+        &mut self,
+        console_idx: usize,
+        entry_name: &str,
+        ctx: &egui::Context,
+    ) {
+        let Some(entry) = self.browser.consoles.get(console_idx).and_then(|console| {
+            console
+                .entries
+                .iter()
+                .find(|entry| entry.game_entry.display_name() == entry_name)
+        }) else {
+            return;
+        };
+        let Some(entry_id) = entry.id else {
+            // Initial scans do not receive durable IDs until reconciliation;
+            // ConsoleScanDone publishes that authoritative scan snapshot.
+            return;
+        };
+        let expected_source_revision = entry.source_revision;
+        match crate::cache::entry_analysis_update(entry) {
+            Ok(update) => self.submit_store(
+                crate::backend::library_store::LibraryStoreRequest::ApplyAnalysis {
+                    entry_id,
+                    expected_source_revision,
+                    update,
+                },
+                ctx,
+            ),
+            Err(error) => self.push_error("Library analysis", error.to_string()),
+        }
+    }
+
     pub fn delete_library_cache(&mut self, root: &std::path::Path, ctx: &egui::Context) {
         let reopen_current = self.root_path.as_deref() == Some(root);
         self.submit_store(
