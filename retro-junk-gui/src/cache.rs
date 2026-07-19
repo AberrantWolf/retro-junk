@@ -380,6 +380,7 @@ fn load_library_from_legacy(
             console_statuses: HashMap::new(),
             stale_consoles: std::collections::HashSet::new(),
             asset_discovery_in_flight: std::collections::HashSet::new(),
+            dat_loads_in_flight: std::collections::HashSet::new(),
         },
         stale_folders,
     ))

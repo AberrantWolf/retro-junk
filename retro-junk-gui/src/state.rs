@@ -74,6 +74,8 @@ pub struct LibraryBrowserState {
     pub stale_consoles: HashSet<retro_junk_db::LibraryConsoleId>,
     /// Entry IDs with filesystem media discovery currently in flight.
     pub asset_discovery_in_flight: HashSet<retro_junk_db::LibraryEntryId>,
+    /// Console folders whose in-memory DAT index is currently loading.
+    pub dat_loads_in_flight: HashSet<String>,
 }
 
 impl LibraryBrowserState {
@@ -1769,6 +1771,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             platform,
             index,
         } => {
+            app.browser.dat_loads_in_flight.remove(&folder_name);
             let game_count = index.game_count();
 
             // Run serial matching for this specific console's entries
@@ -2002,6 +2005,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         }
 
         AppMessage::DatLoadFailed { folder_name, error } => {
+            app.browser.dat_loads_in_flight.remove(&folder_name);
             app.push_error("DAT Load Failed", format!("{folder_name}: {error}"));
             if let Some(ci) = app.browser.find_by_folder(&folder_name) {
                 app.browser.consoles[ci].dat_status = DatStatus::Unavailable { reason: error };

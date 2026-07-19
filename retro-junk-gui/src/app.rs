@@ -670,12 +670,34 @@ impl RetroJunkApp {
         if self.pending_all_hashes_request.is_some() {
             return;
         }
+        self.ensure_dat_index(console_idx, ctx);
         if let Some(request_id) = self.queue_store(
             crate::backend::library_store::LibraryStoreRequest::ConsoleEntryDetails(console_id),
         ) {
             self.pending_all_hashes_request = Some((request_id, console_id));
             ctx.request_repaint_after(Duration::from_millis(20));
         }
+    }
+
+    pub fn ensure_dat_index(&mut self, console_idx: usize, ctx: &egui::Context) {
+        let Some(console) = self.browser.consoles.get(console_idx) else {
+            return;
+        };
+        let folder_name = console.folder_name.clone();
+        if self.dat_indices.contains_key(&folder_name)
+            || self.browser.dat_loads_in_flight.contains(&folder_name)
+        {
+            return;
+        }
+        let platform = console.platform;
+        self.browser.dat_loads_in_flight.insert(folder_name.clone());
+        crate::backend::dat::load_dat_for_console(
+            self.message_tx.clone(),
+            self.context.clone(),
+            platform,
+            folder_name,
+            ctx.clone(),
+        );
     }
 
     pub fn selected_entry_indices(&self) -> Vec<usize> {
