@@ -257,11 +257,20 @@ fn import_game(
         status: media_status,
         tag: None,
         dat_name: game.name.clone(),
+        rom_name: primary_rom.name.clone(),
         dat_source: dat_source.to_string(),
         file_size: i64::try_from(primary_rom.size).unwrap_or(0),
-        crc32: primary_rom.crc.clone(),
-        sha1: primary_rom.sha1.clone().unwrap_or_default(),
-        md5: primary_rom.md5.clone().unwrap_or_default(),
+        crc32: primary_rom.crc.to_ascii_lowercase(),
+        sha1: primary_rom
+            .sha1
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
+        md5: primary_rom
+            .md5
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase(),
         created_at: String::new(),
         updated_at: String::new(),
     };

@@ -383,8 +383,8 @@ pub fn unenrich_releases(
 pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationError> {
     conn.execute(
         "INSERT INTO media (id, release_id, media_serial, disc_number, disc_label,
-             revision, status, tag, dat_name, dat_source, file_size, crc32, sha1, md5)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             revision, status, tag, dat_name, rom_name, dat_source, file_size, crc32, sha1, md5)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT(id) DO UPDATE SET
              release_id = excluded.release_id,
              media_serial = excluded.media_serial,
@@ -394,6 +394,7 @@ pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationErr
              status = excluded.status,
              tag = excluded.tag,
              dat_name = excluded.dat_name,
+             rom_name = excluded.rom_name,
              dat_source = excluded.dat_source,
              file_size = excluded.file_size,
              crc32 = excluded.crc32,
@@ -410,6 +411,7 @@ pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationErr
             media.status.as_str(),
             media.tag.map(|t| t.as_str()),
             media.dat_name,
+            media.rom_name,
             media.dat_source,
             media.file_size,
             media.crc32,
@@ -427,7 +429,7 @@ pub fn find_media_by_dat_name(
 ) -> Result<Option<Media>, OperationError> {
     let mut stmt = conn.prepare(
         "SELECT id, release_id, media_serial, disc_number, disc_label,
-                revision, status, tag, dat_name, dat_source, file_size,
+                revision, status, tag, dat_name, rom_name, dat_source, file_size,
                 crc32, sha1, md5, created_at, updated_at
          FROM media WHERE dat_name = ?1 LIMIT 1",
     )?;
@@ -451,13 +453,14 @@ fn row_to_media(
             status: MediaStatus::from_str_loose(&status_str),
             tag: tag_str.as_deref().and_then(CatalogTag::from_str_loose),
             dat_name: row.get(8)?,
-            dat_source: row.get(9)?,
-            file_size: row.get(10)?,
-            crc32: row.get(11)?,
-            sha1: row.get(12)?,
-            md5: row.get(13)?,
-            created_at: row.get(14)?,
-            updated_at: row.get(15)?,
+            rom_name: row.get(9)?,
+            dat_source: row.get(10)?,
+            file_size: row.get(11)?,
+            crc32: row.get(12)?,
+            sha1: row.get(13)?,
+            md5: row.get(14)?,
+            created_at: row.get(15)?,
+            updated_at: row.get(16)?,
         })
     });
     match result {

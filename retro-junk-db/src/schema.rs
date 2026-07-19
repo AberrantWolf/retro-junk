@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 11;
+pub const CURRENT_VERSION: i32 = 12;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -122,6 +122,7 @@ const TABLES: &[(&str, &str)] = &[
           status TEXT NOT NULL DEFAULT 'verified',
           tag TEXT,
           dat_name TEXT NOT NULL DEFAULT '',
+          rom_name TEXT NOT NULL DEFAULT '',
           dat_source TEXT NOT NULL DEFAULT '',
           file_size INTEGER NOT NULL DEFAULT 0,
           crc32 TEXT NOT NULL DEFAULT '',
@@ -309,7 +310,7 @@ const V9_REBUILDS: &[(&str, &str)] = &[
         "media",
         "id, release_id, COALESCE(media_serial, ''), COALESCE(disc_number, 0),
          COALESCE(disc_label, ''), COALESCE(revision, ''), status, tag,
-         COALESCE(dat_name, ''), COALESCE(dat_source, ''), COALESCE(file_size, 0),
+         COALESCE(dat_name, ''), '', COALESCE(dat_source, ''), COALESCE(file_size, 0),
          COALESCE(crc32, ''), COALESCE(sha1, ''), COALESCE(md5, ''), created_at, updated_at",
     ),
     (
@@ -540,6 +541,23 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
             }
             9 => crate::library::migrate_library_v10(conn)?,
             10 => crate::library::migrate_library_v11(conn)?,
+            11 => {
+                let has_media: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='media')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_media && conn.prepare("SELECT rom_name FROM media LIMIT 0").is_err() {
+                    conn.execute_batch(
+                        "ALTER TABLE media ADD COLUMN rom_name TEXT NOT NULL DEFAULT '';",
+                    )?;
+                }
+                if has_media {
+                    conn.execute_batch(
+                        "UPDATE media SET crc32=lower(crc32),sha1=lower(sha1),md5=lower(md5);",
+                    )?;
+                }
+            }
             _ => {}
         }
         version += 1;

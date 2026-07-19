@@ -10,11 +10,24 @@ use rusqlite::{Connection, params};
 
 use crate::operations::OperationError;
 
+/// A compact, joined catalog row used for runtime ROM identification.
+#[derive(Debug, Clone)]
+pub struct CatalogMediaMatch {
+    pub media: Media,
+    pub platform_id: String,
+    pub region: String,
+    pub release_title: String,
+}
+
 // ── Column Constants ────────────────────────────────────────────────────────
 
 const MEDIA_COLUMNS: &str = "id, release_id, media_serial, disc_number, disc_label, \
-     revision, status, tag, dat_name, dat_source, file_size, \
+     revision, status, tag, dat_name, rom_name, dat_source, file_size, \
      crc32, sha1, md5, created_at, updated_at";
+
+const JOINED_MEDIA_COLUMNS: &str = "m.id, m.release_id, m.media_serial, m.disc_number, m.disc_label, \
+     m.revision, m.status, m.tag, m.dat_name, m.rom_name, m.dat_source, m.file_size, \
+     m.crc32, m.sha1, m.md5, m.created_at, m.updated_at";
 
 const RELEASE_COLUMNS: &str = "id, work_id, platform_id, region, revision, variant, \
      title, alt_title, publisher_id, developer_id, release_date, \
@@ -38,17 +51,55 @@ fn query_media(
 
 /// Find media entries by CRC32 hash.
 pub fn find_media_by_crc32(conn: &Connection, crc32: &str) -> Result<Vec<Media>, OperationError> {
-    query_media(conn, "crc32 = ?1", crc32)
+    query_media(conn, "crc32 = lower(?1)", crc32)
 }
 
 /// Find media entries by SHA1 hash.
 pub fn find_media_by_sha1(conn: &Connection, sha1: &str) -> Result<Vec<Media>, OperationError> {
-    query_media(conn, "sha1 = ?1", sha1)
+    query_media(conn, "sha1 = lower(?1)", sha1)
 }
 
 /// Find media entries by MD5 hash.
 pub fn find_media_by_md5(conn: &Connection, md5: &str) -> Result<Vec<Media>, OperationError> {
-    query_media(conn, "md5 = ?1", md5)
+    query_media(conn, "md5 = lower(?1)", md5)
+}
+
+/// Match one ROM using indexed catalog hashes, constrained to its platform.
+/// CRC32 additionally requires the DAT size; SHA1 is used as the fallback.
+pub fn match_media_by_hash(
+    conn: &Connection,
+    platform_id: &str,
+    file_size: u64,
+    crc32: Option<&str>,
+    sha1: Option<&str>,
+) -> Result<Vec<CatalogMediaMatch>, OperationError> {
+    let sql = format!(
+        "SELECT {JOINED_MEDIA_COLUMNS}, r.platform_id, r.region, r.title \
+         FROM media m JOIN releases r ON r.id=m.release_id \
+         WHERE r.platform_id=?1 AND (\
+           (?2<>'' AND m.crc32=lower(?2) AND m.file_size=?3) OR \
+           (?4<>'' AND m.sha1=lower(?4))\
+         ) ORDER BY CASE WHEN ?2<>'' AND m.crc32=lower(?2) AND m.file_size=?3 THEN 0 ELSE 1 END, \
+                    r.region, m.dat_name"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(
+        params![
+            platform_id,
+            crc32.unwrap_or_default(),
+            i64::try_from(file_size).unwrap_or(i64::MAX),
+            sha1.unwrap_or_default()
+        ],
+        |row| {
+            Ok(CatalogMediaMatch {
+                media: row_to_media(row)?,
+                platform_id: row.get(17)?,
+                region: row.get(18)?,
+                release_title: row.get(19)?,
+            })
+        },
+    )?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
 /// Find media entries by serial number.
@@ -1347,13 +1398,14 @@ fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {
         status: MediaStatus::from_str_loose(&status_str),
         tag: tag_str.as_deref().and_then(CatalogTag::from_str_loose),
         dat_name: row.get(8)?,
-        dat_source: row.get(9)?,
-        file_size: row.get(10)?,
-        crc32: row.get(11)?,
-        sha1: row.get(12)?,
-        md5: row.get(13)?,
-        created_at: row.get(14)?,
-        updated_at: row.get(15)?,
+        rom_name: row.get(9)?,
+        dat_source: row.get(10)?,
+        file_size: row.get(11)?,
+        crc32: row.get(12)?,
+        sha1: row.get(13)?,
+        md5: row.get(14)?,
+        created_at: row.get(15)?,
+        updated_at: row.get(16)?,
     })
 }
 

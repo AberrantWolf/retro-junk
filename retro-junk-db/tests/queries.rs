@@ -62,6 +62,7 @@ fn test_media(id: &str, release_id: &str) -> Media {
         status: MediaStatus::Verified,
         tag: None,
         dat_name: String::new(),
+        rom_name: String::new(),
         dat_source: String::new(),
         file_size: 0,
         crc32: String::new(),
@@ -107,6 +108,7 @@ fn setup_db() -> rusqlite::Connection {
 
     let mut smb_media = test_media("smb1-nes-usa-v1", "smb1-nes-usa");
     smb_media.dat_name = "Super Mario Bros. (USA).nes".to_string();
+    smb_media.rom_name = "Super Mario Bros. (USA).nes".to_string();
     smb_media.dat_source = "no-intro".to_string();
     smb_media.file_size = 40976;
     smb_media.crc32 = "d445f698".to_string();
@@ -129,6 +131,30 @@ fn find_by_sha1() {
     let conn = setup_db();
     let results = find_media_by_sha1(&conn, "ea343f4e445a9050d4b4fbac2c77d0693b1d0922").unwrap();
     assert_eq!(results.len(), 1);
+}
+
+#[test]
+fn runtime_hash_match_is_platform_scoped_size_checked_and_case_insensitive() {
+    let conn = setup_db();
+    let matches = match_media_by_hash(&conn, "nes", 40976, Some("D445F698"), None).unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].media.rom_name, "Super Mario Bros. (USA).nes");
+    assert_eq!(matches[0].region, "usa");
+
+    assert!(match_media_by_hash(&conn, "nes", 1, Some("d445f698"), None).unwrap().is_empty());
+    assert!(match_media_by_hash(&conn, "gb", 40976, Some("d445f698"), None).unwrap().is_empty());
+    assert_eq!(
+        match_media_by_hash(
+            &conn,
+            "nes",
+            1,
+            None,
+            Some("EA343F4E445A9050D4B4FBAC2C77D0693B1D0922"),
+        )
+        .unwrap()
+        .len(),
+        1
+    );
 }
 
 #[test]

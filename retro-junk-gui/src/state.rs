@@ -1141,6 +1141,39 @@ fn regions_match_dat(detected: &[Region], dat_region: &str) -> bool {
     })
 }
 
+/// Resolve hashes directly against the persisted catalog. This performs an
+/// indexed, platform-scoped query and never parses or materializes a DAT.
+fn catalog_hash_match(
+    conn: &retro_junk_db::Connection,
+    platform_id: &str,
+    hashes: &FileHashes,
+    detected_regions: &[Region],
+) -> Option<DatMatchInfo> {
+    let matches = retro_junk_db::match_media_by_hash(
+        conn,
+        platform_id,
+        hashes.data_size,
+        (!hashes.crc32.is_empty()).then_some(hashes.crc32.as_str()),
+        hashes.sha1.as_deref(),
+    )
+    .ok()?;
+    let selected = matches
+        .iter()
+        .find(|m| regions_match_dat(detected_regions, &m.region))
+        .or_else(|| matches.first())?;
+    let crc_match = !hashes.crc32.is_empty()
+        && u64::try_from(selected.media.file_size).ok() == Some(hashes.data_size)
+        && selected.media.crc32.eq_ignore_ascii_case(&hashes.crc32);
+    Some(DatMatchInfo {
+        game_name: selected.media.dat_name.clone(),
+        rom_name: selected.media.rom_name.clone(),
+        method: if crc_match { MatchMethod::Crc32 } else { MatchMethod::Sha1 },
+        region: selected.region.clone(),
+        cross_region: !selected.region.is_empty()
+            && !regions_match_dat(detected_regions, &selected.region),
+    })
+}
+
 /// Build a `DatMatchInfo` from a single DAT match result, including cross-region detection.
 fn build_dat_match_info(
     dat_index: &DatIndex,
@@ -2019,22 +2052,23 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_name,
             hashes,
         } => {
+            let platform_id = app
+                .browser
+                .find_by_folder(&folder_name)
+                .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
                 && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
             {
-                // Try hash matching against the loaded DAT.
-                // Skip multi-disc entries — their game-level match is handled by
-                // multi-disc serial matching; this hash only covers one disc.
                 if entry.disc_identifications.is_none()
-                    && let Some(dat_index) = app.dat_indices.get(&folder_name)
+                    && let (Some(conn), Some(platform_id)) =
+                        (app.catalog_db.as_ref(), platform_id.as_deref())
                 {
-                    let matches = dat_index.match_by_hash(hashes.data_size, &hashes);
                     let detected = entry
                         .identification
                         .as_ref()
                         .map(|id| id.regions.as_slice())
                         .unwrap_or_default();
-                    if let Some(dm) = pick_best_hash_match(dat_index, &matches, detected) {
+                    if let Some(dm) = catalog_hash_match(conn, platform_id, &hashes, detected) {
                         entry.dat_match = Some(dm);
                         entry.status = EntryStatus::Matched;
                         entry.ambiguous_candidates.clear();
@@ -2059,17 +2093,21 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             disc_path,
             hashes,
         } => {
+            let platform_id = app
+                .browser
+                .find_by_folder(&folder_name)
+                .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
                 && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
                 && let Some(ref mut discs) = entry.disc_identifications
             {
                 // Find the matching disc and store its hashes
                 if let Some(disc) = discs.iter_mut().find(|d| d.path == disc_path) {
-                    // Try per-disc DAT matching
-                    if let Some(dat_index) = app.dat_indices.get(&folder_name) {
-                        let matches = dat_index.match_by_hash(hashes.data_size, &hashes);
+                    if let (Some(conn), Some(platform_id)) =
+                        (app.catalog_db.as_ref(), platform_id.as_deref())
+                    {
                         let detected = disc.identification.regions.as_slice();
-                        if let Some(dm) = pick_best_hash_match(dat_index, &matches, detected) {
+                        if let Some(dm) = catalog_hash_match(conn, platform_id, &hashes, detected) {
                             log::info!(
                                 "Disc hash match: {} -> {} ({})",
                                 disc_path.display(),

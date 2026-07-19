@@ -69,6 +69,7 @@ fn test_media(id: &str, release_id: &str) -> Media {
         status: MediaStatus::Verified,
         tag: None,
         dat_name: String::new(),
+        rom_name: String::new(),
         dat_source: String::new(),
         file_size: 0,
         crc32: String::new(),

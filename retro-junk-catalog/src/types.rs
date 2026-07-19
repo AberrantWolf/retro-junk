@@ -194,6 +194,8 @@ pub struct Media {
     pub status: MediaStatus,
     pub tag: Option<CatalogTag>,
     pub dat_name: String,
+    /// Primary ROM filename from the source DAT, including extension.
+    pub rom_name: String,
     pub dat_source: String,
     /// Size in bytes. 0 = unknown (a real dump is never empty).
     pub file_size: i64,
