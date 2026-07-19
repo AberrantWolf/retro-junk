@@ -512,14 +512,12 @@ pub fn discover_assets_for_console(
     entries: Vec<(String, String)>, // (entry_name, rom_stem)
 ) {
     std::thread::spawn(move || {
-        let Some(media_dir) =
-            state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting)
-        else {
-            return;
-        };
+        let media_dir = state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting);
 
         for (entry_name, rom_stem) in entries {
-            let found = state::collect_existing_assets(&media_dir, &rom_stem);
+            let found = media_dir.as_ref().map_or_else(HashMap::new, |media_dir| {
+                state::collect_existing_assets(media_dir, &rom_stem)
+            });
 
             // Register image bytes with egui so they're available when the UI renders.
             for path in found.values() {
@@ -570,4 +568,43 @@ fn generate_miximage_for_entry(
 
     // Re-collect to pick up the new/updated miximage
     state::collect_existing_assets(media_dir, rom_stem)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn console_asset_discovery_reports_media_for_each_requested_entry() {
+        let root = tempfile::tempdir().unwrap();
+        let covers = root.path().join("nes").join("covers");
+        std::fs::create_dir_all(&covers).unwrap();
+        std::fs::write(covers.join("Game.png"), b"test image bytes").unwrap();
+        let (tx, rx) = mpsc::channel();
+
+        discover_assets_for_console(
+            tx,
+            egui::Context::default(),
+            root.path().to_path_buf(),
+            "nes".into(),
+            ".".into(),
+            vec![("Game.nes".into(), "Game".into())],
+        );
+
+        let message = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        let AppMessage::AssetsLoaded {
+            folder_name,
+            entry_name,
+            assets,
+        } = message
+        else {
+            panic!("expected asset discovery result");
+        };
+        assert_eq!(folder_name, "nes");
+        assert_eq!(entry_name, "Game.nes");
+        assert_eq!(
+            assets.get(&AssetType::Cover),
+            Some(&covers.join("Game.png"))
+        );
+    }
 }

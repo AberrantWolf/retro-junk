@@ -379,6 +379,7 @@ fn load_library_from_legacy(
             entry_counts: HashMap::new(),
             console_statuses: HashMap::new(),
             stale_consoles: std::collections::HashSet::new(),
+            asset_discovery_in_flight: std::collections::HashSet::new(),
         },
         stale_folders,
     ))

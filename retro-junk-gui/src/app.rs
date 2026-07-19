@@ -450,6 +450,7 @@ impl RetroJunkApp {
                             Some(entry)
                         })
                         .collect();
+                    self.discover_assets_for_page(console_index, ctx);
                 }
                 Ok(crate::backend::library_store::LibraryStoreValue::ChangeSet(changes)) => {
                     self.library_controller.apply_change_set(&changes);
@@ -556,6 +557,48 @@ impl RetroJunkApp {
                 ctx,
             );
         }
+    }
+
+    fn discover_assets_for_page(&mut self, console_index: usize, ctx: &egui::Context) {
+        let Some(root_path) = self.root_path.clone() else {
+            return;
+        };
+        let Some(console) = self.browser.consoles.get(console_index) else {
+            return;
+        };
+        let folder_name = console.folder_name.clone();
+        let entries: Vec<_> = console
+            .entries
+            .iter()
+            .filter(|entry| entry.asset_paths.is_none())
+            .filter_map(|entry| {
+                let id = entry.id?;
+                (!self.browser.asset_discovery_in_flight.contains(&id)).then(|| {
+                    (
+                        id,
+                        entry.game_entry.display_name().to_owned(),
+                        entry.game_entry.rom_stem().to_owned(),
+                    )
+                })
+            })
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+        self.browser
+            .asset_discovery_in_flight
+            .extend(entries.iter().map(|(id, _, _)| *id));
+        crate::backend::assets::discover_assets_for_console(
+            self.message_tx.clone(),
+            ctx.clone(),
+            root_path,
+            folder_name,
+            self.settings.general.assets_dir.clone(),
+            entries
+                .into_iter()
+                .map(|(_, entry_name, rom_stem)| (entry_name, rom_stem))
+                .collect(),
+        );
     }
 
     pub fn request_console_page(

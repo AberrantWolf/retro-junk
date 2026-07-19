@@ -52,10 +52,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     if app.browser.consoles[console_idx].entries[entry_idx]
         .asset_paths
         .is_none()
+        && !app.browser.asset_discovery_in_flight.contains(&entry_id)
     {
         // Sentinel: mark as "loading" so we don't spawn again next frame
         app.browser.consoles[console_idx].entries[entry_idx].asset_paths =
             Some(std::collections::HashMap::new());
+        app.browser.asset_discovery_in_flight.insert(entry_id);
 
         if let Some(ref root_path) = app.root_path {
             let folder_name = app.browser.consoles[console_idx].folder_name.clone();

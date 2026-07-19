@@ -72,6 +72,8 @@ pub struct LibraryBrowserState {
     pub console_statuses: HashMap<retro_junk_db::LibraryConsoleId, EntryStatus>,
     /// Consoles explicitly marked stale by SQLite and requiring a correctness rebuild.
     pub stale_consoles: HashSet<retro_junk_db::LibraryConsoleId>,
+    /// Entry IDs with filesystem media discovery currently in flight.
+    pub asset_discovery_in_flight: HashSet<retro_junk_db::LibraryEntryId>,
 }
 
 impl LibraryBrowserState {
@@ -2142,20 +2144,26 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_name,
             assets,
         } => {
-            if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
-            {
-                // Invalidate stale cached textures when an asset path changes
-                if let Some(ref old_assets) = entry.asset_paths {
-                    for (at, old_path) in old_assets {
-                        let new_path = assets.get(at);
-                        if new_path != Some(old_path) {
-                            let old_uri = format!("bytes://media/{}", old_path.display());
-                            ctx.forget_image(&old_uri);
+            let loaded_id = app
+                .browser
+                .find_by_folder(&folder_name)
+                .and_then(|ci| app.browser.consoles[ci].find_entry_mut(&entry_name))
+                .and_then(|entry| {
+                    // Invalidate stale cached textures when an asset path changes
+                    if let Some(ref old_assets) = entry.asset_paths {
+                        for (at, old_path) in old_assets {
+                            let new_path = assets.get(at);
+                            if new_path != Some(old_path) {
+                                let old_uri = format!("bytes://media/{}", old_path.display());
+                                ctx.forget_image(&old_uri);
+                            }
                         }
                     }
-                }
-                entry.asset_paths = Some(assets);
+                    entry.asset_paths = Some(assets);
+                    entry.id
+                });
+            if let Some(entry_id) = loaded_id {
+                app.browser.asset_discovery_in_flight.remove(&entry_id);
             }
         }
 
