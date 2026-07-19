@@ -138,6 +138,7 @@ fn import_media_has_correct_hashes() {
     assert_eq!(media[0].sha1, "ea343f4e445a9050d4b4fbac2c77d0693b1d0922");
     assert_eq!(media[0].file_size, 40976);
     assert_eq!(media[0].dat_source, "no-intro");
+    assert_eq!(media[0].rom_name, "Super Mario Bros. (USA).nes");
 }
 
 #[test]
@@ -174,6 +175,21 @@ fn reimport_is_idempotent() {
     // 3 games processed (bad dump skipped), each finds existing work
     // (SMB=1, Zelda=1, Zelda Rev A=1 → 3 existing-work hits)
     assert_eq!(stats2.works_existing, 3);
+}
+
+#[test]
+fn reimport_backfills_primary_rom_name() {
+    let conn = setup_db();
+    let dat = sample_dat();
+    import_dat(&conn, &dat, Platform::Nes, "no-intro", &SilentProgress).unwrap();
+    conn.execute("UPDATE media SET rom_name=''", []).unwrap();
+
+    let stats = import_dat(&conn, &dat, Platform::Nes, "no-intro", &SilentProgress).unwrap();
+    assert_eq!(stats.media_updated, 3);
+    assert_eq!(
+        find_media_by_crc32(&conn, "d445f698").unwrap()[0].rom_name,
+        "Super Mario Bros. (USA).nes"
+    );
 }
 
 #[test]

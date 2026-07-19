@@ -229,7 +229,7 @@ fn import_game(
         let same_hashes = existing_media.crc32 == primary_rom.crc
             && existing_media.sha1 == primary_rom.sha1.as_deref().unwrap_or("")
             && existing_media.file_size == i64::try_from(primary_rom.size).unwrap_or(0);
-        if same_hashes {
+        if same_hashes && existing_media.rom_name == primary_rom.name {
             stats.media_unchanged += 1;
             return Ok(());
         }

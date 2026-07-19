@@ -607,6 +607,20 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                         )?;
                     }
                 }
+                let has_library: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_consoles')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_library {
+                    conn.execute_batch(
+                        "UPDATE library_consoles SET scan_state='stale'
+                         WHERE id IN (
+                           SELECT DISTINCT console_id FROM library_entries
+                           WHERE status IN ('unknown','ambiguous','unrecognized')
+                         );",
+                    )?;
+                }
             }
             _ => {}
         }
