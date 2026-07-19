@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use retro_junk_dat::DatIndex;
 use retro_junk_lib::AnalysisContext;
 
 use crate::settings::AppSettings;
@@ -158,11 +157,6 @@ pub struct RetroJunkApp {
     /// Per-run ROM library state used by the GUI between frames.
     pub browser: LibraryBrowserState,
 
-    /// Loaded DAT indices, keyed by `folder_name`.
-    /// Stored separately from `ConsoleState` because hash matching needs
-    /// immutable access to the index while mutating entries.
-    pub dat_indices: HashMap<String, Arc<DatIndex>>,
-
     /// Active background operations (shown in activity bar).
     pub operations: Vec<BackgroundOperation>,
 
@@ -279,7 +273,6 @@ impl RetroJunkApp {
             context,
             root_path: None,
             browser: LibraryBrowserState::default(),
-            dat_indices: HashMap::new(),
             operations: Vec::new(),
             message_rx: rx,
             message_tx: tx,
@@ -670,34 +663,12 @@ impl RetroJunkApp {
         if self.pending_all_hashes_request.is_some() {
             return;
         }
-        self.ensure_dat_index(console_idx, ctx);
         if let Some(request_id) = self.queue_store(
             crate::backend::library_store::LibraryStoreRequest::ConsoleEntryDetails(console_id),
         ) {
             self.pending_all_hashes_request = Some((request_id, console_id));
             ctx.request_repaint_after(Duration::from_millis(20));
         }
-    }
-
-    pub fn ensure_dat_index(&mut self, console_idx: usize, ctx: &egui::Context) {
-        let Some(console) = self.browser.consoles.get(console_idx) else {
-            return;
-        };
-        let folder_name = console.folder_name.clone();
-        if self.dat_indices.contains_key(&folder_name)
-            || self.browser.dat_loads_in_flight.contains(&folder_name)
-        {
-            return;
-        }
-        let platform = console.platform;
-        self.browser.dat_loads_in_flight.insert(folder_name.clone());
-        crate::backend::dat::load_dat_for_console(
-            self.message_tx.clone(),
-            self.context.clone(),
-            platform,
-            folder_name,
-            ctx.clone(),
-        );
     }
 
     pub fn selected_entry_indices(&self) -> Vec<usize> {

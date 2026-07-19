@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use retro_junk_core::RomAnalyzer;
-use retro_junk_dat::cache;
 use retro_junk_dat::error::DatError;
 use retro_junk_dat::matcher::{DatIndex, MatchMethod, MatchResult};
 
@@ -754,26 +753,14 @@ pub fn plan_renames(
     options: &RenameOptions,
     progress: &dyn Fn(RenameProgress),
 ) -> Result<RenamePlan, DatError> {
-    let dat_names = analyzer.dat_names();
-    if dat_names.is_empty() {
+    if !analyzer.has_dat_support() {
         return Err(DatError::cache(format!(
             "No DAT support for platform '{}'",
             analyzer.platform_name()
         )));
     }
 
-    // Load DATs and merge into a single index
-    let dat_source = analyzer.dat_source();
-    let download_ids = analyzer.dat_download_ids();
-    let dats = cache::load_dats(
-        analyzer.short_name(),
-        dat_names,
-        download_ids,
-        options.dat_dir.as_deref(),
-        dat_source,
-        false,
-    )?;
-    let index = DatIndex::from_dats(dats);
+    let index = crate::catalog_match::load_catalog_index(analyzer)?;
 
     // Collect ROM files (including inside .m3u subdirectories)
     let extensions = crate::scanner::extension_set(analyzer.file_extensions());

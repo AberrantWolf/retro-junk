@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
-use retro_junk_dat::DatIndex;
+use retro_junk_dat::{DatFile, DatGame, DatIndex, DatRom};
 use retro_junk_lib::context::AnalysisContext;
 use retro_junk_lib::disc_set::DiscSetOutcome;
 use retro_junk_lib::rename::{DiscMatchData, ExecutionContext, execute_single_rename};
@@ -59,8 +58,6 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let mut m3u_jobs: Vec<M3uJob> = Vec::new();
     let mut results: Vec<RenameResult> = Vec::new();
 
-    let dat_index = app.dat_indices.get(&folder_name);
-
     // First pass: which selected entries are cue files (their sets rename
     // as a unit, covering their track files).
     let selected_cues: std::collections::HashSet<PathBuf> = app
@@ -91,19 +88,10 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 if is_cue(path) {
                     // Cue/bin sets are planned (and verified) on the
                     // background thread against the DAT index.
-                    if dat_index.is_some() {
-                        cue_jobs.push(CueSetJob {
-                            entry_name,
-                            cue: path.clone(),
-                        });
-                    } else {
-                        results.push(RenameResult {
-                            entry_name,
-                            outcome: RenameOutcome::NoMatch {
-                                reason: "No DAT loaded for disc-set rename".to_string(),
-                            },
-                        });
-                    }
+                    cue_jobs.push(CueSetJob {
+                        entry_name,
+                        cue: path.clone(),
+                    });
                     continue;
                 }
 
@@ -156,16 +144,6 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 }
             }
             GameEntry::MultiDisc { files, .. } => {
-                if dat_index.is_none() {
-                    results.push(RenameResult {
-                        entry_name,
-                        outcome: RenameOutcome::NoMatch {
-                            reason: "No DAT loaded for multi-disc rename".to_string(),
-                        },
-                    });
-                    continue;
-                }
-
                 // Partition: cues become disc sets (planned on the background
                 // thread); non-cue files use cached matches or hash resolution.
                 let mut disc_resolved: HashMap<PathBuf, DiscMatchData> = HashMap::new();
@@ -242,9 +220,8 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let ctx = ctx.clone();
     let total_work = jobs.len() + cue_jobs.len() + m3u_jobs.len();
 
-    // Clone the Arc<DatIndex> for the background thread
-    let dat_index_arc = dat_index.cloned();
     let context = app.context.clone();
+    let catalog_db_path = app.db_path.clone();
     let platform = console.platform;
     let description = format!("Renaming {total_work} entries");
 
@@ -360,7 +337,8 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 }
                 send_progress(&mut file_num);
 
-                let outcome = plan_cue_set(&job.cue, dat_index_arc.as_ref(), &context, platform);
+                let outcome =
+                    plan_cue_set(&job.cue, catalog_db_path.as_deref(), &context, platform);
                 results.push(RenameResult {
                     entry_name: job.entry_name.clone(),
                     outcome: execute_cue_set_outcome(outcome, &job.cue, &exec),
@@ -394,22 +372,18 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     .collect();
 
                 // Resolve unresolved non-cue disc files via hashing
-                if let Some(ref di) = dat_index_arc {
-                    for file_path in &m3u_job.unresolved_files {
-                        match resolve_disc_file(file_path, di, &context, platform) {
-                            Some(disc_data) => all_discs.push(disc_data),
-                            None => {
-                                log::warn!("Could not resolve disc file: {}", file_path.display());
-                            }
-                        }
-                    }
+                for file_path in &m3u_job.unresolved_files {
+                    log::warn!(
+                        "Could not resolve uncached disc file: {}",
+                        file_path.display()
+                    );
                 }
 
                 // Plan a verified disc set for each cue in the folder
                 let mut disc_sets = Vec::new();
                 let mut set_errors = Vec::new();
                 for cue in &m3u_job.cue_files {
-                    match plan_cue_set(cue, dat_index_arc.as_ref(), &context, platform) {
+                    match plan_cue_set(cue, catalog_db_path.as_deref(), &context, platform) {
                         Some(DiscSetOutcome::Planned(plan)) => {
                             all_discs.push(DiscMatchData {
                                 file_path: cue.clone(),
@@ -536,20 +510,72 @@ fn is_cue(path: &Path) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
 }
 
-/// Plan a disc set for a cue file against the loaded DAT index.
-/// Returns `None` when no DAT index or analyzer is available.
+/// Build a small projection containing only catalog media implicated by this
+/// cue's track hashes, then reuse the verified set planner.
 fn plan_cue_set(
     cue: &Path,
-    dat_index: Option<&Arc<DatIndex>>,
-    context: &Arc<AnalysisContext>,
+    db_path: Option<&Path>,
+    context: &AnalysisContext,
     platform: retro_junk_lib::Platform,
 ) -> Option<DiscSetOutcome> {
-    let di = dat_index?;
     let registered = context.get_by_platform(platform)?;
+    let conn = retro_junk_db::open_database(db_path?).ok()?;
+    let set = retro_junk_lib::disc_set::expand_disc_set(cue).ok()?;
+    let mut media_ids = std::collections::BTreeSet::new();
+    for track in &set.tracks {
+        let mut file = std::fs::File::open(track).ok()?;
+        let hashes = retro_junk_lib::hasher::compute_crc32_sha1(
+            &mut file,
+            registered.analyzer.as_ref(),
+            Some(track),
+        )
+        .ok()?;
+        for id in retro_junk_db::match_media_ids_by_track_hash(
+            &conn,
+            registered.analyzer.short_name(),
+            hashes.data_size,
+            &hashes.crc32,
+            hashes.sha1.as_deref(),
+        )
+        .ok()?
+        {
+            media_ids.insert(id);
+        }
+    }
+    let mut games = Vec::new();
+    for media_id in media_ids {
+        let media = retro_junk_db::get_media_by_id(&conn, &media_id).ok()??;
+        let release = retro_junk_db::get_release_by_id(&conn, &media.release_id).ok()??;
+        let tracks = retro_junk_db::find_media_tracks(&conn, &media_id).ok()?;
+        games.push(DatGame {
+            name: media.dat_name,
+            region: Some(release.region),
+            serial: (!media.media_serial.is_empty()).then_some(media.media_serial.clone()),
+            version: (!media.revision.is_empty()).then_some(media.revision),
+            category: None,
+            roms: tracks
+                .into_iter()
+                .map(|track| DatRom {
+                    name: track.track_name,
+                    size: u64::try_from(track.file_size).unwrap_or(0),
+                    crc: track.crc32,
+                    sha1: (!track.sha1.is_empty()).then_some(track.sha1),
+                    md5: (!track.md5.is_empty()).then_some(track.md5),
+                    serial: None,
+                })
+                .collect(),
+        });
+    }
+    let index = DatIndex::from_dat(DatFile {
+        name: String::new(),
+        description: "SQLite catalog cue projection".to_string(),
+        version: String::new(),
+        games,
+    });
     Some(retro_junk_lib::disc_set::plan_disc_set(
         cue,
         registered.analyzer.as_ref(),
-        di,
+        &index,
         &|_, _, _| {},
     ))
 }
@@ -613,39 +639,6 @@ fn describe_set_failure(cue: &Path, outcome: &DiscSetOutcome) -> String {
 
 /// Resolve a single disc file by hashing it and matching against the `DatIndex`.
 /// Runs on the background thread, so it can sniff the format extension directly.
-fn resolve_disc_file(
-    file_path: &PathBuf,
-    dat_index: &DatIndex,
-    context: &Arc<AnalysisContext>,
-    platform: retro_junk_lib::Platform,
-) -> Option<DiscMatchData> {
-    let registered = context.get_by_platform(platform)?;
-    let mut file = std::fs::File::open(file_path).ok()?;
-    let hashes = retro_junk_lib::hasher::compute_crc32_sha1(
-        &mut file,
-        registered.analyzer.as_ref(),
-        Some(file_path.as_path()),
-    )
-    .ok()?;
-    let m = dat_index
-        .match_by_hash(hashes.data_size, &hashes)
-        .into_iter()
-        .next()?;
-    let game = &dat_index.games[m.game_index];
-    let rom = &game.roms[m.rom_index];
-
-    let detected_ext = sniff_detected_extension(file_path, context, platform);
-    Some(DiscMatchData {
-        file_path: file_path.clone(),
-        game_name: game.name.clone(),
-        target_filename: retro_junk_lib::rename::target_filename_for_rename(
-            &rom.name,
-            file_path,
-            &detected_ext,
-        ),
-    })
-}
-
 /// Try to determine the target ROM filename for an entry.
 ///
 /// Priority:
@@ -665,34 +658,32 @@ fn get_target_rom_name(
         return Some(dm.rom_name.clone());
     }
 
-    // 2. Try hash lookup
-    let dat_index = app.dat_indices.get(folder_name)?;
-    if let Some(ref hashes) = entry.hashes
-        && let Some(m) = dat_index
-            .match_by_hash(hashes.data_size, hashes)
-            .into_iter()
-            .next()
+    let conn = app.catalog_db.as_ref()?;
+    let platform_id = app
+        .browser
+        .consoles
+        .iter()
+        .find(|c| c.folder_name == folder_name)?
+        .platform
+        .short_name();
+    if let Some(hashes) = entry.hashes.as_ref()
+        && let Ok(matches) = retro_junk_db::match_media_by_hash(
+            conn,
+            platform_id,
+            hashes.data_size,
+            (!hashes.crc32.is_empty()).then_some(hashes.crc32.as_str()),
+            hashes.sha1.as_deref(),
+        )
+        && let Some(found) = matches.first()
     {
-        return Some(dat_index.games[m.game_index].roms[m.rom_index].name.clone());
+        return Some(found.media.rom_name.clone());
     }
-
-    // 3. Try serial lookup
-    if let Some(ref id) = entry.identification {
-        let serial = &id.serial_number;
-        if !serial.is_empty() {
-            let console = app
-                .browser
-                .consoles
-                .iter()
-                .find(|c| c.folder_name == folder_name)?;
-            let registered = app.context.get_by_platform(console.platform)?;
-            let game_code = registered.analyzer.extract_dat_game_code(serial);
-            if let retro_junk_dat::SerialLookupResult::Match(m) =
-                dat_index.match_by_serial(serial, game_code.as_deref())
-            {
-                return Some(dat_index.games[m.game_index].roms[m.rom_index].name.clone());
-            }
-        }
+    if let Some(id) = entry.identification.as_ref()
+        && let Ok(matches) =
+            retro_junk_db::match_media_by_serial(conn, platform_id, &id.serial_number)
+        && let Some(found) = matches.first()
+    {
+        return Some(found.media.rom_name.clone());
     }
 
     None

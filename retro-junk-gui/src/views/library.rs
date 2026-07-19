@@ -198,7 +198,6 @@ pub fn switch_to_root_unchecked(
     app.ui_state.focused_entry = None;
     app.ui_state.selected_entries.clear();
     app.library_controller.switch_root();
-    app.dat_indices.clear();
     app.ui_state.pending_auto_scans.clear();
     app.ui_state.auto_scan_in_flight = None;
     if let Some(op_id) = app.ui_state.auto_scan_op_id.take() {

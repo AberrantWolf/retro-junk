@@ -102,6 +102,66 @@ pub fn match_media_by_hash(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// Match a normalized header serial against catalog media or release serials,
+/// constrained to the selected platform.
+pub fn match_media_by_serial(
+    conn: &Connection,
+    platform_id: &str,
+    serial: &str,
+) -> Result<Vec<CatalogMediaMatch>, OperationError> {
+    let serial_key = serial.to_ascii_uppercase().replace([' ', '-'], "");
+    if serial_key.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!(
+        "SELECT {JOINED_MEDIA_COLUMNS}, r.platform_id, r.region, r.title \
+         FROM media m JOIN releases r ON r.id=m.release_id \
+         LEFT JOIN media_serial_keys msk ON msk.media_id=m.id \
+         WHERE r.platform_id=?1 AND (\
+           msk.serial_key=?2 OR \
+           upper(replace(replace(r.game_serial, '-', ''), ' ', ''))=?2\
+         ) ORDER BY r.region, m.dat_name"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![platform_id, serial_key], |row| {
+        Ok(CatalogMediaMatch {
+            media: row_to_media(row)?,
+            platform_id: row.get(17)?,
+            region: row.get(18)?,
+            release_title: row.get(19)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Find disc media whose imported track hashes match a physical track.
+pub fn match_media_ids_by_track_hash(
+    conn: &Connection,
+    platform_id: &str,
+    file_size: u64,
+    crc32: &str,
+    sha1: Option<&str>,
+) -> Result<Vec<String>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT mt.media_id FROM media_tracks mt
+         JOIN media m ON m.id=mt.media_id JOIN releases r ON r.id=m.release_id
+         WHERE r.platform_id=?1 AND (
+           (mt.crc32=lower(?2) AND mt.file_size=?3) OR
+           (?4<>'' AND mt.sha1=lower(?4))
+         ) ORDER BY mt.media_id",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            platform_id,
+            crc32,
+            i64::try_from(file_size).unwrap_or(i64::MAX),
+            sha1.unwrap_or_default()
+        ],
+        |row| row.get(0),
+    )?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 /// Find media entries by serial number.
 pub fn find_media_by_serial(conn: &Connection, serial: &str) -> Result<Vec<Media>, OperationError> {
     query_media(conn, "media_serial = ?1", serial)

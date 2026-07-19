@@ -1,7 +1,6 @@
 pub mod assets;
 pub mod catalog_ops;
 pub mod chd_compress;
-pub mod dat;
 pub mod export;
 pub mod fix_cue;
 pub mod hash;

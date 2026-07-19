@@ -64,7 +64,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     backend::scan::quick_scan_console(app, new_console_idx, ctx);
                 } else if let Some(id) = new_console_id {
                     app.request_console_page(id, ctx);
-                    app.ensure_dat_index(new_console_idx, ctx);
                 }
             }
         }
@@ -140,7 +139,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             backend::scan::quick_scan_console(app, i, ctx);
                         } else {
                             app.request_console_page(console_id, ctx);
-                            app.ensure_dat_index(i, ctx);
                         }
                     }
 

@@ -146,9 +146,6 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
             });
             let _ = tx.send(AppMessage::OperationComplete { op_id });
             ctx.request_repaint();
-
-            // Auto-load DAT after scan completes
-            crate::backend::dat::load_dat_for_console(tx, context, platform, folder_name, ctx);
         },
     );
 }

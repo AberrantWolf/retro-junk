@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 12;
+pub const CURRENT_VERSION: i32 = 14;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -130,6 +130,12 @@ const TABLES: &[(&str, &str)] = &[
           md5 TEXT NOT NULL DEFAULT '',
           created_at TEXT NOT NULL DEFAULT (datetime('now')),
           updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+    ),
+    (
+        "media_serial_keys",
+        "(media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+          serial_key TEXT NOT NULL,
+          PRIMARY KEY (media_id, serial_key))",
     ),
     (
         "media_assets",
@@ -275,6 +281,8 @@ CREATE INDEX IF NOT EXISTS idx_media_release ON media(release_id);
 CREATE INDEX IF NOT EXISTS idx_media_crc32 ON media(crc32);
 CREATE INDEX IF NOT EXISTS idx_media_sha1 ON media(sha1);
 CREATE INDEX IF NOT EXISTS idx_media_serial ON media(media_serial);
+CREATE INDEX IF NOT EXISTS idx_media_serial_normalized ON media(upper(replace(replace(media_serial, '-', ''), ' ', '')));
+CREATE INDEX IF NOT EXISTS idx_release_serial_normalized ON releases(upper(replace(replace(game_serial, '-', ''), ' ', '')));
 CREATE INDEX IF NOT EXISTS idx_media_dat_name ON media(dat_name);
 CREATE INDEX IF NOT EXISTS idx_assets_release ON media_assets(release_id);
 CREATE INDEX IF NOT EXISTS idx_assets_type_region ON media_assets(asset_type, region);
@@ -356,6 +364,9 @@ pub fn create_schema(conn: &Connection) -> Result<(), SchemaError> {
         conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {name} {body};"))?;
     }
     conn.execute_batch(INDEXES_SQL)?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_media_serial_key ON media_serial_keys(serial_key);",
+    )?;
     set_schema_version(conn, CURRENT_VERSION)?;
     Ok(())
 }
@@ -558,6 +569,45 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                     )?;
                 }
             }
+            12 => {
+                let has_catalog: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='media')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_catalog {
+                    conn.execute_batch(INDEXES_SQL)?;
+                }
+            }
+            13 => {
+                let has_media: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='media')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if !has_media {
+                    version += 1;
+                    set_schema_version(conn, version)?;
+                    continue;
+                }
+                let body = table_body("media_serial_keys")?;
+                conn.execute_batch(&format!(
+                    "CREATE TABLE IF NOT EXISTS media_serial_keys {body};
+                     CREATE INDEX IF NOT EXISTS idx_media_serial_key ON media_serial_keys(serial_key);"
+                ))?;
+                let rows: Vec<(String, String)> = conn
+                    .prepare("SELECT id,media_serial FROM media WHERE media_serial<>''")?
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<Result<_, _>>()?;
+                for (media_id, serial) in rows {
+                    for key in serial_keys(&serial) {
+                        conn.execute(
+                            "INSERT OR IGNORE INTO media_serial_keys(media_id,serial_key) VALUES(?1,?2)",
+                            rusqlite::params![media_id, key],
+                        )?;
+                    }
+                }
+            }
             _ => {}
         }
         version += 1;
@@ -565,4 +615,18 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
     }
 
     Ok(())
+}
+
+pub(crate) fn serial_keys(serials: &str) -> Vec<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    for serial in serials.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        keys.insert(serial.to_ascii_uppercase().replace([' ', '-'], ""));
+        for segment in serial.split('-') {
+            let segment = segment.trim();
+            if segment.len() == 4 && segment.chars().all(|c| c.is_ascii_alphanumeric()) {
+                keys.insert(segment.to_ascii_uppercase());
+            }
+        }
+    }
+    keys.into_iter().filter(|key| !key.is_empty()).collect()
 }

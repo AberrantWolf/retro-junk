@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use retro_junk_catalog::CatalogTag;
-use retro_junk_dat::{DatIndex, FileHashes, MatchMethod, SerialLookupResult};
+use retro_junk_dat::{FileHashes, MatchMethod};
 use retro_junk_frontend::AssetType;
 use retro_junk_lib::rename::BrokenReference;
 
@@ -74,8 +74,6 @@ pub struct LibraryBrowserState {
     pub stale_consoles: HashSet<retro_junk_db::LibraryConsoleId>,
     /// Entry IDs with filesystem media discovery currently in flight.
     pub asset_discovery_in_flight: HashSet<retro_junk_db::LibraryEntryId>,
-    /// Console folders whose in-memory DAT index is currently loading.
-    pub dat_loads_in_flight: HashSet<String>,
 }
 
 impl LibraryBrowserState {
@@ -864,16 +862,6 @@ pub enum AppMessage {
     },
 
     // -- DAT --
-    DatLoaded {
-        folder_name: String,
-        platform: Platform,
-        index: DatIndex,
-    },
-    DatLoadFailed {
-        folder_name: String,
-        error: String,
-    },
-
     // -- Hashing --
     HashComplete {
         folder_name: String,
@@ -1167,69 +1155,45 @@ fn catalog_hash_match(
     Some(DatMatchInfo {
         game_name: selected.media.dat_name.clone(),
         rom_name: selected.media.rom_name.clone(),
-        method: if crc_match { MatchMethod::Crc32 } else { MatchMethod::Sha1 },
+        method: if crc_match {
+            MatchMethod::Crc32
+        } else {
+            MatchMethod::Sha1
+        },
         region: selected.region.clone(),
         cross_region: !selected.region.is_empty()
             && !regions_match_dat(detected_regions, &selected.region),
     })
 }
 
-/// Build a `DatMatchInfo` from a single DAT match result, including cross-region detection.
-fn build_dat_match_info(
-    dat_index: &DatIndex,
-    game_index: usize,
-    rom_index: usize,
-    method: MatchMethod,
+fn catalog_serial_match(
+    conn: &retro_junk_db::Connection,
+    platform_id: &str,
+    serial: &str,
     detected_regions: &[Region],
-) -> DatMatchInfo {
-    let game = &dat_index.games[game_index];
-    let region = game.region.clone().unwrap_or_default();
-    let cross_region = !region.is_empty() && !regions_match_dat(detected_regions, &region);
-    DatMatchInfo {
-        game_name: game.name.clone(),
-        rom_name: game.roms[rom_index].name.clone(),
-        method,
-        region,
-        cross_region,
-    }
-}
-
-/// Pick the best match from multiple hash matches, preferring the one whose
-/// DAT region matches the file's detected regions.
-fn pick_best_hash_match(
-    dat_index: &DatIndex,
-    matches: &[retro_junk_dat::MatchResult],
-    detected_regions: &[Region],
-) -> Option<DatMatchInfo> {
+) -> Result<DatMatchInfo, Vec<String>> {
+    let matches =
+        retro_junk_db::match_media_by_serial(conn, platform_id, serial).unwrap_or_default();
     if matches.is_empty() {
-        return None;
+        return Err(Vec::new());
     }
-    // If we have detected regions and multiple matches, prefer region-matching entry
-    if !detected_regions.is_empty() && matches.len() > 1 {
-        for m in matches {
-            let game = &dat_index.games[m.game_index];
-            if let Some(ref dat_region) = game.region
-                && regions_match_dat(detected_regions, dat_region)
-            {
-                return Some(build_dat_match_info(
-                    dat_index,
-                    m.game_index,
-                    m.rom_index,
-                    m.method.clone(),
-                    detected_regions,
-                ));
-            }
-        }
+    let distinct: std::collections::HashSet<_> =
+        matches.iter().map(|m| m.media.dat_name.as_str()).collect();
+    if distinct.len() > 1 {
+        return Err(distinct.into_iter().map(str::to_string).collect());
     }
-    // Fall back to first match (with cross-region flag if applicable)
-    let m = &matches[0];
-    Some(build_dat_match_info(
-        dat_index,
-        m.game_index,
-        m.rom_index,
-        m.method.clone(),
-        detected_regions,
-    ))
+    let selected = matches
+        .iter()
+        .find(|m| regions_match_dat(detected_regions, &m.region))
+        .unwrap_or(&matches[0]);
+    Ok(DatMatchInfo {
+        game_name: selected.media.dat_name.clone(),
+        rom_name: selected.media.rom_name.clone(),
+        method: MatchMethod::Serial,
+        region: selected.region.clone(),
+        cross_region: !selected.region.is_empty()
+            && !regions_match_dat(detected_regions, &selected.region),
+    })
 }
 
 // -- Message handler --
@@ -1404,14 +1368,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_name,
             result,
         } => {
-            // Pre-fetch DAT context before mutably borrowing library entries.
-            // Cloning avoids borrow conflicts when we mutate app.browser below.
-            let platform = app
+            let platform_id = app
                 .browser
                 .find_by_folder(&folder_name)
-                .map(|ci| app.browser.consoles[ci].platform);
-            let dat_index = app.dat_indices.get(&folder_name).cloned();
-            let context = app.context.clone();
+                .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
 
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
                 && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
@@ -1434,54 +1394,41 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     }
                 }
 
-                // If the DAT is already loaded (e.g. during a rescan), re-run matching
-                // immediately so we don't temporarily drop a previously-Matched status.
                 if entry.disc_identifications.is_none()
-                    && let Some(ref dat) = dat_index
+                    && let (Some(conn), Some(platform_id)) =
+                        (app.catalog_db.as_ref(), platform_id.as_deref())
                 {
-                    // Try serial matching.
                     if let Some(ref id) = entry.identification
                         && !id.serial_number.is_empty()
-                        && let Some(p) = platform
-                        && let Some(registered) = context.get_by_platform(p)
                     {
-                        let serial = &id.serial_number;
-                        let game_code = registered.analyzer.extract_dat_game_code(serial);
-                        match dat.match_by_serial(serial, game_code.as_deref()) {
-                            SerialLookupResult::Match(m) => {
-                                let game_name = dat.games[m.game_index].name.clone();
-                                let rom_name =
-                                    dat.games[m.game_index].roms[m.rom_index].name.clone();
-                                entry.dat_match = Some(DatMatchInfo {
-                                    game_name,
-                                    rom_name,
-                                    method: m.method,
-                                    region: String::new(),
-                                    cross_region: false,
-                                });
+                        match catalog_serial_match(
+                            conn,
+                            platform_id,
+                            &id.serial_number,
+                            &id.regions,
+                        ) {
+                            Ok(dm) => {
+                                entry.dat_match = Some(dm);
                                 entry.status = EntryStatus::Matched;
                                 entry.ambiguous_candidates.clear();
                             }
-                            SerialLookupResult::Ambiguous { candidates } => {
+                            Err(candidates) if !candidates.is_empty() => {
                                 entry.status = EntryStatus::Ambiguous;
                                 entry.ambiguous_candidates = candidates;
                             }
-                            SerialLookupResult::NotFound => {}
+                            Err(_) => {}
                         }
                     }
 
-                    // If serial didn't resolve it, try hash matching against
-                    // hashes cached from a prior scan.
                     if entry.status != EntryStatus::Matched
                         && let Some(ref hashes) = entry.hashes
                     {
-                        let matches = dat.match_by_hash(hashes.data_size, hashes);
                         let detected = entry
                             .identification
                             .as_ref()
                             .map(|id| id.regions.as_slice())
                             .unwrap_or_default();
-                        if let Some(dm) = pick_best_hash_match(dat, &matches, detected) {
+                        if let Some(dm) = catalog_hash_match(conn, platform_id, hashes, detected) {
                             entry.dat_match = Some(dm);
                             entry.status = EntryStatus::Matched;
                             entry.ambiguous_candidates.clear();
@@ -1504,13 +1451,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_name,
             disc_results,
         } => {
-            // Pre-fetch DAT context before mutably borrowing library entries.
-            let console_platform = app
+            let platform_id = app
                 .browser
                 .find_by_folder(&folder_name)
-                .map(|ci| app.browser.consoles[ci].platform);
-            let dat_index = app.dat_indices.get(&folder_name).cloned();
-            let context = app.context.clone();
+                .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
 
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
                 && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
@@ -1595,11 +1539,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     EntryStatus::Unrecognized
                 };
 
-                // If the DAT is already loaded (e.g. during a rescan), re-run
-                // multi-disc serial matching immediately to restore Matched status.
-                if let Some(ref dat) = dat_index
-                    && let Some(p) = console_platform
-                    && let Some(registered) = context.get_by_platform(p)
+                if let (Some(conn), Some(platform_id)) =
+                    (app.catalog_db.as_ref(), platform_id.as_deref())
                 {
                     let mut matched_names: Vec<String> = Vec::new();
                     let mut first_rom_name = String::new();
@@ -1610,25 +1551,20 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         for disc in discs.iter_mut() {
                             let serial = &disc.identification.serial_number;
                             if !serial.is_empty() {
-                                let game_code = registered.analyzer.extract_dat_game_code(serial);
-                                match dat.match_by_serial(serial, game_code.as_deref()) {
-                                    SerialLookupResult::Match(m) => {
-                                        let name = dat.games[m.game_index].name.clone();
-                                        let rom_name =
-                                            dat.games[m.game_index].roms[m.rom_index].name.clone();
+                                match catalog_serial_match(
+                                    conn,
+                                    platform_id,
+                                    serial,
+                                    &disc.identification.regions,
+                                ) {
+                                    Ok(dm) => {
                                         if first_rom_name.is_empty() {
-                                            first_rom_name.clone_from(&rom_name);
+                                            first_rom_name.clone_from(&dm.rom_name);
                                         }
-                                        disc.dat_match = Some(DatMatchInfo {
-                                            game_name: name.clone(),
-                                            rom_name,
-                                            method: MatchMethod::Serial,
-                                            region: String::new(),
-                                            cross_region: false,
-                                        });
-                                        matched_names.push(name);
+                                        matched_names.push(dm.game_name.clone());
+                                        disc.dat_match = Some(dm);
                                     }
-                                    SerialLookupResult::Ambiguous { candidates } => {
+                                    Err(candidates) if !candidates.is_empty() => {
                                         any_ambiguous = true;
                                         for c in candidates {
                                             if !all_candidates.contains(&c) {
@@ -1636,7 +1572,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                                             }
                                         }
                                     }
-                                    SerialLookupResult::NotFound => {}
+                                    Err(_) => {}
                                 }
                             }
                         }
@@ -1757,6 +1693,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             });
             if let Some(ci) = app.browser.find_by_folder(&folder_name) {
                 app.save_console_cache(ci, ctx);
+                crate::backend::hash::compute_missing_hashes(app, ci);
             }
 
             // Discover media for newly scanned entries so the table shows media indicators.
@@ -1797,254 +1734,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
                 start_next_auto_scan(app, ctx);
             }
-        }
-
-        AppMessage::DatLoaded {
-            folder_name,
-            platform,
-            index,
-        } => {
-            app.browser.dat_loads_in_flight.remove(&folder_name);
-            let game_count = index.game_count();
-
-            // Run serial matching for this specific console's entries
-            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.browser.consoles[ci].dat_status = DatStatus::Loaded { game_count };
-
-                let context = app.context.clone();
-                if let Some(registered) = context.get_by_platform(platform) {
-                    // Single-entry serial matching (skip multi-disc entries)
-                    for entry in &mut app.browser.consoles[ci].entries {
-                        if entry.disc_identifications.is_some() {
-                            continue;
-                        }
-                        if let Some(ref id) = entry.identification
-                            && !id.serial_number.is_empty()
-                        {
-                            let serial = &id.serial_number;
-                            let game_code = registered.analyzer.extract_dat_game_code(serial);
-                            match index.match_by_serial(serial, game_code.as_deref()) {
-                                SerialLookupResult::Match(m) => {
-                                    let game_name = index.games[m.game_index].name.clone();
-                                    let rom_name =
-                                        index.games[m.game_index].roms[m.rom_index].name.clone();
-                                    entry.dat_match = Some(DatMatchInfo {
-                                        game_name,
-                                        rom_name,
-                                        method: m.method,
-                                        region: String::new(),
-                                        cross_region: false,
-                                    });
-                                    entry.status = EntryStatus::Matched;
-                                    entry.ambiguous_candidates.clear();
-                                }
-                                SerialLookupResult::Ambiguous { candidates } => {
-                                    entry.status = EntryStatus::Ambiguous;
-                                    entry.ambiguous_candidates = candidates;
-                                }
-                                SerialLookupResult::NotFound => {
-                                    // Keep current status
-                                }
-                            }
-                        }
-                    }
-
-                    // Multi-disc serial+hash matching: resolve each disc, derive game name
-                    for entry in &mut app.browser.consoles[ci].entries {
-                        let discs = match entry.disc_identifications.as_mut() {
-                            Some(d) if !d.is_empty() => d,
-                            _ => continue,
-                        };
-
-                        let prior_status = entry.status;
-                        let had_prior_dat_match = entry.dat_match.is_some();
-
-                        let mut matched_names: Vec<String> = Vec::new();
-                        let mut first_rom_name = String::new();
-                        let mut any_ambiguous = false;
-                        let mut all_candidates: Vec<String> = Vec::new();
-
-                        for disc in discs.iter_mut() {
-                            let serial = &disc.identification.serial_number;
-                            if !serial.is_empty() {
-                                let game_code = registered.analyzer.extract_dat_game_code(serial);
-                                match index.match_by_serial(serial, game_code.as_deref()) {
-                                    SerialLookupResult::Match(m) => {
-                                        let name = index.games[m.game_index].name.clone();
-                                        let rom_name = index.games[m.game_index].roms[m.rom_index]
-                                            .name
-                                            .clone();
-                                        if first_rom_name.is_empty() {
-                                            first_rom_name.clone_from(&rom_name);
-                                        }
-                                        // Cache per-disc DAT match for rename
-                                        disc.dat_match = Some(DatMatchInfo {
-                                            game_name: name.clone(),
-                                            rom_name,
-                                            method: MatchMethod::Serial,
-                                            region: String::new(),
-                                            cross_region: false,
-                                        });
-                                        matched_names.push(name);
-                                        continue;
-                                    }
-                                    SerialLookupResult::Ambiguous { candidates } => {
-                                        any_ambiguous = true;
-                                        for c in candidates {
-                                            if !all_candidates.contains(&c) {
-                                                all_candidates.push(c);
-                                            }
-                                        }
-                                    }
-                                    SerialLookupResult::NotFound => {}
-                                }
-                            }
-
-                            // Serial didn't resolve — try hash matching with cached hashes
-                            if let Some(ref hashes) = disc.hashes {
-                                let matches = index.match_by_hash(hashes.data_size, hashes);
-                                let detected = disc.identification.regions.as_slice();
-                                if let Some(dm) = pick_best_hash_match(&index, &matches, detected) {
-                                    if first_rom_name.is_empty() {
-                                        first_rom_name.clone_from(&dm.rom_name);
-                                    }
-                                    matched_names.push(dm.game_name.clone());
-                                    disc.dat_match = Some(dm);
-                                } else {
-                                    any_ambiguous = true;
-                                }
-                            } else {
-                                any_ambiguous = true;
-                            }
-                        }
-                        if !matched_names.is_empty() {
-                            // Try catalog DB for canonical game name, fall back to DAT name derivation
-                            let combined = app
-                                .catalog_db
-                                .as_ref()
-                                .and_then(|conn| {
-                                    entry
-                                        .disc_identifications
-                                        .as_ref()
-                                        .and_then(|discs| try_catalog_game_name(discs, conn))
-                                })
-                                .unwrap_or_else(|| {
-                                    let name_refs: Vec<&str> = matched_names
-                                        .iter()
-                                        .map(std::string::String::as_str)
-                                        .collect();
-                                    retro_junk_core::disc::derive_base_game_name(&name_refs)
-                                });
-                            // Cross-region if any disc has a cross-region hash match
-                            let cross_region =
-                                entry.disc_identifications.as_ref().is_some_and(|ds| {
-                                    ds.iter().any(|d| {
-                                        d.dat_match.as_ref().is_some_and(|dm| dm.cross_region)
-                                    })
-                                });
-                            entry.dat_match = Some(DatMatchInfo {
-                                game_name: combined,
-                                rom_name: first_rom_name.clone(),
-                                method: MatchMethod::Serial,
-                                region: String::new(),
-                                cross_region,
-                            });
-                            if any_ambiguous {
-                                // Check if "ambiguous" candidates are just different discs of the same game
-                                if retro_junk_core::disc::candidates_are_same_game(&all_candidates)
-                                    .is_some()
-                                {
-                                    entry.status = EntryStatus::Matched;
-                                    entry.ambiguous_candidates.clear();
-                                } else {
-                                    entry.status = EntryStatus::Ambiguous;
-                                    entry.ambiguous_candidates = all_candidates;
-                                }
-                            } else {
-                                entry.status = EntryStatus::Matched;
-                                entry.ambiguous_candidates.clear();
-                            }
-                        } else if any_ambiguous {
-                            if let Some(base_name) =
-                                retro_junk_core::disc::candidates_are_same_game(&all_candidates)
-                            {
-                                entry.status = EntryStatus::Matched;
-                                entry.ambiguous_candidates.clear();
-                                entry.dat_match = Some(DatMatchInfo {
-                                    game_name: base_name,
-                                    rom_name: first_rom_name,
-                                    method: MatchMethod::Serial,
-                                    region: String::new(),
-                                    cross_region: false,
-                                });
-                            } else {
-                                entry.status = EntryStatus::Ambiguous;
-                                entry.ambiguous_candidates = all_candidates;
-                            }
-                        }
-
-                        // If re-matching couldn't fully resolve but the entry
-                        // already had a valid DAT match from a prior cycle,
-                        // restore its old status.
-                        if entry.status != EntryStatus::Matched && had_prior_dat_match {
-                            entry.status = prior_status;
-                        }
-                    }
-                }
-
-                // Re-check hash matches for entries that have cached hashes
-                // but weren't resolved by serial alone (e.g. Ambiguous or Unrecognized).
-                // Skip multi-disc entries — their game-level match is handled above.
-                for entry in &mut app.browser.consoles[ci].entries {
-                    if entry.disc_identifications.is_some() {
-                        continue;
-                    }
-                    if entry.status != EntryStatus::Matched
-                        && let Some(ref hashes) = entry.hashes
-                    {
-                        let matches = index.match_by_hash(hashes.data_size, hashes);
-                        let detected = entry
-                            .identification
-                            .as_ref()
-                            .map(|id| id.regions.as_slice())
-                            .unwrap_or_default();
-                        if let Some(dm) = pick_best_hash_match(&index, &matches, detected) {
-                            entry.dat_match = Some(dm);
-                            entry.status = EntryStatus::Matched;
-                            entry.ambiguous_candidates.clear();
-                        }
-                    }
-                }
-
-                // Enrich entries with catalog titles
-                if let Some(ref conn) = app.catalog_db {
-                    for entry in &mut app.browser.consoles[ci].entries {
-                        if entry.hashes.is_some() {
-                            try_catalog_enrich(entry, conn);
-                        }
-                        try_catalog_enrich_by_serial(entry, conn);
-                    }
-                }
-            }
-
-            // Store the DatIndex for later hash matching
-            app.dat_indices.insert(folder_name.clone(), Arc::new(index));
-
-            app.operations
-                .retain(|op| !op.description.contains("Loading DAT"));
-            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.save_console_cache(ci, ctx);
-            }
-        }
-
-        AppMessage::DatLoadFailed { folder_name, error } => {
-            app.browser.dat_loads_in_flight.remove(&folder_name);
-            app.push_error("DAT Load Failed", format!("{folder_name}: {error}"));
-            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.browser.consoles[ci].dat_status = DatStatus::Unavailable { reason: error };
-            }
-            app.operations
-                .retain(|op| !op.description.contains("Loading DAT"));
         }
 
         AppMessage::HashComplete {

@@ -113,6 +113,7 @@ fn setup_db() -> rusqlite::Connection {
     smb_media.file_size = 40976;
     smb_media.crc32 = "d445f698".to_string();
     smb_media.sha1 = "ea343f4e445a9050d4b4fbac2c77d0693b1d0922".to_string();
+    smb_media.media_serial = "DL-DOL-GBIE-0-USA, NES-0001".to_string();
     upsert_media(&conn, &smb_media).unwrap();
 
     conn
@@ -141,8 +142,16 @@ fn runtime_hash_match_is_platform_scoped_size_checked_and_case_insensitive() {
     assert_eq!(matches[0].media.rom_name, "Super Mario Bros. (USA).nes");
     assert_eq!(matches[0].region, "usa");
 
-    assert!(match_media_by_hash(&conn, "nes", 1, Some("d445f698"), None).unwrap().is_empty());
-    assert!(match_media_by_hash(&conn, "gb", 40976, Some("d445f698"), None).unwrap().is_empty());
+    assert!(
+        match_media_by_hash(&conn, "nes", 1, Some("d445f698"), None)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        match_media_by_hash(&conn, "gb", 40976, Some("d445f698"), None)
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         match_media_by_hash(
             &conn,
@@ -154,6 +163,26 @@ fn runtime_hash_match_is_platform_scoped_size_checked_and_case_insensitive() {
         .unwrap()
         .len(),
         1
+    );
+}
+
+#[test]
+fn runtime_serial_match_uses_normalized_comma_parts_and_game_codes() {
+    let conn = setup_db();
+    assert_eq!(
+        match_media_by_serial(&conn, "nes", "NES 0001")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        match_media_by_serial(&conn, "nes", "GBIE").unwrap().len(),
+        1
+    );
+    assert!(
+        match_media_by_serial(&conn, "gb", "GBIE")
+            .unwrap()
+            .is_empty()
     );
 }
 

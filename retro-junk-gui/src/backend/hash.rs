@@ -108,8 +108,6 @@ fn hash_one(
 /// Compute hashes for selected entries in the active console.
 pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) {
     let console = &app.browser.consoles[console_idx];
-    let platform = console.platform;
-    let folder_name = console.folder_name.clone();
 
     log::debug!(
         "compute_hashes_for_selection: console_idx={}, selected_entries={:?}, total_entries={}",
@@ -126,8 +124,30 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
             .filter_map(|id| console.entry_by_id(id)),
     );
 
+    spawn_hash_work(app, console_idx, work);
+}
+
+/// Background-hash entries which do not yet have durable hashes. This is run
+/// after scans so catalog status converges without requiring user interaction.
+pub fn compute_missing_hashes(app: &mut RetroJunkApp, console_idx: usize) {
+    let work = collect_hash_work(app.browser.consoles[console_idx].entries.iter().filter(
+        |entry| {
+            if let Some(discs) = entry.disc_identifications.as_ref() {
+                discs.iter().any(|disc| disc.hashes.is_none())
+            } else {
+                entry.hashes.is_none()
+            }
+        },
+    ));
+    spawn_hash_work(app, console_idx, work);
+}
+
+fn spawn_hash_work(app: &mut RetroJunkApp, console_idx: usize, work: Vec<HashWork>) {
+    let console = &app.browser.consoles[console_idx];
+    let platform = console.platform;
+    let folder_name = console.folder_name.clone();
+
     if work.is_empty() {
-        log::warn!("compute_hashes_for_selection: work list is empty, returning early");
         return;
     }
 

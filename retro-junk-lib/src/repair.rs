@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 
 use retro_junk_core::util::format_bytes;
 use retro_junk_core::{AnalysisOptions, DatSource, RomAnalyzer};
-use retro_junk_dat::cache;
 use retro_junk_dat::error::DatError;
 use retro_junk_dat::matcher::DatIndex;
 
@@ -262,8 +261,7 @@ pub fn plan_repairs(
     options: &RepairOptions,
     progress: &dyn Fn(RepairProgress),
 ) -> Result<RepairPlan, DatError> {
-    let dat_names = analyzer.dat_names();
-    if dat_names.is_empty() {
+    if !analyzer.has_dat_support() {
         return Err(DatError::cache(format!(
             "No DAT support for platform '{}'",
             analyzer.platform_name()
@@ -271,16 +269,7 @@ pub fn plan_repairs(
     }
 
     let dat_source = analyzer.dat_source();
-    let download_ids = analyzer.dat_download_ids();
-    let dats = cache::load_dats(
-        analyzer.short_name(),
-        dat_names,
-        download_ids,
-        options.dat_dir.as_deref(),
-        dat_source,
-        false,
-    )?;
-    let index = DatIndex::from_dats(dats);
+    let index = crate::catalog_match::load_catalog_index(analyzer)?;
 
     // Collect ROM files
     let extensions = crate::scanner::extension_set(analyzer.file_extensions());

@@ -4511,6 +4511,7 @@ dependencies = [
  "md5",
  "retro-junk-core",
  "retro-junk-dat",
+ "retro-junk-db",
  "retro-junk-disc",
  "retro-junk-microsoft",
  "retro-junk-nintendo",

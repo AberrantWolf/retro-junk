@@ -419,6 +419,16 @@ pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationErr
             media.md5,
         ],
     )?;
+    conn.execute(
+        "DELETE FROM media_serial_keys WHERE media_id=?1",
+        params![media.id],
+    )?;
+    for key in crate::schema::serial_keys(&media.media_serial) {
+        conn.execute(
+            "INSERT INTO media_serial_keys(media_id,serial_key) VALUES(?1,?2)",
+            params![media.id, key],
+        )?;
+    }
     Ok(())
 }
 
