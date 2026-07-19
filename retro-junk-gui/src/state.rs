@@ -959,10 +959,10 @@ pub enum AppMessage {
 /// Create the activity-bar batch operation that tracks overall auto-scan
 /// progress, then kick off the first queued scan.
 pub fn start_auto_scan_batch(app: &mut crate::app::RetroJunkApp, ctx: &egui::Context) {
-    if app.pending_auto_scans.is_empty() {
+    if app.ui_state.pending_auto_scans.is_empty() {
         return;
     }
-    let total = app.pending_auto_scans.len() as u64;
+    let total = app.ui_state.pending_auto_scans.len() as u64;
     let op_id = next_operation_id();
     let cancel = Arc::new(AtomicBool::new(false));
     let mut op = BackgroundOperation::new(
@@ -975,7 +975,7 @@ pub fn start_auto_scan_batch(app: &mut crate::app::RetroJunkApp, ctx: &egui::Con
     );
     op.progress_total = total;
     app.operations.push(op);
-    app.auto_scan_op_id = Some(op_id);
+    app.ui_state.auto_scan_op_id = Some(op_id);
     start_next_auto_scan(app, ctx);
 }
 
@@ -984,27 +984,27 @@ pub fn start_auto_scan_batch(app: &mut crate::app::RetroJunkApp, ctx: &egui::Con
 /// double-advance the queue). If the batch operation was cancelled or the
 /// queue is empty, removes the batch op from the activity bar.
 fn start_next_auto_scan(app: &mut crate::app::RetroJunkApp, ctx: &egui::Context) {
-    if app.auto_scan_in_flight.is_some() {
+    if app.ui_state.auto_scan_in_flight.is_some() {
         return;
     }
     // If the user clicked Cancel on the batch op, drop the rest of the queue.
-    if let Some(op_id) = app.auto_scan_op_id
+    if let Some(op_id) = app.ui_state.auto_scan_op_id
         && let Some(op) = app.operations.iter().find(|o| o.id == op_id)
         && op.cancel_token.load(std::sync::atomic::Ordering::Relaxed)
     {
-        app.pending_auto_scans.clear();
+        app.ui_state.pending_auto_scans.clear();
     }
-    while let Some(folder_name) = app.pending_auto_scans.pop_front() {
+    while let Some(folder_name) = app.ui_state.pending_auto_scans.pop_front() {
         if let Some(ci) = app.library.find_by_folder(&folder_name)
             && app.library.consoles[ci].scan_status == ScanStatus::NotScanned
         {
-            app.auto_scan_in_flight = Some(folder_name);
+            app.ui_state.auto_scan_in_flight = Some(folder_name);
             crate::backend::scan::quick_scan_console(app, ci, ctx);
             return;
         }
     }
     // Queue drained — remove the batch op from the activity bar.
-    if let Some(op_id) = app.auto_scan_op_id.take() {
+    if let Some(op_id) = app.ui_state.auto_scan_op_id.take() {
         app.operations.retain(|o| o.id != op_id);
     }
 }
@@ -1220,7 +1220,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             if app.settings.general.auto_scan_on_open {
                 for c in &app.library.consoles {
                     if c.scan_status == ScanStatus::NotScanned {
-                        app.pending_auto_scans.push_back(c.folder_name.clone());
+                        app.ui_state
+                            .pending_auto_scans
+                            .push_back(c.folder_name.clone());
                     }
                 }
                 start_auto_scan_batch(app, ctx);
@@ -1680,9 +1682,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
             // Advance the auto-scan queue only when the in-flight queued scan
             // finishes — manual scans run by the user don't pop the queue.
-            if app.auto_scan_in_flight.as_deref() == Some(folder_name.as_str()) {
-                app.auto_scan_in_flight = None;
-                if let Some(op_id) = app.auto_scan_op_id
+            if app.ui_state.auto_scan_in_flight.as_deref() == Some(folder_name.as_str()) {
+                app.ui_state.auto_scan_in_flight = None;
+                if let Some(op_id) = app.ui_state.auto_scan_op_id
                     && let Some(op) = app.operations.iter_mut().find(|o| o.id == op_id)
                 {
                     op.progress_current = (op.progress_current + 1).min(op.progress_total);
@@ -2219,7 +2221,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::StartFolderScan => {
             // Cache loading is complete (whether or not a cache existed).
-            app.loading_library = false;
+            app.ui_state.loading_library = false;
             if let Some(ref root) = app.root_path.clone() {
                 crate::backend::scan::scan_root_folder(app, root.clone(), ctx);
             }
@@ -2313,7 +2315,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             log::info!(
                 "Rename {folder_name}: {renamed} renamed, {already} already correct, {failed} failed"
             );
-            app.results_dialog = crate::app::ResultsDialog::Rename(results);
+            app.ui_state.results_dialog = crate::app::ResultsDialog::Rename(results);
 
             // Invalidate fingerprint so the next save recomputes it from the
             // actual (post-rename) file names on disk.
@@ -2337,7 +2339,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 plan.jobs.len(),
                 plan.unmatched.len(),
             );
-            app.pending_organize_plan = Some((folder_name, plan));
+            app.ui_state.pending_organize_plan = Some((folder_name, plan));
         }
 
         AppMessage::OrganizeComplete {
@@ -2421,7 +2423,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 app.save_console_cache(ci);
                 recheck_invalidated_entries(app, ci, &folder_name, ctx);
             }
-            app.results_dialog = crate::app::ResultsDialog::CueFix(results);
+            app.ui_state.results_dialog = crate::app::ResultsDialog::CueFix(results);
         }
 
         AppMessage::ChdCompressComplete {
@@ -2530,7 +2532,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     recheck_invalidated_entries(app, ci, &folder_name, ctx);
                 }
             }
-            app.results_dialog = crate::app::ResultsDialog::ChdCompress(results);
+            app.ui_state.results_dialog = crate::app::ResultsDialog::ChdCompress(results);
         }
 
         AppMessage::OperationProgress {
@@ -2559,19 +2561,19 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         AppMessage::CatalogDataChanged => {
             // A background catalog op finished writing to the DB. Reload the
             // dashboard/browse data and re-enable the Data-tab buttons.
-            app.tools_state.data.op_in_flight = false;
-            app.tools_state.needs_refresh = true;
-            app.tools_state.browse.table_state.needs_query = true;
-            app.tools_state.data.needs_cache_refresh = true;
+            app.ui_state.tools_state.data.op_in_flight = false;
+            app.ui_state.tools_state.needs_refresh = true;
+            app.ui_state.tools_state.browse.table_state.needs_query = true;
+            app.ui_state.tools_state.data.needs_cache_refresh = true;
         }
 
         AppMessage::CacheListsLoaded { dat, gdb } => {
-            app.tools_state.data.dat_cache_entries = dat;
-            app.tools_state.data.gdb_cache_entries = gdb;
+            app.ui_state.tools_state.data.dat_cache_entries = dat;
+            app.ui_state.tools_state.data.gdb_cache_entries = gdb;
         }
 
         AppMessage::ChdCompressPromptReady { prompt } => {
-            app.chd_compress_prompt = Some(prompt);
+            app.ui_state.chd_compress_prompt = Some(prompt);
         }
 
         AppMessage::ChdmanProbeResult { key, result } => {
@@ -2579,7 +2581,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             // kicked off — otherwise a slow probe for a since-abandoned path
             // could clobber a fresher result.
             let current_key = app.settings.general.chdman_path.trim().to_string();
-            app.chdman_probe = if key == current_key {
+            app.ui_state.chdman_probe = if key == current_key {
                 crate::app::ChdmanProbe::Done { path: key, result }
             } else {
                 crate::app::ChdmanProbe::Idle

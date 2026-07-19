@@ -157,6 +157,7 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
 pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
     let console = &app.library.consoles[console_idx];
     let selected: Vec<scanner::GameEntry> = app
+        .ui_state
         .selected_entries
         .iter()
         .copied()

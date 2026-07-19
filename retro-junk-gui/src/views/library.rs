@@ -34,7 +34,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         });
 
     // Detail panel (right, collapsible)
-    if app.detail_panel_open {
+    if app.ui_state.detail_panel_open {
         egui::Panel::right("detail_panel")
             .resizable(true)
             .default_size(280.0)
@@ -50,18 +50,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         // Toolbar
         ui.horizontal(|ui| {
             ui.add(
-                egui::TextEdit::singleline(&mut app.filter_text)
+                egui::TextEdit::singleline(&mut app.ui_state.filter_text)
                     .hint_text("Filter...")
                     .desired_width(200.0),
             );
 
             ui.separator();
 
-            let has_selection = !app.selected_entries.is_empty();
+            let has_selection = !app.ui_state.selected_entries.is_empty();
             if ui
                 .add_enabled(has_selection, egui::Button::new("Calculate Hashes"))
                 .clicked()
-                && let Some(ci) = app.selected_console
+                && let Some(ci) = app.ui_state.selected_console
             {
                 backend::hash::compute_hashes_for_selection(app, ci);
             }
@@ -69,20 +69,20 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             ui.separator();
 
             // Toggle detail panel
-            let label = if app.detail_panel_open {
+            let label = if app.ui_state.detail_panel_open {
                 "Hide Detail"
             } else {
                 "Show Detail"
             };
             if ui.button(label).clicked() {
-                app.detail_panel_open = !app.detail_panel_open;
+                app.ui_state.detail_panel_open = !app.ui_state.detail_panel_open;
             }
         });
 
         ui.separator();
 
         // Game table
-        if app.selected_console.is_some() {
+        if app.ui_state.selected_console.is_some() {
             widgets::game_table::show(ui, app, ctx);
         } else {
             ui.centered_and_justified(|ui| {
@@ -148,7 +148,7 @@ fn open_folder(app: &mut RetroJunkApp, ctx: &egui::Context) {
 /// dialog resumes via [`switch_to_root_unchecked`].
 pub fn switch_to_root(app: &mut RetroJunkApp, new_root: std::path::PathBuf, ctx: &egui::Context) {
     if let Some(kind) = crate::util::fragile_mount_kind(&new_root) {
-        app.fragile_mount_prompt = Some(crate::state::FragileMountPrompt {
+        app.ui_state.fragile_mount_prompt = Some(crate::state::FragileMountPrompt {
             root: new_root,
             kind,
         });
@@ -169,13 +169,13 @@ pub fn switch_to_root_unchecked(
     app.save_library_cache();
 
     // Reset UI state
-    app.selected_console = None;
-    app.focused_entry = None;
-    app.selected_entries.clear();
+    app.ui_state.selected_console = None;
+    app.ui_state.focused_entry = None;
+    app.ui_state.selected_entries.clear();
     app.dat_indices.clear();
-    app.pending_auto_scans.clear();
-    app.auto_scan_in_flight = None;
-    if let Some(op_id) = app.auto_scan_op_id.take() {
+    app.ui_state.pending_auto_scans.clear();
+    app.ui_state.auto_scan_in_flight = None;
+    if let Some(op_id) = app.ui_state.auto_scan_op_id.take() {
         app.operations.retain(|o| o.id != op_id);
     }
 

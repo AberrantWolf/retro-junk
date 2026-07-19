@@ -114,12 +114,13 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
     log::debug!(
         "compute_hashes_for_selection: console_idx={}, selected_entries={:?}, total_entries={}",
         console_idx,
-        app.selected_entries,
+        app.ui_state.selected_entries,
         console.entries.len()
     );
 
     let work = collect_hash_work(
-        app.selected_entries
+        app.ui_state
+            .selected_entries
             .iter()
             .copied()
             .filter_map(|i| console.entries.get(i)),

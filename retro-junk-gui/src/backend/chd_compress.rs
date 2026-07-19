@@ -155,7 +155,7 @@ pub fn open_compress_dialog(app: &mut RetroJunkApp, console_idx: usize, entry_in
 
 /// Consume the confirmed prompt and run the compression on a worker thread.
 pub fn start_compression(app: &mut RetroJunkApp, ctx: &egui::Context) {
-    let Some(prompt) = app.chd_compress_prompt.take() else {
+    let Some(prompt) = app.ui_state.chd_compress_prompt.take() else {
         return;
     };
     let Ok(chdman) = prompt.chdman else {

@@ -43,8 +43,7 @@ cargo run -p retro-junk-cli -- analyze --root /path/to/roms
 
 *Presentation:*
 - `retro-junk-cli` — CLI frontend (clap)
-- `retro-junk-gui` — desktop GUI (egui/eframe)
-- `retro-junk-gui-cjk` — thin wrapper around `retro-junk-gui` with the full CJK font feature enabled
+- `retro-junk-gui` — desktop GUI (egui/eframe) with full CJK font support
 
 **Dependency graph:**
 ```
@@ -66,7 +65,7 @@ cargo run -p retro-junk-cli -- analyze --root /path/to/roms
                     |
               retro-junk-import  ---------+
                     |
-          CLI / GUI / GUI-CJK   (presentation)
+              CLI / GUI         (presentation)
 ```
 
 Notes:

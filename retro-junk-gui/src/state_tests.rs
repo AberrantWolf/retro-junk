@@ -181,7 +181,7 @@ fn chd_compress_prompt_ready_stores_the_prompt() {
         None,
         None,
     );
-    assert!(app.chd_compress_prompt.is_none());
+    assert!(app.ui_state.chd_compress_prompt.is_none());
 
     let prompt = ChdCompressPrompt {
         folder_name: "psx".to_string(),
@@ -200,6 +200,7 @@ fn chd_compress_prompt_ready_stores_the_prompt() {
     );
 
     let stored = app
+        .ui_state
         .chd_compress_prompt
         .as_ref()
         .expect("prompt must be stored");

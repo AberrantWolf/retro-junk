@@ -1,4 +1,4 @@
-//! Font configuration for egui: UI symbol coverage + optional CJK.
+//! Font configuration for egui: UI symbol coverage + full CJK fallback.
 //!
 //! # Symbols (always installed)
 //!
@@ -18,13 +18,10 @@
 //! used in a string literal and asserts glyph coverage, so a new symbol that
 //! no font can draw fails CI instead of shipping as tofu.
 //!
-//! # CJK (Cargo features)
+//! # CJK
 //!
-//! - `cjk-full` (used by the `retro-junk-gui-cjk` wrapper): Embeds
-//!   NotoSansCJKjp-Regular.otf (~16MB) covering Japanese, Chinese
-//!   (Simplified + Traditional), and Korean.
-//! - `cjk-jp`: Embeds NotoSansJP-Regular.otf (~4.3MB) covering Japanese only.
-//! - Neither (default): No CJK font embedded; CJK characters render as tofu.
+//! NotoSansCJKjp-Regular.otf (~16MB) is embedded in every GUI build. It
+//! covers Japanese, Chinese (Simplified + Traditional), and Korean.
 //!
 //! Font sources: <https://github.com/notofonts/symbols> (Symbols2 2.008,
 //! Symbols 2.003) and <https://github.com/notofonts/noto-cjk> (Sans2.004).
@@ -37,14 +34,9 @@ mod fonts_tests;
 const SYMBOLS2_FONT_DATA: &[u8] = include_bytes!("../fonts/NotoSansSymbols2-Regular.ttf");
 const SYMBOLS_FONT_DATA: &[u8] = include_bytes!("../fonts/NotoSansSymbols-Regular.ttf");
 
-#[cfg(feature = "cjk-full")]
 const CJK_FONT_DATA: &[u8] = include_bytes!("../fonts/NotoSansCJKjp-Regular.otf");
 
-#[cfg(all(feature = "cjk-jp", not(feature = "cjk-full")))]
-const CJK_FONT_DATA: &[u8] = include_bytes!("../fonts/NotoSansJP-Regular.otf");
-
-/// Install the app's font stack: egui defaults + Noto symbol fonts
-/// (+ CJK fallback when a `cjk-*` feature is enabled).
+/// Install the app's font stack: egui defaults + Noto symbol and CJK fonts.
 pub fn configure_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
 
@@ -74,9 +66,6 @@ pub fn configure_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-/// Append the CJK font as the last fallback for both families, so CJK glyphs
-/// render correctly while Latin text and symbols use the fonts above.
-#[cfg(any(feature = "cjk-full", feature = "cjk-jp"))]
 fn add_cjk_fallback(fonts: &mut egui::FontDefinitions) {
     fonts.font_data.insert(
         "noto_sans_cjk".to_owned(),
@@ -90,9 +79,4 @@ fn add_cjk_fallback(fonts: &mut egui::FontDefinitions) {
             .or_default()
             .push("noto_sans_cjk".to_owned());
     }
-}
-
-#[cfg(not(any(feature = "cjk-full", feature = "cjk-jp")))]
-fn add_cjk_fallback(_fonts: &mut egui::FontDefinitions) {
-    // No CJK font embedded — nothing to add.
 }

@@ -13,30 +13,38 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // Tab bar (always shown — the Data tab is how an empty catalog gets populated)
     ui.horizontal(|ui| {
         ui.selectable_value(
-            &mut app.tools_state.active_tab,
+            &mut app.ui_state.tools_state.active_tab,
             ToolsTab::Dashboard,
             "Dashboard",
         );
-        ui.selectable_value(&mut app.tools_state.active_tab, ToolsTab::Browse, "Browse");
-        ui.selectable_value(&mut app.tools_state.active_tab, ToolsTab::Data, "Data");
+        ui.selectable_value(
+            &mut app.ui_state.tools_state.active_tab,
+            ToolsTab::Browse,
+            "Browse",
+        );
+        ui.selectable_value(
+            &mut app.ui_state.tools_state.active_tab,
+            ToolsTab::Data,
+            "Data",
+        );
     });
     ui.separator();
     ui.add_space(4.0);
 
-    match app.tools_state.active_tab {
+    match app.ui_state.tools_state.active_tab {
         ToolsTab::Dashboard => {
             if !has_db {
                 show_no_database(ui, app);
                 return;
             }
             // Refresh data from DB when flagged
-            if app.tools_state.needs_refresh {
+            if app.ui_state.tools_state.needs_refresh {
                 let conn = app.catalog_db.as_ref().unwrap();
-                refresh_data(&mut app.tools_state, conn);
+                refresh_data(&mut app.ui_state.tools_state, conn);
             }
 
             egui::ScrollArea::vertical().show(ui, |ui| {
-                show_stats_section(ui, &app.tools_state);
+                show_stats_section(ui, &app.ui_state.tools_state);
                 ui.add_space(16.0);
                 show_disagreements_section(ui, app);
             });
@@ -61,7 +69,7 @@ fn show_no_database(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.weak("Use the Data tab to import DATs and build the catalog.");
     ui.add_space(8.0);
     if ui.button("Go to Data tab").clicked() {
-        app.tools_state.active_tab = ToolsTab::Data;
+        app.ui_state.tools_state.active_tab = ToolsTab::Data;
     }
 }
 
@@ -159,21 +167,21 @@ fn show_disagreements_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.strong("Disagreements");
     ui.add_space(4.0);
 
-    let filter_changed = show_filter_toolbar(ui, &mut app.tools_state);
+    let filter_changed = show_filter_toolbar(ui, &mut app.ui_state.tools_state);
     if filter_changed {
-        app.tools_state.needs_refresh = true;
+        app.ui_state.tools_state.needs_refresh = true;
         let conn = app.catalog_db.as_ref().unwrap();
-        refresh_data(&mut app.tools_state, conn);
+        refresh_data(&mut app.ui_state.tools_state, conn);
     }
 
     ui.add_space(4.0);
     ui.label(format!(
         "{} disagreement(s)",
-        app.tools_state.disagreements.len()
+        app.ui_state.tools_state.disagreements.len()
     ));
     ui.add_space(4.0);
 
-    if app.tools_state.disagreements.is_empty() {
+    if app.ui_state.tools_state.disagreements.is_empty() {
         ui.weak("No unresolved disagreements.");
         return;
     }
@@ -183,31 +191,31 @@ fn show_disagreements_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         let page_size = 15; // approximate visible rows in 300px max height
         if let Some(action) = crate::widgets::keyboard_nav::process_list_nav(
             ui,
-            app.tools_state.selected_idx,
-            app.tools_state.disagreements.len(),
+            app.ui_state.tools_state.selected_idx,
+            app.ui_state.tools_state.disagreements.len(),
             page_size,
         ) {
             let idx = action.new_index;
-            if Some(idx) != app.tools_state.selected_idx {
-                app.tools_state.selected_idx = Some(idx);
-                app.tools_state.selected_context = None;
+            if Some(idx) != app.ui_state.tools_state.selected_idx {
+                app.ui_state.tools_state.selected_idx = Some(idx);
+                app.ui_state.tools_state.selected_context = None;
                 let conn = app.catalog_db.as_ref().unwrap();
-                load_disagreement_context(&mut app.tools_state, conn, idx);
+                load_disagreement_context(&mut app.ui_state.tools_state, conn, idx);
             }
         }
     }
 
-    let new_selection = show_disagreement_table(ui, &app.tools_state);
+    let new_selection = show_disagreement_table(ui, &app.ui_state.tools_state);
     if let Some(idx) = new_selection
-        && Some(idx) != app.tools_state.selected_idx
+        && Some(idx) != app.ui_state.tools_state.selected_idx
     {
-        app.tools_state.selected_idx = Some(idx);
-        app.tools_state.selected_context = None;
+        app.ui_state.tools_state.selected_idx = Some(idx);
+        app.ui_state.tools_state.selected_context = None;
         let conn = app.catalog_db.as_ref().unwrap();
-        load_disagreement_context(&mut app.tools_state, conn, idx);
+        load_disagreement_context(&mut app.ui_state.tools_state, conn, idx);
     }
 
-    if app.tools_state.selected_idx.is_some() {
+    if app.ui_state.tools_state.selected_idx.is_some() {
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(4.0);
@@ -403,10 +411,10 @@ fn load_disagreement_context(state: &mut ToolsState, conn: &retro_junk_db::Conne
 }
 
 fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
-    let Some(idx) = app.tools_state.selected_idx else {
+    let Some(idx) = app.ui_state.tools_state.selected_idx else {
         return;
     };
-    if idx >= app.tools_state.disagreements.len() {
+    if idx >= app.ui_state.tools_state.disagreements.len() {
         return;
     }
 
@@ -414,7 +422,7 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.add_space(4.0);
 
     // Show entity context
-    if let Some(ref ctx) = app.tools_state.selected_context {
+    if let Some(ref ctx) = app.ui_state.tools_state.selected_context {
         ui.horizontal(|ui| {
             ui.label("Entity:");
             let label = if ctx.platform_name.is_empty() {
@@ -426,7 +434,7 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         });
     }
 
-    let d = &app.tools_state.disagreements[idx];
+    let d = &app.ui_state.tools_state.disagreements[idx];
 
     ui.horizontal(|ui| {
         ui.label("Field:");
@@ -486,14 +494,14 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         if ui.button("Skip").clicked() {
             // Advance to next without resolving
             let next = idx + 1;
-            if next < app.tools_state.disagreements.len() {
-                app.tools_state.selected_idx = Some(next);
-                app.tools_state.selected_context = None;
+            if next < app.ui_state.tools_state.disagreements.len() {
+                app.ui_state.tools_state.selected_idx = Some(next);
+                app.ui_state.tools_state.selected_context = None;
                 let conn = app.catalog_db.as_ref().unwrap();
-                load_disagreement_context(&mut app.tools_state, conn, next);
+                load_disagreement_context(&mut app.ui_state.tools_state, conn, next);
             } else {
-                app.tools_state.selected_idx = None;
-                app.tools_state.selected_context = None;
+                app.ui_state.tools_state.selected_idx = None;
+                app.ui_state.tools_state.selected_context = None;
             }
         }
     });
@@ -522,7 +530,7 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
         // Refresh to pick up changes — keeps selected_idx at same position,
         // which now points to the next item since the resolved one is gone.
-        app.tools_state.needs_refresh = true;
+        app.ui_state.tools_state.needs_refresh = true;
     }
 }
 

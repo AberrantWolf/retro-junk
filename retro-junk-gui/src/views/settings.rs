@@ -190,13 +190,13 @@ fn show_external_tools_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // keystroke while the field is focused, and not while a probe for this
     // exact path is already in flight.
     let path_key = app.settings.general.chdman_path.trim().to_string();
-    let needs_probe = match &app.chdman_probe {
+    let needs_probe = match &app.ui_state.chdman_probe {
         ChdmanProbe::Idle => true,
         ChdmanProbe::Probing => false,
         ChdmanProbe::Done { path, .. } => path != &path_key,
     };
     if needs_probe && !editing {
-        app.chdman_probe = ChdmanProbe::Probing;
+        app.ui_state.chdman_probe = ChdmanProbe::Probing;
         let tx = app.message_tx.clone();
         let egui_ctx = ui.ctx().clone();
         let key = path_key.clone();
@@ -207,14 +207,14 @@ fn show_external_tools_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         });
     }
 
-    if matches!(app.chdman_probe, ChdmanProbe::Probing) {
+    if matches!(app.ui_state.chdman_probe, ChdmanProbe::Probing) {
         ui.indent("chdman_status", |ui| {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.weak("Checking for chdman…");
             });
         });
-    } else if let ChdmanProbe::Done { result, .. } = &app.chdman_probe {
+    } else if let ChdmanProbe::Done { result, .. } = &app.ui_state.chdman_probe {
         let (status_color, status_text, install_hint): (
             egui::Color32,
             String,
@@ -246,7 +246,7 @@ fn show_external_tools_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 // Err staying stuck if the user installs chdman without
                 // restarting the app.
                 if ui.small_button("Re-check").clicked() {
-                    app.chdman_probe = ChdmanProbe::Idle;
+                    app.ui_state.chdman_probe = ChdmanProbe::Idle;
                 }
             });
             if let Some(hint) = install_hint {
@@ -296,10 +296,10 @@ fn show_scraper_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     crate::util::open_in_default_app(&path);
                     // The user is about to edit the file — drop the cached
                     // provenance so the next repaint re-reads it.
-                    app.credential_status = None;
+                    app.ui_state.credential_status = None;
                 }
                 Err(e) => {
-                    app.error_list.push(crate::state::UserError {
+                    app.ui_state.error_list.push(crate::state::UserError {
                         category: "Config".to_string(),
                         message: format!("Failed to create credentials file: {e}"),
                     });
@@ -319,11 +319,12 @@ fn show_scraper_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // Refresh the cached provenance snapshot when stale. Reading it means
     // touching the filesystem and environment, so don't do it every frame.
     let stale = app
+        .ui_state
         .credential_status
         .as_ref()
         .is_none_or(|(at, _)| at.elapsed() > CREDENTIAL_STATUS_TTL);
     if stale {
-        app.credential_status = Some((
+        app.ui_state.credential_status = Some((
             std::time::Instant::now(),
             retro_junk_scraper::credential_sources(),
         ));
@@ -331,7 +332,12 @@ fn show_scraper_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // Keep the statuses live while the view is visible, even without input.
     ui.ctx().request_repaint_after(CREDENTIAL_STATUS_TTL);
 
-    let sources = &app.credential_status.as_ref().expect("just refreshed").1;
+    let sources = &app
+        .ui_state
+        .credential_status
+        .as_ref()
+        .expect("just refreshed")
+        .1;
     let mut open_info = None;
 
     for meta in &CREDENTIAL_FIELDS {
@@ -361,13 +367,13 @@ fn show_scraper_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     }
 
     if open_info.is_some() {
-        app.credential_info_popup = open_info;
+        app.ui_state.credential_info_popup = open_info;
     }
 }
 
 /// Modal explaining one credential field: what it is for and where to get it.
 fn show_credential_info_popup(ctx: &egui::Context, app: &mut RetroJunkApp) {
-    let Some(meta) = app.credential_info_popup else {
+    let Some(meta) = app.ui_state.credential_info_popup else {
         return;
     };
 
@@ -405,7 +411,7 @@ fn show_credential_info_popup(ctx: &egui::Context, app: &mut RetroJunkApp) {
         });
 
     if dismiss || !open {
-        app.credential_info_popup = None;
+        app.ui_state.credential_info_popup = None;
     }
 }
 

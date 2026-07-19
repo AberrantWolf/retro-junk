@@ -64,6 +64,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     // First pass: which selected entries are cue files (their sets rename
     // as a unit, covering their track files).
     let selected_cues: std::collections::HashSet<PathBuf> = app
+        .ui_state
         .selected_entries
         .iter()
         .filter_map(|&i| console.entries.get(i))
@@ -78,7 +79,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     // the cue's FILE references).
     let mut dir_membership: HashMap<PathBuf, HashMap<PathBuf, PathBuf>> = HashMap::new();
 
-    for &i in &app.selected_entries {
+    for &i in &app.ui_state.selected_entries {
         let Some(entry) = console.entries.get(i) else {
             continue;
         };

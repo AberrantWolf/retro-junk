@@ -20,7 +20,7 @@ fn settings_harness<'a>() -> Harness<'a, RetroJunkApp> {
             None,
             None,
         );
-        app.current_view = crate::state::View::Settings;
+        app.ui_state.current_view = crate::state::View::Settings;
         app
     })
 }
@@ -42,7 +42,7 @@ fn scraper_section_lists_all_credential_fields() {
     }
 
     assert!(
-        harness.state().credential_status.is_some(),
+        harness.state().ui_state.credential_status.is_some(),
         "rendering the settings view must populate the credential provenance cache"
     );
 }
@@ -65,6 +65,7 @@ fn credential_info_button_opens_and_closes_popup() {
 
     let meta = harness
         .state()
+        .ui_state
         .credential_info_popup
         .expect("clicking the info button must open the popup");
     assert_eq!(meta.key, retro_junk_scraper::CREDENTIAL_FIELDS[0].key);
@@ -73,7 +74,7 @@ fn credential_info_button_opens_and_closes_popup() {
 
     harness.get_by_label("Close").click();
     harness.run();
-    assert!(harness.state().credential_info_popup.is_none());
+    assert!(harness.state().ui_state.credential_info_popup.is_none());
 }
 
 /// Write a slow fake "chdman": sleeps, then exits non-zero without ever
@@ -95,7 +96,7 @@ fn harness_with_slow_chdman<'a>(chdman_path: std::path::PathBuf) -> Harness<'a, 
         let mut settings = crate::settings::AppSettings::default();
         settings.general.chdman_path = chdman_path.display().to_string();
         let mut app = RetroJunkApp::with_parts(&cc.egui_ctx, settings, None, None);
-        app.current_view = crate::state::View::Settings;
+        app.ui_state.current_view = crate::state::View::Settings;
         app
     })
 }
@@ -121,7 +122,7 @@ fn chdman_probe_runs_off_the_ui_thread() {
 
     assert!(
         matches!(
-            harness.state().chdman_probe,
+            harness.state().ui_state.chdman_probe,
             crate::app::ChdmanProbe::Probing
         ),
         "expected a probe to be kicked off for the configured path, with no result until the \
@@ -134,7 +135,7 @@ fn chdman_probe_runs_off_the_ui_thread() {
         std::thread::sleep(std::time::Duration::from_millis(20));
         harness.step();
         if !matches!(
-            harness.state().chdman_probe,
+            harness.state().ui_state.chdman_probe,
             crate::app::ChdmanProbe::Probing
         ) {
             settled = true;
@@ -144,7 +145,7 @@ fn chdman_probe_runs_off_the_ui_thread() {
     assert!(settled, "chdman probe never completed");
     // The fake binary never prints the CHD banner, so this must be an error.
     assert!(matches!(
-        harness.state().chdman_probe,
+        harness.state().ui_state.chdman_probe,
         crate::app::ChdmanProbe::Done { result: Err(_), .. }
     ));
 }

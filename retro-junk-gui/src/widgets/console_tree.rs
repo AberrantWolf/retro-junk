@@ -8,7 +8,7 @@ use crate::widgets::status_badge;
 /// Render the manufacturer-grouped console tree.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     if app.library.consoles.is_empty() {
-        if app.loading_library {
+        if app.ui_state.loading_library {
             ui.label("Loading library...");
         } else {
             ui.label("No consoles found.");
@@ -37,8 +37,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     };
 
     // Keyboard navigation (only when console tree has focus)
-    if app.focused_panel == FocusedPanel::ConsoleTree {
+    if app.ui_state.focused_panel == FocusedPanel::ConsoleTree {
         let current_pos = app
+            .ui_state
             .selected_console
             .and_then(|sel| ordered_console_indices.iter().position(|&i| i == sel));
 
@@ -49,12 +50,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             10, // page size for console tree
         ) {
             let new_console_idx = ordered_console_indices[action.new_index];
-            if app.selected_console != Some(new_console_idx) {
-                app.selected_console = Some(new_console_idx);
-                app.scroll_to_console = Some(new_console_idx);
-                app.focused_entry = None;
-                app.selected_entries.clear();
-                app.filter_text.clear();
+            if app.ui_state.selected_console != Some(new_console_idx) {
+                app.ui_state.selected_console = Some(new_console_idx);
+                app.ui_state.scroll_to_console = Some(new_console_idx);
+                app.ui_state.focused_entry = None;
+                app.ui_state.selected_entries.clear();
+                app.ui_state.filter_text.clear();
 
                 if app.library.consoles[new_console_idx].scan_status == ScanStatus::NotScanned {
                     backend::scan::quick_scan_console(app, new_console_idx, ctx);
@@ -74,7 +75,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     }
 
                     let console = &app.library.consoles[i];
-                    let is_selected = app.selected_console == Some(i);
+                    let is_selected = app.ui_state.selected_console == Some(i);
 
                     let label = match console.scan_status {
                         ScanStatus::NotScanned => console.folder_name.clone(),
@@ -124,11 +125,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         .inner;
 
                     if label_resp.clicked() && !is_selected {
-                        app.selected_console = Some(i);
-                        app.focused_entry = None;
-                        app.selected_entries.clear();
-                        app.filter_text.clear();
-                        app.focused_panel = FocusedPanel::ConsoleTree;
+                        app.ui_state.selected_console = Some(i);
+                        app.ui_state.focused_entry = None;
+                        app.ui_state.selected_entries.clear();
+                        app.ui_state.filter_text.clear();
+                        app.ui_state.focused_panel = FocusedPanel::ConsoleTree;
 
                         // Trigger quick-scan if not already scanned
                         if app.library.consoles[i].scan_status == ScanStatus::NotScanned {
@@ -140,7 +141,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     // navigation targeted it — not every frame, which would pin
                     // the view and block manual scrolling. Mirrors the game
                     // table's `scroll_to_row` handling.
-                    if app.scroll_to_console == Some(i) {
+                    if app.ui_state.scroll_to_console == Some(i) {
                         label_resp.scroll_to_me(Some(egui::Align::Center));
                     }
 
@@ -162,7 +163,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     // Consume the one-shot scroll request; the targeted row (if visible) has
     // now scrolled itself into view.
-    app.scroll_to_console = None;
+    app.ui_state.scroll_to_console = None;
 }
 
 /// Render the context menu for a console tree entry.
@@ -190,7 +191,7 @@ fn show_console_context_menu(
         .clicked()
     {
         // Select all entries, then compute hashes
-        app.selected_entries = (0..entry_count).collect();
+        app.ui_state.selected_entries = (0..entry_count).collect();
         backend::hash::compute_hashes_for_selection(app, console_idx);
         ui.close();
     }
@@ -202,7 +203,7 @@ fn show_console_context_menu(
         )
         .clicked()
     {
-        app.selected_entries = (0..entry_count).collect();
+        app.ui_state.selected_entries = (0..entry_count).collect();
         backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
         ui.close();
     }

@@ -5,7 +5,7 @@ use crate::state::TagDialog;
 
 /// Render any active tag dialog as a modal window.
 pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
-    match &app.tag_dialog {
+    match &app.ui_state.tag_dialog {
         TagDialog::None => {}
         TagDialog::Homebrew { .. } => show_homebrew_dialog(ctx, app),
         TagDialog::ModSearch { .. } => show_mod_search_dialog(ctx, app),
@@ -24,7 +24,7 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
             ui.label("Enter the homebrew game name:");
             ui.add_space(4.0);
 
-            if let TagDialog::Homebrew { ref mut name, .. } = app.tag_dialog {
+            if let TagDialog::Homebrew { ref mut name, .. } = app.ui_state.tag_dialog {
                 let resp = ui.text_edit_singleline(name);
                 // Auto-focus the text field on first frame
                 if !resp.has_focus() {
@@ -50,7 +50,7 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
             ref name,
             console_idx,
             entry_idx,
-        } = app.tag_dialog
+        } = app.ui_state.tag_dialog
         {
             let name = name.clone();
 
@@ -89,9 +89,9 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
             }
             app.save_entry_cache(console_idx, &[entry_idx]);
         }
-        app.tag_dialog = TagDialog::None;
+        app.ui_state.tag_dialog = TagDialog::None;
     } else if cancelled {
-        app.tag_dialog = TagDialog::None;
+        app.ui_state.tag_dialog = TagDialog::None;
     }
 }
 
@@ -114,7 +114,7 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 ref mut results,
                 ref mut selected,
                 ..
-            } = app.tag_dialog
+            } = app.ui_state.tag_dialog
             {
                 let resp = ui.text_edit_singleline(query);
                 if resp.changed() {
@@ -175,7 +175,7 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
             console_idx,
             entry_idx,
             ..
-        } = app.tag_dialog
+        } = app.ui_state.tag_dialog
             && let Some(work) = results.get(sel_idx)
         {
             let work_id = work.id.clone();
@@ -229,8 +229,8 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
             }
             app.save_entry_cache(console_idx, &[entry_idx]);
         }
-        app.tag_dialog = TagDialog::None;
+        app.ui_state.tag_dialog = TagDialog::None;
     } else if cancelled {
-        app.tag_dialog = TagDialog::None;
+        app.ui_state.tag_dialog = TagDialog::None;
     }
 }

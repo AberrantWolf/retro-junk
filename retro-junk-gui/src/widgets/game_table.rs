@@ -14,12 +14,12 @@ use crate::widgets::status_badge;
 
 /// Render the sortable, filterable game table for the selected console.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
-    let Some(console_idx) = app.selected_console else {
+    let Some(console_idx) = app.ui_state.selected_console else {
         return;
     };
 
     let console = &app.library.consoles[console_idx];
-    let filter = app.filter_text.to_lowercase();
+    let filter = app.ui_state.filter_text.to_lowercase();
 
     // Build filtered index list
     let filtered_indices: Vec<usize> = console
@@ -55,14 +55,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     // Cmd+A / Ctrl+A: select all visible entries
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
-        app.selected_entries = filtered_indices.iter().copied().collect();
+        app.ui_state.selected_entries = filtered_indices.iter().copied().collect();
     }
 
     // Keyboard navigation (only when game table has focus)
-    if app.focused_panel == FocusedPanel::GameTable {
+    if app.ui_state.focused_panel == FocusedPanel::GameTable {
         let current_filtered_pos = filtered_indices
             .iter()
-            .position(|&i| Some(i) == app.focused_entry);
+            .position(|&i| Some(i) == app.ui_state.focused_entry);
 
         let text_height_estimate = egui::TextStyle::Body
             .resolve(ui.style())
@@ -80,24 +80,24 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
             if action.extend_selection {
                 // Shift: extend selection from focused to new position
-                if let Some(focused) = app.focused_entry {
+                if let Some(focused) = app.ui_state.focused_entry {
                     let start = focused.min(entry_idx);
                     let end = focused.max(entry_idx);
                     for i in start..=end {
                         if filtered_indices.contains(&i) {
-                            app.selected_entries.insert(i);
+                            app.ui_state.selected_entries.insert(i);
                         }
                     }
                 } else {
-                    app.selected_entries.insert(entry_idx);
+                    app.ui_state.selected_entries.insert(entry_idx);
                 }
             } else {
-                app.selected_entries.clear();
-                app.selected_entries.insert(entry_idx);
+                app.ui_state.selected_entries.clear();
+                app.ui_state.selected_entries.insert(entry_idx);
             }
 
-            app.focused_entry = Some(entry_idx);
-            app.scroll_to_row = Some(action.new_index);
+            app.ui_state.focused_entry = Some(entry_idx);
+            app.ui_state.scroll_to_row = Some(action.new_index);
         }
     }
 
@@ -252,8 +252,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     body.rows(text_height, row_data.len(), |mut row| {
                         let row_idx = row.index();
                         let data = &row_data[row_idx];
-                        let is_selected = app.selected_entries.contains(&data.entry_idx);
-                        let is_focused = app.focused_entry == Some(data.entry_idx);
+                        let is_selected = app.ui_state.selected_entries.contains(&data.entry_idx);
+                        let is_focused = app.ui_state.focused_entry == Some(data.entry_idx);
 
                         // Highlight the entire row
                         row.set_selected(is_selected || is_focused);
@@ -316,7 +316,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         });
 
                         // Scroll-to-row: when keyboard navigation targets this row
-                        if app.scroll_to_row == Some(row_idx) {
+                        if app.ui_state.scroll_to_row == Some(row_idx) {
                             r1.1.scroll_to_me(Some(egui::Align::Center));
                         }
 
@@ -325,18 +325,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
                         // Right-click selection: if right-clicked row isn't selected, select just it
                         if row_resp.secondary_clicked() {
-                            if !app.selected_entries.contains(&data.entry_idx) {
-                                app.selected_entries.clear();
-                                app.selected_entries.insert(data.entry_idx);
+                            if !app.ui_state.selected_entries.contains(&data.entry_idx) {
+                                app.ui_state.selected_entries.clear();
+                                app.ui_state.selected_entries.insert(data.entry_idx);
                             }
-                            app.focused_entry = Some(data.entry_idx);
+                            app.ui_state.focused_entry = Some(data.entry_idx);
                         }
 
                         // Left-click
                         if row_resp.clicked() {
                             let modifiers = ctx.input(|i| i.modifiers);
                             handle_row_click(app, data.entry_idx, modifiers);
-                            app.focused_panel = FocusedPanel::GameTable;
+                            app.ui_state.focused_panel = FocusedPanel::GameTable;
                         }
 
                         // Context menu on unioned response
@@ -348,7 +348,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         });
 
     // Clear scroll-to-row after rendering
-    app.scroll_to_row = None;
+    app.ui_state.scroll_to_row = None;
 }
 
 /// Render the context menu for a game table row.
@@ -375,7 +375,7 @@ fn show_row_context_menu(
         let mut any_has_media = false;
         let mut all_have_all_media = true;
         let mut any_has_miximage = false;
-        for &i in &app.selected_entries {
+        for &i in &app.ui_state.selected_entries {
             if let Some(entry) = console.entries.get(i) {
                 let ms = entry.asset_status();
                 match ms {
@@ -442,7 +442,7 @@ fn show_row_context_menu(
     // Fix CUE Sheet — only show when at least one selected entry has CUE compat issues
     {
         let console = &app.library.consoles[console_idx];
-        let has_cue_issues = app.selected_entries.iter().any(|&i| {
+        let has_cue_issues = app.ui_state.selected_entries.iter().any(|&i| {
             console
                 .entries
                 .get(i)
@@ -463,7 +463,7 @@ fn show_row_context_menu(
             .add_enabled(!busy, egui::Button::new("Compress to CHD…"))
             .on_disabled_hover_text("A CHD compression is already running for this console");
         if button.clicked() {
-            let selection: Vec<usize> = app.selected_entries.iter().copied().collect();
+            let selection: Vec<usize> = app.ui_state.selected_entries.iter().copied().collect();
             backend::chd_compress::open_compress_dialog(app, console_idx, &selection);
             ui.close();
         }
@@ -473,8 +473,8 @@ fn show_row_context_menu(
     show_set_region_submenu(ui, app, console_idx);
 
     // Tag menu items (only for single selection)
-    if app.selected_entries.len() == 1 {
-        let entry_idx = *app.selected_entries.iter().next().unwrap();
+    if app.ui_state.selected_entries.len() == 1 {
+        let entry_idx = *app.ui_state.selected_entries.iter().next().unwrap();
         show_tag_menu_items(ui, app, console_idx, entry_idx);
     }
 
@@ -495,7 +495,7 @@ fn show_row_context_menu(
     }
 
     let has_serial = !data.serial.is_empty()
-        || app.selected_entries.iter().any(|&i| {
+        || app.ui_state.selected_entries.iter().any(|&i| {
             app.library.consoles[console_idx]
                 .entries
                 .get(i)
@@ -517,7 +517,7 @@ fn show_row_context_menu(
     }
 
     let has_crc32 = !data.crc32.is_empty()
-        || app.selected_entries.iter().any(|&i| {
+        || app.ui_state.selected_entries.iter().any(|&i| {
             app.library.consoles[console_idx]
                 .entries
                 .get(i)
@@ -535,7 +535,7 @@ fn show_row_context_menu(
     }
 
     let has_dat = !data.dat_match.is_empty()
-        || app.selected_entries.iter().any(|&i| {
+        || app.ui_state.selected_entries.iter().any(|&i| {
             app.library.consoles[console_idx]
                 .entries
                 .get(i)
@@ -560,7 +560,7 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
     // don't narrow the recommendations to empty.
     let console = &app.library.consoles[console_idx];
     let mut recommended: Option<HashSet<Region>> = None;
-    for &i in &app.selected_entries {
+    for &i in &app.ui_state.selected_entries {
         if let Some(entry) = console.entries.get(i)
             && let Some(ref id) = entry.identification
             && !id.regions.is_empty()
@@ -576,7 +576,7 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
 
     ui.menu_button("Set Region", |ui| {
         if ui.button("Auto-detect").clicked() {
-            let indices: Vec<usize> = app.selected_entries.iter().copied().collect();
+            let indices: Vec<usize> = app.ui_state.selected_entries.iter().copied().collect();
             for &i in &indices {
                 if let Some(entry) = app.library.consoles[console_idx].entries.get_mut(i) {
                     entry.region_override = None;
@@ -591,7 +591,8 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
             ui.label("Recommended");
             for &region in Region::ALL {
                 if recommended.contains(&region) && ui.button(region.name()).clicked() {
-                    let indices: Vec<usize> = app.selected_entries.iter().copied().collect();
+                    let indices: Vec<usize> =
+                        app.ui_state.selected_entries.iter().copied().collect();
                     for &i in &indices {
                         if let Some(entry) = app.library.consoles[console_idx].entries.get_mut(i) {
                             entry.region_override = Some(region);
@@ -607,7 +608,7 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
         ui.label("Other Regions");
         for &region in Region::ALL {
             if !recommended.contains(&region) && ui.button(region.name()).clicked() {
-                let indices: Vec<usize> = app.selected_entries.iter().copied().collect();
+                let indices: Vec<usize> = app.ui_state.selected_entries.iter().copied().collect();
                 for &i in &indices {
                     if let Some(entry) = app.library.consoles[console_idx].entries.get_mut(i) {
                         entry.region_override = Some(region);
@@ -629,6 +630,7 @@ fn collect_selected_field(
 ) -> String {
     let console = &app.library.consoles[console_idx];
     let mut values: Vec<String> = app
+        .ui_state
         .selected_entries
         .iter()
         .copied()
@@ -678,32 +680,32 @@ struct RowData {
 fn handle_row_click(app: &mut RetroJunkApp, entry_idx: usize, modifiers: egui::Modifiers) {
     if modifiers.ctrl || modifiers.command {
         // Toggle selection
-        if app.selected_entries.contains(&entry_idx) {
+        if app.ui_state.selected_entries.contains(&entry_idx) {
             // Deselect: don't move focused_entry to this row — that would keep
             // it visually highlighted through the is_focused path.
-            app.selected_entries.remove(&entry_idx);
+            app.ui_state.selected_entries.remove(&entry_idx);
             return;
         }
-        app.selected_entries.insert(entry_idx);
+        app.ui_state.selected_entries.insert(entry_idx);
     } else if modifiers.shift {
         // Range select
-        if let Some(focused) = app.focused_entry {
+        if let Some(focused) = app.ui_state.focused_entry {
             let start = focused.min(entry_idx);
             let end = focused.max(entry_idx);
             for i in start..=end {
-                app.selected_entries.insert(i);
+                app.ui_state.selected_entries.insert(i);
             }
         } else {
-            app.selected_entries.clear();
-            app.selected_entries.insert(entry_idx);
+            app.ui_state.selected_entries.clear();
+            app.ui_state.selected_entries.insert(entry_idx);
         }
     } else {
         // Single select
-        app.selected_entries.clear();
-        app.selected_entries.insert(entry_idx);
+        app.ui_state.selected_entries.clear();
+        app.ui_state.selected_entries.insert(entry_idx);
     }
 
-    app.focused_entry = Some(entry_idx);
+    app.ui_state.focused_entry = Some(entry_idx);
 }
 
 /// Paint text in a table cell without creating a widget.
@@ -737,7 +739,7 @@ fn show_tag_menu_items(
             if ui.button("Mark as Homebrew\u{2026}").clicked() {
                 // Pre-fill with cleaned filename
                 let name = entry.game_entry.display_name().to_string();
-                app.tag_dialog = TagDialog::Homebrew {
+                app.ui_state.tag_dialog = TagDialog::Homebrew {
                     name,
                     console_idx,
                     entry_idx,
@@ -745,7 +747,7 @@ fn show_tag_menu_items(
                 ui.close();
             }
             if ui.button("Mark as Modded Version of\u{2026}").clicked() {
-                app.tag_dialog = TagDialog::ModSearch {
+                app.ui_state.tag_dialog = TagDialog::ModSearch {
                     query: String::new(),
                     results: Vec::new(),
                     selected: None,

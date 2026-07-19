@@ -163,10 +163,10 @@ pub fn run_import(app: &mut RetroJunkApp, ctx: &egui::Context) {
         return;
     };
     let context = app.context.clone();
-    let selected = app.tools_state.data.selected_systems.clone();
+    let selected = app.ui_state.tools_state.data.selected_systems.clone();
     let catalog_dir = catalog_data_dir(&app.settings.general.catalog_data_dir);
     let egui_ctx = ctx.clone();
-    app.tools_state.data.op_in_flight = true;
+    app.ui_state.tools_state.data.op_in_flight = true;
 
     spawn_background_op(
         app,
@@ -323,10 +323,10 @@ pub fn run_gdb_enrich(app: &mut RetroJunkApp, ctx: &egui::Context) {
         return;
     };
     let context = app.context.clone();
-    let selected = app.tools_state.data.selected_systems.clone();
-    let limit = parse_limit(&app.tools_state.data.gdb_limit);
+    let selected = app.ui_state.tools_state.data.selected_systems.clone();
+    let limit = parse_limit(&app.ui_state.tools_state.data.gdb_limit);
     let egui_ctx = ctx.clone();
-    app.tools_state.data.op_in_flight = true;
+    app.ui_state.tools_state.data.op_in_flight = true;
 
     spawn_background_op(
         app,
@@ -403,9 +403,9 @@ pub fn run_ss_enrich(app: &mut RetroJunkApp, ctx: &egui::Context, opts: SsEnrich
     let Some(db_path) = app.db_path.clone() else {
         return;
     };
-    let selected = app.tools_state.data.selected_systems.clone();
+    let selected = app.ui_state.tools_state.data.selected_systems.clone();
     let egui_ctx = ctx.clone();
-    app.tools_state.data.op_in_flight = true;
+    app.ui_state.tools_state.data.op_in_flight = true;
 
     spawn_background_op(
         app,
@@ -592,13 +592,13 @@ fn run_reconcile(conn: &retro_junk_db::Connection, platform_ids: &[String]) {
 /// Download DAT or GDB files for the selected systems into the local cache.
 pub fn run_cache_fetch(app: &mut RetroJunkApp, ctx: &egui::Context, kind: CacheKind) {
     let context = app.context.clone();
-    let selected = app.tools_state.data.selected_systems.clone();
+    let selected = app.ui_state.tools_state.data.selected_systems.clone();
     let egui_ctx = ctx.clone();
     let desc = match kind {
         CacheKind::Dat => "Fetching DAT files",
         CacheKind::Gdb => "Fetching GDB files",
     };
-    app.tools_state.data.op_in_flight = true;
+    app.ui_state.tools_state.data.op_in_flight = true;
 
     spawn_background_op(
         app,
@@ -671,7 +671,7 @@ fn cache_fetch_worker(
 /// Clear the DAT or GDB download cache.
 pub fn run_cache_clear(app: &mut RetroJunkApp, ctx: &egui::Context, kind: CacheKind) {
     let egui_ctx = ctx.clone();
-    app.tools_state.data.op_in_flight = true;
+    app.ui_state.tools_state.data.op_in_flight = true;
 
     spawn_background_op(
         app,

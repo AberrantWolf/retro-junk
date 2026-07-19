@@ -48,14 +48,14 @@ fn long_values_wrap_instead_of_widening_the_panel() {
     entry.asset_paths = Some(std::collections::HashMap::new());
 
     let state = harness.state_mut();
-    state.current_view = View::Library;
+    state.ui_state.current_view = View::Library;
     state.root_path = Some(PathBuf::from("/roms"));
     state.library = Library {
         consoles: vec![test_console("psx", vec![entry])],
     };
-    state.selected_console = Some(0);
-    state.focused_entry = Some(0);
-    state.detail_panel_open = true;
+    state.ui_state.selected_console = Some(0);
+    state.ui_state.focused_entry = Some(0);
+    state.ui_state.detail_panel_open = true;
 
     // Give the panel several frames: the buggy feedback loop (content lays
     // out wider -> panel persists the wider size -> repeat) grows one step

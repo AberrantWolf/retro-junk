@@ -42,7 +42,7 @@ fn sidebar_click_switches_to_settings_view() {
     harness.get_by_label("Settings").click();
     harness.run();
 
-    assert_eq!(harness.state().current_view, View::Settings);
+    assert_eq!(harness.state().ui_state.current_view, View::Settings);
     harness.get_by_label("Current root:");
 }
 
@@ -140,7 +140,10 @@ fn tools_data_tab_renders_operation_cards() {
     harness.get_by_label("Data").click();
     harness.run();
 
-    assert_eq!(harness.state().tools_state.active_tab, ToolsTab::Data);
+    assert_eq!(
+        harness.state().ui_state.tools_state.active_tab,
+        ToolsTab::Data
+    );
 
     // Each data-gathering operation card should be present.
     harness.get_by_label("Import catalog from DATs");

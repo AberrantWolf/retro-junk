@@ -7,30 +7,31 @@ use crate::views::tools::{format_number, truncate_str};
 /// Render the database browser tab.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // Load platforms if not yet loaded (shared with Dashboard)
-    if app.tools_state.platforms.is_empty() {
+    if app.ui_state.tools_state.platforms.is_empty() {
         let conn = app.catalog_db.as_ref().unwrap();
-        app.tools_state.platforms = retro_junk_db::list_platforms(conn).unwrap_or_default();
+        app.ui_state.tools_state.platforms =
+            retro_junk_db::list_platforms(conn).unwrap_or_default();
     }
 
     // Toolbar: table selector + search + platform filter
     let query_changed = show_toolbar(ui, app);
     if query_changed {
-        app.tools_state.browse.table_state.reset_query();
+        app.ui_state.tools_state.browse.table_state.reset_query();
     }
 
     ui.add_space(4.0);
 
     // Run query if needed
-    if app.tools_state.browse.table_state.needs_query {
+    if app.ui_state.tools_state.browse.table_state.needs_query {
         run_query(app);
     }
 
     // Results count + table
-    let total = app.tools_state.browse.table_state.total_count;
+    let total = app.ui_state.tools_state.browse.table_state.total_count;
     ui.label(format!("{} result(s)", format_number(total)));
     ui.add_space(4.0);
 
-    match app.tools_state.browse.active_table {
+    match app.ui_state.tools_state.browse.active_table {
         BrowseTable::Releases => show_releases_table(ui, app),
         BrowseTable::Media => show_media_table(ui, app),
         BrowseTable::Works => show_works_table(ui, app),
@@ -41,9 +42,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
     // Pagination footer
     ui.add_space(4.0);
-    let page_changed = show_pagination(ui, &mut app.tools_state.browse.table_state);
+    let page_changed = show_pagination(ui, &mut app.ui_state.tools_state.browse.table_state);
     if page_changed {
-        app.tools_state.browse.table_state.needs_query = true;
+        app.ui_state.tools_state.browse.table_state.needs_query = true;
     }
 }
 
@@ -52,7 +53,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 /// Returns true if the query parameters changed (table, search, or platform filter).
 fn show_toolbar(ui: &mut egui::Ui, app: &mut RetroJunkApp) -> bool {
     let mut changed = false;
-    let browse = &mut app.tools_state.browse;
+    let browse = &mut app.ui_state.tools_state.browse;
     let active = browse.active_table;
 
     ui.horizontal(|ui| {
@@ -105,6 +106,7 @@ fn show_toolbar(ui: &mut egui::Ui, app: &mut RetroJunkApp) -> bool {
             ui.label("Platform:");
             let current_label = match &browse.table_state.platform_filter {
                 Some(pid) => app
+                    .ui_state
                     .tools_state
                     .platforms
                     .iter()
@@ -122,7 +124,7 @@ fn show_toolbar(ui: &mut egui::Ui, app: &mut RetroJunkApp) -> bool {
                     {
                         changed = true;
                     }
-                    for p in &app.tools_state.platforms {
+                    for p in &app.ui_state.tools_state.platforms {
                         if ui
                             .selectable_value(
                                 &mut browse.table_state.platform_filter,
@@ -215,7 +217,7 @@ fn show_pagination(ui: &mut egui::Ui, state: &mut TableViewState) -> bool {
 
 fn run_query(app: &mut RetroJunkApp) {
     let conn = app.catalog_db.as_ref().unwrap();
-    let browse = &mut app.tools_state.browse;
+    let browse = &mut app.ui_state.tools_state.browse;
     let ts = &mut browse.table_state;
     ts.needs_query = false;
 
@@ -316,9 +318,9 @@ fn show_releases_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         .body(|body| {
             body.rows(
                 ROW_HEIGHT,
-                app.tools_state.browse.releases.len(),
+                app.ui_state.tools_state.browse.releases.len(),
                 |mut row| {
-                    let r = &app.tools_state.browse.releases[row.index()];
+                    let r = &app.ui_state.tools_state.browse.releases[row.index()];
                     row.col(|ui| {
                         ui.label(truncate_str(&r.title, 60));
                     });
@@ -373,9 +375,9 @@ fn show_media_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         .body(|body| {
             body.rows(
                 ROW_HEIGHT,
-                app.tools_state.browse.media_rows.len(),
+                app.ui_state.tools_state.browse.media_rows.len(),
                 |mut row| {
-                    let m = &app.tools_state.browse.media_rows[row.index()];
+                    let m = &app.ui_state.tools_state.browse.media_rows[row.index()];
                     row.col(|ui| {
                         let name = if m.dat_name.is_empty() {
                             "(unnamed)"
@@ -420,12 +422,16 @@ fn show_works_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             });
         })
         .body(|body| {
-            body.rows(ROW_HEIGHT, app.tools_state.browse.works.len(), |mut row| {
-                let w = &app.tools_state.browse.works[row.index()];
-                row.col(|ui| {
-                    ui.label(truncate_str(&w.canonical_name, 100));
-                });
-            });
+            body.rows(
+                ROW_HEIGHT,
+                app.ui_state.tools_state.browse.works.len(),
+                |mut row| {
+                    let w = &app.ui_state.tools_state.browse.works[row.index()];
+                    row.col(|ui| {
+                        ui.label(truncate_str(&w.canonical_name, 100));
+                    });
+                },
+            );
         });
 }
 
@@ -458,9 +464,9 @@ fn show_companies_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         .body(|body| {
             body.rows(
                 ROW_HEIGHT,
-                app.tools_state.browse.companies.len(),
+                app.ui_state.tools_state.browse.companies.len(),
                 |mut row| {
-                    let c = &app.tools_state.browse.companies[row.index()];
+                    let c = &app.ui_state.tools_state.browse.companies[row.index()];
                     row.col(|ui| {
                         ui.label(truncate_str(&c.name, 60));
                     });
@@ -509,9 +515,9 @@ fn show_collection_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         .body(|body| {
             body.rows(
                 ROW_HEIGHT,
-                app.tools_state.browse.collection.len(),
+                app.ui_state.tools_state.browse.collection.len(),
                 |mut row| {
-                    let c = &app.tools_state.browse.collection[row.index()];
+                    let c = &app.ui_state.tools_state.browse.collection[row.index()];
                     row.col(|ui| {
                         ui.label(truncate_str(&c.title, 60));
                     });
@@ -569,9 +575,9 @@ fn show_import_log_table(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         .body(|body| {
             body.rows(
                 ROW_HEIGHT,
-                app.tools_state.browse.import_logs.len(),
+                app.ui_state.tools_state.browse.import_logs.len(),
                 |mut row| {
-                    let log = &app.tools_state.browse.import_logs[row.index()];
+                    let log = &app.ui_state.tools_state.browse.import_logs[row.index()];
                     row.col(|ui| {
                         ui.label(truncate_str(&log.source_name, 40));
                     });

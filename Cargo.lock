@@ -4482,14 +4482,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "retro-junk-gui-cjk"
-version = "0.2.0"
-dependencies = [
- "eframe",
- "retro-junk-gui",
-]
-
-[[package]]
 name = "retro-junk-import"
 version = "0.2.0"
 dependencies = [

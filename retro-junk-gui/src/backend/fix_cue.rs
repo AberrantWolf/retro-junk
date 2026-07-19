@@ -16,7 +16,7 @@ pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &e
 
     // Collect CUE file paths from selected entries
     let mut cue_files: Vec<(String, PathBuf)> = Vec::new();
-    for &i in &app.selected_entries {
+    for &i in &app.ui_state.selected_entries {
         let Some(entry) = console.entries.get(i) else {
             continue;
         };

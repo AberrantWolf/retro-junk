@@ -281,12 +281,6 @@ only the playable tree to frontends.
   upstream `retro_junk_dat::matcher::FileHashes.sha1` is Option (CRC-only
   hashing mode); revisit if FileHashes ever grows an all-or-nothing hash
   group like the scraper's `RomHashes`.
-- [ ] **`retro-junk-gui-cjk` decision** — kept deliberately: it is a 3-line
-  wrapper binary that exists so cargo-dist ships a second GUI artifact with
-  the `cjk-full` font feature (~65MB of Noto CJK) without bloating the
-  default download. Revisit only if dist grows per-feature artifact
-  support.
-
 ## CLI
 
 - [x] **Flesh out `list` command output** — Resolved: the standalone `list` command was folded into `catalog lookup`. `catalog lookup --type platforms` shows ID, name, manufacturer, year, media type, release/media counts.

@@ -2,12 +2,12 @@ use crate::app::RetroJunkApp;
 
 /// Render the fragile-network-mount confirmation as a modal window.
 ///
-/// Shown while `app.fragile_mount_prompt` is `Some`. GVFS/KIO-FUSE mounts
+/// Shown while `app.ui_state.fragile_mount_prompt` is `Some`. GVFS/KIO-FUSE mounts
 /// stall or return wrong data under heavy random-access I/O (CHD/ISO
 /// seeking), so we ask before adopting one as a library root. Accepting
 /// resumes the switch via `switch_to_root_unchecked`.
 pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
-    let Some(ref prompt) = app.fragile_mount_prompt else {
+    let Some(ref prompt) = app.ui_state.fragile_mount_prompt else {
         return;
     };
     let kind = prompt.kind;
@@ -50,10 +50,10 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
         });
 
     if confirmed {
-        if let Some(prompt) = app.fragile_mount_prompt.take() {
+        if let Some(prompt) = app.ui_state.fragile_mount_prompt.take() {
             crate::views::library::switch_to_root_unchecked(app, prompt.root, ctx);
         }
     } else if cancelled {
-        app.fragile_mount_prompt = None;
+        app.ui_state.fragile_mount_prompt = None;
     }
 }

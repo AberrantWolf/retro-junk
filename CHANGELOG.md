@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The main GUI release now includes full Japanese, Chinese, and Korean font
+  support; the separate `retro-junk-gui-cjk` release variant was removed.
 - CUE sheet compatibility issues are now detected during scan and displayed as warning triangles in the game table and detailed messages in the detail panel, with clear "fixable" vs "re-dump required" messaging
 - Added `retro-junk fix-cue` command to detect and convert CDRWin-format CUE sheets to standard CUE format for wider emulator compatibility (e.g., DuckStation rejecting `CD_ROM_XA` headers)
 - Added `retro-junk systems` command listing all 25 supported systems with DAT/GDB capability tags, grouped by manufacturer, with optional `--manufacturer` filter

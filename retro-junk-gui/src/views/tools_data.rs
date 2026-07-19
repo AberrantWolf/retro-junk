@@ -25,12 +25,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     let ctx = ui.ctx().clone();
 
     // Refresh cache listings when first shown or after a cache op.
-    if app.tools_state.data.needs_cache_refresh {
+    if app.ui_state.tools_state.data.needs_cache_refresh {
         catalog_ops::load_cache_lists(app, &ctx);
-        app.tools_state.data.needs_cache_refresh = false;
+        app.ui_state.tools_state.data.needs_cache_refresh = false;
     }
 
-    let busy = app.tools_state.data.op_in_flight;
+    let busy = app.ui_state.tools_state.data.op_in_flight;
     let mut action: Option<Action> = None;
 
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -60,7 +60,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             Action::Import => catalog_ops::run_import(app, &ctx),
             Action::GdbEnrich => catalog_ops::run_gdb_enrich(app, &ctx),
             Action::SsEnrich => {
-                let d = &app.tools_state.data;
+                let d = &app.ui_state.tools_state.data;
                 let opts = SsEnrichOptions {
                     force: d.ss_force,
                     download_assets: d.ss_download_assets,
@@ -94,7 +94,7 @@ fn show_system_selector(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         })
         .collect();
 
-    let selected = &mut app.tools_state.data.selected_systems;
+    let selected = &mut app.ui_state.tools_state.data.selected_systems;
 
     let summary = if selected.is_empty() {
         format!("All systems ({})", consoles.len())
@@ -184,7 +184,7 @@ fn show_gdb_card(
         ui.horizontal(|ui| {
             ui.label("Limit per system:");
             ui.add(
-                egui::TextEdit::singleline(&mut app.tools_state.data.gdb_limit)
+                egui::TextEdit::singleline(&mut app.ui_state.tools_state.data.gdb_limit)
                     .desired_width(80.0)
                     .hint_text("all"),
             );
@@ -211,7 +211,7 @@ fn show_ss_card(
              Requires configured credentials.",
         );
         ui.add_space(4.0);
-        let d = &mut app.tools_state.data;
+        let d = &mut app.ui_state.tools_state.data;
         egui::Grid::new("ss_enrich_opts")
             .num_columns(2)
             .spacing([12.0, 4.0])
@@ -274,7 +274,7 @@ fn show_cache_card(ui: &mut egui::Ui, app: &RetroJunkApp, busy: bool, action: &m
             }
         });
 
-        let d = &app.tools_state.data;
+        let d = &app.ui_state.tools_state.data;
         let dat_total: u64 = d.dat_cache_entries.iter().map(|e| e.file_size).sum();
         let gdb_total: u64 = d.gdb_cache_entries.iter().map(|e| e.file_size).sum();
         ui.add_space(4.0);

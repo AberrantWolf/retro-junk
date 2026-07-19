@@ -3,7 +3,6 @@ Noto Sans CJK fonts are licensed under the SIL Open Font License, Version 1.1.
 Source: https://github.com/notofonts/noto-cjk
 Release: Sans2.004
 Files:
-  - NotoSansJP-Regular.otf (Japanese subset)
   - NotoSansCJKjp-Regular.otf (Full CJK, Japanese preferred glyphs)
 
 Noto Sans Symbols fonts are licensed under the SIL Open Font License,

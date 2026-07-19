@@ -65,16 +65,16 @@ fn panel_toggles_do_not_reassign_widget_ids() {
     harness.run();
 
     // ── Tools/Browse: toggling the bottom log viewer must not re-id the view ──
-    harness.state_mut().current_view = View::Tools;
-    harness.state_mut().tools_state.active_tab = ToolsTab::Browse;
+    harness.state_mut().ui_state.current_view = View::Tools;
+    harness.state_mut().ui_state.tools_state.active_tab = ToolsTab::Browse;
     for _ in 0..4 {
         harness.run();
     }
 
     reset();
     for _ in 0..4 {
-        let cur = harness.state().log_viewer.open;
-        harness.state_mut().log_viewer.open = !cur;
+        let cur = harness.state().ui_state.log_viewer.open;
+        harness.state_mut().ui_state.log_viewer.open = !cur;
         for _ in 0..3 {
             harness.run();
         }
@@ -86,15 +86,16 @@ fn panel_toggles_do_not_reassign_widget_ids() {
     );
 
     // ── Switching browse tables (with the log open) must stay clean too ──
-    harness.state_mut().log_viewer.open = true;
+    harness.state_mut().ui_state.log_viewer.open = true;
     for _ in 0..3 {
         harness.run();
     }
     reset();
     for &table in BrowseTable::ALL {
-        harness.state_mut().tools_state.browse.active_table = table;
+        harness.state_mut().ui_state.tools_state.browse.active_table = table;
         harness
             .state_mut()
+            .ui_state
             .tools_state
             .browse
             .table_state
@@ -106,16 +107,16 @@ fn panel_toggles_do_not_reassign_widget_ids() {
     assert_eq!(clashes(), 0, "cycling browse tables re-assigned widget ids");
 
     // ── Library: toggling the right-hand detail panel must not re-id the table ──
-    harness.state_mut().log_viewer.open = false;
-    harness.state_mut().current_view = View::Library;
+    harness.state_mut().ui_state.log_viewer.open = false;
+    harness.state_mut().ui_state.current_view = View::Library;
     harness.state_mut().root_path = Some(std::path::PathBuf::from("/nonexistent/library"));
     for _ in 0..4 {
         harness.run();
     }
     reset();
     for _ in 0..4 {
-        let cur = harness.state().detail_panel_open;
-        harness.state_mut().detail_panel_open = !cur;
+        let cur = harness.state().ui_state.detail_panel_open;
+        harness.state_mut().ui_state.detail_panel_open = !cur;
         for _ in 0..3 {
             harness.run();
         }

@@ -31,7 +31,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.heading("Details");
     ui.separator();
 
-    let (Some(console_idx), Some(entry_idx)) = (app.selected_console, app.focused_entry) else {
+    let (Some(console_idx), Some(entry_idx)) =
+        (app.ui_state.selected_console, app.ui_state.focused_entry)
+    else {
         ui.label("Select an entry to view details.");
         return;
     };

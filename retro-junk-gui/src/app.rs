@@ -7,6 +7,7 @@ mod tests;
 mod id_stability_tests;
 
 use std::collections::HashMap;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -56,13 +57,97 @@ pub enum ChdmanProbe {
     },
 }
 
+/// Ephemeral state used to render and interact with the UI.
+///
+/// Keeping this separate from [`RetroJunkApp`]'s library, database, and
+/// background-operation state makes the boundary between application data and
+/// per-session UI state explicit.
+pub struct UiState {
+    /// Current sidebar navigation selection.
+    pub current_view: View,
+    /// Index of the currently selected console in `library.consoles`.
+    pub selected_console: Option<usize>,
+    /// One-shot request to scroll the console tree to an index.
+    pub scroll_to_console: Option<usize>,
+    /// Index of the focused entry in the selected console's entries list.
+    pub focused_entry: Option<usize>,
+    /// Selected entry indices for multi-select.
+    pub selected_entries: HashSet<usize>,
+    /// Text filter for the game table.
+    pub filter_text: String,
+    /// Whether the detail panel is visible.
+    pub detail_panel_open: bool,
+    /// Which batch-results dialog is open, if any.
+    pub results_dialog: ResultsDialog,
+    /// Pending CHD compression awaiting user confirmation.
+    pub chd_compress_prompt: Option<crate::state::ChdCompressPrompt>,
+    /// Cached chdman detection for the Settings view.
+    pub chdman_probe: ChdmanProbe,
+    /// Cached ScreenScraper credential provenance for the Settings view.
+    pub credential_status: Option<(std::time::Instant, retro_junk_scraper::CredentialSources)>,
+    /// Credential field whose explanation popup is open, if any.
+    pub credential_info_popup: Option<&'static retro_junk_scraper::CredentialFieldMeta>,
+    /// True while the initial cache load is in flight on startup.
+    pub loading_library: bool,
+    /// Transient state for the Tools (catalog) view.
+    pub tools_state: ToolsState,
+    /// Which panel currently has keyboard focus for arrow-key navigation.
+    pub focused_panel: FocusedPanel,
+    /// One-shot request to scroll the game table to a filtered row index.
+    pub scroll_to_row: Option<usize>,
+    /// State for the homebrew/modded tagging dialog.
+    pub tag_dialog: crate::state::TagDialog,
+    /// Pending root switch awaiting fragile-mount confirmation.
+    pub fragile_mount_prompt: Option<crate::state::FragileMountPrompt>,
+    /// State for the log viewer panel.
+    pub log_viewer: crate::widgets::log_viewer::LogViewerState,
+    /// Accumulated errors to show in the error dialog.
+    pub error_list: Vec<crate::state::UserError>,
+    /// Pending organize plan awaiting user confirmation.
+    pub pending_organize_plan: Option<(String, retro_junk_lib::organize::OrganizePlan)>,
+    /// Folder names queued for serialized auto-scan.
+    pub pending_auto_scans: VecDeque<String>,
+    /// Folder name of the queued auto-scan currently in flight.
+    pub auto_scan_in_flight: Option<String>,
+    /// Activity-bar operation id for the auto-scan batch.
+    pub auto_scan_op_id: Option<u64>,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            current_view: View::Library,
+            selected_console: None,
+            scroll_to_console: None,
+            focused_entry: None,
+            selected_entries: HashSet::new(),
+            filter_text: String::new(),
+            detail_panel_open: true,
+            results_dialog: ResultsDialog::None,
+            chd_compress_prompt: None,
+            chdman_probe: ChdmanProbe::Idle,
+            credential_status: None,
+            credential_info_popup: None,
+            loading_library: false,
+            tools_state: ToolsState::default(),
+            focused_panel: FocusedPanel::default(),
+            scroll_to_row: None,
+            tag_dialog: crate::state::TagDialog::None,
+            fragile_mount_prompt: None,
+            log_viewer: crate::widgets::log_viewer::LogViewerState::default(),
+            error_list: Vec::new(),
+            pending_organize_plan: None,
+            pending_auto_scans: VecDeque::new(),
+            auto_scan_in_flight: None,
+            auto_scan_op_id: None,
+        }
+    }
+}
+
 /// Main application state.
 pub struct RetroJunkApp {
     /// Analysis context with all registered console analyzers.
     pub context: Arc<AnalysisContext>,
-
-    /// Current sidebar navigation selection.
-    pub current_view: View,
 
     /// Root path for the ROM library.
     pub root_path: Option<std::path::PathBuf>,
@@ -84,26 +169,8 @@ pub struct RetroJunkApp {
     /// Sender cloned into background threads.
     pub message_tx: mpsc::Sender<AppMessage>,
 
-    /// Index of the currently selected console in `library.consoles`.
-    pub selected_console: Option<usize>,
-
-    /// When set, the console tree will scroll to this console index. One-shot:
-    /// set on keyboard navigation, consumed and cleared by the tree next frame.
-    /// Mirrors `scroll_to_row` for the game table; scrolling every frame while a
-    /// console is merely selected would pin the view and block manual scrolling.
-    pub scroll_to_console: Option<usize>,
-
-    /// Index of the focused entry in the selected console's entries list.
-    pub focused_entry: Option<usize>,
-
-    /// Set of selected entry indices (for multi-select).
-    pub selected_entries: std::collections::HashSet<usize>,
-
-    /// Text filter for the game table.
-    pub filter_text: String,
-
-    /// Whether the detail panel is visible.
-    pub detail_panel_open: bool,
+    /// Ephemeral state used only by the UI.
+    pub ui_state: UiState,
 
     /// Persistent settings (library roots, preferences).
     pub settings: AppSettings,
@@ -114,74 +181,6 @@ pub struct RetroJunkApp {
 
     /// Path to the catalog database file (for opening separate connections in background threads).
     pub db_path: Option<std::path::PathBuf>,
-
-    /// Which batch-results dialog is open, if any, with its per-item results.
-    /// The rename / CUE fix / CHD compression dialogs are mutually exclusive.
-    pub results_dialog: ResultsDialog,
-
-    /// Pending CHD compression awaiting user confirmation. When `Some`, the
-    /// compress-to-CHD dialog is shown (including the "chdman missing" explanation).
-    pub chd_compress_prompt: Option<crate::state::ChdCompressPrompt>,
-
-    /// Cached chdman detection for the Settings view.
-    /// Re-probed when the configured chdman path changes.
-    pub chdman_probe: ChdmanProbe,
-
-    /// Cached `ScreenScraper` credential provenance for the Settings view,
-    /// with the time it was computed. Re-read after a short TTL so edits
-    /// made in an external editor show up without a manual refresh.
-    pub credential_status: Option<(std::time::Instant, retro_junk_scraper::CredentialSources)>,
-
-    /// Credential field whose explanation popup is open, if any.
-    pub credential_info_popup: Option<&'static retro_junk_scraper::CredentialFieldMeta>,
-
-    /// True while the initial cache load is in flight on startup.
-    /// Cleared when `StartFolderScan` is processed (the signal that the cache
-    /// thread has finished, whether or not a cache existed).
-    pub loading_library: bool,
-
-    /// Transient state for the Tools (catalog) view.
-    pub tools_state: ToolsState,
-
-    /// Which panel currently has keyboard focus for arrow-key navigation.
-    pub focused_panel: FocusedPanel,
-
-    /// When set, the game table will scroll to this filtered row index.
-    pub scroll_to_row: Option<usize>,
-
-    /// State for the homebrew/modded tagging dialog.
-    pub tag_dialog: crate::state::TagDialog,
-
-    /// Pending root switch awaiting fragile-mount confirmation.
-    /// When `Some`, the network-share warning dialog is shown.
-    pub fragile_mount_prompt: Option<crate::state::FragileMountPrompt>,
-
-    /// State for the log viewer panel.
-    pub log_viewer: crate::widgets::log_viewer::LogViewerState,
-
-    /// Accumulated errors to show in the error dialog. Non-empty triggers the dialog.
-    pub error_list: Vec<crate::state::UserError>,
-
-    /// Pending organize plan awaiting user confirmation.
-    /// When `Some`, the organize preview dialog should be shown.
-    pub pending_organize_plan: Option<(String, retro_junk_lib::organize::OrganizePlan)>,
-
-    /// Folder names queued for auto-scan, processed one at a time.
-    ///
-    /// Auto-scan after folder discovery used to spawn one worker per console,
-    /// which stampedes slow network shares. The queue serializes scans so only
-    /// one console is being read at a time.
-    pub pending_auto_scans: std::collections::VecDeque<String>,
-
-    /// The `folder_name` of the auto-scan currently in flight, if any.
-    /// Used to advance the queue only when the queued scan finishes (not when
-    /// the user kicks off a manual scan in parallel).
-    pub auto_scan_in_flight: Option<String>,
-
-    /// Activity-bar operation id for the auto-scan batch (when active).
-    /// The op shows overall progress (N of M consoles scanned) and lives until
-    /// the queue drains.
-    pub auto_scan_op_id: Option<u64>,
 
     /// `JoinHandle`s for every spawned background-operation thread, keyed by
     /// `op_id`. Joined (and removed) when the operation completes, or all at
@@ -217,14 +216,14 @@ impl RetroJunkApp {
                 // Don't auto-load a fragile network mount at startup; show the
                 // warning dialog instead. Confirming resumes the load via
                 // switch_to_root_unchecked.
-                app.fragile_mount_prompt = Some(crate::state::FragileMountPrompt {
+                app.ui_state.fragile_mount_prompt = Some(crate::state::FragileMountPrompt {
                     root: root.clone(),
                     kind,
                 });
                 return app;
             }
             app.root_path = Some(root.clone());
-            app.loading_library = true;
+            app.ui_state.loading_library = true;
 
             // Load cache first, then scan. The cache thread sends CacheLoaded
             // (if a cache exists) followed by StartFolderScan. This ordering
@@ -284,39 +283,16 @@ impl RetroJunkApp {
 
         Self {
             context,
-            current_view: View::Library,
             root_path: None,
             library: Library::default(),
             dat_indices: HashMap::new(),
             operations: Vec::new(),
             message_rx: rx,
             message_tx: tx,
-            selected_console: None,
-            scroll_to_console: None,
-            focused_entry: None,
-            selected_entries: std::collections::HashSet::new(),
-            filter_text: String::new(),
-            detail_panel_open: true,
+            ui_state: UiState::default(),
             settings,
             catalog_db,
             db_path,
-            results_dialog: ResultsDialog::None,
-            chd_compress_prompt: None,
-            chdman_probe: ChdmanProbe::Idle,
-            credential_status: None,
-            credential_info_popup: None,
-            loading_library: false,
-            tools_state: ToolsState::default(),
-            focused_panel: FocusedPanel::default(),
-            scroll_to_row: None,
-            tag_dialog: crate::state::TagDialog::None,
-            fragile_mount_prompt: None,
-            log_viewer: crate::widgets::log_viewer::LogViewerState::default(),
-            error_list: Vec::new(),
-            pending_organize_plan: None,
-            pending_auto_scans: std::collections::VecDeque::new(),
-            auto_scan_in_flight: None,
-            auto_scan_op_id: None,
             op_threads: HashMap::new(),
         }
     }
@@ -398,7 +374,7 @@ impl RetroJunkApp {
 
     /// Push an error that will be shown to the user in a modal dialog.
     pub fn push_error(&mut self, category: impl Into<String>, message: impl Into<String>) {
-        self.error_list.push(crate::state::UserError {
+        self.ui_state.error_list.push(crate::state::UserError {
             category: category.into(),
             message: message.into(),
         });
@@ -415,11 +391,11 @@ impl eframe::App for RetroJunkApp {
         // Global view switching: Ctrl+1/2/3
         ctx.input_mut(|i| {
             if i.consume_key(egui::Modifiers::CTRL, egui::Key::Num1) {
-                self.current_view = View::Library;
+                self.ui_state.current_view = View::Library;
             } else if i.consume_key(egui::Modifiers::CTRL, egui::Key::Num2) {
-                self.current_view = View::Settings;
+                self.ui_state.current_view = View::Settings;
             } else if i.consume_key(egui::Modifiers::CTRL, egui::Key::Num3) {
-                self.current_view = View::Tools;
+                self.ui_state.current_view = View::Tools;
             }
         });
 
@@ -429,7 +405,7 @@ impl eframe::App for RetroJunkApp {
         }
 
         // Sidebar
-        let prev_view = self.current_view;
+        let prev_view = self.ui_state.current_view;
         egui::Panel::left("sidebar")
             .resizable(false)
             .exact_size(120.0)
@@ -439,23 +415,23 @@ impl eframe::App for RetroJunkApp {
                 ui.separator();
                 ui.add_space(4.0);
 
-                let view = &mut self.current_view;
+                let view = &mut self.ui_state.current_view;
                 ui.selectable_value(view, View::Library, "Library");
                 ui.selectable_value(view, View::Settings, "Settings");
                 ui.selectable_value(view, View::Tools, "Tools");
             });
 
         // Trigger refresh when switching to Tools view
-        if self.current_view == View::Tools && prev_view != View::Tools {
-            self.tools_state.needs_refresh = true;
+        if self.ui_state.current_view == View::Tools && prev_view != View::Tools {
+            self.ui_state.tools_state.needs_refresh = true;
         }
 
         // Bottom panels render in order: status bar (bottommost), log viewer, activity bar.
         // egui stacks bottom panels upward, so the first one rendered sits at the very bottom.
         if widgets::status_bar::show(ui) {
-            self.log_viewer.open = !self.log_viewer.open;
+            self.ui_state.log_viewer.open = !self.ui_state.log_viewer.open;
         }
-        widgets::log_viewer::show(ui, &mut self.log_viewer);
+        widgets::log_viewer::show(ui, &mut self.ui_state.log_viewer);
 
         // Activity bar (bottom, only when operations active)
         if self.has_active_operations() {
@@ -467,14 +443,14 @@ impl eframe::App for RetroJunkApp {
         // Main content. Uses a stable-id central panel so toggling the
         // conditional log viewer / activity bar panels above doesn't re-id every
         // widget in the view (see `util::stable_central_panel`).
-        util::stable_central_panel(ui, "main_view", |ui| match self.current_view {
+        util::stable_central_panel(ui, "main_view", |ui| match self.ui_state.current_view {
             View::Library => views::library::show(ui, self, ctx),
             View::Settings => views::settings::show(ui, self),
             View::Tools => views::tools::show(ui, self),
         });
 
         // Batch-results modal dialog (rename / CUE fix / CHD compression)
-        let dismissed = match &self.results_dialog {
+        let dismissed = match &self.ui_state.results_dialog {
             ResultsDialog::None => false,
             ResultsDialog::Rename(items) => widgets::results_dialog::show_results_dialog(
                 ctx,
@@ -499,14 +475,14 @@ impl eframe::App for RetroJunkApp {
             ),
         };
         if dismissed {
-            self.results_dialog = ResultsDialog::None;
+            self.ui_state.results_dialog = ResultsDialog::None;
         }
 
         // Compress-to-CHD confirmation dialog
         widgets::chd_compress_dialog::show(ctx, self);
 
         // Organize preview dialog
-        if self.pending_organize_plan.is_some() {
+        if self.ui_state.pending_organize_plan.is_some() {
             show_organize_preview_dialog(ctx, self);
         }
 
@@ -517,7 +493,7 @@ impl eframe::App for RetroJunkApp {
         widgets::tag_dialog::show(ctx, self);
 
         // Error dialog
-        widgets::error_dialog::show(ctx, &mut self.error_list);
+        widgets::error_dialog::show(ctx, &mut self.ui_state.error_list);
     }
 
     fn on_exit(&mut self) {
@@ -630,7 +606,7 @@ fn rename_results_row(ui: &mut egui::Ui, item: &RenameResult) {
 
 /// Modal dialog previewing an organize plan and letting the user confirm or cancel.
 fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
-    let Some((ref _folder_name, ref plan)) = app.pending_organize_plan else {
+    let Some((ref _folder_name, ref plan)) = app.ui_state.pending_organize_plan else {
         return;
     };
 
@@ -718,10 +694,10 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
         });
 
     if execute {
-        let (folder_name, plan) = app.pending_organize_plan.take().unwrap();
+        let (folder_name, plan) = app.ui_state.pending_organize_plan.take().unwrap();
         crate::backend::organize::execute_organize_plan(app, folder_name, plan, ctx);
     } else if dismiss || !open {
-        app.pending_organize_plan = None;
+        app.ui_state.pending_organize_plan = None;
     }
 }
 

@@ -125,6 +125,7 @@ fn scrape_media_for_selection(
 
     // Collect work items from selected entries
     let work: Vec<ScrapeWorkItem> = app
+        .ui_state
         .selected_entries
         .iter()
         .copied()
@@ -413,6 +414,7 @@ pub fn regenerate_miximages_for_selection(
 
     // Collect (entry_name, rom_stem) for selected entries
     let work: Vec<(String, String)> = app
+        .ui_state
         .selected_entries
         .iter()
         .copied()

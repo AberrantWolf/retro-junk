@@ -20,7 +20,7 @@ irm https://github.com/AberrantWolf/retro-junk/releases/latest/download/retro-ju
 cargo install --path retro-junk-cli
 ```
 
-> **Note:** This repo uses [Git LFS](https://git-lfs.com/) for the CJK font files embedded in the GUI. Without it, `cargo test --workspace` and the `cjk-full`/`cjk-jp` GUI builds fail with a font-parsing panic (the checkout contains LFS pointer text instead of fonts). After cloning, run:
+> **Note:** This repo uses [Git LFS](https://git-lfs.com/) for the full CJK font embedded in the GUI. Without it, GUI builds and `cargo test --workspace` fail with a font-parsing panic (the checkout contains LFS pointer text instead of the font). After cloning, run:
 >
 > ```bash
 > git lfs install --local && git lfs pull

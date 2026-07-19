@@ -11,7 +11,7 @@ use crate::app::RetroJunkApp;
 use crate::widgets::results_dialog::STATUS_ERR;
 
 pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
-    if app.chd_compress_prompt.is_none() {
+    if app.ui_state.chd_compress_prompt.is_none() {
         return;
     }
 
@@ -19,7 +19,7 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
     let mut close = false;
     let mut open = true;
     {
-        let prompt = app.chd_compress_prompt.as_mut().unwrap();
+        let prompt = app.ui_state.chd_compress_prompt.as_mut().unwrap();
         egui::Window::new("Compress to CHD")
             .collapsible(false)
             .resizable(true)
@@ -136,6 +136,6 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
     if start {
         crate::backend::chd_compress::start_compression(app, ctx);
     } else if close || !open {
-        app.chd_compress_prompt = None;
+        app.ui_state.chd_compress_prompt = None;
     }
 }

@@ -43,7 +43,7 @@ fn start_compression_noops_when_busy() {
         ProgressDisplay::Percent,
     ));
 
-    app.chd_compress_prompt = Some(ChdCompressPrompt {
+    app.ui_state.chd_compress_prompt = Some(ChdCompressPrompt {
         folder_name: "psx".to_string(),
         items: vec![ChdCompressItem {
             job: fake_job(100),
@@ -62,7 +62,7 @@ fn start_compression_noops_when_busy() {
 
     // The prompt is always consumed (taken), but no second ChdCompress op
     // was spawned — still just the one pre-existing operation.
-    assert!(app.chd_compress_prompt.is_none());
+    assert!(app.ui_state.chd_compress_prompt.is_none());
     assert_eq!(
         app.operations.len(),
         1,
@@ -79,7 +79,7 @@ fn start_compression_spawns_when_not_busy() {
         None,
     );
 
-    app.chd_compress_prompt = Some(ChdCompressPrompt {
+    app.ui_state.chd_compress_prompt = Some(ChdCompressPrompt {
         folder_name: "psx".to_string(),
         items: vec![ChdCompressItem {
             job: fake_job(100),
@@ -99,7 +99,7 @@ fn start_compression_spawns_when_not_busy() {
     let ctx = egui::Context::default();
     start_compression(&mut app, &ctx);
 
-    assert!(app.chd_compress_prompt.is_none());
+    assert!(app.ui_state.chd_compress_prompt.is_none());
     assert_eq!(
         app.operations.len(),
         1,
