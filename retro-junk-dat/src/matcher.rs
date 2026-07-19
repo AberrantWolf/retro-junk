@@ -91,10 +91,16 @@ impl DatIndex {
         for (gi, game) in dat.games.iter().enumerate() {
             for (ri, rom) in game.roms.iter().enumerate() {
                 by_size.entry(rom.size).or_default().push((gi, ri));
-                by_crc32.entry(rom.crc.clone()).or_default().push((gi, ri));
+                by_crc32
+                    .entry(rom.crc.to_ascii_lowercase())
+                    .or_default()
+                    .push((gi, ri));
 
                 if let Some(ref sha1) = rom.sha1 {
-                    by_sha1.entry(sha1.clone()).or_default().push((gi, ri));
+                    by_sha1
+                        .entry(sha1.to_ascii_lowercase())
+                        .or_default()
+                        .push((gi, ri));
                 }
 
                 if let Some(ref serial) = rom.serial {
@@ -150,7 +156,7 @@ impl DatIndex {
     #[must_use]
     pub fn match_by_hash(&self, size: u64, hashes: &FileHashes) -> Vec<MatchResult> {
         // Try CRC32 first
-        if let Some(entries) = self.by_crc32.get(&hashes.crc32) {
+        if let Some(entries) = self.by_crc32.get(&hashes.crc32.to_ascii_lowercase()) {
             let matches: Vec<MatchResult> = entries
                 .iter()
                 .filter(|&&(gi, ri)| self.games[gi].roms[ri].size == size)
@@ -167,7 +173,7 @@ impl DatIndex {
 
         // Try SHA1 if available
         if let Some(ref sha1) = hashes.sha1
-            && let Some(entries) = self.by_sha1.get(sha1)
+            && let Some(entries) = self.by_sha1.get(&sha1.to_ascii_lowercase())
         {
             let matches: Vec<MatchResult> = entries
                 .iter()

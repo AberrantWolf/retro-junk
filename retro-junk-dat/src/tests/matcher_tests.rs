@@ -128,6 +128,46 @@ fn test_match_by_crc32() {
 }
 
 #[test]
+fn test_hash_matching_is_case_insensitive_for_clrmamepro_dats() {
+    let dat = DatFile {
+        name: "Genesis".into(),
+        description: String::new(),
+        version: String::new(),
+        games: vec![DatGame {
+            name: "Sonic Spinball (USA)".into(),
+            region: Some("USA".into()),
+            serial: None,
+            version: None,
+            category: None,
+            roms: vec![DatRom {
+                name: "Sonic Spinball (USA).md".into(),
+                size: 1_048_576,
+                crc: "677206CB".into(),
+                md5: Some("841E347B30A6E298EE2B0C722F19FE74".into()),
+                sha1: Some("24BF6342B98C09775089C9F39CFB2F6FBE7806F7".into()),
+                serial: Some("MK-1537-00".into()),
+            }],
+        }],
+    };
+    let index = DatIndex::from_dat(dat);
+    let hashes = FileHashes {
+        crc32: "677206cb".into(),
+        md5: None,
+        sha1: Some("24bf6342b98c09775089c9f39cfb2f6fbe7806f7".into()),
+        data_size: 1_048_576,
+        warnings: Vec::new(),
+    };
+
+    let matches = index.match_by_hash(hashes.data_size, &hashes);
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].method, MatchMethod::Crc32);
+    assert_eq!(
+        index.games[matches[0].game_index].name,
+        "Sonic Spinball (USA)"
+    );
+}
+
+#[test]
 fn test_match_by_serial_exact() {
     let index = DatIndex::from_dat(make_test_dat());
     // Exact match: DAT has "SNS-ZL-USA", query "SNS-ZL-USA"
