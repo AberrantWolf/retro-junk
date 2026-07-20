@@ -61,6 +61,7 @@ pub enum LibraryStoreRequest {
         json: Option<String>,
     },
     ApplyFilesystemTransition {
+        console_id: LibraryConsoleId,
         entry_id: LibraryEntryId,
         expected_source_revision: u64,
         entry: ScannedLibraryEntry,
@@ -277,15 +278,26 @@ fn execute(
             json.as_deref(),
         )?),
         R::ApplyFilesystemTransition {
+            console_id,
             entry_id,
             expected_source_revision,
             entry,
-        } => LibraryStoreValue::ChangeSet(retro_junk_db::apply_filesystem_transition(
-            conn,
-            entry_id,
-            expected_source_revision,
-            &entry,
-        )?),
+        } => {
+            match retro_junk_db::apply_filesystem_transition(
+                conn,
+                entry_id,
+                expected_source_revision,
+                &entry,
+            ) {
+                Ok(changes) => LibraryStoreValue::ChangeSet(changes),
+                Err(error) => {
+                    // The filesystem operation has already succeeded. Persist
+                    // the recovery marker before reporting the failed mapping.
+                    let _ = retro_junk_db::mark_console_stale(conn, console_id);
+                    return Err(error);
+                }
+            }
+        }
         R::MarkConsoleStale(id) => {
             LibraryStoreValue::ChangeSet(retro_junk_db::mark_console_stale(conn, id)?)
         }
@@ -470,6 +482,34 @@ mod tests {
         }
     }
 
+    fn scanned(name: &str) -> ScannedLibraryEntry {
+        ScannedLibraryEntry {
+            entry_key: retro_junk_db::file_source_key(std::path::Path::new(name)).unwrap(),
+            source_fingerprint: format!("fingerprint:{name}"),
+            row: retro_junk_db::LibraryEntryRow {
+                display_name: name.into(),
+                game_entry_json: format!(r#"{{"SingleFile":"/roms/nes/{name}"}}"#),
+                status: "unknown".into(),
+                tag: String::new(),
+                crc32: String::new(),
+                sha1: String::new(),
+                md5: String::new(),
+                data_size: 0,
+                dat_game_name: String::new(),
+                dat_rom_name: String::new(),
+                dat_match_method: String::new(),
+                region_override: String::new(),
+                cover_title: String::new(),
+                screen_title: String::new(),
+                identification_json: None,
+                disc_identifications_json: None,
+                broken_references_json: None,
+                ambiguous_candidates_json: None,
+                cue_compat_issues_json: None,
+            },
+        }
+    }
+
     #[test]
     fn unchanged_frames_schedule_zero_additional_reads() {
         let mut controller = LibraryProjectionController::default();
@@ -531,6 +571,36 @@ mod tests {
             HashSet::from([LibraryEntryId(1)])
         );
         assert_eq!(controller.focused_entry, None);
+    }
+
+    #[test]
+    fn change_invalidates_only_its_console_projection() {
+        let mut controller = LibraryProjectionController::default();
+        let q1 = query();
+        let mut q2 = query();
+        q2.console_id = LibraryConsoleId(8);
+        for query in [&q1, &q2] {
+            let request = controller.schedule_list(query.clone(), 1).unwrap();
+            let reply = StoreEnvelope {
+                session_generation: 0,
+                request_id: request.request_id,
+                payload: Ok(LibraryStoreValue::EntryList(LibraryEntryListPage {
+                    console_id: query.console_id,
+                    console_revision: 1,
+                    total_count: 0,
+                    counts: Default::default(),
+                    offset: 0,
+                    rows: Vec::new(),
+                })),
+            };
+            assert!(controller.accept_list_reply(&reply, query));
+        }
+        controller.apply_change_set(&LibraryChangeSet {
+            console_revision: Some((q1.console_id, 2)),
+            ..Default::default()
+        });
+        assert!(controller.schedule_list(q1, 2).is_some());
+        assert!(controller.schedule_list(q2, 1).is_none());
     }
 
     #[test]
@@ -607,5 +677,96 @@ mod tests {
             Ok(LibraryStoreValue::EntryDetails(ref rows)) if rows.len() == 350
         ));
         store.shutdown_and_join(3);
+    }
+
+    #[test]
+    fn committed_scan_survives_immediate_shutdown_and_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        let mut store = LibraryStore::start(path.clone()).unwrap();
+        store
+            .submit(StoreEnvelope {
+                session_generation: 1,
+                request_id: 1,
+                payload: LibraryStoreRequest::CommitConsoleScan(CompletedConsoleScan {
+                    root_path: "/roms".into(),
+                    platform: "Nes".into(),
+                    folder_name: "nes".into(),
+                    folder_path: "/roms/nes".into(),
+                    fingerprint_hash: "folder".into(),
+                    entries: vec![scanned("game.nes")],
+                }),
+            })
+            .unwrap();
+        store.shutdown_and_join(1);
+
+        let conn = retro_junk_db::open_database(&path).unwrap();
+        let root = retro_junk_db::get_library_root_id(&conn, "/roms")
+            .unwrap()
+            .unwrap();
+        let summaries = retro_junk_db::list_console_summaries(&conn, root).unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].entry_count, 1);
+    }
+
+    #[test]
+    fn failed_filesystem_transition_marks_console_stale_before_reply() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        let mut store = LibraryStore::start(path.clone()).unwrap();
+        store
+            .submit(StoreEnvelope {
+                session_generation: 1,
+                request_id: 1,
+                payload: LibraryStoreRequest::CommitConsoleScan(CompletedConsoleScan {
+                    root_path: "/roms".into(),
+                    platform: "Nes".into(),
+                    folder_name: "nes".into(),
+                    folder_path: "/roms/nes".into(),
+                    fingerprint_hash: "folder".into(),
+                    entries: vec![scanned("game.nes")],
+                }),
+            })
+            .unwrap();
+        let first = store
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        let (console_id, entry_id) = match first.payload.unwrap() {
+            LibraryStoreValue::ConsoleScanCommitted {
+                console_id,
+                changes,
+                ..
+            } => (console_id, changes.affected_entries[0]),
+            other => panic!("unexpected reply: {other:?}"),
+        };
+        store
+            .submit(StoreEnvelope {
+                session_generation: 1,
+                request_id: 2,
+                payload: LibraryStoreRequest::ApplyFilesystemTransition {
+                    console_id,
+                    entry_id,
+                    expected_source_revision: 99,
+                    entry: scanned("renamed.nes"),
+                },
+            })
+            .unwrap();
+        assert!(
+            store
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+                .payload
+                .is_err()
+        );
+        store.shutdown_and_join(1);
+
+        let conn = retro_junk_db::open_database(&path).unwrap();
+        let root = retro_junk_db::get_library_root_id(&conn, "/roms")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            retro_junk_db::list_console_summaries(&conn, root).unwrap()[0].scan_state,
+            retro_junk_db::LibraryScanState::Stale
+        );
     }
 }

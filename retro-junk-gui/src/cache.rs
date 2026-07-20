@@ -449,7 +449,20 @@ fn save_console_inner(
     root_id: retro_junk_db::LibraryRootId,
     console: &ConsoleState,
 ) -> Result<(), CacheError> {
-    ensure_console_id(conn, root_id, console).map(|_| ())
+    let console_id = ensure_console_id(conn, root_id, console)?;
+    let details = retro_junk_db::load_entry_details_for_console(conn, console_id)?;
+    for entry in &console.entries {
+        let scanned = scanned_entry(console, entry)?;
+        let Some(detail) = details
+            .iter()
+            .find(|detail| detail.entry_key == scanned.entry_key)
+        else {
+            continue;
+        };
+        let update = entry_analysis_update(entry)?;
+        retro_junk_db::apply_entry_analysis(conn, detail.id, detail.source_revision, &update)?;
+    }
+    Ok(())
 }
 
 // ── Row ↔ Domain Conversion ─────────────────────────────────────────────────

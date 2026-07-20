@@ -356,13 +356,7 @@ impl RetroJunkApp {
                     {
                         self.pending_all_hashes_request = None;
                     }
-                    if let Some(console_id) = filesystem_console {
-                        self.submit_store(
-                            crate::backend::library_store::LibraryStoreRequest::MarkConsoleStale(
-                                console_id,
-                            ),
-                            ctx,
-                        );
+                    if filesystem_console.is_some() {
                         self.push_error(
                             "Library database",
                             format!(
@@ -848,20 +842,23 @@ impl RetroJunkApp {
                 Some((entry_id, entry.source_revision, scanned))
             })
             .collect();
-        let console_id = self
+        let Some(console_id) = self
             .browser
             .consoles
             .get(console_idx)
-            .and_then(|console| console.id);
+            .and_then(|console| console.id)
+        else {
+            return;
+        };
         for (entry_id, expected_source_revision, entry) in commands {
             if let Some(request_id) = self.queue_store(
                 crate::backend::library_store::LibraryStoreRequest::ApplyFilesystemTransition {
+                    console_id,
                     entry_id,
                     expected_source_revision,
                     entry,
                 },
-            ) && let Some(console_id) = console_id
-            {
+            ) {
                 self.pending_filesystem_writes
                     .insert(request_id, console_id);
             }

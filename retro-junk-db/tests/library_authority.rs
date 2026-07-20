@@ -27,21 +27,64 @@ fn row(path: &str, display: &str) -> LibraryEntryRow {
 }
 
 fn setup(entries: &[LibraryEntryRow]) -> (Connection, LibraryRootId, LibraryConsoleId) {
-    let conn = open_memory().unwrap();
+    let mut conn = open_memory().unwrap();
     let root = upsert_library_root(&conn, "/roms").unwrap();
-    let console = save_console_bulk(
+    let console = ensure_library_console(
         &conn,
-        &ConsoleRecord {
+        &LibraryConsoleDescriptor {
             root_id: root,
-            platform: "NES",
-            folder_name: "nes",
-            folder_path: "/roms/nes",
-            fingerprint_hash: "folder-1",
-            dat_game_count: 0,
+            platform: "NES".into(),
+            folder_name: "nes".into(),
+            folder_path: "/roms/nes".into(),
         },
-        entries,
     )
     .unwrap();
+    let scanned: Vec<_> = entries
+        .iter()
+        .map(|row| ScannedLibraryEntry {
+            entry_key: source_key_from_game_entry_json(
+                row.game_entry_json.as_str(),
+                Path::new("/roms/nes"),
+            )
+            .unwrap(),
+            source_fingerprint: String::new(),
+            row: row.clone(),
+        })
+        .collect();
+    let token = begin_console_scan(&mut conn, console).unwrap();
+    reconcile_console_scan(&mut conn, token, "folder-1", &scanned).unwrap();
+    for detail in load_entry_details_for_console(&conn, console).unwrap() {
+        let source = entries
+            .iter()
+            .find(|row| row.display_name == detail.row.display_name)
+            .unwrap();
+        apply_entry_analysis(
+            &mut conn,
+            detail.id,
+            detail.source_revision,
+            &EntryAnalysisUpdate {
+                status: source.status.clone(),
+                crc32: source.crc32.clone(),
+                sha1: source.sha1.clone(),
+                md5: source.md5.clone(),
+                data_size: source.data_size,
+                dat_game_name: source.dat_game_name.clone(),
+                dat_rom_name: source.dat_rom_name.clone(),
+                dat_match_method: source.dat_match_method.clone(),
+                cover_title: source.cover_title.clone(),
+                screen_title: source.screen_title.clone(),
+                identification_json: source.identification_json.clone(),
+                disc_identifications_json: source.disc_identifications_json.clone(),
+                broken_references_json: source.broken_references_json.clone(),
+                ambiguous_candidates_json: source.ambiguous_candidates_json.clone(),
+                cue_compat_issues_json: source.cue_compat_issues_json.clone(),
+            },
+        )
+        .unwrap();
+        if !source.tag.is_empty() {
+            set_entry_tag(&mut conn, detail.id, Some(&source.tag)).unwrap();
+        }
+    }
     (conn, root, console)
 }
 

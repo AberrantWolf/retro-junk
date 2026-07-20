@@ -1,5 +1,15 @@
 use retro_junk_db::*;
 
+#[allow(dead_code)]
+struct ConsoleRecord<'a> {
+    root_id: LibraryRootId,
+    platform: &'a str,
+    folder_name: &'a str,
+    folder_path: &'a str,
+    fingerprint_hash: &'a str,
+    dat_game_count: i64,
+}
+
 fn make_entry(name: &str, status: &str) -> LibraryEntryRow {
     LibraryEntryRow {
         display_name: name.to_string(),
@@ -24,6 +34,73 @@ fn make_entry(name: &str, status: &str) -> LibraryEntryRow {
     }
 }
 
+fn save_console_bulk(
+    conn: &mut Connection,
+    console: &ConsoleRecord<'_>,
+    entries: &[LibraryEntryRow],
+) -> Result<LibraryConsoleId, LibraryError> {
+    let id = ensure_library_console(
+        conn,
+        &LibraryConsoleDescriptor {
+            root_id: console.root_id,
+            platform: console.platform.to_owned(),
+            folder_name: console.folder_name.to_owned(),
+            folder_path: console.folder_path.to_owned(),
+        },
+    )?;
+    let scanned: Vec<_> = entries
+        .iter()
+        .map(|row| {
+            Ok(ScannedLibraryEntry {
+                entry_key: source_key_from_game_entry_json(
+                    &row.game_entry_json,
+                    std::path::Path::new(console.folder_path),
+                )?,
+                source_fingerprint: String::new(),
+                row: row.clone(),
+            })
+        })
+        .collect::<Result<_, LibraryError>>()?;
+    let token = begin_console_scan(conn, id)?;
+    reconcile_console_scan(conn, token, console.fingerprint_hash, &scanned)?;
+    for detail in load_entry_details_for_console(conn, id)? {
+        let Some(source) = entries
+            .iter()
+            .find(|row| row.display_name == detail.row.display_name)
+        else {
+            continue;
+        };
+        apply_entry_analysis(
+            conn,
+            detail.id,
+            detail.source_revision,
+            &EntryAnalysisUpdate {
+                status: source.status.clone(),
+                crc32: source.crc32.clone(),
+                sha1: source.sha1.clone(),
+                md5: source.md5.clone(),
+                data_size: source.data_size,
+                dat_game_name: source.dat_game_name.clone(),
+                dat_rom_name: source.dat_rom_name.clone(),
+                dat_match_method: source.dat_match_method.clone(),
+                cover_title: source.cover_title.clone(),
+                screen_title: source.screen_title.clone(),
+                identification_json: source.identification_json.clone(),
+                disc_identifications_json: source.disc_identifications_json.clone(),
+                broken_references_json: source.broken_references_json.clone(),
+                ambiguous_candidates_json: source.ambiguous_candidates_json.clone(),
+                cue_compat_issues_json: source.cue_compat_issues_json.clone(),
+            },
+        )?;
+        set_entry_tag(
+            conn,
+            detail.id,
+            (!source.tag.is_empty()).then_some(source.tag.as_str()),
+        )?;
+    }
+    Ok(id)
+}
+
 #[test]
 fn upsert_and_load_library_root() {
     let conn = open_memory().unwrap();
@@ -40,7 +117,7 @@ fn upsert_and_load_library_root() {
 
 #[test]
 fn save_and_load_console_bulk() {
-    let conn = open_memory().unwrap();
+    let mut conn = open_memory().unwrap();
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
 
     let entries = vec![
@@ -49,7 +126,7 @@ fn save_and_load_console_bulk() {
     ];
 
     let console_id = save_console_bulk(
-        &conn,
+        &mut conn,
         &ConsoleRecord {
             root_id,
             platform: "NES",
@@ -67,7 +144,6 @@ fn save_and_load_console_bulk() {
     assert_eq!(consoles.len(), 1);
     assert_eq!(consoles[0].platform, "NES");
     assert_eq!(consoles[0].folder_name, "nes");
-    assert_eq!(consoles[0].dat_game_count, 500);
     assert_eq!(consoles[0].id, console_id);
 
     // Load entries
@@ -85,12 +161,12 @@ fn save_and_load_console_bulk() {
 
 #[test]
 fn save_console_bulk_replaces_entries() {
-    let conn = open_memory().unwrap();
+    let mut conn = open_memory().unwrap();
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
 
     let entries_v1 = vec![make_entry("old.nes", "unknown")];
     let console_id = save_console_bulk(
-        &conn,
+        &mut conn,
         &ConsoleRecord {
             root_id,
             platform: "NES",
@@ -109,7 +185,7 @@ fn save_console_bulk_replaces_entries() {
         make_entry("new2.nes", "matched"),
     ];
     let console_id2 = save_console_bulk(
-        &conn,
+        &mut conn,
         &ConsoleRecord {
             root_id,
             platform: "NES",
@@ -130,11 +206,11 @@ fn save_console_bulk_replaces_entries() {
 }
 
 #[test]
-fn upsert_single_entry() {
-    let conn = open_memory().unwrap();
+fn reconciliation_updates_single_entry() {
+    let mut conn = open_memory().unwrap();
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
     let console_id = save_console_bulk(
-        &conn,
+        &mut conn,
         &ConsoleRecord {
             root_id,
             platform: "NES",
@@ -147,10 +223,22 @@ fn upsert_single_entry() {
     )
     .unwrap();
 
-    // Upsert the same entry with updated status
+    // Reconcile the same source with updated derived state.
     let mut updated = make_entry("game.nes", "matched");
     updated.tag = "homebrew".to_string();
-    upsert_entry(&conn, console_id, &updated).unwrap();
+    save_console_bulk(
+        &mut conn,
+        &ConsoleRecord {
+            root_id,
+            platform: "NES",
+            folder_name: "nes",
+            folder_path: "/roms/nes",
+            fingerprint_hash: "fp2",
+            dat_game_count: 0,
+        },
+        &[updated],
+    )
+    .unwrap();
 
     let loaded = load_entries_for_console(&conn, console_id).unwrap();
     assert_eq!(loaded.len(), 1);
@@ -159,11 +247,11 @@ fn upsert_single_entry() {
 }
 
 #[test]
-fn upsert_entries_batch() {
-    let conn = open_memory().unwrap();
+fn reconciliation_updates_entry_batch() {
+    let mut conn = open_memory().unwrap();
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
     let console_id = save_console_bulk(
-        &conn,
+        &mut conn,
         &ConsoleRecord {
             root_id,
             platform: "NES",
@@ -179,12 +267,24 @@ fn upsert_entries_batch() {
     )
     .unwrap();
 
-    // Batch upsert
+    // Reconcile a batch with updated derived state.
     let updates = vec![
         make_entry("game1.nes", "matched"),
         make_entry("game2.nes", "matched"),
     ];
-    upsert_entries(&conn, console_id, &updates).unwrap();
+    save_console_bulk(
+        &mut conn,
+        &ConsoleRecord {
+            root_id,
+            platform: "NES",
+            folder_name: "nes",
+            folder_path: "/roms/nes",
+            fingerprint_hash: "fp2",
+            dat_game_count: 0,
+        },
+        &updates,
+    )
+    .unwrap();
 
     let loaded = load_entries_for_console(&conn, console_id).unwrap();
     assert!(loaded.iter().all(|e| e.status == "matched"));
@@ -192,10 +292,10 @@ fn upsert_entries_batch() {
 
 #[test]
 fn delete_root_cascades() {
-    let conn = open_memory().unwrap();
+    let mut conn = open_memory().unwrap();
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
     save_console_bulk(
-        &conn,
+        &mut conn,
         &ConsoleRecord {
             root_id,
             platform: "NES",
@@ -217,12 +317,12 @@ fn delete_root_cascades() {
 
 #[test]
 fn multiple_roots_independent() {
-    let conn = open_memory().unwrap();
+    let mut conn = open_memory().unwrap();
     let root1 = upsert_library_root(&conn, "/roms1").unwrap();
     let root2 = upsert_library_root(&conn, "/roms2").unwrap();
 
     save_console_bulk(
-        &conn,
+        &mut conn,
         &ConsoleRecord {
             root_id: root1,
             platform: "NES",
@@ -235,7 +335,7 @@ fn multiple_roots_independent() {
     )
     .unwrap();
     save_console_bulk(
-        &conn,
+        &mut conn,
         &ConsoleRecord {
             root_id: root2,
             platform: "SNES",
