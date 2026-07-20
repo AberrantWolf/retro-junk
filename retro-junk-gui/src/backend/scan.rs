@@ -66,6 +66,7 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
     let folder_path = console.folder_path.clone();
     let folder_name = console.folder_name.clone();
     let platform = console.platform;
+    let db_path = app.db_path.clone();
     let ctx = ctx.clone();
 
     let platform_name = console.platform_name.to_string();
@@ -136,6 +137,7 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
                 op_id,
                 &cancel,
                 &ctx,
+                db_path.as_deref(),
             );
 
             let fingerprint = crate::fingerprint::compute_fingerprint(&folder_path);
@@ -167,6 +169,7 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
     let context = app.context.clone();
     let folder_name = console.folder_name.clone();
     let platform = console.platform;
+    let db_path = app.db_path.clone();
     let ctx = ctx.clone();
 
     let count = selected.len();
@@ -199,6 +202,7 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 op_id,
                 &cancel,
                 &ctx,
+                db_path.as_deref(),
             );
 
             let _ = tx.send(AppMessage::OperationComplete { op_id });
@@ -242,9 +246,29 @@ fn analyze_entries(
     op_id: u64,
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ctx: &egui::Context,
+    db_path: Option<&std::path::Path>,
 ) {
+    enum PendingAnalysis {
+        Single {
+            entry_id: Option<retro_junk_db::LibraryEntryId>,
+            entry_name: String,
+            result: Result<retro_junk_lib::RomIdentification, retro_junk_lib::AnalysisError>,
+            query: Option<usize>,
+        },
+        Multi {
+            entry_id: Option<retro_junk_db::LibraryEntryId>,
+            entry_name: String,
+            results: Vec<(
+                PathBuf,
+                Result<retro_junk_lib::RomIdentification, retro_junk_lib::AnalysisError>,
+            )>,
+            queries: Vec<Option<usize>>,
+        },
+    }
     let options = AnalysisOptions::new().quick(true);
     let total = entries.len();
+    let mut pending = Vec::with_capacity(total);
+    let mut serials = Vec::new();
 
     for (progress_idx, (entry_id, entry)) in entries.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
@@ -267,11 +291,18 @@ fn analyze_entries(
                     Err(e) => Err(retro_junk_lib::AnalysisError::Io(e)),
                 };
 
-                let _ = tx.send(AppMessage::EntryAnalyzed {
-                    folder_name: folder_name.to_string(),
+                let query = result.as_ref().ok().and_then(|identification| {
+                    (!identification.serial_number.is_empty()).then(|| {
+                        let index = serials.len();
+                        serials.push(identification.serial_number.clone());
+                        index
+                    })
+                });
+                pending.push(PendingAnalysis::Single {
                     entry_id: *entry_id,
                     entry_name: entry_name.clone(),
                     result,
+                    query,
                 });
             }
             scanner::GameEntry::MultiDisc { files, .. } => {
@@ -295,11 +326,23 @@ fn analyze_entries(
                     })
                     .collect();
 
-                let _ = tx.send(AppMessage::MultiDiscAnalyzed {
-                    folder_name: folder_name.to_string(),
+                let queries = disc_results
+                    .iter()
+                    .map(|(_, result)| {
+                        result.as_ref().ok().and_then(|identification| {
+                            (!identification.serial_number.is_empty()).then(|| {
+                                let index = serials.len();
+                                serials.push(identification.serial_number.clone());
+                                index
+                            })
+                        })
+                    })
+                    .collect();
+                pending.push(PendingAnalysis::Multi {
                     entry_id: *entry_id,
                     entry_name: entry_name.clone(),
-                    disc_results,
+                    results: disc_results,
+                    queries,
                 });
             }
         }
@@ -333,6 +376,58 @@ fn analyze_entries(
         if progress_idx % 10 == 0 {
             ctx.request_repaint();
         }
+    }
+
+    let matches = db_path
+        .and_then(|path| retro_junk_db::open_database(path).ok())
+        .and_then(|conn| {
+            let mut matches = Vec::with_capacity(serials.len());
+            for cluster in serials.chunks(200) {
+                matches.extend(
+                    retro_junk_db::match_media_by_serials(&conn, analyzer.short_name(), cluster)
+                        .ok()?,
+                );
+            }
+            Some(matches)
+        })
+        .unwrap_or_else(|| vec![Vec::new(); serials.len()]);
+    for analysis in pending {
+        let message = match analysis {
+            PendingAnalysis::Single {
+                entry_id,
+                entry_name,
+                result,
+                query,
+            } => AppMessage::EntryAnalyzed {
+                folder_name: folder_name.to_owned(),
+                entry_id,
+                entry_name,
+                result,
+                catalog_matches: query
+                    .and_then(|index| matches.get(index).cloned())
+                    .unwrap_or_default(),
+            },
+            PendingAnalysis::Multi {
+                entry_id,
+                entry_name,
+                results,
+                queries,
+            } => AppMessage::MultiDiscAnalyzed {
+                folder_name: folder_name.to_owned(),
+                entry_id,
+                entry_name,
+                disc_results: results,
+                catalog_matches: queries
+                    .into_iter()
+                    .map(|query| {
+                        query
+                            .and_then(|index| matches.get(index).cloned())
+                            .unwrap_or_default()
+                    })
+                    .collect(),
+            },
+        };
+        let _ = tx.send(message);
     }
 }
 

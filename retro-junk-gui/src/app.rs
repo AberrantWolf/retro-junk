@@ -298,10 +298,21 @@ impl RetroJunkApp {
 
     /// Drain all pending messages from background threads.
     fn process_pending_messages(&mut self, ctx: &egui::Context) {
-        self.process_store_replies(ctx);
-        while let Ok(msg) = self.message_rx.try_recv() {
+        const MAX_MESSAGES_PER_FRAME: usize = 64;
+        const MESSAGE_BUDGET: Duration = Duration::from_millis(4);
+        self.process_store_replies(ctx, MAX_MESSAGES_PER_FRAME);
+        let started = std::time::Instant::now();
+        let mut processed = 0;
+        while processed < MAX_MESSAGES_PER_FRAME && started.elapsed() < MESSAGE_BUDGET {
+            let Ok(msg) = self.message_rx.try_recv() else {
+                return;
+            };
             crate::state::handle_message(self, msg, ctx);
+            processed += 1;
         }
+        // There may be more work. Yield to layout/paint first, then promptly
+        // schedule another frame instead of starving the event loop.
+        ctx.request_repaint();
     }
 
     pub fn submit_store(
@@ -339,10 +350,12 @@ impl RetroJunkApp {
         );
     }
 
-    fn process_store_replies(&mut self, ctx: &egui::Context) {
+    fn process_store_replies(&mut self, ctx: &egui::Context, limit: usize) {
         let mut replies = Vec::new();
         if let Some(store) = self.library_store.as_ref() {
-            while let Ok(reply) = store.try_recv() {
+            while replies.len() < limit
+                && let Ok(reply) = store.try_recv()
+            {
                 replies.push(reply);
             }
         }
@@ -738,31 +751,28 @@ impl RetroJunkApp {
         !self.operations.is_empty()
     }
 
-    /// Commit a completed off-thread scan as one authoritative reconciliation.
-    pub fn commit_completed_scan(&mut self, console_idx: usize, ctx: &egui::Context) {
-        let result = self
-            .root_path
-            .as_ref()
-            .zip(self.browser.consoles.get(console_idx))
-            .map(|(root, console)| crate::cache::completed_console_scan(root, console));
-        match result {
-            Some(Ok(snapshot)) => {
-                let console_id = self.browser.consoles[console_idx].id;
-                let count = snapshot.entries.len() as u64;
-                if let Some(console_id) = console_id {
-                    self.browser.entry_counts.insert(console_id, count);
-                }
-                self.submit_store(
-                    crate::backend::library_store::LibraryStoreRequest::CommitConsoleScan(snapshot),
-                    ctx,
-                );
-            }
-            Some(Err(error)) => {
-                log::warn!("Failed to publish console scan: {error}");
-                self.push_error("Library scan", error.to_string());
-            }
-            None => {}
-        }
+    /// Prepare filesystem fingerprints and serialized scan rows off the UI thread.
+    pub fn prepare_completed_scan(&mut self, console_idx: usize, ctx: &egui::Context) {
+        let Some(root) = self.root_path.clone() else {
+            return;
+        };
+        let Some(console) = self.browser.consoles.get(console_idx).cloned() else {
+            return;
+        };
+        let tx = self.message_tx.clone();
+        let repaint = ctx.clone();
+        std::thread::spawn(move || {
+            let folder_name = console.folder_name.clone();
+            let console_id = console.id;
+            let result = crate::cache::completed_console_scan(&root, &console)
+                .map_err(|error| error.to_string());
+            let _ = tx.send(crate::state::AppMessage::ScanSnapshotPrepared {
+                folder_name,
+                console_id,
+                result,
+            });
+            repaint.request_repaint();
+        });
     }
 
     pub fn set_entry_regions(
@@ -1067,7 +1077,11 @@ impl eframe::App for RetroJunkApp {
         // Apply whatever completion messages those threads sent (e.g.
         // ChdCompressComplete), queuing their final store commands.
         let ctx = egui::Context::default();
-        self.process_pending_messages(&ctx);
+        // Producers are joined, so drain their finite completion queue before
+        // shutting down the serialized store.
+        while let Ok(message) = self.message_rx.try_recv() {
+            crate::state::handle_message(self, message, &ctx);
+        }
 
         // Commands already queued by completed producers are committed before
         // the store worker acknowledges shutdown.

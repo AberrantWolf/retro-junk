@@ -17,6 +17,15 @@ pub struct CatalogMediaMatch {
     pub platform_id: String,
     pub region: String,
     pub release_title: String,
+    pub cover_title: String,
+    pub screen_title: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CatalogHashQuery {
+    pub file_size: u64,
+    pub crc32: String,
+    pub sha1: String,
 }
 
 // ── Column Constants ────────────────────────────────────────────────────────
@@ -74,7 +83,7 @@ pub fn match_media_by_hash(
     sha1: Option<&str>,
 ) -> Result<Vec<CatalogMediaMatch>, OperationError> {
     let sql = format!(
-        "SELECT {JOINED_MEDIA_COLUMNS}, r.platform_id, r.region, r.title \
+        "SELECT {JOINED_MEDIA_COLUMNS}, r.platform_id, r.region, r.title, r.cover_title, r.screen_title \
          FROM media m JOIN releases r ON r.id=m.release_id \
          WHERE r.platform_id=?1 AND (\
            (?2<>'' AND m.crc32=lower(?2) AND m.file_size=?3) OR \
@@ -96,6 +105,8 @@ pub fn match_media_by_hash(
                 platform_id: row.get(17)?,
                 region: row.get(18)?,
                 release_title: row.get(19)?,
+                cover_title: row.get(20)?,
+                screen_title: row.get(21)?,
             })
         },
     )?;
@@ -114,7 +125,7 @@ pub fn match_media_by_serial(
         return Ok(Vec::new());
     }
     let sql = format!(
-        "SELECT {JOINED_MEDIA_COLUMNS}, r.platform_id, r.region, r.title \
+        "SELECT {JOINED_MEDIA_COLUMNS}, r.platform_id, r.region, r.title, r.cover_title, r.screen_title \
          FROM media m JOIN releases r ON r.id=m.release_id \
          LEFT JOIN media_serial_keys msk ON msk.media_id=m.id \
          WHERE r.platform_id=?1 AND (\
@@ -129,9 +140,115 @@ pub fn match_media_by_serial(
             platform_id: row.get(17)?,
             region: row.get(18)?,
             release_title: row.get(19)?,
+            cover_title: row.get(20)?,
+            screen_title: row.get(21)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Resolve a cluster of serials in one platform-scoped SQL query.
+pub fn match_media_by_serials(
+    conn: &Connection,
+    platform_id: &str,
+    serials: &[String],
+) -> Result<Vec<Vec<CatalogMediaMatch>>, OperationError> {
+    if serials.is_empty() {
+        return Ok(Vec::new());
+    }
+    let values = std::iter::repeat_n("(?, ?)", serials.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "WITH input(request_index,serial_key) AS (VALUES {values}) \
+         SELECT DISTINCT {JOINED_MEDIA_COLUMNS}, r.platform_id, r.region, r.title, r.cover_title, r.screen_title, input.request_index \
+         FROM input JOIN releases r ON r.platform_id=? JOIN media m ON m.release_id=r.id \
+         LEFT JOIN media_serial_keys msk ON msk.media_id=m.id \
+         WHERE msk.serial_key=input.serial_key OR \
+           upper(replace(replace(r.game_serial, '-', ''), ' ', ''))=input.serial_key \
+         ORDER BY input.request_index, r.region, m.dat_name"
+    );
+    let mut parameters: Vec<rusqlite::types::Value> = Vec::with_capacity(serials.len() * 2 + 1);
+    for (index, serial) in serials.iter().enumerate() {
+        parameters.push(i64::try_from(index).unwrap_or(i64::MAX).into());
+        parameters.push(serial.to_ascii_uppercase().replace([' ', '-'], "").into());
+    }
+    parameters.push(platform_id.to_owned().into());
+    let mut grouped = vec![Vec::new(); serials.len()];
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(parameters), |row| {
+        Ok((
+            row.get::<_, usize>(22)?,
+            CatalogMediaMatch {
+                media: row_to_media(row)?,
+                platform_id: row.get(17)?,
+                region: row.get(18)?,
+                release_title: row.get(19)?,
+                cover_title: row.get(20)?,
+                screen_title: row.get(21)?,
+            },
+        ))
+    })?;
+    for row in rows {
+        let (index, found) = row?;
+        if let Some(matches) = grouped.get_mut(index) {
+            matches.push(found);
+        }
+    }
+    Ok(grouped)
+}
+
+/// Resolve a cluster of hashes in one platform-scoped SQL query.
+pub fn match_media_by_hashes(
+    conn: &Connection,
+    platform_id: &str,
+    requests: &[CatalogHashQuery],
+) -> Result<Vec<Vec<CatalogMediaMatch>>, OperationError> {
+    if requests.is_empty() {
+        return Ok(Vec::new());
+    }
+    let values = std::iter::repeat_n("(?, ?, ?, ?)", requests.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "WITH input(request_index,file_size,crc32,sha1) AS (VALUES {values}) \
+         SELECT {JOINED_MEDIA_COLUMNS}, r.platform_id, r.region, r.title, r.cover_title, r.screen_title, input.request_index \
+         FROM input JOIN releases r ON r.platform_id=? \
+         JOIN media m ON m.release_id=r.id AND ((input.crc32<>'' AND m.crc32=lower(input.crc32) AND m.file_size=input.file_size) \
+                      OR (input.sha1<>'' AND m.sha1=lower(input.sha1))) \
+         ORDER BY input.request_index, CASE WHEN input.crc32<>'' AND m.crc32=lower(input.crc32) \
+              AND m.file_size=input.file_size THEN 0 ELSE 1 END, r.region, m.dat_name"
+    );
+    let mut parameters: Vec<rusqlite::types::Value> = Vec::with_capacity(requests.len() * 4 + 1);
+    for (index, request) in requests.iter().enumerate() {
+        parameters.push(i64::try_from(index).unwrap_or(i64::MAX).into());
+        parameters.push(i64::try_from(request.file_size).unwrap_or(i64::MAX).into());
+        parameters.push(request.crc32.clone().into());
+        parameters.push(request.sha1.clone().into());
+    }
+    parameters.push(platform_id.to_owned().into());
+    let mut grouped = vec![Vec::new(); requests.len()];
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(parameters), |row| {
+        Ok((
+            row.get::<_, usize>(22)?,
+            CatalogMediaMatch {
+                media: row_to_media(row)?,
+                platform_id: row.get(17)?,
+                region: row.get(18)?,
+                release_title: row.get(19)?,
+                cover_title: row.get(20)?,
+                screen_title: row.get(21)?,
+            },
+        ))
+    })?;
+    for row in rows {
+        let (index, found) = row?;
+        if let Some(matches) = grouped.get_mut(index) {
+            matches.push(found);
+        }
+    }
+    Ok(grouped)
 }
 
 /// Find disc media whose imported track hashes match a physical track.

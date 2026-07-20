@@ -165,6 +165,7 @@ fn spawn_hash_work(app: &mut RetroJunkApp, console_idx: usize, work: Vec<HashWor
 
     let total_bytes: u64 = work.iter().map(|w| w.file_size).sum();
     let context = app.context.clone();
+    let db_path = app.db_path.clone();
     let description = format!("Computing hashes ({} files)", work.len());
     let scope = folder_name.clone();
 
@@ -182,6 +183,7 @@ fn spawn_hash_work(app: &mut RetroJunkApp, console_idx: usize, work: Vec<HashWor
 
             let mut bytes_completed: u64 = 0;
             let last_reported = Cell::new(0u64);
+            let mut completed = Vec::new();
 
             for item in &work {
                 if cancel.load(Ordering::Relaxed) {
@@ -201,7 +203,7 @@ fn spawn_hash_work(app: &mut RetroJunkApp, console_idx: usize, work: Vec<HashWor
                     }
                 };
 
-                let msg = match hash_one(
+                match hash_one(
                     item,
                     registered.analyzer.as_ref(),
                     file_base,
@@ -214,29 +216,23 @@ fn spawn_hash_work(app: &mut RetroJunkApp, console_idx: usize, work: Vec<HashWor
                             hashes.crc32,
                             hashes.data_size
                         );
-                        if item.is_disc {
-                            AppMessage::DiscHashComplete {
-                                folder_name: folder_name.clone(),
-                                entry_id: item.entry_id,
-                                disc_path: item.path.clone(),
-                                hashes,
-                            }
-                        } else {
-                            AppMessage::HashComplete {
-                                folder_name: folder_name.clone(),
-                                entry_id: item.entry_id,
-                                hashes,
-                            }
-                        }
+                        completed.push((
+                            item.entry_id,
+                            item.entry_name.clone(),
+                            item.path.clone(),
+                            item.is_disc,
+                            hashes,
+                        ));
                     }
-                    Err(error) => AppMessage::HashFailed {
-                        folder_name: folder_name.clone(),
-                        entry_id: item.entry_id,
-                        entry_name: item.entry_name.clone(),
-                        error,
-                    },
-                };
-                let _ = tx.send(msg);
+                    Err(error) => {
+                        let _ = tx.send(AppMessage::HashFailed {
+                            folder_name: folder_name.clone(),
+                            entry_id: item.entry_id,
+                            entry_name: item.entry_name.clone(),
+                            error,
+                        });
+                    }
+                }
 
                 // Always advance past this file (even on failure)
                 bytes_completed += item.file_size;
@@ -246,6 +242,57 @@ fn spawn_hash_work(app: &mut RetroJunkApp, console_idx: usize, work: Vec<HashWor
                     total: total_bytes,
                 });
                 last_reported.set(bytes_completed);
+            }
+
+            // Resolve the completed cluster with one SQL query. The UI only
+            // applies the already-fetched candidates and never performs an
+            // N+1 catalog lookup while draining hash messages.
+            let queries: Vec<_> = completed
+                .iter()
+                .map(|(_, _, _, _, hashes)| retro_junk_db::CatalogHashQuery {
+                    file_size: hashes.data_size,
+                    crc32: hashes.crc32.clone(),
+                    sha1: hashes.sha1.clone().unwrap_or_default(),
+                })
+                .collect();
+            let matches = db_path
+                .as_deref()
+                .and_then(|path| retro_junk_db::open_database(path).ok())
+                .and_then(|conn| {
+                    let mut matches = Vec::with_capacity(queries.len());
+                    for cluster in queries.chunks(200) {
+                        matches.extend(
+                            retro_junk_db::match_media_by_hashes(
+                                &conn,
+                                registered.analyzer.short_name(),
+                                cluster,
+                            )
+                            .ok()?,
+                        );
+                    }
+                    Some(matches)
+                })
+                .unwrap_or_else(|| vec![Vec::new(); completed.len()]);
+            for ((entry_id, _entry_name, path, is_disc, hashes), catalog_matches) in
+                completed.into_iter().zip(matches)
+            {
+                let message = if is_disc {
+                    AppMessage::DiscHashComplete {
+                        folder_name: folder_name.clone(),
+                        entry_id,
+                        disc_path: path,
+                        hashes,
+                        catalog_matches,
+                    }
+                } else {
+                    AppMessage::HashComplete {
+                        folder_name: folder_name.clone(),
+                        entry_id,
+                        hashes,
+                        catalog_matches,
+                    }
+                };
+                let _ = tx.send(message);
             }
 
             let _ = tx.send(AppMessage::OperationComplete { op_id });

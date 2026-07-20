@@ -106,6 +106,7 @@ impl LibraryBrowserState {
     }
 }
 
+#[derive(Clone)]
 pub struct ConsoleState {
     /// Durable database identity; absent only before the first reconciliation.
     #[allow(dead_code)]
@@ -284,6 +285,7 @@ pub struct DiscIdentification {
     pub dat_match: Option<DatMatchInfo>,
 }
 
+#[derive(Clone)]
 pub struct LibraryEntry {
     /// Durable database identity; absent only for not-yet-reconciled scan rows.
     pub id: Option<retro_junk_db::LibraryEntryId>,
@@ -688,123 +690,6 @@ fn describe_m3u_format(files: &[PathBuf]) -> String {
     format!("M3U folder ({})", parts.join(", "))
 }
 
-/// Try to enrich a library entry with cover/screen titles from the catalog DB
-/// using disc serial numbers.
-///
-/// Used as a fallback for multi-disc entries that have per-disc serials but no SHA1.
-fn try_catalog_enrich_by_serial(entry: &mut LibraryEntry, conn: &retro_junk_db::Connection) {
-    if !entry.cover_title.is_empty() {
-        return;
-    }
-    let discs = match entry.disc_identifications.as_ref() {
-        Some(d) if !d.is_empty() => d,
-        _ => return,
-    };
-    for disc in discs {
-        let serial = &disc.identification.serial_number;
-        if serial.is_empty() {
-            continue;
-        }
-        let Ok(media_list) = retro_junk_db::find_media_by_serial(conn, serial) else {
-            continue;
-        };
-        let release_id = match media_list.first() {
-            Some(m) => &m.release_id,
-            None => continue,
-        };
-        if let Ok(Some(release)) = retro_junk_db::get_release_by_id(conn, release_id) {
-            entry.cover_title = release.cover_title;
-            entry.screen_title = release.screen_title;
-            return;
-        }
-    }
-}
-
-/// Try to resolve a canonical game name for a multi-disc set from the catalog DB.
-///
-/// Lookup priority per disc:
-/// 1. Serial → `find_media_by_serial()` (always available for PS1)
-/// 2. SHA1 → `find_media_by_sha1()` (available after hashing)
-///
-/// If all matched discs share the same work, returns `"{canonical_name} ({region_display})"`.
-/// Returns `None` if no discs found or discs belong to different works.
-fn try_catalog_game_name(
-    discs: &[DiscIdentification],
-    conn: &retro_junk_db::Connection,
-) -> Option<String> {
-    let mut work_id: Option<String> = None;
-    let mut release_id_for_region: Option<String> = None;
-
-    for disc in discs {
-        // Try serial first, then SHA1
-        let serial = &disc.identification.serial_number;
-        let media = (!serial.is_empty())
-            .then(|| retro_junk_db::find_media_by_serial(conn, serial).ok())
-            .flatten()
-            .and_then(|v| if v.is_empty() { None } else { Some(v) })
-            .or_else(|| {
-                disc.hashes
-                    .as_ref()
-                    .and_then(|h| h.sha1.as_deref())
-                    .and_then(|s| retro_junk_db::find_media_by_sha1(conn, s).ok())
-                    .and_then(|v| if v.is_empty() { None } else { Some(v) })
-            });
-
-        let Some(media_list) = media else {
-            continue;
-        };
-
-        let first = &media_list[0];
-        let release = retro_junk_db::get_release_by_id(conn, &first.release_id).ok()??;
-
-        match &work_id {
-            None => {
-                work_id = Some(release.work_id.clone());
-                release_id_for_region = Some(release.id.clone());
-            }
-            Some(existing) if *existing == release.work_id => {
-                // Same work — consistent
-            }
-            Some(_) => {
-                // Different works — can't determine a single game name
-                return None;
-            }
-        }
-    }
-
-    let wid = work_id?;
-    let rid = release_id_for_region?;
-    let work = retro_junk_db::get_work_by_id(conn, &wid).ok()??;
-    let release = retro_junk_db::get_release_by_id(conn, &rid).ok()??;
-
-    let region_display = retro_junk_catalog::region_slug_to_display(&release.region);
-    Some(format!("{} ({})", work.canonical_name, region_display))
-}
-
-/// Try to enrich a library entry with cover/screen titles from the catalog DB.
-///
-/// Skips if the entry already has a `cover_title` or has no SHA1 hash.
-/// `SQLite` indexed lookups are sub-millisecond, safe for the main thread.
-fn try_catalog_enrich(entry: &mut LibraryEntry, conn: &retro_junk_db::Connection) {
-    if !entry.cover_title.is_empty() {
-        return;
-    }
-    let Some(sha1) = entry.hashes.as_ref().and_then(|h| h.sha1.as_deref()) else {
-        return;
-    };
-    let Ok(media_list) = retro_junk_db::find_media_by_sha1(conn, sha1) else {
-        return;
-    };
-    let release_id = match media_list.first() {
-        Some(m) => &m.release_id,
-        None => return,
-    };
-    if let Ok(Some(release)) = retro_junk_db::get_release_by_id(conn, release_id) {
-        entry.cover_title = release.cover_title;
-        entry.screen_title = release.screen_title;
-    }
-}
-
 /// An error that should be shown to the user in a modal dialog.
 #[derive(Debug, Clone)]
 pub struct UserError {
@@ -852,12 +737,14 @@ pub enum AppMessage {
         entry_id: Option<retro_junk_db::LibraryEntryId>,
         entry_name: String,
         result: Result<RomIdentification, AnalysisError>,
+        catalog_matches: Vec<retro_junk_db::CatalogMediaMatch>,
     },
     MultiDiscAnalyzed {
         folder_name: String,
         entry_id: Option<retro_junk_db::LibraryEntryId>,
         entry_name: String,
         disc_results: Vec<(PathBuf, Result<RomIdentification, AnalysisError>)>,
+        catalog_matches: Vec<Vec<retro_junk_db::CatalogMediaMatch>>,
     },
     BrokenRefsChecked {
         folder_name: String,
@@ -881,6 +768,11 @@ pub enum AppMessage {
         folder_name: String,
         fingerprint: crate::fingerprint::FolderFingerprint,
     },
+    ScanSnapshotPrepared {
+        folder_name: String,
+        console_id: Option<retro_junk_db::LibraryConsoleId>,
+        result: Result<crate::backend::library_store::CompletedConsoleScan, String>,
+    },
 
     // -- DAT --
     // -- Hashing --
@@ -888,12 +780,14 @@ pub enum AppMessage {
         folder_name: String,
         entry_id: retro_junk_db::LibraryEntryId,
         hashes: FileHashes,
+        catalog_matches: Vec<retro_junk_db::CatalogMediaMatch>,
     },
     DiscHashComplete {
         folder_name: String,
         entry_id: retro_junk_db::LibraryEntryId,
         disc_path: PathBuf,
         hashes: FileHashes,
+        catalog_matches: Vec<retro_junk_db::CatalogMediaMatch>,
     },
     HashFailed {
         folder_name: String,
@@ -1146,30 +1040,26 @@ fn regions_match_dat(detected: &[Region], dat_region: &str) -> bool {
     })
 }
 
-/// Resolve hashes directly against the persisted catalog. This performs an
-/// indexed, platform-scoped query and never parses or materializes a DAT.
-fn catalog_hash_match(
-    conn: &retro_junk_db::Connection,
-    platform_id: &str,
-    hashes: &FileHashes,
+fn select_catalog_hash_match<'a>(
+    matches: &'a [retro_junk_db::CatalogMediaMatch],
+    _hashes: &FileHashes,
     detected_regions: &[Region],
-) -> Option<DatMatchInfo> {
-    let matches = retro_junk_db::match_media_by_hash(
-        conn,
-        platform_id,
-        hashes.data_size,
-        (!hashes.crc32.is_empty()).then_some(hashes.crc32.as_str()),
-        hashes.sha1.as_deref(),
-    )
-    .ok()?;
-    let selected = matches
+) -> Option<&'a retro_junk_db::CatalogMediaMatch> {
+    matches
         .iter()
         .find(|m| regions_match_dat(detected_regions, &m.region))
-        .or_else(|| matches.first())?;
+        .or_else(|| matches.first())
+}
+
+fn catalog_match_info(
+    selected: &retro_junk_db::CatalogMediaMatch,
+    hashes: &FileHashes,
+    detected_regions: &[Region],
+) -> DatMatchInfo {
     let crc_match = !hashes.crc32.is_empty()
         && u64::try_from(selected.media.file_size).ok() == Some(hashes.data_size)
         && selected.media.crc32.eq_ignore_ascii_case(&hashes.crc32);
-    Some(DatMatchInfo {
+    DatMatchInfo {
         game_name: selected.media.dat_name.clone(),
         rom_name: selected.media.rom_name.clone(),
         method: if crc_match {
@@ -1180,17 +1070,13 @@ fn catalog_hash_match(
         region: selected.region.clone(),
         cross_region: !selected.region.is_empty()
             && !regions_match_dat(detected_regions, &selected.region),
-    })
+    }
 }
 
-fn catalog_serial_match(
-    conn: &retro_junk_db::Connection,
-    platform_id: &str,
-    serial: &str,
+fn catalog_serial_match_candidates(
+    matches: &[retro_junk_db::CatalogMediaMatch],
     detected_regions: &[Region],
 ) -> Result<DatMatchInfo, Vec<String>> {
-    let matches =
-        retro_junk_db::match_media_by_serial(conn, platform_id, serial).unwrap_or_default();
     if matches.is_empty() {
         return Err(Vec::new());
     }
@@ -1416,12 +1302,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_id,
             entry_name,
             result,
+            catalog_matches,
         } => {
-            let platform_id = app
-                .browser
-                .find_by_folder(&folder_name)
-                .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
-
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
                 && let Some(entry) =
                     app.browser.consoles[ci].analysis_entry_mut(entry_id, &entry_name)
@@ -1444,19 +1326,20 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     }
                 }
 
-                if entry.disc_identifications.is_none()
-                    && let (Some(conn), Some(platform_id)) =
-                        (app.catalog_db.as_ref(), platform_id.as_deref())
-                {
+                if entry.disc_identifications.is_none() {
                     if let Some(ref id) = entry.identification
                         && !id.serial_number.is_empty()
                     {
-                        match catalog_serial_match(
-                            conn,
-                            platform_id,
-                            &id.serial_number,
-                            &id.regions,
-                        ) {
+                        if entry.cover_title.is_empty()
+                            && let Some(found) = catalog_matches
+                                .iter()
+                                .find(|found| regions_match_dat(&id.regions, &found.region))
+                                .or_else(|| catalog_matches.first())
+                        {
+                            entry.cover_title.clone_from(&found.cover_title);
+                            entry.screen_title.clone_from(&found.screen_title);
+                        }
+                        match catalog_serial_match_candidates(&catalog_matches, &id.regions) {
                             Ok(dm) => {
                                 entry.dat_match = Some(dm);
                                 entry.status = EntryStatus::Matched;
@@ -1469,23 +1352,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             Err(_) => {}
                         }
                     }
-
-                    if entry.status != EntryStatus::Matched
-                        && let Some(ref hashes) = entry.hashes
-                    {
-                        let detected = entry
-                            .identification
-                            .as_ref()
-                            .map(|id| id.regions.as_slice())
-                            .unwrap_or_default();
-                        if let Some(dm) = catalog_hash_match(conn, platform_id, hashes, detected) {
-                            entry.dat_match = Some(dm);
-                            entry.status = EntryStatus::Matched;
-                            entry.ambiguous_candidates.clear();
-                        }
-                    }
                 }
-
                 // If re-matching couldn't run (DATs not loaded yet) or didn't
                 // find anything, but the entry already had a valid DAT match
                 // from a prior cycle, restore its old status. The cached
@@ -1504,12 +1371,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_id,
             entry_name,
             disc_results,
+            catalog_matches,
         } => {
-            let platform_id = app
-                .browser
-                .find_by_folder(&folder_name)
-                .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
-
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
                 && let Some(entry) =
                     app.browser.consoles[ci].analysis_entry_mut(entry_id, &entry_name)
@@ -1594,8 +1457,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     EntryStatus::Unrecognized
                 };
 
-                if let (Some(conn), Some(platform_id)) =
-                    (app.catalog_db.as_ref(), platform_id.as_deref())
                 {
                     let mut matched_names: Vec<String> = Vec::new();
                     let mut first_rom_name = String::new();
@@ -1603,13 +1464,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     let mut all_candidates: Vec<String> = Vec::new();
 
                     if let Some(ref mut discs) = entry.disc_identifications {
-                        for disc in discs.iter_mut() {
+                        for (disc, candidates) in discs.iter_mut().zip(&catalog_matches) {
                             let serial = &disc.identification.serial_number;
                             if !serial.is_empty() {
-                                match catalog_serial_match(
-                                    conn,
-                                    platform_id,
-                                    serial,
+                                match catalog_serial_match_candidates(
+                                    candidates,
                                     &disc.identification.regions,
                                 ) {
                                     Ok(dm) => {
@@ -1634,22 +1493,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     }
 
                     if !matched_names.is_empty() {
-                        let combined = app
-                            .catalog_db
-                            .as_ref()
-                            .and_then(|conn| {
-                                entry
-                                    .disc_identifications
-                                    .as_ref()
-                                    .and_then(|discs| try_catalog_game_name(discs, conn))
-                            })
-                            .unwrap_or_else(|| {
-                                let name_refs: Vec<&str> = matched_names
-                                    .iter()
-                                    .map(std::string::String::as_str)
-                                    .collect();
-                                retro_junk_core::disc::derive_base_game_name(&name_refs)
-                            });
+                        let name_refs: Vec<&str> = matched_names
+                            .iter()
+                            .map(std::string::String::as_str)
+                            .collect();
+                        let combined = retro_junk_core::disc::derive_base_game_name(&name_refs);
                         entry.dat_match = Some(DatMatchInfo {
                             game_name: combined,
                             rom_name: first_rom_name.clone(),
@@ -1775,7 +1623,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     })
             });
             if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.commit_completed_scan(ci, ctx);
+                app.prepare_completed_scan(ci, ctx);
             }
 
             // Advance the auto-scan queue only when the in-flight queued scan
@@ -1791,40 +1639,62 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
         }
 
+        AppMessage::ScanSnapshotPrepared {
+            folder_name,
+            console_id,
+            result,
+        } => match result {
+            Ok(snapshot) => {
+                let count = snapshot.entries.len() as u64;
+                if let Some(console_id) = console_id {
+                    app.browser.entry_counts.insert(console_id, count);
+                }
+                app.submit_store(
+                    crate::backend::library_store::LibraryStoreRequest::CommitConsoleScan(snapshot),
+                    ctx,
+                );
+            }
+            Err(error) => {
+                log::warn!("Failed to publish {folder_name} scan: {error}");
+                app.push_error("Library scan", error);
+            }
+        },
+
         AppMessage::HashComplete {
             folder_name,
             entry_id,
             hashes,
+            catalog_matches,
         } => {
-            let platform_id = app
-                .browser
-                .find_by_folder(&folder_name)
-                .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
                 && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
             {
                 if entry.disc_identifications.is_none()
-                    && let (Some(conn), Some(platform_id)) =
-                        (app.catalog_db.as_ref(), platform_id.as_deref())
+                    && let Some(selected) = select_catalog_hash_match(
+                        &catalog_matches,
+                        &hashes,
+                        entry
+                            .identification
+                            .as_ref()
+                            .map(|id| id.regions.as_slice())
+                            .unwrap_or_default(),
+                    )
                 {
-                    let detected = entry
-                        .identification
-                        .as_ref()
-                        .map(|id| id.regions.as_slice())
-                        .unwrap_or_default();
-                    if let Some(dm) = catalog_hash_match(conn, platform_id, &hashes, detected) {
-                        entry.dat_match = Some(dm);
-                        entry.status = EntryStatus::Matched;
-                        entry.ambiguous_candidates.clear();
-                    }
+                    entry.dat_match = Some(catalog_match_info(
+                        selected,
+                        &hashes,
+                        entry
+                            .identification
+                            .as_ref()
+                            .map(|id| id.regions.as_slice())
+                            .unwrap_or_default(),
+                    ));
+                    entry.cover_title.clone_from(&selected.cover_title);
+                    entry.screen_title.clone_from(&selected.screen_title);
+                    entry.status = EntryStatus::Matched;
+                    entry.ambiguous_candidates.clear();
                 }
                 entry.hashes = Some(hashes);
-
-                // Enrich with catalog titles
-                if let Some(ref conn) = app.catalog_db {
-                    try_catalog_enrich(entry, conn);
-                    try_catalog_enrich_by_serial(entry, conn);
-                }
             }
             app.publish_entry_analysis(entry_id, ctx);
         }
@@ -1834,30 +1704,24 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_id,
             disc_path,
             hashes,
+            catalog_matches,
         } => {
-            let platform_id = app
-                .browser
-                .find_by_folder(&folder_name)
-                .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
                 && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
                 && let Some(ref mut discs) = entry.disc_identifications
             {
                 // Find the matching disc and store its hashes
                 if let Some(disc) = discs.iter_mut().find(|d| d.path == disc_path) {
-                    if let (Some(conn), Some(platform_id)) =
-                        (app.catalog_db.as_ref(), platform_id.as_deref())
-                    {
-                        let detected = disc.identification.regions.as_slice();
-                        if let Some(dm) = catalog_hash_match(conn, platform_id, &hashes, detected) {
-                            log::info!(
-                                "Disc hash match: {} -> {} ({})",
-                                disc_path.display(),
-                                dm.game_name,
-                                dm.rom_name
-                            );
-                            disc.dat_match = Some(dm);
-                        }
+                    if let Some(selected) = select_catalog_hash_match(
+                        &catalog_matches,
+                        &hashes,
+                        disc.identification.regions.as_slice(),
+                    ) {
+                        disc.dat_match = Some(catalog_match_info(
+                            selected,
+                            &hashes,
+                            disc.identification.regions.as_slice(),
+                        ));
                     }
                     disc.hashes = Some(hashes);
                 }
@@ -1865,20 +1729,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 // Check if ALL discs now have hashes and at least one has a DAT match
                 let all_hashed = discs.iter().all(|d| d.hashes.is_some());
                 if all_hashed && discs.iter().any(|d| d.dat_match.is_some()) {
-                    // Derive game-level name: try catalog DB, then fall back to DAT name derivation
-                    let game_name = app
-                        .catalog_db
-                        .as_ref()
-                        .and_then(|conn| try_catalog_game_name(discs, conn))
-                        .unwrap_or_else(|| {
-                            let names: Vec<&str> = discs
-                                .iter()
-                                .filter_map(|d| {
-                                    d.dat_match.as_ref().map(|dm| dm.game_name.as_str())
-                                })
-                                .collect();
-                            retro_junk_core::disc::derive_base_game_name(&names)
-                        });
+                    let names: Vec<&str> = discs
+                        .iter()
+                        .filter_map(|d| d.dat_match.as_ref().map(|dm| dm.game_name.as_str()))
+                        .collect();
+                    let game_name = retro_junk_core::disc::derive_base_game_name(&names);
                     let first_match = discs.iter().find_map(|d| d.dat_match.as_ref());
                     let first_rom_name = first_match
                         .map(|dm| dm.rom_name.clone())
@@ -1900,10 +1755,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     entry.ambiguous_candidates.clear();
                 }
 
-                // Enrich with catalog titles
-                if let Some(ref conn) = app.catalog_db {
-                    try_catalog_enrich(entry, conn);
-                    try_catalog_enrich_by_serial(entry, conn);
+                if entry.cover_title.is_empty()
+                    && let Some(found) = catalog_matches.first()
+                {
+                    entry.cover_title.clone_from(&found.cover_title);
+                    entry.screen_title.clone_from(&found.screen_title);
                 }
             }
             app.publish_entry_analysis(entry_id, ctx);

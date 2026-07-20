@@ -164,6 +164,25 @@ fn runtime_hash_match_is_platform_scoped_size_checked_and_case_insensitive() {
         .len(),
         1
     );
+    let clustered = match_media_by_hashes(
+        &conn,
+        "nes",
+        &[
+            CatalogHashQuery {
+                file_size: 40976,
+                crc32: "D445F698".into(),
+                sha1: String::new(),
+            },
+            CatalogHashQuery {
+                file_size: 1,
+                crc32: "00000000".into(),
+                sha1: String::new(),
+            },
+        ],
+    )
+    .unwrap();
+    assert_eq!(clustered[0].len(), 1);
+    assert!(clustered[1].is_empty());
 }
 
 #[test]
@@ -184,6 +203,15 @@ fn runtime_serial_match_uses_normalized_comma_parts_and_game_codes() {
             .unwrap()
             .is_empty()
     );
+    let clustered = match_media_by_serials(
+        &conn,
+        "nes",
+        &["NES 0001".into(), "missing".into(), "GBIE".into()],
+    )
+    .unwrap();
+    assert_eq!(clustered[0].len(), 1);
+    assert!(clustered[1].is_empty());
+    assert_eq!(clustered[2].len(), 1);
 }
 
 #[test]
