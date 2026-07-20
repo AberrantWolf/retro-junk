@@ -7,23 +7,21 @@ use std::sync::mpsc;
 use std::thread;
 
 use retro_junk_db::{
-    ConsoleRecord, ConsoleScanToken, EntryAnalysisUpdate, LibraryChangeSet,
-    LibraryConsoleDescriptor, LibraryConsoleId, LibraryConsoleSummary, LibraryEntryDetail,
-    LibraryEntryId, LibraryEntryListPage, LibraryEntryListQuery, LibraryRootId,
-    ScannedLibraryEntry,
+    EntryAnalysisUpdate, LibraryChangeSet, LibraryConsoleDescriptor, LibraryConsoleId,
+    LibraryConsoleSummary, LibraryEntryDetail, LibraryEntryId, LibraryEntryListPage,
+    LibraryEntryListQuery, LibraryRootId, ScannedLibraryEntry,
 };
 
 pub type UiSessionGeneration = u64;
 pub type StoreRequestId = u64;
 
 #[derive(Debug, Clone)]
-pub struct LibraryConsoleSnapshot {
+pub struct CompletedConsoleScan {
     pub root_path: String,
     pub platform: String,
     pub folder_name: String,
     pub folder_path: String,
     pub fingerprint_hash: String,
-    pub dat_game_count: i64,
     pub entries: Vec<ScannedLibraryEntry>,
 }
 
@@ -38,18 +36,12 @@ pub struct StoreEnvelope<T> {
 pub enum LibraryStoreRequest {
     OpenRoot(String),
     EnsureConsole(LibraryConsoleDescriptor),
-    PublishConsole(LibraryConsoleSnapshot),
+    CommitConsoleScan(CompletedConsoleScan),
     ConsoleSummaries(LibraryRootId),
     EntryList(LibraryEntryListQuery),
     EntryDetail(LibraryEntryId),
     EntryDetails(Vec<LibraryEntryId>),
     ConsoleEntryDetails(LibraryConsoleId),
-    BeginConsoleScan(LibraryConsoleId),
-    ReconcileConsoleScan {
-        token: ConsoleScanToken,
-        fingerprint_hash: String,
-        entries: Vec<ScannedLibraryEntry>,
-    },
     SetRegionOverride {
         entry_id: LibraryEntryId,
         value: Option<String>,
@@ -90,16 +82,16 @@ pub enum LibraryStoreValue {
         folder_name: String,
         console_id: LibraryConsoleId,
     },
-    ConsolePublished {
+    ConsoleScanCommitted {
         folder_name: String,
         console_id: LibraryConsoleId,
         entry_count: u64,
+        changes: LibraryChangeSet,
     },
     ConsoleSummaries(Vec<LibraryConsoleSummary>),
     EntryList(LibraryEntryListPage),
     EntryDetail(Option<LibraryEntryDetail>),
     EntryDetails(Vec<LibraryEntryDetail>),
-    ScanToken(ConsoleScanToken),
     ChangeSet(LibraryChangeSet),
     ShutdownComplete,
 }
@@ -216,24 +208,29 @@ fn execute(
                 console_id,
             }
         }
-        R::PublishConsole(snapshot) => {
+        R::CommitConsoleScan(snapshot) => {
             let root_id = retro_junk_db::upsert_library_root(conn, &snapshot.root_path)?;
-            let console_id = retro_junk_db::save_console_reconciled(
+            let console_id = retro_junk_db::ensure_library_console(
                 conn,
-                &ConsoleRecord {
+                &LibraryConsoleDescriptor {
                     root_id,
-                    platform: &snapshot.platform,
-                    folder_name: &snapshot.folder_name,
-                    folder_path: &snapshot.folder_path,
-                    fingerprint_hash: &snapshot.fingerprint_hash,
-                    dat_game_count: snapshot.dat_game_count,
+                    platform: snapshot.platform.clone(),
+                    folder_name: snapshot.folder_name.clone(),
+                    folder_path: snapshot.folder_path.clone(),
                 },
+            )?;
+            let token = retro_junk_db::begin_console_scan(conn, console_id)?;
+            let changes = retro_junk_db::reconcile_console_scan(
+                conn,
+                token,
+                &snapshot.fingerprint_hash,
                 &snapshot.entries,
             )?;
-            LibraryStoreValue::ConsolePublished {
+            LibraryStoreValue::ConsoleScanCommitted {
                 folder_name: snapshot.folder_name,
                 console_id,
                 entry_count: snapshot.entries.len() as u64,
+                changes,
             }
         }
         R::ConsoleSummaries(root) => {
@@ -253,19 +250,6 @@ fn execute(
         R::ConsoleEntryDetails(console_id) => LibraryStoreValue::EntryDetails(
             retro_junk_db::load_entry_details_for_console(conn, console_id)?,
         ),
-        R::BeginConsoleScan(id) => {
-            LibraryStoreValue::ScanToken(retro_junk_db::begin_console_scan(conn, id)?)
-        }
-        R::ReconcileConsoleScan {
-            token,
-            fingerprint_hash,
-            entries,
-        } => LibraryStoreValue::ChangeSet(retro_junk_db::reconcile_console_scan(
-            conn,
-            token,
-            &fingerprint_hash,
-            &entries,
-        )?),
         R::SetRegionOverride { entry_id, value } => LibraryStoreValue::ChangeSet(
             retro_junk_db::set_entry_region_override(conn, entry_id, value.as_deref())?,
         ),

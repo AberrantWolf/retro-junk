@@ -8,8 +8,7 @@ use retro_junk_db::{Connection, LibraryEntryRow};
 use retro_junk_lib::{AnalysisContext, Platform, Region};
 
 use crate::state::{
-    ConsoleState, DatMatchInfo, DatStatus, EntryStatus, LibraryBrowserState, LibraryEntry,
-    ScanStatus,
+    ConsoleState, DatMatchInfo, EntryStatus, LibraryBrowserState, LibraryEntry, ScanStatus,
 };
 
 // ── Error Type ──────────────────────────────────────────────────────────────
@@ -91,7 +90,7 @@ pub fn compute_fingerprint(path: &Path) -> FolderFingerprint {
 
 /// One-time full import used only while converting the legacy JSON cache.
 fn import_legacy_library(
-    conn: &Connection,
+    conn: &mut Connection,
     root: &Path,
     library: &LibraryBrowserState,
 ) -> Result<(), CacheError> {
@@ -128,19 +127,15 @@ fn import_legacy_library(
 }
 
 /// Build the source-aware payload published by the serialized library store.
-pub fn console_snapshot(
+pub fn completed_console_scan(
     root: &Path,
     console: &ConsoleState,
-) -> Result<crate::backend::library_store::LibraryConsoleSnapshot, CacheError> {
+) -> Result<crate::backend::library_store::CompletedConsoleScan, CacheError> {
     let platform = serde_json::to_string(&console.platform)?;
     let fingerprint_hash = console.fingerprint.as_ref().map_or_else(
         || compute_fingerprint(&console.folder_path).name_hash,
         |fingerprint| fingerprint.name_hash.clone(),
     );
-    let dat_game_count = match &console.dat_status {
-        DatStatus::Loaded { game_count } => *game_count as i64,
-        _ => 0,
-    };
     let entries = console
         .entries
         .iter()
@@ -161,14 +156,31 @@ pub fn console_snapshot(
         })
         .collect::<Result<Vec<_>, CacheError>>()?;
 
-    Ok(crate::backend::library_store::LibraryConsoleSnapshot {
+    Ok(crate::backend::library_store::CompletedConsoleScan {
         root_path: root.to_string_lossy().into_owned(),
         platform: platform.trim_matches('"').to_owned(),
         folder_name: console.folder_name.clone(),
         folder_path: console.folder_path.to_string_lossy().into_owned(),
         fingerprint_hash,
-        dat_game_count,
         entries,
+    })
+}
+
+pub fn scanned_entry(
+    console: &ConsoleState,
+    entry: &LibraryEntry,
+) -> Result<retro_junk_db::ScannedLibraryEntry, CacheError> {
+    let row = entry_to_row(entry)?;
+    Ok(retro_junk_db::ScannedLibraryEntry {
+        entry_key: retro_junk_db::source_key_from_game_entry_json(
+            &row.game_entry_json,
+            &console.folder_path,
+        )?,
+        source_fingerprint: retro_junk_db::source_fingerprint_from_game_entry_json(
+            &row.game_entry_json,
+            &console.folder_path,
+        )?,
+        row,
     })
 }
 
@@ -176,7 +188,7 @@ pub fn console_snapshot(
 
 /// One-time migration from JSON cache files to `SQLite`.
 /// Reads old JSON format, writes to DB, deletes JSON file.
-pub fn migrate_json_cache(conn: &Connection, root: &Path, context: &AnalysisContext) {
+pub fn migrate_json_cache(conn: &mut Connection, root: &Path, context: &AnalysisContext) {
     let json_path = legacy_cache_path(root);
     if !json_path.exists() {
         return;
@@ -235,7 +247,6 @@ struct LegacyCachedConsole {
     folder_path: PathBuf,
     fingerprint: LegacyFingerprint,
     entries: Vec<LegacyCachedEntry>,
-    dat_game_count: Option<usize>,
 }
 
 #[derive(Clone, Deserialize)]
@@ -331,11 +342,6 @@ fn load_library_from_legacy(
             })
             .collect();
 
-        let dat_status = match cc.dat_game_count {
-            Some(gc) => DatStatus::Loaded { game_count: gc },
-            None => DatStatus::NotLoaded,
-        };
-
         if is_stale {
             stale_folders.push(cc.folder_name.clone());
         }
@@ -354,7 +360,6 @@ fn load_library_from_legacy(
                 ScanStatus::Scanned
             },
             entries,
-            dat_status,
             fingerprint: if is_stale { None } else { Some(current_fp) },
             loose_disc_files: Vec::new(),
         });
@@ -388,7 +393,7 @@ fn load_library_from_legacy(
 // ── Private Helpers ─────────────────────────────────────────────────────────
 
 fn ensure_console_id(
-    conn: &Connection,
+    conn: &mut Connection,
     root_id: retro_junk_db::LibraryRootId,
     console: &ConsoleState,
 ) -> Result<retro_junk_db::LibraryConsoleId, CacheError> {
@@ -399,10 +404,6 @@ fn ensure_console_id(
         || compute_fingerprint(&console.folder_path).name_hash,
         |fp| fp.name_hash.clone(),
     );
-    let dat_game_count = match &console.dat_status {
-        DatStatus::Loaded { game_count } => *game_count as i64,
-        _ => 0,
-    };
     let rows: Vec<LibraryEntryRow> = console
         .entries
         .iter()
@@ -429,23 +430,22 @@ fn ensure_console_id(
         })
         .collect::<Result<Vec<_>, retro_junk_db::LibraryError>>()?;
 
-    let console_id = retro_junk_db::save_console_reconciled(
+    let console_id = retro_junk_db::ensure_library_console(
         conn,
-        &retro_junk_db::ConsoleRecord {
+        &retro_junk_db::LibraryConsoleDescriptor {
             root_id,
-            platform: platform_str,
-            folder_name: &console.folder_name,
-            folder_path: &console.folder_path.to_string_lossy(),
-            fingerprint_hash: &fingerprint,
-            dat_game_count,
+            platform: platform_str.to_owned(),
+            folder_name: console.folder_name.clone(),
+            folder_path: console.folder_path.to_string_lossy().into_owned(),
         },
-        &entries,
     )?;
+    let token = retro_junk_db::begin_console_scan(conn, console_id)?;
+    retro_junk_db::reconcile_console_scan(conn, token, &fingerprint, &entries)?;
     Ok(console_id)
 }
 
 fn save_console_inner(
-    conn: &Connection,
+    conn: &mut Connection,
     root_id: retro_junk_db::LibraryRootId,
     console: &ConsoleState,
 ) -> Result<(), CacheError> {

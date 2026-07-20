@@ -189,6 +189,7 @@ pub struct RetroJunkApp {
     pending_page_request: Option<u64>,
     pending_details_request: Option<u64>,
     pending_all_hashes_request: Option<(u64, retro_junk_db::LibraryConsoleId)>,
+    pending_filesystem_writes: HashMap<u64, retro_junk_db::LibraryConsoleId>,
 
     /// `JoinHandle`s for every spawned background-operation thread, keyed by
     /// `op_id`. Joined (and removed) when the operation completes, or all at
@@ -233,7 +234,7 @@ impl RetroJunkApp {
             }
             app.root_path = Some(root.clone());
             app.ui_state.loading_library = true;
-            if let Some(conn) = app.catalog_db.as_ref() {
+            if let Some(conn) = app.catalog_db.as_mut() {
                 crate::cache::migrate_json_cache(conn, root, &app.context);
             }
             app.open_browser_root(root, &cc.egui_ctx);
@@ -286,6 +287,7 @@ impl RetroJunkApp {
             pending_page_request: None,
             pending_details_request: None,
             pending_all_hashes_request: None,
+            pending_filesystem_writes: HashMap::new(),
             op_threads: HashMap::new(),
         }
     }
@@ -345,6 +347,7 @@ impl RetroJunkApp {
                 continue;
             }
             let request_id = reply.request_id;
+            let filesystem_console = self.pending_filesystem_writes.remove(&request_id);
             match reply.payload {
                 Err(error) => {
                     if self
@@ -353,7 +356,22 @@ impl RetroJunkApp {
                     {
                         self.pending_all_hashes_request = None;
                     }
-                    self.push_error("Library database", error);
+                    if let Some(console_id) = filesystem_console {
+                        self.submit_store(
+                            crate::backend::library_store::LibraryStoreRequest::MarkConsoleStale(
+                                console_id,
+                            ),
+                            ctx,
+                        );
+                        self.push_error(
+                            "Library database",
+                            format!(
+                                "The filesystem changed but its database transition failed: {error}. The console was marked for rescan."
+                            ),
+                        );
+                    } else {
+                        self.push_error("Library database", error);
+                    }
                 }
                 Ok(crate::backend::library_store::LibraryStoreValue::RootOpened {
                     root_id,
@@ -397,11 +415,13 @@ impl RetroJunkApp {
                         }
                     }
                 }
-                Ok(crate::backend::library_store::LibraryStoreValue::ConsolePublished {
+                Ok(crate::backend::library_store::LibraryStoreValue::ConsoleScanCommitted {
                     folder_name,
                     console_id,
                     entry_count,
+                    changes,
                 }) => {
+                    self.library_controller.apply_change_set(&changes);
                     self.browser.entry_counts.insert(console_id, entry_count);
                     if let Some(index) = self.browser.find_by_folder(&folder_name) {
                         self.browser.consoles[index].id = Some(console_id);
@@ -468,6 +488,7 @@ impl RetroJunkApp {
                         .filter_map(detail_to_entry)
                         .collect();
                     self.discover_assets_for_page(console_index, ctx);
+                    crate::backend::hash::compute_missing_hashes(self, console_index);
                 }
                 Ok(crate::backend::library_store::LibraryStoreValue::ChangeSet(changes)) => {
                     self.library_controller.apply_change_set(&changes);
@@ -554,13 +575,6 @@ impl RetroJunkApp {
                     _ => crate::state::ScanStatus::NotScanned,
                 },
                 entries: Vec::new(),
-                dat_status: if summary.dat_game_count > 0 {
-                    crate::state::DatStatus::Loaded {
-                        game_count: summary.dat_game_count as usize,
-                    }
-                } else {
-                    crate::state::DatStatus::NotLoaded
-                },
                 fingerprint: None,
                 loose_disc_files: Vec::new(),
             });
@@ -724,13 +738,13 @@ impl RetroJunkApp {
         !self.operations.is_empty()
     }
 
-    /// Save one console's entries to the database.
-    pub fn save_console_cache(&mut self, console_idx: usize, ctx: &egui::Context) {
+    /// Commit a completed off-thread scan as one authoritative reconciliation.
+    pub fn commit_completed_scan(&mut self, console_idx: usize, ctx: &egui::Context) {
         let result = self
             .root_path
             .as_ref()
             .zip(self.browser.consoles.get(console_idx))
-            .map(|(root, console)| crate::cache::console_snapshot(root, console));
+            .map(|(root, console)| crate::cache::completed_console_scan(root, console));
         match result {
             Some(Ok(snapshot)) => {
                 let console_id = self.browser.consoles[console_idx].id;
@@ -739,7 +753,7 @@ impl RetroJunkApp {
                     self.browser.entry_counts.insert(console_id, count);
                 }
                 self.submit_store(
-                    crate::backend::library_store::LibraryStoreRequest::PublishConsole(snapshot),
+                    crate::backend::library_store::LibraryStoreRequest::CommitConsoleScan(snapshot),
                     ctx,
                 );
             }
@@ -792,23 +806,17 @@ impl RetroJunkApp {
 
     /// Publish derived analysis for one durable entry without reconciling or
     /// rewriting the rest of its console.
-    pub fn save_entry_analysis(
+    pub fn publish_entry_analysis(
         &mut self,
-        console_idx: usize,
-        entry_name: &str,
+        entry_id: retro_junk_db::LibraryEntryId,
         ctx: &egui::Context,
     ) {
-        let Some(entry) = self.browser.consoles.get(console_idx).and_then(|console| {
-            console
-                .entries
-                .iter()
-                .find(|entry| entry.game_entry.display_name() == entry_name)
-        }) else {
-            return;
-        };
-        let Some(entry_id) = entry.id else {
-            // Initial scans do not receive durable IDs until reconciliation;
-            // ConsoleScanDone publishes that authoritative scan snapshot.
+        let Some(entry) = self
+            .browser
+            .consoles
+            .iter()
+            .find_map(|console| console.entry_by_id(entry_id))
+        else {
             return;
         };
         let expected_source_revision = entry.source_revision;
@@ -822,6 +830,56 @@ impl RetroJunkApp {
                 ctx,
             ),
             Err(error) => self.push_error("Library analysis", error.to_string()),
+        }
+    }
+
+    pub fn publish_filesystem_entries(
+        &mut self,
+        console_idx: usize,
+        entry_ids: impl IntoIterator<Item = retro_junk_db::LibraryEntryId>,
+        ctx: &egui::Context,
+    ) {
+        let commands: Vec<_> = entry_ids
+            .into_iter()
+            .filter_map(|entry_id| {
+                let console = self.browser.consoles.get(console_idx)?;
+                let entry = console.entry_by_id(entry_id)?;
+                let scanned = crate::cache::scanned_entry(console, entry).ok()?;
+                Some((entry_id, entry.source_revision, scanned))
+            })
+            .collect();
+        let console_id = self
+            .browser
+            .consoles
+            .get(console_idx)
+            .and_then(|console| console.id);
+        for (entry_id, expected_source_revision, entry) in commands {
+            if let Some(request_id) = self.queue_store(
+                crate::backend::library_store::LibraryStoreRequest::ApplyFilesystemTransition {
+                    entry_id,
+                    expected_source_revision,
+                    entry,
+                },
+            ) && let Some(console_id) = console_id
+            {
+                self.pending_filesystem_writes
+                    .insert(request_id, console_id);
+            }
+        }
+        ctx.request_repaint_after(Duration::from_millis(20));
+    }
+
+    pub fn mark_console_stale(&mut self, console_idx: usize, ctx: &egui::Context) {
+        if let Some(id) = self
+            .browser
+            .consoles
+            .get(console_idx)
+            .and_then(|console| console.id)
+        {
+            self.submit_store(
+                crate::backend::library_store::LibraryStoreRequest::MarkConsoleStale(id),
+                ctx,
+            );
         }
     }
 

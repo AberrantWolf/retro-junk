@@ -119,7 +119,6 @@ pub struct ConsoleState {
     pub platform_name: &'static str,
     pub scan_status: ScanStatus,
     pub entries: Vec<LibraryEntry>,
-    pub dat_status: DatStatus,
     /// Cached folder fingerprint (avoids recomputing on every save).
     pub fingerprint: Option<crate::cache::FolderFingerprint>,
     /// Loose disc entry-point files at the top level (not inside .m3u folders).
@@ -136,6 +135,14 @@ impl ConsoleState {
     pub fn entry_by_id(&self, id: retro_junk_db::LibraryEntryId) -> Option<&LibraryEntry> {
         self.entry_index(id)
             .and_then(|index| self.entries.get(index))
+    }
+
+    pub fn entry_by_id_mut(
+        &mut self,
+        id: retro_junk_db::LibraryEntryId,
+    ) -> Option<&mut LibraryEntry> {
+        self.entry_index(id)
+            .and_then(|index| self.entries.get_mut(index))
     }
 
     /// Compatibility lookup for background messages not yet converted to IDs.
@@ -164,19 +171,6 @@ pub enum ScanStatus {
     NotScanned,
     Scanning,
     Scanned,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum DatStatus {
-    #[default]
-    NotLoaded,
-    Loading,
-    Loaded {
-        game_count: usize,
-    },
-    Unavailable {
-        reason: String,
-    },
 }
 
 /// Derive the media directory for a console from the root path, folder name, and user setting.
@@ -865,17 +859,18 @@ pub enum AppMessage {
     // -- Hashing --
     HashComplete {
         folder_name: String,
-        entry_name: String,
+        entry_id: retro_junk_db::LibraryEntryId,
         hashes: FileHashes,
     },
     DiscHashComplete {
         folder_name: String,
-        entry_name: String,
+        entry_id: retro_junk_db::LibraryEntryId,
         disc_path: PathBuf,
         hashes: FileHashes,
     },
     HashFailed {
         folder_name: String,
+        entry_id: retro_junk_db::LibraryEntryId,
         entry_name: String,
         error: String,
     },
@@ -1226,7 +1221,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 platform_name,
                 scan_status: ScanStatus::NotScanned,
                 entries: Vec::new(),
-                dat_status: DatStatus::NotLoaded,
                 fingerprint: None,
                 loose_disc_files: Vec::new(),
             });
@@ -1692,8 +1686,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     })
             });
             if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.save_console_cache(ci, ctx);
-                crate::backend::hash::compute_missing_hashes(app, ci);
+                app.commit_completed_scan(ci, ctx);
             }
 
             // Discover media for newly scanned entries so the table shows media indicators.
@@ -1738,7 +1731,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::HashComplete {
             folder_name,
-            entry_name,
+            entry_id,
             hashes,
         } => {
             let platform_id = app
@@ -1746,7 +1739,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 .find_by_folder(&folder_name)
                 .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
+                && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
             {
                 if entry.disc_identifications.is_none()
                     && let (Some(conn), Some(platform_id)) =
@@ -1771,14 +1764,12 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     try_catalog_enrich_by_serial(entry, conn);
                 }
             }
-            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.save_entry_analysis(ci, &entry_name, ctx);
-            }
+            app.publish_entry_analysis(entry_id, ctx);
         }
 
         AppMessage::DiscHashComplete {
             folder_name,
-            entry_name,
+            entry_id,
             disc_path,
             hashes,
         } => {
@@ -1787,7 +1778,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 .find_by_folder(&folder_name)
                 .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
+                && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
                 && let Some(ref mut discs) = entry.disc_identifications
             {
                 // Find the matching disc and store its hashes
@@ -1853,17 +1844,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     try_catalog_enrich_by_serial(entry, conn);
                 }
             }
-            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.save_entry_analysis(ci, &entry_name, ctx);
-            }
+            app.publish_entry_analysis(entry_id, ctx);
         }
 
         AppMessage::HashFailed {
             folder_name,
+            entry_id,
             entry_name,
             error,
         } => {
-            log::warn!("Hash failed for {folder_name} entry {entry_name}: {error}");
+            log::warn!("Hash failed for {folder_name} entry {entry_id:?} ({entry_name}): {error}");
             app.push_error(
                 "Hash Failed",
                 format!("{entry_name} ({folder_name}): {error}"),
@@ -1953,6 +1943,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             let mut renamed = 0usize;
             let mut already = 0usize;
             let mut failed = 0usize;
+            let mut transitioned_ids = Vec::new();
 
             // Extension set for the console's platform, used by
             // `refresh_multidisc_files` (D5) to re-collect a renamed
@@ -1976,6 +1967,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             if let Some(entry) =
                                 app.browser.consoles[ci].find_entry_mut(&r.entry_name)
                             {
+                                transitioned_ids.extend(entry.id);
                                 entry.game_entry =
                                     retro_junk_lib::scanner::GameEntry::SingleFile(target.clone());
                                 // Invalidate cached checks so background re-check picks them up
@@ -1995,6 +1987,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             if let Some(entry) =
                                 app.browser.consoles[ci].find_entry_mut(&r.entry_name)
                             {
+                                transitioned_ids.extend(entry.id);
                                 // Update folder name from the target folder
                                 if let retro_junk_lib::scanner::GameEntry::MultiDisc {
                                     ref mut name,
@@ -2031,7 +2024,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 app.browser.consoles[ci].fingerprint = None;
             }
             if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.save_console_cache(ci, ctx);
+                app.publish_filesystem_entries(ci, transitioned_ids, ctx);
                 if renamed > 0 {
                     recheck_invalidated_entries(app, ci, &folder_name, ctx);
                 }
@@ -2108,6 +2101,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
                     .map(|r| r.file_name.as_str())
                     .collect();
+                let mut affected_ids = Vec::new();
                 for entry in &mut app.browser.consoles[ci].entries {
                     let dominated = entry.cue_compat_issues.as_ref().is_some_and(|issues| {
                         issues
@@ -2122,11 +2116,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         })
                     });
                     if dominated {
+                        affected_ids.extend(entry.id);
                         entry.broken_references = None;
                         entry.cue_compat_issues = None;
                     }
                 }
-                app.save_console_cache(ci, ctx);
+                for id in affected_ids {
+                    app.publish_entry_analysis(id, ctx);
+                }
                 recheck_invalidated_entries(app, ci, &folder_name, ctx);
             }
             app.ui_state.results_dialog = crate::app::ResultsDialog::CueFix(results);
@@ -2163,6 +2160,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 let mut deleted_files: std::collections::HashSet<PathBuf> =
                     std::collections::HashSet::new();
                 let mut any_sources_deleted = false;
+                let mut transitioned_ids = Vec::new();
 
                 // Process every Compressed outcome, not just ones with
                 // sources_deleted: with the dialog default (keep originals),
@@ -2192,6 +2190,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     };
 
                     if *sources_deleted {
+                        transitioned_ids.extend(entry.id);
                         any_sources_deleted = true;
                         deleted_files.extend(r.job.source_files.iter().cloned());
                         match entry.game_entry {
@@ -2234,8 +2233,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
                 if changed {
                     app.browser.consoles[ci].fingerprint = None;
-                    app.save_console_cache(ci, ctx);
+                    app.publish_filesystem_entries(ci, transitioned_ids, ctx);
+                    app.mark_console_stale(ci, ctx);
                     recheck_invalidated_entries(app, ci, &folder_name, ctx);
+                    app.browser.consoles[ci].scan_status = ScanStatus::NotScanned;
+                    crate::backend::scan::quick_scan_console(app, ci, ctx);
                 }
             }
             app.ui_state.results_dialog = crate::app::ResultsDialog::ChdCompress(results);

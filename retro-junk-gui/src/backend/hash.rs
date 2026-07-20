@@ -16,6 +16,7 @@ const PROGRESS_THROTTLE: u64 = 4 * 1024 * 1024;
 
 /// A single unit of hash work: either a whole entry or one disc of a multi-disc entry.
 struct HashWork {
+    entry_id: retro_junk_db::LibraryEntryId,
     entry_name: String,
     path: PathBuf,
     file_size: u64,
@@ -26,7 +27,8 @@ struct HashWork {
 /// multi-disc entries get one item per disc.
 fn collect_hash_work<'a>(entries: impl Iterator<Item = &'a LibraryEntry>) -> Vec<HashWork> {
     entries
-        .flat_map(|entry| {
+        .filter_map(|entry| entry.id.map(|id| (id, entry)))
+        .flat_map(|(entry_id, entry)| {
             let name = entry.game_entry.display_name().to_string();
             log::debug!(
                 "compute_hashes: entry '{}', disc_identifications={}, status={:?}",
@@ -48,6 +50,7 @@ fn collect_hash_work<'a>(entries: impl Iterator<Item = &'a LibraryEntry>) -> Vec
                             file_size
                         );
                         HashWork {
+                            entry_id,
                             entry_name: name.clone(),
                             path: d.path.clone(),
                             file_size,
@@ -64,6 +67,7 @@ fn collect_hash_work<'a>(entries: impl Iterator<Item = &'a LibraryEntry>) -> Vec
                     file_size
                 );
                 vec![HashWork {
+                    entry_id,
                     entry_name: name,
                     path,
                     file_size,
@@ -130,6 +134,14 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
 /// Background-hash entries which do not yet have durable hashes. This is run
 /// after scans so catalog status converges without requiring user interaction.
 pub fn compute_missing_hashes(app: &mut RetroJunkApp, console_idx: usize) {
+    let scope = &app.browser.consoles[console_idx].folder_name;
+    if app
+        .operations
+        .iter()
+        .any(|op| op.kind == OperationKind::Hash && op.scope == *scope)
+    {
+        return;
+    }
     let work = collect_hash_work(app.browser.consoles[console_idx].entries.iter().filter(
         |entry| {
             if let Some(discs) = entry.disc_identifications.as_ref() {
@@ -205,20 +217,21 @@ fn spawn_hash_work(app: &mut RetroJunkApp, console_idx: usize, work: Vec<HashWor
                         if item.is_disc {
                             AppMessage::DiscHashComplete {
                                 folder_name: folder_name.clone(),
-                                entry_name: item.entry_name.clone(),
+                                entry_id: item.entry_id,
                                 disc_path: item.path.clone(),
                                 hashes,
                             }
                         } else {
                             AppMessage::HashComplete {
                                 folder_name: folder_name.clone(),
-                                entry_name: item.entry_name.clone(),
+                                entry_id: item.entry_id,
                                 hashes,
                             }
                         }
                     }
                     Err(error) => AppMessage::HashFailed {
                         folder_name: folder_name.clone(),
+                        entry_id: item.entry_id,
                         entry_name: item.entry_name.clone(),
                         error,
                     },

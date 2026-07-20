@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use retro_junk_lib::Platform;
 use retro_junk_lib::scanner::GameEntry;
 
-use crate::state::{ConsoleState, DatStatus, EntryStatus, LibraryEntry, ScanStatus};
+use crate::state::{ConsoleState, EntryStatus, LibraryEntry, ScanStatus};
 
 static NEXT_ENTRY_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_CONSOLE_ID: AtomicU64 = AtomicU64::new(1);
@@ -55,7 +55,6 @@ pub fn test_console(folder_name: &str, entries: Vec<LibraryEntry>) -> ConsoleSta
         platform_name: "PlayStation",
         scan_status: ScanStatus::Scanned,
         entries,
-        dat_status: DatStatus::NotLoaded,
         fingerprint: None,
         loose_disc_files: Vec::new(),
     }
