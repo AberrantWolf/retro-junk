@@ -34,7 +34,7 @@ fn make_entry(name: &str, status: &str) -> LibraryEntryRow {
     }
 }
 
-fn save_console_bulk(
+fn reconcile_test_console(
     conn: &mut Connection,
     console: &ConsoleRecord<'_>,
     entries: &[LibraryEntryRow],
@@ -116,7 +116,7 @@ fn upsert_and_load_library_root() {
 }
 
 #[test]
-fn save_and_load_console_bulk() {
+fn reconcile_and_load_console() {
     let mut conn = open_memory().unwrap();
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
 
@@ -125,7 +125,7 @@ fn save_and_load_console_bulk() {
         make_entry("game2.nes", "unknown"),
     ];
 
-    let console_id = save_console_bulk(
+    let console_id = reconcile_test_console(
         &mut conn,
         &ConsoleRecord {
             root_id,
@@ -160,12 +160,12 @@ fn save_and_load_console_bulk() {
 }
 
 #[test]
-fn save_console_bulk_replaces_entries() {
+fn reconciliation_replaces_absent_entries() {
     let mut conn = open_memory().unwrap();
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
 
     let entries_v1 = vec![make_entry("old.nes", "unknown")];
-    let console_id = save_console_bulk(
+    let console_id = reconcile_test_console(
         &mut conn,
         &ConsoleRecord {
             root_id,
@@ -184,7 +184,7 @@ fn save_console_bulk_replaces_entries() {
         make_entry("new1.nes", "matched"),
         make_entry("new2.nes", "matched"),
     ];
-    let console_id2 = save_console_bulk(
+    let console_id2 = reconcile_test_console(
         &mut conn,
         &ConsoleRecord {
             root_id,
@@ -209,7 +209,7 @@ fn save_console_bulk_replaces_entries() {
 fn reconciliation_updates_single_entry() {
     let mut conn = open_memory().unwrap();
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
-    let console_id = save_console_bulk(
+    let console_id = reconcile_test_console(
         &mut conn,
         &ConsoleRecord {
             root_id,
@@ -226,7 +226,7 @@ fn reconciliation_updates_single_entry() {
     // Reconcile the same source with updated derived state.
     let mut updated = make_entry("game.nes", "matched");
     updated.tag = "homebrew".to_string();
-    save_console_bulk(
+    reconcile_test_console(
         &mut conn,
         &ConsoleRecord {
             root_id,
@@ -250,7 +250,7 @@ fn reconciliation_updates_single_entry() {
 fn reconciliation_updates_entry_batch() {
     let mut conn = open_memory().unwrap();
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
-    let console_id = save_console_bulk(
+    let console_id = reconcile_test_console(
         &mut conn,
         &ConsoleRecord {
             root_id,
@@ -272,7 +272,7 @@ fn reconciliation_updates_entry_batch() {
         make_entry("game1.nes", "matched"),
         make_entry("game2.nes", "matched"),
     ];
-    save_console_bulk(
+    reconcile_test_console(
         &mut conn,
         &ConsoleRecord {
             root_id,
@@ -294,7 +294,7 @@ fn reconciliation_updates_entry_batch() {
 fn delete_root_cascades() {
     let mut conn = open_memory().unwrap();
     let root_id = upsert_library_root(&conn, "/roms").unwrap();
-    save_console_bulk(
+    reconcile_test_console(
         &mut conn,
         &ConsoleRecord {
             root_id,
@@ -321,7 +321,7 @@ fn multiple_roots_independent() {
     let root1 = upsert_library_root(&conn, "/roms1").unwrap();
     let root2 = upsert_library_root(&conn, "/roms2").unwrap();
 
-    save_console_bulk(
+    reconcile_test_console(
         &mut conn,
         &ConsoleRecord {
             root_id: root1,
@@ -334,7 +334,7 @@ fn multiple_roots_independent() {
         &[make_entry("game1.nes", "matched")],
     )
     .unwrap();
-    save_console_bulk(
+    reconcile_test_console(
         &mut conn,
         &ConsoleRecord {
             root_id: root2,

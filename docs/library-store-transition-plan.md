@@ -318,3 +318,23 @@ GUI/controller tests must verify:
 Integration tests must verify scan -> immediate quit -> reopen preserves data
 without an exit-time save, and that filesystem operations plus injected DB
 failure leave a visible rescan-required state rather than silent divergence.
+
+## Implementation status
+
+Completed. SQLite is the sole persistent library model: startup and root
+switches load console summaries and paged entry projections, user edits and
+derived results are serialized store commands, and completed scans reconcile
+by durable source key without deleting stable entry IDs. Filesystem operations
+publish ID-addressed transitions and persist a stale-console recovery marker if
+the database update fails.
+
+The remaining `ConsoleState.entries` values are disposable scan work or the
+currently requested detail projection. Display-name lookup is restricted to
+analysis of a new scan snapshot before it has database IDs; work on an existing
+entry carries `LibraryEntryId`. Media discovery is ephemeral and ID-keyed.
+
+Raw DAT files are read only by the explicit catalog import/update operation,
+which pre-populates SQLite. Library browsing, matching, hashing, rename
+planning, status summaries, and detail rendering query SQLite and do not load a
+console DAT into memory. Folder fingerprinting and legacy JSON migration are
+separated from normal library-store persistence.
