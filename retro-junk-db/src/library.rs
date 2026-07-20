@@ -789,18 +789,6 @@ pub fn apply_entry_analysis(
         Ok(())
     })
 }
-pub fn apply_disc_analysis(
-    conn: &mut Connection,
-    id: LibraryEntryId,
-    expected_source_revision: u64,
-    json: Option<&str>,
-) -> Result<LibraryChangeSet, LibraryError> {
-    mutate_entry(conn, id, expected_source_revision, |tx| {
-        tx.execute("UPDATE library_entries SET disc_identifications_json=?1,revision=revision+1 WHERE id=?2",params![json,id.0])?;
-        Ok(())
-    })
-}
-
 pub fn apply_filesystem_transition(
     conn: &mut Connection,
     id: LibraryEntryId,

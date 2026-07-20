@@ -13,6 +13,7 @@ use crate::state::{self, AppMessage, OperationKind, ProgressDisplay, RenameOutco
 
 /// A single-file rename job. Target is resolved on the background thread.
 struct RenameJob {
+    entry_id: retro_junk_db::LibraryEntryId,
     entry_name: String,
     source: PathBuf,
     /// Raw DAT rom name (e.g., "Game (USA).iso") — extension corrected at rename time.
@@ -21,12 +22,14 @@ struct RenameJob {
 
 /// A cue/bin disc set job: planned and verified on the background thread.
 struct CueSetJob {
+    entry_id: retro_junk_db::LibraryEntryId,
     entry_name: String,
     cue: PathBuf,
 }
 
 /// An M3U rename job that needs background resolution of disc files.
 struct M3uJob {
+    entry_id: retro_junk_db::LibraryEntryId,
     entry_name: String,
     /// All disc files in this multi-disc set (from the playlist)
     files: Vec<PathBuf>,
@@ -89,6 +92,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     // Cue/bin sets are planned (and verified) on the
                     // background thread against the DAT index.
                     cue_jobs.push(CueSetJob {
+                        entry_id: i,
                         entry_name,
                         cue: path.clone(),
                     });
@@ -105,6 +109,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                         if !selected_cues.contains(cue) {
                             let cue_name = cue.file_name().and_then(|n| n.to_str()).unwrap_or("?");
                             results.push(RenameResult {
+                                entry_id: i,
                                 entry_name,
                                 outcome: RenameOutcome::NoMatch {
                                     reason: format!(
@@ -125,6 +130,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     Some(dat_rom_name) => {
                         let source = entry.game_entry.analysis_path().to_path_buf();
                         jobs.push(RenameJob {
+                            entry_id: i,
                             entry_name,
                             source,
                             dat_rom_name,
@@ -132,6 +138,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     }
                     None => {
                         results.push(RenameResult {
+                            entry_id: i,
                             entry_name,
                             outcome: RenameOutcome::NoMatch {
                                 reason: format!(
@@ -177,6 +184,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
                 if cue_files.is_empty() && resolved.is_empty() && unresolved.is_empty() {
                     results.push(RenameResult {
+                        entry_id: i,
                         entry_name,
                         outcome: RenameOutcome::NoMatch {
                             reason: format!(
@@ -189,6 +197,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 }
 
                 m3u_jobs.push(M3uJob {
+                    entry_id: i,
                     entry_name,
                     files: files.clone(),
                     resolved_discs: resolved,
@@ -296,6 +305,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
                 if job.source == target {
                     results.push(RenameResult {
+                        entry_id: job.entry_id,
                         entry_name: job.entry_name.clone(),
                         outcome: RenameOutcome::AlreadyCorrect,
                     });
@@ -308,6 +318,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                             log::warn!("{}: {}", job.entry_name, warning);
                         }
                         results.push(RenameResult {
+                            entry_id: job.entry_id,
                             entry_name: job.entry_name.clone(),
                             outcome: RenameOutcome::Renamed {
                                 source: job.source.clone(),
@@ -317,6 +328,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     }
                     Err(e) => {
                         results.push(RenameResult {
+                            entry_id: job.entry_id,
                             entry_name: job.entry_name.clone(),
                             outcome: RenameOutcome::Error {
                                 message: format!(
@@ -340,6 +352,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 let outcome =
                     plan_cue_set(&job.cue, catalog_db_path.as_deref(), &context, platform);
                 results.push(RenameResult {
+                    entry_id: job.entry_id,
                     entry_name: job.entry_name.clone(),
                     outcome: execute_cue_set_outcome(outcome, &job.cue, &exec),
                 });
@@ -415,6 +428,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
                 if all_discs.is_empty() && disc_sets.is_empty() {
                     results.push(RenameResult {
+                        entry_id: m3u_job.entry_id,
                         entry_name: m3u_job.entry_name.clone(),
                         outcome: RenameOutcome::NoMatch {
                             reason: if set_errors.is_empty() {
@@ -450,6 +464,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
                 if any_work {
                     results.push(RenameResult {
+                        entry_id: m3u_job.entry_id,
                         entry_name: m3u_job.entry_name.clone(),
                         outcome: RenameOutcome::M3uRenamed {
                             target_folder: m3u_result.final_folder,
@@ -461,11 +476,13 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     });
                 } else if m3u_result.errors.is_empty() {
                     results.push(RenameResult {
+                        entry_id: m3u_job.entry_id,
                         entry_name: m3u_job.entry_name.clone(),
                         outcome: RenameOutcome::AlreadyCorrect,
                     });
                 } else {
                     results.push(RenameResult {
+                        entry_id: m3u_job.entry_id,
                         entry_name: m3u_job.entry_name.clone(),
                         outcome: RenameOutcome::Error {
                             message: m3u_result.errors.join("; "),
@@ -643,8 +660,8 @@ fn describe_set_failure(cue: &Path, outcome: &DiscSetOutcome) -> String {
 ///
 /// Priority:
 /// 1. Cached `dat_match.rom_name` (already resolved)
-/// 2. Hash lookup against loaded DAT index
-/// 3. Serial lookup against loaded DAT index
+/// 2. Hash lookup against the SQLite catalog
+/// 3. Serial lookup against the SQLite catalog
 fn get_target_rom_name(
     app: &RetroJunkApp,
     folder_name: &str,

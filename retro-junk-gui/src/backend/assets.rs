@@ -21,7 +21,8 @@ pub fn load_assets_for_entry(
     ctx: egui::Context,
     root_path: PathBuf,
     folder_name: String,
-    entry_name: String,
+    entry_id: retro_junk_db::LibraryEntryId,
+    _entry_name: String,
     rom_stem: String,
     media_dir_setting: String,
 ) {
@@ -31,7 +32,7 @@ pub fn load_assets_for_entry(
         else {
             let _ = tx.send(AppMessage::AssetsLoaded {
                 folder_name,
-                entry_name,
+                entry_id,
                 assets: HashMap::new(),
             });
             ctx.request_repaint();
@@ -51,7 +52,7 @@ pub fn load_assets_for_entry(
 
         let _ = tx.send(AppMessage::AssetsLoaded {
             folder_name,
-            entry_name,
+            entry_id,
             assets: found,
         });
         ctx.request_repaint();
@@ -60,6 +61,7 @@ pub fn load_assets_for_entry(
 
 /// Data collected on the UI thread for each entry to scrape.
 struct ScrapeWorkItem {
+    entry_id: retro_junk_db::LibraryEntryId,
     entry_name: String,
     rom_stem: String,
     filename: String,
@@ -156,6 +158,7 @@ fn scrape_media_for_selection(
             );
 
             Some(ScrapeWorkItem {
+                entry_id: i,
                 entry_name: entry.game_entry.display_name().to_string(),
                 rom_stem: entry.game_entry.rom_stem().to_string(),
                 filename,
@@ -183,8 +186,7 @@ fn scrape_media_for_selection(
     // When scraping missing only, keep paths visible during the operation.
     if force_redownload {
         for item in &work {
-            if let Some(entry) = app.browser.consoles[console_idx].find_entry_mut(&item.entry_name)
-            {
+            if let Some(entry) = app.browser.consoles[console_idx].entry_by_id_mut(item.entry_id) {
                 entry.asset_paths = None;
             }
         }
@@ -314,6 +316,7 @@ fn scrape_media_for_selection(
                             log::warn!("Lookup failed for {}: {}", item.filename, e);
                             let _ = tx.send(AppMessage::ScrapeEntryFailed {
                                 folder_name: folder_name.clone(),
+                                entry_id: item.entry_id,
                                 entry_name: item.entry_name.clone(),
                                 error: e.to_string(),
                             });
@@ -357,6 +360,7 @@ fn scrape_media_for_selection(
                             log::warn!("Media download failed for {}: {}", item.filename, e);
                             let _ = tx.send(AppMessage::ScrapeEntryFailed {
                                 folder_name: folder_name.clone(),
+                                entry_id: item.entry_id,
                                 entry_name: item.entry_name.clone(),
                                 error: e.to_string(),
                             });
@@ -383,7 +387,7 @@ fn scrape_media_for_selection(
 
                     let _ = tx.send(AppMessage::AssetsLoaded {
                         folder_name: folder_name.clone(),
-                        entry_name: item.entry_name.clone(),
+                        entry_id: item.entry_id,
                         assets: final_media,
                     });
                     ctx.request_repaint();
@@ -413,7 +417,7 @@ pub fn regenerate_miximages_for_selection(
     };
 
     // Collect (entry_name, rom_stem) for selected entries
-    let work: Vec<(String, String)> = app
+    let work: Vec<(retro_junk_db::LibraryEntryId, String, String)> = app
         .ui_state
         .selected_entries
         .iter()
@@ -421,6 +425,7 @@ pub fn regenerate_miximages_for_selection(
         .filter_map(|i| {
             let entry = console.entry_by_id(i)?;
             Some((
+                i,
                 entry.game_entry.display_name().to_string(),
                 entry.game_entry.rom_stem().to_string(),
             ))
@@ -460,7 +465,7 @@ pub fn regenerate_miximages_for_selection(
                     }
                 };
 
-            for (file_num, (entry_name, rom_stem)) in work.iter().enumerate() {
+            for (file_num, (entry_id, _entry_name, rom_stem)) in work.iter().enumerate() {
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
@@ -487,7 +492,7 @@ pub fn regenerate_miximages_for_selection(
 
                 let _ = tx.send(AppMessage::AssetsLoaded {
                     folder_name: folder_name.clone(),
-                    entry_name: entry_name.clone(),
+                    entry_id: *entry_id,
                     assets: updated_media,
                 });
                 ctx.request_repaint();
@@ -509,12 +514,12 @@ pub fn discover_assets_for_console(
     root_path: PathBuf,
     folder_name: String,
     media_dir_setting: String,
-    entries: Vec<(String, String)>, // (entry_name, rom_stem)
+    entries: Vec<(retro_junk_db::LibraryEntryId, String, String)>,
 ) {
     std::thread::spawn(move || {
         let media_dir = state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting);
 
-        for (entry_name, rom_stem) in entries {
+        for (entry_id, _entry_name, rom_stem) in entries {
             let found = media_dir.as_ref().map_or_else(HashMap::new, |media_dir| {
                 state::collect_existing_assets(media_dir, &rom_stem)
             });
@@ -529,7 +534,7 @@ pub fn discover_assets_for_console(
 
             let _ = tx.send(AppMessage::AssetsLoaded {
                 folder_name: folder_name.clone(),
-                entry_name,
+                entry_id,
                 assets: found,
             });
         }
@@ -588,20 +593,24 @@ mod tests {
             root.path().to_path_buf(),
             "nes".into(),
             ".".into(),
-            vec![("Game.nes".into(), "Game".into())],
+            vec![(
+                retro_junk_db::LibraryEntryId(7),
+                "Game.nes".into(),
+                "Game".into(),
+            )],
         );
 
         let message = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
         let AppMessage::AssetsLoaded {
             folder_name,
-            entry_name,
+            entry_id,
             assets,
         } = message
         else {
             panic!("expected asset discovery result");
         };
         assert_eq!(folder_name, "nes");
-        assert_eq!(entry_name, "Game.nes");
+        assert_eq!(entry_id, retro_junk_db::LibraryEntryId(7));
         assert_eq!(
             assets.get(&AssetType::Cover),
             Some(&covers.join("Game.png"))

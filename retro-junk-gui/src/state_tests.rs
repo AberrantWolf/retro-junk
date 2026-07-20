@@ -311,7 +311,7 @@ fn chd_compress_complete_without_source_deletion_leaves_entry_untouched_but_clea
         warnings: Vec::new(),
     });
     let mut console = test_console("psx", vec![entry]);
-    console.fingerprint = Some(crate::cache::FolderFingerprint {
+    console.fingerprint = Some(crate::fingerprint::FolderFingerprint {
         name_hash: "stale".to_string(),
     });
     app.browser.consoles.push(console);

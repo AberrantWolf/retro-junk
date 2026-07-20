@@ -40,52 +40,6 @@ impl std::fmt::Display for CacheError {
     }
 }
 
-// ── Fingerprint ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-pub struct FolderFingerprint {
-    /// Hash of sorted filenames in the folder (no metadata/stat calls needed).
-    pub name_hash: String,
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
-}
-
-/// Compute a quick fingerprint of a folder by hashing sorted filenames.
-///
-/// Only uses `read_dir` + `file_type()` (no `metadata()`/`stat()` calls),
-/// so this is fast even for folders with thousands of entries.
-pub fn compute_fingerprint(path: &Path) -> FolderFingerprint {
-    let mut names = Vec::new();
-
-    if let Ok(entries) = std::fs::read_dir(path) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // Check subdirectories using file_type() (free on macOS/Linux via d_type)
-            if let Ok(ft) = entry.file_type()
-                && ft.is_dir()
-                && let Ok(sub_entries) = std::fs::read_dir(entry.path())
-            {
-                for sub in sub_entries.flatten() {
-                    names.push(format!("{}/{}", name, sub.file_name().to_string_lossy()));
-                }
-            }
-            names.push(name);
-        }
-    }
-
-    names.sort();
-    let hash = Sha256::digest(names.join("\n").as_bytes());
-    FolderFingerprint {
-        name_hash: hex_encode(&hash[..8]),
-    }
-}
-
 // ── Public API ──────────────────────────────────────────────────────────────
 
 /// One-time full import used only while converting the legacy JSON cache.
@@ -121,7 +75,7 @@ fn import_legacy_library(
         if console.scan_status != ScanStatus::Scanned {
             continue;
         }
-        save_console_inner(conn, root_id, console)?;
+        import_legacy_console(conn, root_id, console)?;
     }
     Ok(())
 }
@@ -133,7 +87,7 @@ pub fn completed_console_scan(
 ) -> Result<crate::backend::library_store::CompletedConsoleScan, CacheError> {
     let platform = serde_json::to_string(&console.platform)?;
     let fingerprint_hash = console.fingerprint.as_ref().map_or_else(
-        || compute_fingerprint(&console.folder_path).name_hash,
+        || crate::fingerprint::compute_fingerprint(&console.folder_path).name_hash,
         |fingerprint| fingerprint.name_hash.clone(),
     );
     let entries = console
@@ -286,7 +240,11 @@ fn legacy_cache_dir() -> PathBuf {
 fn legacy_cache_key(root: &Path) -> String {
     let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let hash = Sha256::digest(canonical.to_string_lossy().as_bytes());
-    hex_encode(&hash[..8])
+    hash[..8].iter().fold(String::new(), |mut output, byte| {
+        use std::fmt::Write;
+        let _ = write!(output, "{byte:02x}");
+        output
+    })
 }
 
 fn legacy_cache_path(root: &Path) -> PathBuf {
@@ -315,7 +273,7 @@ fn load_library_from_legacy(
             None => continue,
         };
 
-        let current_fp = compute_fingerprint(&cc.folder_path);
+        let current_fp = crate::fingerprint::compute_fingerprint(&cc.folder_path);
         let is_stale = current_fp.name_hash != cc.fingerprint.name_hash;
 
         let entries = cc
@@ -401,7 +359,7 @@ fn ensure_console_id(
     // serde_json wraps enums in quotes: "\"NES\"" — strip them
     let platform_str = platform_str.trim_matches('"');
     let fingerprint = console.fingerprint.as_ref().map_or_else(
-        || compute_fingerprint(&console.folder_path).name_hash,
+        || crate::fingerprint::compute_fingerprint(&console.folder_path).name_hash,
         |fp| fp.name_hash.clone(),
     );
     let rows: Vec<LibraryEntryRow> = console
@@ -444,7 +402,7 @@ fn ensure_console_id(
     Ok(console_id)
 }
 
-fn save_console_inner(
+fn import_legacy_console(
     conn: &mut Connection,
     root_id: retro_junk_db::LibraryRootId,
     console: &ConsoleState,

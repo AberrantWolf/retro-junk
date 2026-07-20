@@ -70,6 +70,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 ui.ctx().clone(),
                 root_path.clone(),
                 folder_name,
+                entry_id,
                 entry_name,
                 rom_stem,
                 app.settings.general.assets_dir.clone(),

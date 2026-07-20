@@ -55,11 +55,6 @@ pub enum LibraryStoreRequest {
         expected_source_revision: u64,
         update: EntryAnalysisUpdate,
     },
-    ApplyDiscAnalysis {
-        entry_id: LibraryEntryId,
-        expected_source_revision: u64,
-        json: Option<String>,
-    },
     ApplyFilesystemTransition {
         console_id: LibraryConsoleId,
         entry_id: LibraryEntryId,
@@ -266,16 +261,6 @@ fn execute(
             entry_id,
             expected_source_revision,
             &update,
-        )?),
-        R::ApplyDiscAnalysis {
-            entry_id,
-            expected_source_revision,
-            json,
-        } => LibraryStoreValue::ChangeSet(retro_junk_db::apply_disc_analysis(
-            conn,
-            entry_id,
-            expected_source_revision,
-            json.as_deref(),
         )?),
         R::ApplyFilesystemTransition {
             console_id,

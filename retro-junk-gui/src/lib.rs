@@ -11,6 +11,7 @@
 mod app;
 mod backend;
 mod cache;
+mod fingerprint;
 pub mod fonts;
 pub mod log_capture;
 mod settings;

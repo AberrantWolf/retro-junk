@@ -496,10 +496,15 @@ impl RetroJunkApp {
                     {
                         self.ui_state.focused_entry = None;
                     }
-                    if let Some(console_id) = self.ui_state.selected_console {
-                        self.request_console_page(console_id, ctx);
+                    if let (Some(selected), Some((changed, _))) =
+                        (self.ui_state.selected_console, changes.console_revision)
+                        && selected == changed
+                    {
+                        self.request_console_page(selected, ctx);
                     }
-                    self.refresh_console_summaries(ctx);
+                    if changes.console_revision.is_some() || changes.root_revision.is_some() {
+                        self.refresh_console_summaries(ctx);
+                    }
                 }
                 _ => {}
             }
@@ -619,10 +624,7 @@ impl RetroJunkApp {
             root_path,
             folder_name,
             self.settings.general.assets_dir.clone(),
-            entries
-                .into_iter()
-                .map(|(_, entry_name, rom_stem)| (entry_name, rom_stem))
-                .collect(),
+            entries,
         );
     }
 

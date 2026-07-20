@@ -54,8 +54,7 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
 
 /// Quick-scan a single console folder: discover game entries, then analyze each.
 ///
-/// Identified by `console_idx` (position in `library.consoles`) to avoid
-/// ambiguity when multiple folders map to the same platform.
+/// The index is resolved only at this UI boundary; persisted work uses durable IDs.
 pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
     let console = &mut app.browser.consoles[console_idx];
     if console.scan_status != crate::state::ScanStatus::NotScanned {
@@ -81,7 +80,7 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             let Some(registered) = context.get_by_platform(platform) else {
-                let fingerprint = crate::cache::compute_fingerprint(&folder_path);
+                let fingerprint = crate::fingerprint::compute_fingerprint(&folder_path);
                 let _ = tx.send(AppMessage::ConsoleScanDone {
                     folder_name,
                     fingerprint,
@@ -95,7 +94,7 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
                 Ok(e) => e,
                 Err(e) => {
                     log::warn!("Failed to scan {}: {}", folder_path.display(), e);
-                    let fingerprint = crate::cache::compute_fingerprint(&folder_path);
+                    let fingerprint = crate::fingerprint::compute_fingerprint(&folder_path);
                     let _ = tx.send(AppMessage::ConsoleScanDone {
                         folder_name,
                         fingerprint,
@@ -128,7 +127,7 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
             ctx.request_repaint();
 
             // Analyze each entry
-            let refs: Vec<&scanner::GameEntry> = entries.iter().collect();
+            let refs: Vec<_> = entries.iter().map(|entry| (None, entry)).collect();
             analyze_entries(
                 &refs,
                 registered.analyzer.as_ref(),
@@ -139,7 +138,7 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
                 &ctx,
             );
 
-            let fingerprint = crate::cache::compute_fingerprint(&folder_path);
+            let fingerprint = crate::fingerprint::compute_fingerprint(&folder_path);
             let _ = tx.send(AppMessage::ConsoleScanDone {
                 folder_name: folder_name.clone(),
                 fingerprint,
@@ -153,12 +152,12 @@ pub fn quick_scan_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui
 /// Re-analyze selected entries without rediscovering the folder.
 pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
     let console = &app.browser.consoles[console_idx];
-    let selected: Vec<scanner::GameEntry> = app
+    let selected: Vec<(retro_junk_db::LibraryEntryId, scanner::GameEntry)> = app
         .ui_state
         .selected_entries
         .iter()
         .copied()
-        .filter_map(|id| console.entry_by_id(id).map(|e| e.game_entry.clone()))
+        .filter_map(|id| console.entry_by_id(id).map(|e| (id, e.game_entry.clone())))
         .collect();
 
     if selected.is_empty() {
@@ -188,7 +187,10 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 return;
             };
 
-            let refs: Vec<&scanner::GameEntry> = selected.iter().collect();
+            let refs: Vec<_> = selected
+                .iter()
+                .map(|(id, entry)| (Some(*id), entry))
+                .collect();
             analyze_entries(
                 &refs,
                 registered.analyzer.as_ref(),
@@ -211,26 +213,19 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 /// `BrokenRefsChecked` for each entry whose `broken_references` is `None`.
 pub fn check_broken_refs_background(
     tx: mpsc::Sender<AppMessage>,
-    entries: Vec<(String, String, scanner::GameEntry)>,
+    entries: Vec<(String, retro_junk_db::LibraryEntryId, scanner::GameEntry)>,
     ctx: egui::Context,
 ) {
     std::thread::spawn(move || {
-        for (folder_name, entry_name, entry) in &entries {
+        for (folder_name, entry_id, entry) in &entries {
             let broken = rename::check_broken_references(entry);
-            let _ = tx.send(AppMessage::BrokenRefsChecked {
-                folder_name: folder_name.clone(),
-                entry_name: entry_name.clone(),
-                broken_refs: broken,
-            });
-
             let cue_issues = check_cue_compat_for_entry(entry);
-            if !cue_issues.is_empty() {
-                let _ = tx.send(AppMessage::CueCompatChecked {
-                    folder_name: folder_name.clone(),
-                    entry_name: entry_name.clone(),
-                    issues: cue_issues,
-                });
-            }
+            let _ = tx.send(AppMessage::EntryDiagnosticsChecked {
+                folder_name: folder_name.clone(),
+                entry_id: *entry_id,
+                broken_refs: broken,
+                issues: cue_issues,
+            });
         }
         ctx.request_repaint();
     });
@@ -240,7 +235,7 @@ pub fn check_broken_refs_background(
 ///
 /// Shared by `quick_scan_console` (all entries) and `rescan_selected_entries` (subset).
 fn analyze_entries(
-    entries: &[&scanner::GameEntry],
+    entries: &[(Option<retro_junk_db::LibraryEntryId>, &scanner::GameEntry)],
     analyzer: &dyn RomAnalyzer,
     tx: &mpsc::Sender<AppMessage>,
     folder_name: &str,
@@ -251,7 +246,7 @@ fn analyze_entries(
     let options = AnalysisOptions::new().quick(true);
     let total = entries.len();
 
-    for (progress_idx, entry) in entries.iter().enumerate() {
+    for (progress_idx, (entry_id, entry)) in entries.iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
@@ -274,6 +269,7 @@ fn analyze_entries(
 
                 let _ = tx.send(AppMessage::EntryAnalyzed {
                     folder_name: folder_name.to_string(),
+                    entry_id: *entry_id,
                     entry_name: entry_name.clone(),
                     result,
                 });
@@ -301,6 +297,7 @@ fn analyze_entries(
 
                 let _ = tx.send(AppMessage::MultiDiscAnalyzed {
                     folder_name: folder_name.to_string(),
+                    entry_id: *entry_id,
                     entry_name: entry_name.clone(),
                     disc_results,
                 });
@@ -311,6 +308,7 @@ fn analyze_entries(
         let broken_refs = rename::check_broken_references(entry);
         let _ = tx.send(AppMessage::BrokenRefsChecked {
             folder_name: folder_name.to_string(),
+            entry_id: *entry_id,
             entry_name: entry_name.clone(),
             broken_refs,
         });
@@ -320,6 +318,7 @@ fn analyze_entries(
         if !cue_issues.is_empty() {
             let _ = tx.send(AppMessage::CueCompatChecked {
                 folder_name: folder_name.to_string(),
+                entry_id: *entry_id,
                 entry_name,
                 issues: cue_issues,
             });

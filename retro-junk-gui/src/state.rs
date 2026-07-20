@@ -120,7 +120,7 @@ pub struct ConsoleState {
     pub scan_status: ScanStatus,
     pub entries: Vec<LibraryEntry>,
     /// Cached folder fingerprint (avoids recomputing on every save).
-    pub fingerprint: Option<crate::cache::FolderFingerprint>,
+    pub fingerprint: Option<crate::fingerprint::FolderFingerprint>,
     /// Loose disc entry-point files at the top level (not inside .m3u folders).
     /// Populated during scan for disc-based consoles. Non-empty means the user
     /// may want to run the Organize command.
@@ -145,11 +145,22 @@ impl ConsoleState {
             .and_then(|index| self.entries.get_mut(index))
     }
 
-    /// Compatibility lookup for background messages not yet converted to IDs.
+    /// Name lookup for entries in a not-yet-committed scan snapshot.
     pub fn find_entry_mut(&mut self, name: &str) -> Option<&mut LibraryEntry> {
         self.entries
             .iter_mut()
             .find(|e| e.game_entry.display_name() == name)
+    }
+
+    pub fn analysis_entry_mut(
+        &mut self,
+        id: Option<retro_junk_db::LibraryEntryId>,
+        scan_name: &str,
+    ) -> Option<&mut LibraryEntry> {
+        match id {
+            Some(id) => self.entry_by_id_mut(id),
+            None => self.find_entry_mut(scan_name),
+        }
     }
 
     /// Look up an entry by one of its constituent files.
@@ -477,6 +488,7 @@ pub enum TagDialog {
 // -- Rename results --
 
 pub struct RenameResult {
+    pub entry_id: retro_junk_db::LibraryEntryId,
     pub entry_name: String,
     pub outcome: RenameOutcome,
 }
@@ -832,27 +844,37 @@ pub enum AppMessage {
     },
     EntryAnalyzed {
         folder_name: String,
+        entry_id: Option<retro_junk_db::LibraryEntryId>,
         entry_name: String,
         result: Result<RomIdentification, AnalysisError>,
     },
     MultiDiscAnalyzed {
         folder_name: String,
+        entry_id: Option<retro_junk_db::LibraryEntryId>,
         entry_name: String,
         disc_results: Vec<(PathBuf, Result<RomIdentification, AnalysisError>)>,
     },
     BrokenRefsChecked {
         folder_name: String,
+        entry_id: Option<retro_junk_db::LibraryEntryId>,
         entry_name: String,
         broken_refs: Vec<BrokenReference>,
     },
     CueCompatChecked {
         folder_name: String,
+        entry_id: Option<retro_junk_db::LibraryEntryId>,
         entry_name: String,
+        issues: Vec<CueCompatIssue>,
+    },
+    EntryDiagnosticsChecked {
+        folder_name: String,
+        entry_id: retro_junk_db::LibraryEntryId,
+        broken_refs: Vec<BrokenReference>,
         issues: Vec<CueCompatIssue>,
     },
     ConsoleScanDone {
         folder_name: String,
-        fingerprint: crate::cache::FolderFingerprint,
+        fingerprint: crate::fingerprint::FolderFingerprint,
     },
 
     // -- DAT --
@@ -878,11 +900,12 @@ pub enum AppMessage {
     // -- Media / Scraping --
     AssetsLoaded {
         folder_name: String,
-        entry_name: String,
+        entry_id: retro_junk_db::LibraryEntryId,
         assets: HashMap<AssetType, PathBuf>,
     },
     ScrapeEntryFailed {
         folder_name: String,
+        entry_id: retro_junk_db::LibraryEntryId,
         entry_name: String,
         error: String,
     },
@@ -1041,13 +1064,7 @@ fn recheck_invalidated_entries(
         .entries
         .iter()
         .filter(|e| e.broken_references.is_none())
-        .map(|e| {
-            (
-                folder_name.to_string(),
-                e.game_entry.display_name().to_string(),
-                e.game_entry.clone(),
-            )
-        })
+        .filter_map(|e| Some((folder_name.to_string(), e.id?, e.game_entry.clone())))
         .collect();
     if !unchecked.is_empty() {
         crate::backend::scan::check_broken_refs_background(
@@ -1359,6 +1376,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::EntryAnalyzed {
             folder_name,
+            entry_id,
             entry_name,
             result,
         } => {
@@ -1368,7 +1386,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
 
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
+                && let Some(entry) =
+                    app.browser.consoles[ci].analysis_entry_mut(entry_id, &entry_name)
             {
                 let prior_status = entry.status;
                 let had_prior_dat_match = entry.dat_match.is_some();
@@ -1438,10 +1457,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     entry.status = prior_status;
                 }
             }
+            if let Some(entry_id) = entry_id {
+                app.publish_entry_analysis(entry_id, ctx);
+            }
         }
 
         AppMessage::MultiDiscAnalyzed {
             folder_name,
+            entry_id,
             entry_name,
             disc_results,
         } => {
@@ -1451,7 +1474,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 .map(|ci| app.browser.consoles[ci].platform.short_name().to_string());
 
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
+                && let Some(entry) =
+                    app.browser.consoles[ci].analysis_entry_mut(entry_id, &entry_name)
             {
                 // Save old per-disc hashes so we can carry them forward.
                 // Analysis doesn't produce hashes, so without this a rescan
@@ -1639,29 +1663,57 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     entry.status = prior_status;
                 }
             }
+            if let Some(entry_id) = entry_id {
+                app.publish_entry_analysis(entry_id, ctx);
+            }
         }
 
         AppMessage::BrokenRefsChecked {
             folder_name,
+            entry_id,
             entry_name,
             broken_refs,
         } => {
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
+                && let Some(entry) =
+                    app.browser.consoles[ci].analysis_entry_mut(entry_id, &entry_name)
             {
                 entry.broken_references = Some(broken_refs);
+            }
+            if let Some(entry_id) = entry_id {
+                app.publish_entry_analysis(entry_id, ctx);
             }
         }
 
         AppMessage::CueCompatChecked {
             folder_name,
+            entry_id,
             entry_name,
             issues,
         } => {
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
+                && let Some(entry) =
+                    app.browser.consoles[ci].analysis_entry_mut(entry_id, &entry_name)
             {
                 entry.cue_compat_issues = Some(issues);
+            }
+            if let Some(entry_id) = entry_id {
+                app.publish_entry_analysis(entry_id, ctx);
+            }
+        }
+
+        AppMessage::EntryDiagnosticsChecked {
+            folder_name,
+            entry_id,
+            broken_refs,
+            issues,
+        } => {
+            if let Some(ci) = app.browser.find_by_folder(&folder_name)
+                && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
+            {
+                entry.broken_references = Some(broken_refs);
+                entry.cue_compat_issues = Some(issues);
+                app.publish_entry_analysis(entry_id, ctx);
             }
         }
 
@@ -1687,33 +1739,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             });
             if let Some(ci) = app.browser.find_by_folder(&folder_name) {
                 app.commit_completed_scan(ci, ctx);
-            }
-
-            // Discover media for newly scanned entries so the table shows media indicators.
-            if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(ref root) = app.root_path.clone()
-            {
-                let entries: Vec<(String, String)> = app.browser.consoles[ci]
-                    .entries
-                    .iter()
-                    .filter(|e| e.asset_paths.is_none())
-                    .map(|e| {
-                        (
-                            e.game_entry.display_name().to_string(),
-                            e.game_entry.rom_stem().to_string(),
-                        )
-                    })
-                    .collect();
-                if !entries.is_empty() {
-                    crate::backend::assets::discover_assets_for_console(
-                        app.message_tx.clone(),
-                        ctx.clone(),
-                        root.clone(),
-                        folder_name.clone(),
-                        app.settings.general.assets_dir.clone(),
-                        entries,
-                    );
-                }
             }
 
             // Advance the auto-scan queue only when the in-flight queued scan
@@ -1862,13 +1887,13 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::AssetsLoaded {
             folder_name,
-            entry_name,
+            entry_id,
             assets,
         } => {
             let loaded_id = app
                 .browser
                 .find_by_folder(&folder_name)
-                .and_then(|ci| app.browser.consoles[ci].find_entry_mut(&entry_name))
+                .and_then(|ci| app.browser.consoles[ci].entry_by_id_mut(entry_id))
                 .and_then(|entry| {
                     // Invalidate stale cached textures when an asset path changes
                     if let Some(ref old_assets) = entry.asset_paths {
@@ -1890,6 +1915,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::ScrapeEntryFailed {
             folder_name,
+            entry_id,
             entry_name,
             error,
         } => {
@@ -1899,7 +1925,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 format!("{entry_name} ({folder_name}): {error}"),
             );
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].find_entry_mut(&entry_name)
+                && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
             {
                 // Only clear asset_paths if they haven't been discovered yet.
                 // If media was already known (e.g. scraping missing media for a game
@@ -1965,7 +1991,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             renamed += 1;
                             // Update the GameEntry path to reflect the new filename
                             if let Some(entry) =
-                                app.browser.consoles[ci].find_entry_mut(&r.entry_name)
+                                app.browser.consoles[ci].entry_by_id_mut(r.entry_id)
                             {
                                 transitioned_ids.extend(entry.id);
                                 entry.game_entry =
@@ -1985,7 +2011,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                             failed += m3u_errors.len();
                             // Update the MultiDisc GameEntry to reflect the new folder
                             if let Some(entry) =
-                                app.browser.consoles[ci].find_entry_mut(&r.entry_name)
+                                app.browser.consoles[ci].entry_by_id_mut(r.entry_id)
                             {
                                 transitioned_ids.extend(entry.id);
                                 // Update folder name from the target folder
