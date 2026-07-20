@@ -1222,6 +1222,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             restored_root,
             fragile_mount_kind,
         } => {
+            app.ui_state.startup_status = None;
             match database {
                 Ok(connection) => {
                     app.catalog_db = Some(connection);

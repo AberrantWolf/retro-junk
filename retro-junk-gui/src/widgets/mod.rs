@@ -8,6 +8,7 @@ pub mod game_table;
 pub mod keyboard_nav;
 pub mod log_viewer;
 pub mod results_dialog;
+pub mod startup_dialog;
 pub mod status_badge;
 pub mod status_bar;
 pub mod tag_dialog;

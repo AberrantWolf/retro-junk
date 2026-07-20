@@ -90,6 +90,8 @@ pub struct UiState {
     pub credential_info_popup: Option<&'static retro_junk_scraper::CredentialFieldMeta>,
     /// True while the initial cache load is in flight on startup.
     pub loading_library: bool,
+    /// Present while startup database work blocks reliable application use.
+    pub startup_status: Option<String>,
     /// Transient state for the Tools (catalog) view.
     pub tools_state: ToolsState,
     /// Which panel currently has keyboard focus for arrow-key navigation.
@@ -131,6 +133,7 @@ impl Default for UiState {
             credential_status: None,
             credential_info_popup: None,
             loading_library: false,
+            startup_status: None,
             tools_state: ToolsState::default(),
             focused_panel: FocusedPanel::default(),
             scroll_to_row: None,
@@ -206,6 +209,7 @@ impl RetroJunkApp {
             .map(|p| p.join("catalog.db"));
         let mut app = Self::with_parts(&cc.egui_ctx, settings, None, None);
         app.db_path = db_path.clone();
+        app.ui_state.startup_status = Some("Opening and migrating the catalog…".to_owned());
 
         // Schema migration, legacy import, and saved-root probes can all be
         // slow. Run them after constructing the app so the first frame is not
@@ -1051,6 +1055,7 @@ impl eframe::App for RetroJunkApp {
         widgets::tag_dialog::show(ctx, self);
 
         // Error dialog
+        widgets::startup_dialog::show(ctx, self.ui_state.startup_status.as_deref());
         widgets::error_dialog::show(ctx, &mut self.ui_state.error_list);
     }
 
