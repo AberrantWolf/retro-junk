@@ -247,8 +247,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
         // Apply override change
         if new_override != current_override {
-            app.browser.consoles[console_idx].entries[entry_idx].region_override = new_override;
-            app.save_entry_cache(console_idx, &[entry_idx], ui.ctx());
+            if let Some(entry_id) = app.browser.consoles[console_idx].entries[entry_idx].id {
+                app.set_entry_regions([entry_id], new_override, ui.ctx());
+            }
         }
 
         // Warning text

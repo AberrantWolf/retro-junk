@@ -751,38 +751,39 @@ impl RetroJunkApp {
         }
     }
 
-    /// Save specific entries within a console to the database.
-    pub fn save_entry_cache(
+    pub fn set_entry_regions(
         &mut self,
-        console_idx: usize,
-        entry_indices: &[usize],
+        entry_ids: impl IntoIterator<Item = retro_junk_db::LibraryEntryId>,
+        value: Option<retro_junk_core::Region>,
         ctx: &egui::Context,
     ) {
-        let commands: Vec<_> = entry_indices
-            .iter()
-            .filter_map(|&index| self.browser.consoles.get(console_idx)?.entries.get(index))
-            .filter_map(|entry| {
-                let id = entry.id?;
-                let region = entry.region_override.map(|value| value.name().to_owned());
-                let tag = entry.tag.map(|value| match value {
-                    retro_junk_catalog::CatalogTag::Homebrew => "homebrew".to_owned(),
-                    retro_junk_catalog::CatalogTag::Modded => "modded".to_owned(),
-                });
-                Some((id, region, tag))
-            })
-            .collect();
-        for (entry_id, region, tag) in commands {
+        let value = value.map(|region| region.name().to_owned());
+        for entry_id in entry_ids {
             self.submit_store(
                 crate::backend::library_store::LibraryStoreRequest::SetRegionOverride {
                     entry_id,
-                    value: region,
+                    value: value.clone(),
                 },
                 ctx,
             );
+        }
+    }
+
+    pub fn set_entry_tags(
+        &mut self,
+        entry_ids: impl IntoIterator<Item = retro_junk_db::LibraryEntryId>,
+        value: Option<retro_junk_catalog::CatalogTag>,
+        ctx: &egui::Context,
+    ) {
+        let value = value.map(|tag| match tag {
+            retro_junk_catalog::CatalogTag::Homebrew => "homebrew".to_owned(),
+            retro_junk_catalog::CatalogTag::Modded => "modded".to_owned(),
+        });
+        for entry_id in entry_ids {
             self.submit_store(
                 crate::backend::library_store::LibraryStoreRequest::SetTag {
                     entry_id,
-                    value: tag,
+                    value: value.clone(),
                 },
                 ctx,
             );

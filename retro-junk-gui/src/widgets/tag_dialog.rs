@@ -86,16 +86,7 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 }
             }
 
-            // Set tag on the entry
-            if let Some(entry) = app
-                .browser
-                .consoles
-                .get_mut(console_idx)
-                .and_then(|c| c.entries.get_mut(entry_idx))
-            {
-                entry.tag = Some(CatalogTag::Homebrew);
-            }
-            app.save_entry_cache(console_idx, &[entry_idx], ctx);
+            app.set_entry_tags([entry_id], Some(CatalogTag::Homebrew), ctx);
         }
         app.ui_state.tag_dialog = TagDialog::None;
     } else if cancelled {
@@ -234,16 +225,7 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 }
             }
 
-            // Set tag on the entry
-            if let Some(entry) = app
-                .browser
-                .consoles
-                .get_mut(console_idx)
-                .and_then(|c| c.entries.get_mut(entry_idx))
-            {
-                entry.tag = Some(CatalogTag::Modded);
-            }
-            app.save_entry_cache(console_idx, &[entry_idx], ctx);
+            app.set_entry_tags([entry_id], Some(CatalogTag::Modded), ctx);
         }
         app.ui_state.tag_dialog = TagDialog::None;
     } else if cancelled {

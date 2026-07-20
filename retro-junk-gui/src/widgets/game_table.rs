@@ -542,13 +542,8 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
 
     ui.menu_button("Set Region", |ui| {
         if ui.button("Auto-detect").clicked() {
-            let indices = app.selected_entry_indices();
-            for &i in &indices {
-                if let Some(entry) = app.browser.consoles[console_idx].entries.get_mut(i) {
-                    entry.region_override = None;
-                }
-            }
-            app.save_entry_cache(console_idx, &indices, ui.ctx());
+            let ids: Vec<_> = app.ui_state.selected_entries.iter().copied().collect();
+            app.set_entry_regions(ids, None, ui.ctx());
             ui.close();
         }
 
@@ -557,13 +552,8 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
             ui.label("Recommended");
             for &region in Region::ALL {
                 if recommended.contains(&region) && ui.button(region.name()).clicked() {
-                    let indices = app.selected_entry_indices();
-                    for &i in &indices {
-                        if let Some(entry) = app.browser.consoles[console_idx].entries.get_mut(i) {
-                            entry.region_override = Some(region);
-                        }
-                    }
-                    app.save_entry_cache(console_idx, &indices, ui.ctx());
+                    let ids: Vec<_> = app.ui_state.selected_entries.iter().copied().collect();
+                    app.set_entry_regions(ids, Some(region), ui.ctx());
                     ui.close();
                 }
             }
@@ -573,13 +563,8 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
         ui.label("Other Regions");
         for &region in Region::ALL {
             if !recommended.contains(&region) && ui.button(region.name()).clicked() {
-                let indices = app.selected_entry_indices();
-                for &i in &indices {
-                    if let Some(entry) = app.browser.consoles[console_idx].entries.get_mut(i) {
-                        entry.region_override = Some(region);
-                    }
-                }
-                app.save_entry_cache(console_idx, &indices, ui.ctx());
+                let ids: Vec<_> = app.ui_state.selected_entries.iter().copied().collect();
+                app.set_entry_regions(ids, Some(region), ui.ctx());
                 ui.close();
             }
         }
@@ -749,8 +734,7 @@ fn show_tag_menu_items(
         EntryStatus::Tagged(_) => {
             ui.separator();
             if ui.button("Remove Tag").clicked() {
-                app.browser.consoles[console_idx].entries[entry_idx].tag = None;
-                app.save_entry_cache(console_idx, &[entry_idx], ui.ctx());
+                app.set_entry_tags([entry_id], None, ui.ctx());
                 ui.close();
             }
         }
