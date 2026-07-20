@@ -826,6 +826,11 @@ pub fn next_operation_id() -> u64 {
 /// console they target. This is critical because multiple folders can map to
 /// the same platform (e.g., "gb" and "gbc" both map to `Platform::GameBoy`).
 pub enum AppMessage {
+    StartupReady {
+        database: Result<retro_junk_db::Connection, String>,
+        restored_root: Option<PathBuf>,
+        fragile_mount_kind: Option<&'static str>,
+    },
     // -- Folder scan --
     ConsoleFolderFound {
         platform: Platform,
@@ -1212,6 +1217,37 @@ fn catalog_serial_match(
 
 pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Context) {
     match msg {
+        AppMessage::StartupReady {
+            database,
+            restored_root,
+            fragile_mount_kind,
+        } => {
+            match database {
+                Ok(connection) => {
+                    app.catalog_db = Some(connection);
+                    if let Some(path) = app.db_path.clone() {
+                        match crate::backend::library_store::LibraryStore::start(path) {
+                            Ok(store) => app.library_store = Some(store),
+                            Err(error) => app.push_error("Library database", error),
+                        }
+                    }
+                }
+                Err(error) => app.push_error("Catalog database", error),
+            }
+            if let Some(root) = restored_root
+                && app.root_path.is_none()
+                && app.settings.library.current_root.as_ref() == Some(&root)
+            {
+                if let Some(kind) = fragile_mount_kind {
+                    app.ui_state.fragile_mount_prompt = Some(FragileMountPrompt { root, kind });
+                } else {
+                    app.root_path = Some(root.clone());
+                    app.ui_state.loading_library = true;
+                    app.open_browser_root(&root, ctx);
+                    let _ = app.message_tx.send(AppMessage::StartFolderScan);
+                }
+            }
+        }
         AppMessage::ConsoleFolderFound {
             platform,
             folder_name,

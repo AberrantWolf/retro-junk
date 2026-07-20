@@ -201,47 +201,47 @@ impl RetroJunkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = crate::settings::load_settings();
 
-        // Always open (or create) the catalog DB. The library worker opens its
-        // own serialized connection to the same file.
         let db_path = retro_junk_dat::cache::cache_dir()
             .ok()
             .map(|p| p.join("catalog.db"));
-        let catalog_db = db_path
-            .as_ref()
-            .and_then(|p| retro_junk_db::open_database(p).ok());
+        let mut app = Self::with_parts(&cc.egui_ctx, settings, None, None);
+        app.db_path = db_path.clone();
 
-        let mut app = Self::with_parts(&cc.egui_ctx, settings, catalog_db, db_path);
-
-        // Restore last open root from settings
-        if let Some(ref root) = app.settings.library.current_root.clone() {
-            log::info!("Settings current_root: {}", root.display());
-            if !root.is_dir() {
-                log::warn!("current_root is not a directory, skipping auto-load");
+        // Schema migration, legacy import, and saved-root probes can all be
+        // slow. Run them after constructing the app so the first frame is not
+        // held hostage by database size or a disconnected network mount.
+        let tx = app.message_tx.clone();
+        let ctx = cc.egui_ctx.clone();
+        let analysis_context = app.context.clone();
+        let configured_root = app.settings.library.current_root.clone();
+        std::thread::spawn(move || {
+            let mut database = db_path
+                .as_ref()
+                .ok_or_else(|| "Could not determine the catalog database path".to_owned())
+                .and_then(|path| retro_junk_db::open_database(path).map_err(|e| e.to_string()));
+            let mut restored_root = None;
+            let mut fragile_mount_kind = None;
+            if let Some(root) = configured_root {
+                log::info!("Settings current_root: {}", root.display());
+                if root.is_dir() {
+                    fragile_mount_kind = crate::util::fragile_mount_kind(&root);
+                    if fragile_mount_kind.is_none()
+                        && let Ok(conn) = database.as_mut()
+                    {
+                        crate::cache::migrate_json_cache(conn, &root, analysis_context.as_ref());
+                    }
+                    restored_root = Some(root);
+                } else {
+                    log::warn!("current_root is not a directory, skipping auto-load");
+                }
             }
-        }
-        if let Some(ref root) = app.settings.library.current_root.clone()
-            && root.is_dir()
-        {
-            if let Some(kind) = crate::util::fragile_mount_kind(root) {
-                // Don't auto-load a fragile network mount at startup; show the
-                // warning dialog instead. Confirming resumes the load via
-                // switch_to_root_unchecked.
-                app.ui_state.fragile_mount_prompt = Some(crate::state::FragileMountPrompt {
-                    root: root.clone(),
-                    kind,
-                });
-                return app;
-            }
-            app.root_path = Some(root.clone());
-            app.ui_state.loading_library = true;
-            if let Some(conn) = app.catalog_db.as_mut() {
-                crate::cache::migrate_json_cache(conn, root, &app.context);
-            }
-            app.open_browser_root(root, &cc.egui_ctx);
-            let _ = app
-                .message_tx
-                .send(crate::state::AppMessage::StartFolderScan);
-        }
+            let _ = tx.send(crate::state::AppMessage::StartupReady {
+                database,
+                restored_root,
+                fragile_mount_kind,
+            });
+            ctx.request_repaint();
+        });
 
         app
     }

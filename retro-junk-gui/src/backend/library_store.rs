@@ -102,9 +102,6 @@ pub struct LibraryStore {
 
 impl LibraryStore {
     pub fn start(path: PathBuf) -> Result<Self, String> {
-        // Open once on the caller to surface schema/migration failures before
-        // returning a worker that can only report asynchronous errors.
-        retro_junk_db::open_database(&path).map_err(|e| e.to_string())?;
         let (request_tx, request_rx) = mpsc::channel();
         let (reply_tx, reply_rx) = mpsc::channel();
         let thread = thread::Builder::new()
