@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use retro_junk_core::{Platform, RomAnalyzer};
+use retro_junk_core::{IdentificationCapabilities, Platform, RomAnalyzer};
 
 /// Metadata about a registered console.
 #[derive(Debug, Clone)]
@@ -19,6 +19,8 @@ pub struct Console {
     pub extensions: &'static [&'static str],
     /// Alternative folder names
     pub folder_names: &'static [&'static str],
+    /// Identification columns meaningful for this console.
+    pub identification: IdentificationCapabilities,
 }
 
 impl Console {
@@ -31,6 +33,7 @@ impl Console {
             manufacturer: analyzer.manufacturer(),
             extensions: analyzer.file_extensions(),
             folder_names: analyzer.folder_names(),
+            identification: analyzer.identification_capabilities(),
         }
     }
 }

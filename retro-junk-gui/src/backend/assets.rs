@@ -13,8 +13,8 @@ use crate::state::{self, AppMessage, OperationKind, ProgressDisplay};
 
 /// Load media files for an entry on a background thread.
 ///
-/// Discovers media files on disk and registers their bytes with egui,
-/// then sends a `AssetsLoaded` message to update the entry's `asset_paths`.
+/// Discovers media files on disk. The detail panel loads them through egui's
+/// file loader, so this path never creates a permanent in-memory byte cache.
 pub fn load_assets_for_entry(
     tx: crate::state::AppMessageSender,
     ctx: egui::Context,
@@ -40,19 +40,54 @@ pub fn load_assets_for_entry(
 
         let found = state::collect_existing_assets(&media_dir, &rom_stem);
 
-        // Register image bytes with egui before sending the message,
-        // so they're available by the time the UI renders.
-        for path in found.values() {
-            let uri = format!("bytes://media/{}", path.display());
-            if let Ok(bytes) = std::fs::read(path) {
-                ctx.include_bytes(uri, bytes);
-            }
-        }
-
         let _ = tx.send(AppMessage::AssetsLoaded {
             folder_name,
             entry_id,
             assets: found,
+        });
+        ctx.request_repaint();
+    });
+}
+
+/// Query media availability for every row in a newly-loaded page without
+/// reading or retaining any image data.
+pub fn load_asset_statuses_for_page(
+    tx: crate::state::AppMessageSender,
+    ctx: egui::Context,
+    root_path: PathBuf,
+    console_id: retro_junk_db::LibraryConsoleId,
+    folder_name: String,
+    entries: Vec<(retro_junk_db::LibraryEntryId, String)>,
+    media_dir_setting: String,
+) {
+    std::thread::spawn(move || {
+        let media_dir = state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting);
+        let statuses = entries
+            .into_iter()
+            .map(|(entry_id, display_name)| {
+                if let Some(media_dir) = media_dir.as_ref() {
+                    // Multi-disc entries intentionally keep the `.m3u` suffix in
+                    // their media stem; ordinary files use the filename stem.
+                    let rom_stem = if display_name.to_ascii_lowercase().ends_with(".m3u") {
+                        display_name
+                    } else {
+                        Path::new(&display_name)
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .unwrap_or(&display_name)
+                            .to_owned()
+                    };
+                    let found = state::collect_existing_assets(media_dir, &rom_stem);
+                    let (status, has_miximage) = state::asset_availability(&found);
+                    (entry_id, status, has_miximage)
+                } else {
+                    (entry_id, state::AssetStatus::None, false)
+                }
+            })
+            .collect();
+        let _ = tx.send(AppMessage::AssetStatusesLoaded {
+            console_id,
+            statuses,
         });
         ctx.request_repaint();
     });
@@ -378,13 +413,11 @@ fn scrape_media_for_selection(
                         }
                     };
 
-                    // Register downloaded images with egui and invalidate old ones
+                    // Invalidate an image if it is currently displayed. Do not
+                    // register bytes for bulk scrape results.
                     for path in downloaded.values() {
-                        let uri = format!("bytes://media/{}", path.display());
+                        let uri = state::asset_image_uri(path);
                         ctx.forget_image(&uri);
-                        if let Ok(bytes) = std::fs::read(path) {
-                            ctx.include_bytes(uri, bytes);
-                        }
                     }
 
                     // Auto-generate miximage from the freshly downloaded media
@@ -489,13 +522,12 @@ pub fn regenerate_miximages_for_selection(
                 let updated_media =
                     generate_miximage_for_entry(&media_dir, rom_stem, &layout, &ctx);
 
-                // Register all non-miximage images with egui (miximage already registered by helper)
+                // Invalidate any currently displayed component images without
+                // loading bulk-operation results into memory.
                 for (mt, path) in &updated_media {
                     if *mt != AssetType::Miximage {
-                        let uri = format!("bytes://media/{}", path.display());
-                        if let Ok(bytes) = std::fs::read(path) {
-                            ctx.include_bytes(uri, bytes);
-                        }
+                        let uri = state::asset_image_uri(path);
+                        ctx.forget_image(&uri);
                     }
                 }
 
@@ -530,11 +562,8 @@ fn generate_miximage_for_entry(
     match retro_junk_frontend::miximage::generate_miximage(&existing, &output_path, layout) {
         Ok(generated) => {
             if generated {
-                let uri = format!("bytes://media/{}", output_path.display());
+                let uri = state::asset_image_uri(&output_path);
                 ctx.forget_image(&uri);
-                if let Ok(bytes) = std::fs::read(&output_path) {
-                    ctx.include_bytes(uri, bytes);
-                }
             }
         }
         Err(e) => {

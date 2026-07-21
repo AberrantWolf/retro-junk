@@ -383,6 +383,14 @@ fn to_identification(
 pub struct GameBoyAnalyzer;
 
 impl RomAnalyzer for GameBoyAnalyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities {
+            internal_name: true,
+            region: true,
+            ..Default::default()
+        }
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,

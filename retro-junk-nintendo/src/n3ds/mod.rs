@@ -119,6 +119,14 @@ fn detect_format(reader: &mut dyn ReadSeek) -> Result<Option<N3dsFormat>, Analys
 pub struct N3dsAnalyzer;
 
 impl RomAnalyzer for N3dsAnalyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities {
+            serial: true,
+            region: true,
+            ..Default::default()
+        }
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,

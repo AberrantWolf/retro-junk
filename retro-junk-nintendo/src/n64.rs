@@ -421,6 +421,10 @@ fn to_identification(
 pub struct N64Analyzer;
 
 impl RomAnalyzer for N64Analyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities::ALL
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,

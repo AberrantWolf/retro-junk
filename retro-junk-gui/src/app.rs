@@ -211,6 +211,34 @@ pub struct RetroJunkApp {
 }
 
 impl RetroJunkApp {
+    /// Keep decoded media bounded to the one entry that can currently render
+    /// in the detail panel. `forget_image` clears file bytes, decoded pixels,
+    /// and GPU textures from every installed egui loader.
+    pub fn reconcile_detail_assets(&mut self, ctx: &egui::Context) {
+        let target = (self.ui_state.current_view == View::Library
+            && self.ui_state.detail_panel_open)
+            .then_some(self.ui_state.focused_entry)
+            .flatten();
+        if self.browser.detail_asset_entry == target {
+            return;
+        }
+        self.release_detail_assets(ctx);
+        self.browser.detail_asset_entry = target;
+    }
+
+    pub fn release_detail_assets(&mut self, ctx: &egui::Context) {
+        for console in &mut self.browser.consoles {
+            for entry in &mut console.entries {
+                if let Some(paths) = entry.asset_paths.take() {
+                    for path in paths.values() {
+                        ctx.forget_image(&crate::state::asset_image_uri(path));
+                    }
+                }
+            }
+        }
+        self.browser.detail_asset_entry = None;
+    }
+
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = crate::settings::load_settings();
 
@@ -271,6 +299,14 @@ impl RetroJunkApp {
     ) -> Self {
         egui_extras::install_image_loaders(egui_ctx);
         crate::fonts::configure_fonts(egui_ctx);
+        // `TableBody::rows` virtualizes large lists by removing off-screen
+        // widget IDs. At certain scroll offsets a different row then occupies
+        // an identical screen rectangle, which the debug-only cross-frame
+        // heuristic misdiagnoses as ID instability and outlines in red. Keep
+        // true same-frame ID-clash detection enabled; disable only this
+        // virtualization-incompatible heuristic. ID-stability tests explicitly
+        // re-enable it while exercising non-virtualized layout transitions.
+        egui_ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
         let (raw_tx, rx) = mpsc::channel();
         let tx = AppMessageSender::new(raw_tx);
         let context = Arc::new(retro_junk_lib::create_default_context());
@@ -483,7 +519,15 @@ impl RetroJunkApp {
                         .entry_counts
                         .insert(page.console_id, page.total_count);
                     let ids: Vec<_> = page.rows.iter().map(|row| row.id).collect();
+                    let asset_rows: Vec<_> = page
+                        .rows
+                        .iter()
+                        .map(|row| (row.id, row.display_name.clone()))
+                        .collect();
+                    let page_console_id = page.console_id;
                     self.browser.active_page = Some(page);
+                    self.browser.asset_statuses.clear();
+                    self.browser.entries_with_miximages.clear();
                     let focused = self.ui_state.focused_entry;
                     if let Some(console_index) = self
                         .browser
@@ -499,6 +543,20 @@ impl RetroJunkApp {
                     }
                     if let Some(id) = focused.filter(|id| ids.contains(id)) {
                         self.request_entry_detail(id, ctx);
+                    }
+                    if let (Some(root_path), Some(console_index)) = (
+                        self.root_path.clone(),
+                        self.browser.find_by_id(page_console_id),
+                    ) {
+                        crate::backend::assets::load_asset_statuses_for_page(
+                            self.message_tx.clone(),
+                            ctx.clone(),
+                            root_path,
+                            page_console_id,
+                            self.browser.consoles[console_index].folder_name.clone(),
+                            asset_rows,
+                            self.settings.general.assets_dir.clone(),
+                        );
                     }
                 }
                 Ok(crate::backend::library_store::LibraryStoreValue::EntryDetail(detail)) => {
@@ -1054,6 +1112,7 @@ impl RetroJunkApp {
             .for_generation(self.library_controller.session_generation);
         self.cancel_root_scoped_operations();
         self.reset_root_session_requests();
+        self.release_detail_assets(ctx);
         self.browser = LibraryBrowserState::default();
         self.ui_state.selected_console = None;
         self.ui_state.focused_entry = None;
@@ -1085,6 +1144,7 @@ impl eframe::App for RetroJunkApp {
 
         // Drain background messages
         self.process_pending_messages(ctx);
+        self.reconcile_detail_assets(ctx);
 
         // Global view switching: Ctrl+1/2/3
         ctx.input_mut(|i| {

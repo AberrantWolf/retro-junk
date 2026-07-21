@@ -21,7 +21,9 @@ pub fn show_with_warning(
     has_cue_compat_issues: bool,
     media_status: AssetStatus,
 ) -> egui::Response {
-    let show_media = !matches!(media_status, AssetStatus::Unknown);
+    // Keep the indicator present and gray while filesystem discovery is in
+    // flight, avoiding both layout shifts and a false claim about availability.
+    let show_media = true;
     let show_warning = has_broken_refs || has_hash_warnings || has_cue_compat_issues;
     let width = 10.0 + if show_warning { 10.0 } else { 0.0 } + if show_media { 10.0 } else { 0.0 };
     let color = status.color();
@@ -66,7 +68,10 @@ pub fn show_with_warning(
                     ui.painter()
                         .rect_filled(sq_rect, 0.0, crate::theme::STATUS_OK);
                 }
-                AssetStatus::Unknown => unreachable!(),
+                AssetStatus::Unknown => {
+                    let gray = ui.visuals().text_color().linear_multiply(0.25);
+                    ui.painter().rect_filled(sq_rect, 0.0, gray);
+                }
             }
         }
     }

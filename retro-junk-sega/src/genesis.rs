@@ -144,6 +144,10 @@ fn compute_checksum(reader: &mut dyn ReadSeek, rom_end: u32) -> Result<u16, Anal
 pub struct GenesisAnalyzer;
 
 impl RomAnalyzer for GenesisAnalyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities::ALL
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,

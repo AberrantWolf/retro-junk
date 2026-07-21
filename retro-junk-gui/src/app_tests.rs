@@ -35,6 +35,28 @@ fn first_launch_shows_sidebar_and_welcome() {
 }
 
 #[test]
+fn app_disables_virtual_list_incompatible_rect_id_warning() {
+    let harness = harness();
+    assert!(
+        !harness
+            .ctx
+            .style_of(egui::Theme::Dark)
+            .debug
+            .warn_if_rect_changes_id
+            && !harness
+                .ctx
+                .style_of(egui::Theme::Light)
+                .debug
+                .warn_if_rect_changes_id,
+        "virtualized tables must not enable egui's cross-frame rect/id heuristic"
+    );
+    assert!(
+        harness.ctx.options(|options| options.warn_on_id_clash),
+        "true same-frame widget ID collisions must remain visible"
+    );
+}
+
+#[test]
 fn sidebar_click_switches_to_settings_view() {
     let mut harness = harness();
     harness.run();
@@ -110,6 +132,58 @@ fn selected_entry_identity_survives_entry_reorder() {
     app.browser.consoles[0].entries.reverse();
     assert_eq!(app.selected_entry_indices(), vec![0]);
     assert!(app.ui_state.selected_entries.contains(&selected_id));
+}
+
+#[test]
+fn changing_detail_focus_releases_every_previous_asset_path() {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use retro_junk_frontend::AssetType;
+    use retro_junk_lib::scanner::GameEntry;
+
+    let ctx = egui::Context::default();
+    let mut app =
+        RetroJunkApp::with_parts(&ctx, crate::settings::AppSettings::default(), None, None);
+    let mut first = crate::test_support::test_entry(GameEntry::SingleFile(PathBuf::from("a.rom")));
+    let mut second = crate::test_support::test_entry(GameEntry::SingleFile(PathBuf::from("b.rom")));
+    let first_id = first.id.unwrap();
+    let second_id = second.id.unwrap();
+    first.asset_paths = Some(HashMap::from([(
+        AssetType::Cover,
+        PathBuf::from("/media/a.png"),
+    )]));
+    second.asset_paths = Some(HashMap::from([(
+        AssetType::Cover,
+        PathBuf::from("/media/b.png"),
+    )]));
+    app.browser.consoles.push(crate::test_support::test_console(
+        "psx",
+        vec![first, second],
+    ));
+    app.browser.detail_asset_entry = Some(first_id);
+    app.ui_state.current_view = View::Library;
+    app.ui_state.detail_panel_open = true;
+    app.ui_state.focused_entry = Some(second_id);
+
+    app.reconcile_detail_assets(&ctx);
+
+    assert_eq!(app.browser.detail_asset_entry, Some(second_id));
+    assert!(
+        app.browser.consoles[0]
+            .entries
+            .iter()
+            .all(|entry| entry.asset_paths.is_none()),
+        "selection changes must drop paths for old and not-yet-loaded detail entries"
+    );
+
+    app.browser.consoles[0].entries[1].asset_paths = Some(HashMap::from([(
+        AssetType::Screenshot,
+        PathBuf::from("/media/b-shot.png"),
+    )]));
+    app.ui_state.focused_entry = Some(first_id);
+    app.reconcile_detail_assets(&ctx);
+    assert!(app.browser.consoles[0].entries[1].asset_paths.is_none());
 }
 
 #[test]

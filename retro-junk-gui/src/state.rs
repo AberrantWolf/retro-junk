@@ -27,7 +27,7 @@ pub const SCRAPEABLE_ASSET_TYPES: &[AssetType] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetStatus {
-    /// `asset_paths` is None — not yet discovered
+    /// Filesystem availability has not been discovered yet.
     Unknown,
     /// Discovered, no scrapeable assets found
     None,
@@ -35,6 +35,32 @@ pub enum AssetStatus {
     Partial { found: u8, total: u8 },
     /// All scrapeable asset types present
     Complete,
+}
+
+fn asset_status_from_paths(media: &HashMap<AssetType, PathBuf>) -> AssetStatus {
+    let total = SCRAPEABLE_ASSET_TYPES.len() as u8;
+    let found = SCRAPEABLE_ASSET_TYPES
+        .iter()
+        .filter(|mt| media.contains_key(mt))
+        .count() as u8;
+    match found {
+        0 => AssetStatus::None,
+        n if n == total => AssetStatus::Complete,
+        n => AssetStatus::Partial { found: n, total },
+    }
+}
+
+pub fn asset_availability(media: &HashMap<AssetType, PathBuf>) -> (AssetStatus, bool) {
+    (
+        asset_status_from_paths(media),
+        media.contains_key(&AssetType::Miximage),
+    )
+}
+
+/// URI used by egui's file loader. Unlike `include_bytes`, this lets us evict
+/// all decoded data and textures when the detail selection changes.
+pub fn asset_image_uri(path: &Path) -> String {
+    format!("file://{}", path.display())
 }
 use retro_junk_lib::scanner::GameEntry;
 use retro_junk_lib::{AnalysisError, Platform, Region, RomIdentification};
@@ -74,6 +100,12 @@ pub struct LibraryBrowserState {
     pub stale_consoles: HashSet<retro_junk_db::LibraryConsoleId>,
     /// Entry IDs with filesystem media discovery currently in flight.
     pub asset_discovery_in_flight: HashSet<retro_junk_db::LibraryEntryId>,
+    /// Lightweight filesystem-derived availability for rows in the active page.
+    /// This deliberately contains no paths or image bytes.
+    pub asset_statuses: HashMap<retro_junk_db::LibraryEntryId, AssetStatus>,
+    pub entries_with_miximages: HashSet<retro_junk_db::LibraryEntryId>,
+    /// The sole entry whose paths/images may be retained for the detail panel.
+    pub detail_asset_entry: Option<retro_junk_db::LibraryEntryId>,
 }
 
 impl LibraryBrowserState {
@@ -362,36 +394,11 @@ impl LibraryEntry {
         }
     }
 
-    /// Compute the media status by checking `asset_paths` against the scrapeable types.
-    pub fn asset_status(&self) -> AssetStatus {
-        let Some(media) = self.asset_paths.as_ref() else {
-            return AssetStatus::Unknown;
-        };
-        let total = SCRAPEABLE_ASSET_TYPES.len() as u8;
-        let found = SCRAPEABLE_ASSET_TYPES
-            .iter()
-            .filter(|mt| media.contains_key(mt))
-            .count() as u8;
-        match found {
-            0 => AssetStatus::None,
-            n if n == total => AssetStatus::Complete,
-            n => AssetStatus::Partial { found: n, total },
-        }
-    }
-
     /// Whether this entry has detected CUE sheet compatibility issues.
     pub fn has_cue_compat_issues(&self) -> bool {
         self.cue_compat_issues
             .as_ref()
             .is_some_and(|issues| !issues.is_empty())
-    }
-
-    /// Whether this entry has broken CUE/M3U file references.
-    /// Whether this entry has a generated miximage on disk.
-    pub fn has_miximage(&self) -> bool {
-        self.asset_paths
-            .as_ref()
-            .is_some_and(|m| m.contains_key(&AssetType::Miximage))
     }
 }
 
@@ -827,6 +834,10 @@ pub enum AppMessage {
         folder_name: String,
         entry_id: retro_junk_db::LibraryEntryId,
         assets: HashMap<AssetType, PathBuf>,
+    },
+    AssetStatusesLoaded {
+        console_id: retro_junk_db::LibraryConsoleId,
+        statuses: Vec<(retro_junk_db::LibraryEntryId, AssetStatus, bool)>,
     },
     ScrapeEntryFailed {
         folder_name: String,
@@ -1703,26 +1714,56 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_id,
             assets,
         } => {
-            let loaded_id = app
-                .browser
-                .find_by_folder(&folder_name)
-                .and_then(|ci| app.browser.consoles[ci].entry_by_id_mut(entry_id))
-                .and_then(|entry| {
-                    // Invalidate stale cached textures when an asset path changes
-                    if let Some(ref old_assets) = entry.asset_paths {
-                        for (at, old_path) in old_assets {
-                            let new_path = assets.get(at);
-                            if new_path != Some(old_path) {
-                                let old_uri = format!("bytes://media/{}", old_path.display());
-                                ctx.forget_image(&old_uri);
-                            }
+            let (status, has_miximage) = asset_availability(&assets);
+            app.browser.asset_statuses.insert(entry_id, status);
+            if has_miximage {
+                app.browser.entries_with_miximages.insert(entry_id);
+            } else {
+                app.browser.entries_with_miximages.remove(&entry_id);
+            }
+
+            // Bulk scraping can report hundreds of entries. Only the active
+            // detail entry is allowed to retain paths and feed egui's loaders.
+            if app.browser.detail_asset_entry == Some(entry_id)
+                && let Some(ci) = app.browser.find_by_folder(&folder_name)
+                && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
+            {
+                if let Some(ref old_assets) = entry.asset_paths {
+                    for (at, old_path) in old_assets {
+                        if assets.get(at) != Some(old_path) {
+                            ctx.forget_image(&asset_image_uri(old_path));
                         }
                     }
-                    entry.asset_paths = Some(assets);
-                    entry.id
-                });
-            if let Some(entry_id) = loaded_id {
-                app.browser.asset_discovery_in_flight.remove(&entry_id);
+                }
+                entry.asset_paths = Some(assets);
+            }
+            app.browser.asset_discovery_in_flight.remove(&entry_id);
+        }
+
+        AppMessage::AssetStatusesLoaded {
+            console_id,
+            statuses,
+        } => {
+            if app.ui_state.selected_console == Some(console_id) {
+                let active_ids: HashSet<_> = app
+                    .browser
+                    .active_page
+                    .as_ref()
+                    .filter(|page| page.console_id == console_id)
+                    .into_iter()
+                    .flat_map(|page| page.rows.iter().map(|row| row.id))
+                    .collect();
+                for (entry_id, status, has_miximage) in statuses {
+                    if !active_ids.contains(&entry_id) {
+                        continue;
+                    }
+                    app.browser.asset_statuses.insert(entry_id, status);
+                    if has_miximage {
+                        app.browser.entries_with_miximages.insert(entry_id);
+                    } else {
+                        app.browser.entries_with_miximages.remove(&entry_id);
+                    }
+                }
             }
         }
 
@@ -1737,7 +1778,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 "Scrape Failed",
                 format!("{entry_name} ({folder_name}): {error}"),
             );
-            if let Some(ci) = app.browser.find_by_folder(&folder_name)
+            if app.browser.detail_asset_entry == Some(entry_id)
+                && let Some(ci) = app.browser.find_by_folder(&folder_name)
                 && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
             {
                 // Only clear asset_paths if they haven't been discovered yet.

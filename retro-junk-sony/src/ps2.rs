@@ -216,6 +216,10 @@ impl Ps2Analyzer {
 }
 
 impl RomAnalyzer for Ps2Analyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities::ALL
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,

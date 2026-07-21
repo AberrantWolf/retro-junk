@@ -32,6 +32,10 @@ const GCM_DISC_SIZE: u64 = 1_459_978_240;
 pub struct GameCubeAnalyzer;
 
 impl RomAnalyzer for GameCubeAnalyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities::ALL
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,

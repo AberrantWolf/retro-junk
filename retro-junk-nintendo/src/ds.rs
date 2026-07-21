@@ -496,6 +496,10 @@ fn to_identification(
 pub struct DsAnalyzer;
 
 impl RomAnalyzer for DsAnalyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities::ALL
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,

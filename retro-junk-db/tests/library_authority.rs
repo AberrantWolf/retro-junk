@@ -227,6 +227,38 @@ fn list_search_treats_sql_wildcards_and_escape_characters_literally() {
 }
 
 #[test]
+fn list_projection_contains_all_automatically_known_row_fields() {
+    let mut entry = row("game.nes", "game.nes");
+    entry.identification_json = Some(
+        r#"{"serial_number":"","internal_name":"HEADER TITLE","regions":["Usa","Europe"]}"#.into(),
+    );
+    entry.hash_warnings_json = Some(r#"["headered dump"]"#.into());
+    entry.disc_identifications_json = Some(
+        r#"[{"identification":{"serial_number":"DISC-1"},"hashes":{"warnings":["track mismatch"]}}]"#
+            .into(),
+    );
+    let (conn, _, console) = setup(&[entry]);
+    let page = query_entry_list(
+        &conn,
+        &LibraryEntryListQuery {
+            console_id: console,
+            search: String::new(),
+            filter: LibraryEntryFilter::All,
+            sort: LibraryEntrySortField::DisplayName,
+            direction: SortDirection::Ascending,
+            offset: 0,
+            limit: 300,
+        },
+    )
+    .unwrap();
+    let projected = &page.rows[0];
+    assert_eq!(projected.serial, "DISC-1");
+    assert_eq!(projected.internal_name, "HEADER TITLE");
+    assert_eq!(projected.detected_regions, ["Usa", "Europe"]);
+    assert!(projected.has_hash_warnings);
+}
+
+#[test]
 fn console_summaries_report_complete_effective_status_aggregates() {
     let mut matched = row("matched.nes", "matched.nes");
     matched.status = "matched".into();

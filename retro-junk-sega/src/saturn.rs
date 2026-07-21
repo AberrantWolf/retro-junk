@@ -295,6 +295,10 @@ impl SaturnAnalyzer {
 }
 
 impl RomAnalyzer for SaturnAnalyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities::ALL
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,

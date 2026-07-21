@@ -199,6 +199,7 @@ pub fn switch_to_root_unchecked(
     new_root: std::path::PathBuf,
     ctx: &egui::Context,
 ) {
+    app.release_detail_assets(ctx);
     // Reset UI state
     app.ui_state.selected_console = None;
     app.ui_state.focused_entry = None;

@@ -25,6 +25,39 @@
 use crate::create_default_context;
 use retro_junk_core::{ChdExtensionRole, HashAlgorithms};
 
+#[test]
+fn analyzers_declare_their_quick_scan_identification_columns() {
+    let ctx = create_default_context();
+    let with = |field: fn(retro_junk_core::IdentificationCapabilities) -> bool| {
+        ctx.consoles()
+            .filter(|console| field(console.metadata.identification))
+            .map(|console| console.metadata.short_name)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        with(|capabilities| capabilities.serial),
+        [
+            "snes", "n64", "gamecube", "wii", "gba", "nds", "3ds", "ps1", "ps2", "genesis",
+            "saturn",
+        ]
+    );
+    assert_eq!(
+        with(|capabilities| capabilities.internal_name),
+        [
+            "nes", "snes", "n64", "gamecube", "wii", "gb", "gba", "nds", "ps1", "ps2", "genesis",
+            "saturn",
+        ]
+    );
+    assert_eq!(
+        with(|capabilities| capabilities.region),
+        [
+            "nes", "snes", "n64", "gamecube", "wii", "gb", "gba", "nds", "3ds", "ps1", "ps2",
+            "genesis", "saturn",
+        ]
+    );
+}
+
 /// Any analyzer that declares a CHD-convertible source extension
 /// (`chd_extensions()` contains a `Source(_)` entry) must also list `"chd"`
 /// in `file_extensions()`. Otherwise the very file this analyzer's own CHD

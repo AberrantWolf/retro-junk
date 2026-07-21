@@ -591,7 +591,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     ui.add_space(4.0);
                     ui.label(egui::RichText::new(mt.to_string()).weak());
 
-                    let uri = format!("bytes://media/{}", path.display());
+                    let uri = crate::state::asset_image_uri(path);
                     let image = egui::Image::new(uri)
                         .fit_to_exact_size(egui::vec2(panel_width, panel_width))
                         .maintain_aspect_ratio(true)

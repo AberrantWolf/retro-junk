@@ -39,6 +39,7 @@ impl LibrarySourceKey {
         Ok(Self(value))
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -98,7 +99,7 @@ pub fn normalize_relative_path(path: &Path) -> Result<String, LibraryError> {
     for component in Path::new(&portable).components() {
         match component {
             Component::Normal(part) => {
-                parts.push(part.to_str().ok_or(LibraryError::UnsafeSourcePath)?)
+                parts.push(part.to_str().ok_or(LibraryError::UnsafeSourcePath)?);
             }
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
@@ -492,6 +493,11 @@ pub struct LibraryEntryListItem {
     /// projection avoids loading and deserializing every rich entry payload.
     pub crc32: String,
     pub dat_game_name: String,
+    pub serial: String,
+    pub internal_name: String,
+    /// Serialized `Region` variant names from the persisted identification.
+    pub detected_regions: Vec<String>,
+    pub has_hash_warnings: bool,
     pub has_broken_references: bool,
     pub has_cue_compat_issues: bool,
     pub revision: u64,
@@ -1148,7 +1154,8 @@ pub fn query_entry_list(
                 crc32,dat_game_name,
                 broken_references_json IS NOT NULL AND broken_references_json <> '[]',
                 cue_compat_issues_json IS NOT NULL AND cue_compat_issues_json <> '[]',
-                revision,source_revision
+                revision,source_revision,identification_json,hash_warnings_json,
+                disc_identifications_json
          FROM library_entries WHERE {where_sql}
          ORDER BY {order} LIMIT ?3 OFFSET ?4"
     );
@@ -1157,6 +1164,13 @@ pub fn query_entry_list(
         .query_map(
             params![q.console_id.0, pattern, q.limit.clamp(1, 2000), q.offset],
             |r| {
+                let identification_json: Option<String> = r.get(12)?;
+                let hash_warnings_json: Option<String> = r.get(13)?;
+                let disc_identifications_json: Option<String> = r.get(14)?;
+                let (serial, internal_name, detected_regions) = project_identification(
+                    identification_json.as_deref(),
+                    disc_identifications_json.as_deref(),
+                );
                 Ok(LibraryEntryListItem {
                     id: LibraryEntryId(r.get(0)?),
                     display_name: r.get(1)?,
@@ -1166,6 +1180,11 @@ pub fn query_entry_list(
                     data_size: r.get::<_, u64>(5)?,
                     crc32: r.get(6)?,
                     dat_game_name: r.get(7)?,
+                    serial,
+                    internal_name,
+                    detected_regions,
+                    has_hash_warnings: json_array_is_nonempty(hash_warnings_json.as_deref())
+                        || disc_hash_warnings_are_nonempty(disc_identifications_json.as_deref()),
                     has_broken_references: r.get(8)?,
                     has_cue_compat_issues: r.get(9)?,
                     revision: r.get(10)?,
@@ -1182,6 +1201,68 @@ pub fn query_entry_list(
         offset: q.offset,
         rows,
     })
+}
+
+fn project_identification(
+    identification_json: Option<&str>,
+    disc_identifications_json: Option<&str>,
+) -> (String, String, Vec<String>) {
+    let identification = identification_json.and_then(|json| serde_json::from_str(json).ok());
+    let serial = identification
+        .as_ref()
+        .and_then(|value: &serde_json::Value| value.get("serial_number"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let internal_name = identification
+        .as_ref()
+        .and_then(|value| value.get("internal_name"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let detected_regions = identification
+        .as_ref()
+        .and_then(|value| value.get("regions"))
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    let serial = if serial.is_empty() {
+        disc_identifications_json
+            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+            .and_then(|value| {
+                value.as_array()?.iter().find_map(|disc| {
+                    let serial = disc.get("identification")?.get("serial_number")?.as_str()?;
+                    (!serial.is_empty()).then(|| serial.to_owned())
+                })
+            })
+            .unwrap_or_default()
+    } else {
+        serial.to_owned()
+    };
+    (serial, internal_name, detected_regions)
+}
+
+fn json_array_is_nonempty(json: Option<&str>) -> bool {
+    json.and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        .and_then(|value| value.as_array().map(|items| !items.is_empty()))
+        .unwrap_or(false)
+}
+
+fn disc_hash_warnings_are_nonempty(json: Option<&str>) -> bool {
+    json.and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        .and_then(|value| {
+            value.as_array().map(|discs| {
+                discs.iter().any(|disc| {
+                    disc.get("hashes")
+                        .and_then(|hashes| hashes.get("warnings"))
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|warnings| !warnings.is_empty())
+                })
+            })
+        })
+        .unwrap_or(false)
 }
 
 pub fn load_entry_detail(
@@ -1670,7 +1751,7 @@ pub(crate) fn migrate_library_v10(conn: &Connection) -> Result<(), LibraryError>
             .unwrap_or_else(|_| LibrarySourceKey::invalid(*row_id));
         let idx = derived.len();
         groups.entry((*cid, key.to_string())).or_default().push(idx);
-        derived.push(key)
+        derived.push(key);
     }
     for indices in groups.values().filter(|v| v.len() > 1) {
         for &i in indices {

@@ -245,6 +245,23 @@ impl HashAlgorithms {
 pub trait ReadSeek: Read + Seek {}
 impl<T: Read + Seek> ReadSeek for T {}
 
+/// Identification fields a platform analyzer can produce during its normal
+/// quick scan. Frontends use this to omit permanently-empty list columns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IdentificationCapabilities {
+    pub serial: bool,
+    pub internal_name: bool,
+    pub region: bool,
+}
+
+impl IdentificationCapabilities {
+    pub const ALL: Self = Self {
+        serial: true,
+        internal_name: true,
+        region: true,
+    };
+}
+
 /// Trait for analyzing ROM files and disc images.
 ///
 /// Implementors should extract identifying information from the ROM header
@@ -323,6 +340,11 @@ pub trait RomAnalyzer: Send + Sync {
     /// This performs a quick check (magic bytes, header validation) without
     /// full analysis. Useful for auto-detection of ROM type.
     fn can_handle(&self, reader: &mut dyn ReadSeek) -> bool;
+
+    /// Fields this analyzer can surface without an explicit hash operation.
+    fn identification_capabilities(&self) -> IdentificationCapabilities {
+        IdentificationCapabilities::default()
+    }
 
     /// Check if this analyzer matches a folder name (case-insensitive).
     fn matches_folder(&self, folder_name: &str) -> bool {

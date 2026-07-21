@@ -27,7 +27,7 @@ retro-junk-catalog.workspace = true
 retro-junk-import.workspace = true
 eframe = "0.35"
 egui = "0.35"
-egui_extras = { version = "0.35", features = ["image"] }
+egui_extras = { version = "0.35", features = ["file", "image"] }
 rfd = "0.15"
 log.workspace = true
 serde.workspace = true

@@ -20,6 +20,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     let console = &app.browser.consoles[console_idx];
     let Some(console_id) = console.id else { return };
+    let list_columns = app.context.get_by_platform(console.platform).map_or_else(
+        EntryListColumns::default,
+        |registered| EntryListColumns {
+            serial: registered.metadata.identification.serial,
+            internal_name: registered.metadata.identification.internal_name,
+            region: registered.metadata.identification.region,
+            dat_match: registered.analyzer.has_dat_support(),
+        },
+    );
     let Some(page) = app
         .browser
         .active_page
@@ -101,53 +110,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 entry_id: projection.id,
                 status: projection_status(&projection.status, &projection.tag),
                 has_broken_refs: projection.has_broken_references,
-                has_hash_warnings: entry
-                    .and_then(|entry| entry.hashes.as_ref())
-                    .as_ref()
-                    .is_some_and(|h| !h.warnings.is_empty())
-                    || entry
-                        .and_then(|entry| entry.disc_identifications.as_ref())
-                        .is_some_and(|discs| {
-                            discs
-                                .iter()
-                                .any(|d| d.hashes.as_ref().is_some_and(|h| !h.warnings.is_empty()))
-                        }),
+                has_hash_warnings: projection.has_hash_warnings,
                 has_cue_compat_issues: projection.has_cue_compat_issues,
-                asset_status: entry.map_or(
-                    AssetStatus::Unknown,
-                    crate::state::LibraryEntry::asset_status,
-                ),
+                asset_status: app
+                    .browser
+                    .asset_statuses
+                    .get(&projection.id)
+                    .copied()
+                    .unwrap_or(AssetStatus::Unknown),
                 name: projection.display_name.clone(),
                 file_path: entry.map(|entry| entry.game_entry.analysis_path().to_path_buf()),
-                serial: entry.map(entry_serial).unwrap_or_default(),
-                internal_name: entry
-                    .and_then(|entry| entry.identification.as_ref())
-                    .map(|id| id.internal_name.clone())
-                    .unwrap_or_default(),
-                regions: entry.map_or_else(
-                    || projection.region_override.clone(),
-                    |entry| {
-                        let codes: Vec<&str> = entry
-                            .effective_regions()
-                            .iter()
-                            .map(retro_junk_core::Region::code)
-                            .collect();
-                        let text = codes.join(", ");
-                        if entry.region_override.is_some() && !text.is_empty() {
-                            format!("{text}*")
-                        } else {
-                            text
-                        }
-                    },
-                ),
-                crc32: entry
-                    .and_then(|entry| entry.hashes.as_ref())
-                    .map(|h| h.crc32.clone())
-                    .unwrap_or_else(|| projection.crc32.clone()),
-                dat_match: entry
-                    .and_then(|entry| entry.dat_match.as_ref())
-                    .map(|dm| dm.game_name.clone())
-                    .unwrap_or_else(|| projection.dat_game_name.clone()),
+                serial: projection.serial.clone(),
+                internal_name: projection.internal_name.clone(),
+                regions: projected_regions(projection),
+                crc32: projection.crc32.clone(),
+                dat_match: projection.dat_game_name.clone(),
             }
         })
         .collect();
@@ -181,18 +158,27 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             // we only need to subtract the table header to get the body height.
             let body_height = (ui.available_height() - header_height).max(0.0);
 
-            let table = TableBuilder::new(ui)
+            let mut table = TableBuilder::new(ui)
                 .striped(true)
                 .resizable(true)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::exact(30.0)) // Status badge + media indicator
-                .column(Column::initial(280.0).at_least(100.0)) // Name
-                .column(Column::initial(120.0).at_least(60.0)) // Serial
-                .column(Column::initial(140.0).at_least(60.0)) // Internal Name
-                .column(Column::initial(80.0).at_least(40.0)) // Region
-                .column(Column::initial(80.0).at_least(60.0)) // CRC32
-                .column(Column::initial(200.0).at_least(80.0)) // DAT Match
+                .column(Column::initial(280.0).at_least(100.0)); // Name
+            if list_columns.serial {
+                table = table.column(Column::initial(120.0).at_least(60.0));
+            }
+            if list_columns.internal_name {
+                table = table.column(Column::initial(140.0).at_least(60.0));
+            }
+            if list_columns.region {
+                table = table.column(Column::initial(80.0).at_least(40.0));
+            }
+            table = table.column(Column::initial(80.0).at_least(60.0)); // CRC32
+            if list_columns.dat_match {
+                table = table.column(Column::initial(200.0).at_least(80.0));
+            }
+            table = table
                 .min_scrolled_height(0.0)
                 .max_scroll_height(body_height);
 
@@ -204,21 +190,29 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     header.col(|ui| {
                         ui.strong("Name");
                     });
-                    header.col(|ui| {
-                        ui.strong("Serial");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Internal Name");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Region");
-                    });
+                    if list_columns.serial {
+                        header.col(|ui| {
+                            ui.strong("Serial");
+                        });
+                    }
+                    if list_columns.internal_name {
+                        header.col(|ui| {
+                            ui.strong("Internal Name");
+                        });
+                    }
+                    if list_columns.region {
+                        header.col(|ui| {
+                            ui.strong("Region");
+                        });
+                    }
                     header.col(|ui| {
                         ui.strong("CRC32");
                     });
-                    header.col(|ui| {
-                        ui.strong("DAT Match");
-                    });
+                    if list_columns.dat_match {
+                        header.col(|ui| {
+                            ui.strong("DAT Match");
+                        });
+                    }
                 })
                 .body(|body| {
                     body.rows(text_height, row_data.len(), |mut row| {
@@ -263,29 +257,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
                         // Paint text directly in cells so no WidgetRect is created,
                         // allowing the cell response to handle all click interaction.
-                        let r2 = row.col(|ui| paint_cell_text(ui, &data.name));
-                        let r3 = row.col(|ui| {
-                            paint_cell_text(ui, &data.serial);
-                        });
-                        let r4 = row.col(|ui| {
-                            paint_cell_text(ui, &data.internal_name);
-                        });
-                        let r5 = row.col(|ui| {
-                            paint_cell_text(
-                                ui,
-                                if data.regions.is_empty() {
-                                    ""
-                                } else {
-                                    &data.regions
-                                },
-                            );
-                        });
-                        let r6 = row.col(|ui| {
-                            paint_cell_text(ui, &data.crc32);
-                        });
-                        let r7 = row.col(|ui| {
-                            paint_cell_text(ui, &data.dat_match);
-                        });
+                        let name_response = row.col(|ui| paint_cell_text(ui, &data.name));
 
                         // Scroll-to-row: when keyboard navigation targets this row
                         if app.ui_state.scroll_to_row == Some(row_idx) {
@@ -293,7 +265,20 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         }
 
                         // Union all column responses for click and context menu
-                        let row_resp = r1.1 | r2.1 | r3.1 | r4.1 | r5.1 | r6.1 | r7.1;
+                        let mut row_resp = r1.1 | name_response.1;
+                        if list_columns.serial {
+                            row_resp |= row.col(|ui| paint_cell_text(ui, &data.serial)).1;
+                        }
+                        if list_columns.internal_name {
+                            row_resp |= row.col(|ui| paint_cell_text(ui, &data.internal_name)).1;
+                        }
+                        if list_columns.region {
+                            row_resp |= row.col(|ui| paint_cell_text(ui, &data.regions)).1;
+                        }
+                        row_resp |= row.col(|ui| paint_cell_text(ui, &data.crc32)).1;
+                        if list_columns.dat_match {
+                            row_resp |= row.col(|ui| paint_cell_text(ui, &data.dat_match)).1;
+                        }
 
                         // Right-click selection: if right-clicked row isn't selected, select just it
                         if row_resp.secondary_clicked() {
@@ -362,8 +347,13 @@ fn show_row_context_menu(
         let mut all_have_all_media = true;
         let mut any_has_miximage = false;
         for &i in &app.ui_state.selected_entries {
-            if let Some(entry) = console.entry_by_id(i) {
-                let ms = entry.asset_status();
+            if console.entry_by_id(i).is_some() {
+                let ms = app
+                    .browser
+                    .asset_statuses
+                    .get(&i)
+                    .copied()
+                    .unwrap_or(AssetStatus::Unknown);
                 match ms {
                     AssetStatus::Complete => {
                         any_has_media = true;
@@ -376,7 +366,7 @@ fn show_row_context_menu(
                         all_have_all_media = false;
                     }
                 }
-                if entry.has_miximage() {
+                if app.browser.entries_with_miximages.contains(&i) {
                     any_has_miximage = true;
                 }
             }
@@ -610,21 +600,42 @@ fn collect_selected_field(
 }
 
 /// Serial for a table row: the entry's own, falling back to the first
-/// disc-level serial for multi-disc sets. Empty when none.
-fn entry_serial(entry: &crate::state::LibraryEntry) -> String {
-    if let Some(ref id) = entry.identification
-        && !id.serial_number.is_empty()
-    {
-        return id.serial_number.clone();
+#[derive(Clone, Copy, Default)]
+struct EntryListColumns {
+    serial: bool,
+    internal_name: bool,
+    region: bool,
+    dat_match: bool,
+}
+
+fn projected_regions(projection: &retro_junk_db::LibraryEntryListItem) -> String {
+    if !projection.region_override.is_empty() {
+        return format!("{}*", region_code(&projection.region_override));
     }
-    entry
-        .disc_identifications
+    projection
+        .detected_regions
         .iter()
-        .flatten()
-        .map(|d| &d.identification.serial_number)
-        .find(|s| !s.is_empty())
-        .cloned()
-        .unwrap_or_default()
+        .map(|region| region_code(region))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn region_code(region: &str) -> &str {
+    match region {
+        "Japan" => "JPN",
+        "Usa" | "USA" => "USA",
+        "Europe" => "EUR",
+        "Australia" => "AUS",
+        "Korea" => "KOR",
+        "China" => "CHN",
+        "Taiwan" => "TWN",
+        "Asia" => "ASI",
+        "Brazil" => "BRA",
+        "LatinAmerica" | "Latin America" => "LAT",
+        "World" => "WLD",
+        "Unknown" => "UNK",
+        other => other,
+    }
 }
 
 struct RowData {

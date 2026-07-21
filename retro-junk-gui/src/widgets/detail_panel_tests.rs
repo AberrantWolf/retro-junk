@@ -46,6 +46,7 @@ fn long_values_wrap_instead_of_widening_the_panel() {
     // Media-scan sentinel: pretend assets were already scanned so the panel
     // doesn't spawn a background loader thread against the fake root path.
     entry.asset_paths = Some(std::collections::HashMap::new());
+    let entry_id = entry.id;
 
     let state = harness.state_mut();
     state.ui_state.current_view = View::Library;
@@ -58,6 +59,9 @@ fn long_values_wrap_instead_of_widening_the_panel() {
         console_statuses: std::collections::HashMap::new(),
         stale_consoles: std::collections::HashSet::new(),
         asset_discovery_in_flight: std::collections::HashSet::new(),
+        asset_statuses: std::collections::HashMap::new(),
+        entries_with_miximages: std::collections::HashSet::new(),
+        detail_asset_entry: entry_id,
     };
     state.ui_state.selected_console = state.browser.consoles[0].id;
     state.ui_state.focused_entry = state.browser.consoles[0].entries[0].id;

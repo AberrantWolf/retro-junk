@@ -32,6 +32,10 @@ const DVD5_SIZE_THRESHOLD: u64 = 4_700_000_000;
 pub struct WiiAnalyzer;
 
 impl RomAnalyzer for WiiAnalyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities::ALL
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,

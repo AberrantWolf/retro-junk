@@ -902,6 +902,14 @@ fn detect_format(reader: &mut dyn ReadSeek) -> Result<NesFormat, AnalysisError> 
 pub struct NesAnalyzer;
 
 impl RomAnalyzer for NesAnalyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities {
+            internal_name: true, // Famicom Disk System headers
+            region: true,
+            ..Default::default()
+        }
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,

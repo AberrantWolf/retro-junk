@@ -267,6 +267,10 @@ fn to_identification(
 pub struct GbaAnalyzer;
 
 impl RomAnalyzer for GbaAnalyzer {
+    fn identification_capabilities(&self) -> retro_junk_core::IdentificationCapabilities {
+        retro_junk_core::IdentificationCapabilities::ALL
+    }
+
     fn analyze(
         &self,
         reader: &mut dyn ReadSeek,
