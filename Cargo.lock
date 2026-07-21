@@ -4344,7 +4344,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-catalog"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -4355,7 +4355,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "clap",
@@ -4382,7 +4382,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crc32fast",
  "md5",
@@ -4393,7 +4393,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-dat"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "csv",
  "dirs",
@@ -4410,7 +4410,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-db"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "retro-junk-catalog",
  "rusqlite",
@@ -4422,7 +4422,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-disc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chd",
  "crc32fast",
@@ -4436,7 +4436,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-frontend"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -4452,7 +4452,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-gui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -4486,7 +4486,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-import"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "futures",
@@ -4504,7 +4504,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-lib"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crc32fast",
  "dirs",
@@ -4528,7 +4528,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-microsoft"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "retro-junk-core",
  "thiserror 2.0.18",
@@ -4536,7 +4536,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-nintendo"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "crc32fast",
  "log",
@@ -4550,7 +4550,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-scraper"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "dirs",
@@ -4569,7 +4569,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-sega"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "log",
  "retro-junk-core",
@@ -4579,7 +4579,7 @@ dependencies = [
 
 [[package]]
 name = "retro-junk-sony"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "log",
  "retro-junk-core",

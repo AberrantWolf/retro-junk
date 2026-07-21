@@ -2,8 +2,27 @@
 
 ## Unreleased
 
+## 0.3.0
+
+- Made SQLite the authoritative GUI library store, with durable entry IDs,
+  command-first edits, catalog-backed matching, and automatic migration and
+  repair of existing libraries.
+- Moved startup loading, scans, filesystem refreshes, hashing, and media
+  discovery off the UI thread while keeping list metadata stable as entries
+  are selected.
+- Bounded GUI list projections and media memory use: list rows retain only
+  lightweight asset-presence state, while image data is loaded and retained
+  only for the currently focused detail view.
+- Tailored game-list columns to each console's identification capabilities so
+  unsupported serial, internal-name, region, and DAT fields are omitted.
+- Fixed intermittent debug-build red outlines while scrolling large,
+  virtualized game lists without disabling true same-frame ID collision
+  warnings.
 - The main GUI release now includes full Japanese, Chinese, and Korean font
   support; the separate `retro-junk-gui-cjk` release variant was removed.
+
+## 0.2.0
+
 - CUE sheet compatibility issues are now detected during scan and displayed as warning triangles in the game table and detailed messages in the detail panel, with clear "fixable" vs "re-dump required" messaging
 - Added `retro-junk fix-cue` command to detect and convert CDRWin-format CUE sheets to standard CUE format for wider emulator compatibility (e.g., DuckStation rejecting `CD_ROM_XA` headers)
 - Added `retro-junk systems` command listing all 25 supported systems with DAT/GDB capability tags, grouped by manufacturer, with optional `--manufacturer` filter
