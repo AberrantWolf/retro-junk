@@ -171,7 +171,7 @@ impl ScreenScraperClient {
     /// to prevent hangs when `ScreenScraper` stalls mid-transfer.
     pub async fn download_media(&self, url: &str) -> Result<Vec<u8>, ScrapeError> {
         tokio::time::timeout(MEDIA_TIMEOUT, async {
-            let resp = self.http.get(url).send().await?;
+            let resp = self.http.get(url).send().await?.error_for_status()?;
             Ok::<_, reqwest::Error>(resp.bytes().await?.to_vec())
         })
         .await
@@ -182,6 +182,17 @@ impl ScreenScraperClient {
             ))
         })?
         .map_err(ScrapeError::from)
+        .and_then(|bytes| {
+            let prefix = &bytes[..bytes.len().min(256)];
+            let text = String::from_utf8_lossy(prefix);
+            if bytes.is_empty() || looks_like_html_error(&text) {
+                Err(ScrapeError::Api(
+                    "Media server returned an empty or HTML response".to_owned(),
+                ))
+            } else {
+                Ok(bytes)
+            }
+        })
     }
 
     /// Get current quota info if available.

@@ -491,10 +491,13 @@ impl RomAnalyzer for N64Analyzer {
         reader.seek(SeekFrom::Start(header_offset))?;
 
         match detect_n64_format(&magic) {
-            Some(N64Format::Z64) | None => Ok(None),
+            Some(N64Format::Z64) => Ok(None),
             Some(fmt) => Ok(Some(Box::new(move |buf: &mut [u8]| {
                 normalize_to_big_endian(buf, fmt);
             }))),
+            None => Err(AnalysisError::invalid_format(
+                "N64 hashing requires z64, v64, or n64 ROM data",
+            )),
         }
     }
 

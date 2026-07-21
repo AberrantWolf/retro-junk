@@ -7,6 +7,7 @@ pub mod checksum;
 pub mod disc;
 pub mod error;
 pub mod hasher;
+pub mod matching;
 pub mod platform;
 pub mod progress;
 pub mod region;

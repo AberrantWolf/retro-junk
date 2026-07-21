@@ -606,6 +606,47 @@ fn test_ambiguous_serial_returns_ambiguous() {
 }
 
 #[test]
+fn test_header_revision_resolves_ambiguous_serial_as_serial_match() {
+    let dat = DatFile {
+        name: "Test".into(),
+        description: String::new(),
+        version: "1".into(),
+        games: vec![
+            single_rom_game(
+                "Mario & Luigi - Partners in Time (USA)",
+                "Partners in Time (USA).nds",
+                67_108_864,
+                "11111111",
+                Some("ARME"),
+            ),
+            single_rom_game(
+                "Mario & Luigi - Partners in Time (USA) (Rev 1)",
+                "Partners in Time (USA) (Rev 1).nds",
+                67_108_864,
+                "22222222",
+                Some("ARME"),
+            ),
+        ],
+    };
+    let index = DatIndex::from_dat(dat);
+    let mut identification = retro_junk_core::RomIdentification::new();
+    identification.version = "v1".into();
+    identification.regions = vec![retro_junk_core::Region::Usa];
+    identification.file_size = 57_506_248;
+
+    let result = expect_match(index.match_by_serial_with_identification(
+        "NTR-ARME",
+        Some("ARME"),
+        &identification,
+    ));
+    assert_eq!(result.method, MatchMethod::Serial);
+    assert_eq!(
+        index.games[result.game_index].name,
+        "Mario & Luigi - Partners in Time (USA) (Rev 1)"
+    );
+}
+
+#[test]
 fn test_ambiguous_via_game_code() {
     // Two games share the same 4-char code, tested via the game_code path
     let dat = DatFile {

@@ -86,9 +86,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             ui.separator();
 
             let has_selection = !app.ui_state.selected_entries.is_empty();
-            if ui
-                .add_enabled(has_selection, egui::Button::new("Calculate Hashes"))
-                .clicked()
+            let selection_ready = has_selection && app.selected_entry_details_loaded();
+            let hash_button = ui
+                .add_enabled(selection_ready, egui::Button::new("Calculate Hashes"))
+                .on_disabled_hover_text(if has_selection {
+                    "Loading the selected entry details…"
+                } else {
+                    "Select one or more entries"
+                });
+            if hash_button.clicked()
                 && let Some(ci) = app.selected_console_index()
             {
                 backend::hash::compute_hashes_for_selection(app, ci);
@@ -198,11 +204,16 @@ pub fn switch_to_root_unchecked(
     app.ui_state.focused_entry = None;
     app.ui_state.selected_entries.clear();
     app.library_controller.switch_root();
+    app.message_tx = app
+        .message_tx
+        .for_generation(app.library_controller.session_generation);
+    app.cancel_root_scoped_operations();
     app.ui_state.pending_auto_scans.clear();
     app.ui_state.auto_scan_in_flight = None;
     if let Some(op_id) = app.ui_state.auto_scan_op_id.take() {
         app.operations.retain(|o| o.id != op_id);
     }
+    app.reset_root_session_requests();
 
     // Set new root
     app.root_path = Some(new_root.clone());

@@ -27,6 +27,7 @@ pub fn test_entry(game_entry: GameEntry) -> LibraryEntry {
         game_entry,
         identification: None,
         hashes: None,
+        disc_verification: Default::default(),
         dat_match: None,
         status: EntryStatus::Unknown,
         ambiguous_candidates: Vec::new(),

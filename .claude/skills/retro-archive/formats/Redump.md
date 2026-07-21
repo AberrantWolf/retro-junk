@@ -238,6 +238,13 @@ Redump tracks **three checksums per file** (per track):
 ### Important Notes on Checksums
 - **Per-track, not per-disc**: Each track file (`.bin`) and the CUE sheet have their own
   individual checksums. There is no single whole-disc checksum.
+- **Complete verification requires the complete track set**: A matching data-track checksum can
+  identify a title or revision, but it does not verify the disc when an expected audio/data track
+  is missing, extra, or mismatched. Verification must assign every logical local track to one
+  distinct track of the same DAT game and leave no DAT track unaccounted for.
+- **Combined-BIN CUE images must be split logically before comparison**: When several tracks share
+  one BIN, hash each byte span described by the CUE indexes independently. Hashing the entire BIN
+  produces a checksum that Redump does not catalogue.
 - **2352-byte raw sectors**: Data track checksums cover the full raw sector including sync
   bytes, header, ECC, and EDC — not just the 2048-byte user data. This means Redump
   checksums are NOT compatible with ISO files.

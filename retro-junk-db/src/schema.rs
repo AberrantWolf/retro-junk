@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 14;
+pub const CURRENT_VERSION: i32 = 16;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -260,6 +260,8 @@ const TABLES: &[(&str, &str)] = &[
           sha1 TEXT NOT NULL DEFAULT '',
           md5 TEXT NOT NULL DEFAULT '',
           data_size INTEGER NOT NULL DEFAULT 0,
+          hash_warnings_json TEXT,
+          disc_verification TEXT NOT NULL DEFAULT 'not_applicable',
           dat_game_name TEXT NOT NULL DEFAULT '',
           dat_rom_name TEXT NOT NULL DEFAULT '',
           dat_match_method TEXT NOT NULL DEFAULT '',
@@ -618,6 +620,90 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                          WHERE id IN (
                            SELECT DISTINCT console_id FROM library_entries
                            WHERE status IN ('unknown','ambiguous','unrecognized')
+                         );",
+                    )?;
+                }
+            }
+            15 => {
+                let has_library: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_entries')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_library {
+                    if conn
+                        .prepare("SELECT hash_warnings_json FROM library_entries LIMIT 0")
+                        .is_err()
+                    {
+                        conn.execute_batch(
+                            "ALTER TABLE library_entries ADD COLUMN hash_warnings_json TEXT;",
+                        )?;
+                    }
+                    if conn
+                        .prepare("SELECT disc_verification FROM library_entries LIMIT 0")
+                        .is_err()
+                    {
+                        conn.execute_batch(
+                            "ALTER TABLE library_entries ADD COLUMN disc_verification TEXT NOT NULL DEFAULT 'not_applicable';",
+                        )?;
+                    }
+                    // Older releases treated a matching data track as a
+                    // verified CUE/BIN disc. Those cached hashes cannot prove
+                    // that every Redump track existed, so discard only their
+                    // derived verdicts and let the normal stale-console scan
+                    // rebuild identification before an explicit rehash.
+                    conn.execute_batch(
+                        "UPDATE library_entries
+                         SET status='unknown',crc32='',sha1='',md5='',data_size=0,
+                             hash_warnings_json=NULL,disc_verification='not_applicable',
+                             dat_game_name='',dat_rom_name='',dat_match_method='',
+                             disc_identifications_json=NULL,ambiguous_candidates_json=NULL,
+                             revision=revision+1
+                         WHERE instr(lower(game_entry_json),'.cue')>0;
+                         UPDATE library_consoles
+                         SET scan_state='stale',revision=revision+1
+                         WHERE id IN (
+                           SELECT DISTINCT console_id FROM library_entries
+                           WHERE instr(lower(game_entry_json),'.cue')>0
+                         );",
+                    )?;
+                }
+            }
+            14 => {
+                let has_match_state: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_entries')
+                         AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_consoles')
+                         AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='media')
+                         AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='releases')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_match_state {
+                    // Matching policy now has one authoritative verdict. Only
+                    // invalidate consoles whose cached status is unresolved or
+                    // disagrees with the catalog's definitive hash evidence.
+                    conn.execute_batch(
+                        "UPDATE library_consoles AS c
+                         SET scan_state='stale', revision=revision+1
+                         WHERE c.scan_state='ready' AND EXISTS (
+                           SELECT 1 FROM library_entries e
+                           WHERE e.console_id=c.id AND (
+                             e.status IN ('unknown','ambiguous','unrecognized') OR
+                             (e.status='matched' AND NOT EXISTS (
+                               SELECT 1 FROM media m JOIN releases r ON r.id=m.release_id
+                               WHERE r.platform_id=c.platform AND (
+                                 (e.crc32<>'' AND m.crc32=lower(e.crc32) AND m.file_size=e.data_size) OR
+                                 (e.sha1<>'' AND m.sha1=lower(e.sha1))
+                               )
+                             )) OR
+                             (e.status='likely' AND EXISTS (
+                               SELECT 1 FROM media m JOIN releases r ON r.id=m.release_id
+                               WHERE r.platform_id=c.platform AND (
+                                 (e.crc32<>'' AND m.crc32=lower(e.crc32) AND m.file_size=e.data_size) OR
+                                 (e.sha1<>'' AND m.sha1=lower(e.sha1))
+                               )
+                             ))
+                           )
                          );",
                     )?;
                 }

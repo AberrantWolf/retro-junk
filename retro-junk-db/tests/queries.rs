@@ -186,8 +186,48 @@ fn runtime_hash_match_is_platform_scoped_size_checked_and_case_insensitive() {
 }
 
 #[test]
+fn clustered_hash_lookup_includes_per_track_disc_fingerprints() {
+    let conn = setup_db();
+    insert_media_track(
+        &conn,
+        &MediaTrack {
+            media_id: "smb1-nes-usa-v1".into(),
+            track_number: 2,
+            track_name: "Audio Track 2.bin".into(),
+            file_size: 2352,
+            crc32: "1234abcd".into(),
+            sha1: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
+            md5: String::new(),
+        },
+    )
+    .unwrap();
+
+    let matches = match_media_by_hashes(
+        &conn,
+        "nes",
+        &[CatalogHashQuery {
+            file_size: 2352,
+            crc32: "1234ABCD".into(),
+            sha1: String::new(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(matches[0].len(), 1);
+    assert_eq!(matches[0][0].media.id, "smb1-nes-usa-v1");
+
+    let tracks = find_media_tracks_for_media_ids(&conn, &["smb1-nes-usa-v1".to_string()]).unwrap();
+    assert_eq!(tracks.len(), 1);
+    assert_eq!(tracks[0].track_number, 2);
+}
+
+#[test]
 fn runtime_serial_match_uses_normalized_comma_parts_and_game_codes() {
     let conn = setup_db();
+    conn.execute(
+        "UPDATE releases SET revision='Rev 1' WHERE id='smb1-nes-usa'",
+        [],
+    )
+    .unwrap();
     assert_eq!(
         match_media_by_serial(&conn, "nes", "NES 0001")
             .unwrap()
@@ -210,8 +250,40 @@ fn runtime_serial_match_uses_normalized_comma_parts_and_game_codes() {
     )
     .unwrap();
     assert_eq!(clustered[0].len(), 1);
+    assert_eq!(clustered[0][0].release_revision, "Rev 1");
     assert!(clustered[1].is_empty());
     assert_eq!(clustered[2].len(), 1);
+}
+
+#[test]
+fn runtime_serial_batch_never_treats_an_empty_key_as_a_catalog_match() {
+    let conn = setup_db();
+    let clustered = match_media_by_serials(&conn, "nes", &[String::new(), "   - ".into()]).unwrap();
+    assert_eq!(clustered.len(), 2);
+    assert!(clustered.iter().all(Vec::is_empty));
+}
+
+#[test]
+fn runtime_serial_batch_combines_indexed_media_and_release_serial_sources() {
+    let conn = setup_db();
+    conn.execute(
+        "UPDATE releases SET game_serial='REL-0042' WHERE id='zelda1-nes-usa'",
+        [],
+    )
+    .unwrap();
+    let mut zelda_media = test_media("zelda1-nes-usa-v1", "zelda1-nes-usa");
+    zelda_media.dat_name = "The Legend of Zelda (USA).nes".into();
+    upsert_media(&conn, &zelda_media).unwrap();
+
+    let clustered = match_media_by_serials(
+        &conn,
+        "nes",
+        &["NES-0001".into(), "REL 0042".into(), String::new()],
+    )
+    .unwrap();
+    assert_eq!(clustered[0][0].media.id, "smb1-nes-usa-v1");
+    assert_eq!(clustered[1][0].media.id, "zelda1-nes-usa-v1");
+    assert!(clustered[2].is_empty());
 }
 
 #[test]

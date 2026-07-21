@@ -175,9 +175,9 @@ pub(crate) fn build_identification(
     }
 
     // Version
-    if header.version > 0 {
-        id.version = format!("1.{:02}", header.version);
-    }
+    // Zero is meaningful: it identifies the original release and can
+    // disambiguate it from later DAT revisions sharing the same game code.
+    id.version = format!("1.{:02}", header.version);
 
     // Maker code
     id.maker_code.clone_from(&maker);

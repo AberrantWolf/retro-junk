@@ -20,7 +20,7 @@ use retro_junk_catalog::CatalogTag;
 use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
-use crate::state::{DISPLAY_ASSET_TYPES, EntryStatus};
+use crate::state::{DISPLAY_ASSET_TYPES, DiscVerification, EntryStatus};
 use crate::theme::{STATUS_ERR, STATUS_WARN, STATUS_WARN_STRONG};
 
 /// Indent for fields nested under a per-disc or per-reference heading.
@@ -42,8 +42,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.label("Console not found.");
         return;
     };
+    app.request_entry_detail(entry_id, ui.ctx());
     let Some(entry_idx) = app.browser.consoles[console_idx].entry_index(entry_id) else {
-        ui.label("Entry not found.");
+        ui.spinner();
+        ui.label("Loading entry details…");
         return;
     };
 
@@ -91,7 +93,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 EntryStatus::Unknown => ("Unknown", effective.color()),
                 EntryStatus::Unrecognized => ("Unrecognized", effective.color()),
                 EntryStatus::Ambiguous => ("Ambiguous", effective.color()),
-                EntryStatus::Matched => ("Matched", effective.color()),
+                EntryStatus::LikelyMatched => ("Likely match", effective.color()),
+                EntryStatus::Matched => ("Verified", effective.color()),
                 EntryStatus::Tagged(CatalogTag::Homebrew) => ("Homebrew", effective.color()),
                 EntryStatus::Tagged(CatalogTag::Modded) => ("Modded", effective.color()),
             };
@@ -102,6 +105,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 }
             });
         });
+
+        if entry.status == EntryStatus::LikelyMatched {
+            ui.add_space(2.0);
+            let explanation = if entry.hashes.is_some()
+                || entry
+                    .disc_identifications
+                    .as_ref()
+                    .is_some_and(|discs| discs.iter().any(|disc| disc.hashes.is_some()))
+            {
+                "The ROM header identifies one DAT release, but the calculated hash does not verify its bytes."
+            } else {
+                "The ROM header identifies one DAT release. Calculate hashes to verify the ROM bytes."
+            };
+            ui.label(egui::RichText::new(explanation).weak().italics());
+        }
 
         // Show ambiguous candidates if applicable
         if entry.status == EntryStatus::Ambiguous && !entry.ambiguous_candidates.is_empty() {
@@ -384,6 +402,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                         warning_note(ui, NESTED_INDENT, warning);
                     }
                 }
+                if disc.disc_verification != DiscVerification::NotApplicable {
+                    nested_detail_row(
+                        ui,
+                        "Disc Integrity",
+                        disc_verification_label(disc.disc_verification),
+                    );
+                }
                 if let Some(ref dm) = disc.dat_match {
                     nested_detail_row(ui, "DAT", &dm.rom_name);
                 } else if entry.status == EntryStatus::Ambiguous {
@@ -490,6 +515,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 "Data Size",
                 &retro_junk_lib::util::format_bytes(hashes.data_size),
             );
+            if entry.disc_verification != DiscVerification::NotApplicable {
+                detail_row(
+                    ui,
+                    "Disc Integrity",
+                    disc_verification_label(entry.disc_verification),
+                );
+            }
             for warning in &hashes.warnings {
                 warning_note(ui, 0.0, warning);
             }
@@ -573,6 +605,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             }
         }
     });
+}
+
+fn disc_verification_label(verification: DiscVerification) -> &'static str {
+    match verification {
+        DiscVerification::NotApplicable => "Not applicable",
+        DiscVerification::Complete => "Complete track set verified",
+        DiscVerification::Incomplete => "Incomplete or mismatched track set",
+        DiscVerification::InvalidLayout => "Invalid CUE layout",
+    }
 }
 
 /// A label that wraps within the available width and offers "Copy" on

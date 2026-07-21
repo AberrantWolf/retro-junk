@@ -640,3 +640,11 @@ fn test_normalize_n64() {
     normalize_to_big_endian(&mut data, RomFormat::N64);
     assert_eq!(data, vec![0x80, 0x37, 0x12, 0x40]);
 }
+
+#[test]
+fn test_dat_hashing_rejects_unknown_or_compressed_payload() {
+    let analyzer = N64Analyzer;
+    let mut data = Cursor::new(vec![0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]);
+    let result = analyzer.dat_chunk_normalizer(&mut data, 0);
+    assert!(result.is_err());
+}

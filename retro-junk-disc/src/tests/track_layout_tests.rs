@@ -143,6 +143,27 @@ fn cue_index_past_end_of_file_is_rejected() {
 }
 
 #[test]
+fn zero_length_and_duplicate_tracks_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    write_file(dir.path(), "game.bin", 10 * 2352);
+    let zero_length = r#"FILE "game.bin" BINARY
+  TRACK 01 MODE2/2352
+    INDEX 01 00:00:00
+  TRACK 02 AUDIO
+    INDEX 01 00:00:00
+"#;
+    assert!(cue_track_spans(&parse_cue(zero_length).unwrap(), dir.path()).is_err());
+
+    let duplicate = r#"FILE "game.bin" BINARY
+  TRACK 01 MODE2/2352
+    INDEX 01 00:00:00
+  TRACK 01 AUDIO
+    INDEX 01 00:00:05
+"#;
+    assert!(cue_track_spans(&parse_cue(duplicate).unwrap(), dir.path()).is_err());
+}
+
+#[test]
 fn missing_referenced_file_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let cue = r#"FILE "missing.bin" BINARY

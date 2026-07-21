@@ -8,7 +8,8 @@ use retro_junk_db::{Connection, LibraryEntryRow};
 use retro_junk_lib::{AnalysisContext, Platform, Region};
 
 use crate::state::{
-    ConsoleState, DatMatchInfo, EntryStatus, LibraryBrowserState, LibraryEntry, ScanStatus,
+    ConsoleState, DatMatchInfo, DiscVerification, EntryStatus, LibraryBrowserState, LibraryEntry,
+    ScanStatus,
 };
 
 // ── Error Type ──────────────────────────────────────────────────────────────
@@ -80,46 +81,6 @@ fn import_legacy_library(
     Ok(())
 }
 
-/// Build the source-aware payload published by the serialized library store.
-pub fn completed_console_scan(
-    root: &Path,
-    console: &ConsoleState,
-) -> Result<crate::backend::library_store::CompletedConsoleScan, CacheError> {
-    let platform = serde_json::to_string(&console.platform)?;
-    let fingerprint_hash = console.fingerprint.as_ref().map_or_else(
-        || crate::fingerprint::compute_fingerprint(&console.folder_path).name_hash,
-        |fingerprint| fingerprint.name_hash.clone(),
-    );
-    let entries = console
-        .entries
-        .iter()
-        .map(entry_to_row)
-        .map(|row| {
-            let row = row?;
-            Ok(retro_junk_db::ScannedLibraryEntry {
-                entry_key: retro_junk_db::source_key_from_game_entry_json(
-                    &row.game_entry_json,
-                    &console.folder_path,
-                )?,
-                source_fingerprint: retro_junk_db::source_fingerprint_from_game_entry_json(
-                    &row.game_entry_json,
-                    &console.folder_path,
-                )?,
-                row,
-            })
-        })
-        .collect::<Result<Vec<_>, CacheError>>()?;
-
-    Ok(crate::backend::library_store::CompletedConsoleScan {
-        root_path: root.to_string_lossy().into_owned(),
-        platform: platform.trim_matches('"').to_owned(),
-        folder_name: console.folder_name.clone(),
-        folder_path: console.folder_path.to_string_lossy().into_owned(),
-        fingerprint_hash,
-        entries,
-    })
-}
-
 pub fn scanned_entry(
     console: &ConsoleState,
     entry: &LibraryEntry,
@@ -133,6 +94,24 @@ pub fn scanned_entry(
         source_fingerprint: retro_junk_db::source_fingerprint_from_game_entry_json(
             &row.game_entry_json,
             &console.folder_path,
+        )?,
+        row,
+    })
+}
+
+pub(crate) fn scanned_entry_for_folder(
+    folder_path: &Path,
+    entry: &LibraryEntry,
+) -> Result<retro_junk_db::ScannedLibraryEntry, CacheError> {
+    let row = entry_to_row(entry)?;
+    Ok(retro_junk_db::ScannedLibraryEntry {
+        entry_key: retro_junk_db::source_key_from_game_entry_json(
+            &row.game_entry_json,
+            folder_path,
+        )?,
+        source_fingerprint: retro_junk_db::source_fingerprint_from_game_entry_json(
+            &row.game_entry_json,
+            folder_path,
         )?,
         row,
     })
@@ -286,6 +265,7 @@ fn load_library_from_legacy(
                 game_entry: ce.game_entry.clone(),
                 identification: ce.identification.clone(),
                 hashes: ce.hashes.clone(),
+                disc_verification: Default::default(),
                 dat_match: ce.dat_match.clone(),
                 status: ce.status,
                 ambiguous_candidates: ce.ambiguous_candidates.clone(),
@@ -425,7 +405,7 @@ fn import_legacy_console(
 
 // ── Row ↔ Domain Conversion ─────────────────────────────────────────────────
 
-fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Error> {
+pub(crate) fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Error> {
     let display_name = entry.game_entry.display_name().to_string();
     let game_entry_json = serde_json::to_string(&entry.game_entry)?;
 
@@ -440,6 +420,12 @@ fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Err
         ),
         None => (String::new(), String::new(), String::new(), 0),
     };
+    let hash_warnings_json = entry
+        .hashes
+        .as_ref()
+        .filter(|hashes| !hashes.warnings.is_empty())
+        .map(|hashes| serde_json::to_string(&hashes.warnings))
+        .transpose()?;
 
     let (dat_game_name, dat_rom_name, dat_match_method) = match &entry.dat_match {
         Some(dm) => (
@@ -494,6 +480,8 @@ fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Err
         sha1,
         md5,
         data_size,
+        hash_warnings_json,
+        disc_verification: disc_verification_to_str(entry.disc_verification).to_string(),
         dat_game_name,
         dat_rom_name,
         dat_match_method,
@@ -520,6 +508,8 @@ pub(crate) fn entry_analysis_update(
         sha1: row.sha1,
         md5: row.md5,
         data_size: row.data_size,
+        hash_warnings_json: row.hash_warnings_json,
+        disc_verification: row.disc_verification,
         dat_game_name: row.dat_game_name,
         dat_rom_name: row.dat_rom_name,
         dat_match_method: row.dat_match_method,
@@ -533,11 +523,42 @@ pub(crate) fn entry_analysis_update(
     })
 }
 
+/// Build the narrow payload written by an explicit hash operation. This must
+/// not include diagnostics or identification fields which may have changed
+/// independently while a large disc was hashing.
+pub(crate) fn entry_hash_update(
+    entry: &LibraryEntry,
+) -> Result<retro_junk_db::EntryHashUpdate, serde_json::Error> {
+    let row = entry_to_row(entry)?;
+    Ok(retro_junk_db::EntryHashUpdate {
+        status: row.status,
+        crc32: row.crc32,
+        sha1: row.sha1,
+        md5: row.md5,
+        data_size: row.data_size,
+        hash_warnings_json: row.hash_warnings_json,
+        disc_verification: row.disc_verification,
+        dat_game_name: row.dat_game_name,
+        dat_rom_name: row.dat_rom_name,
+        dat_match_method: row.dat_match_method,
+        cover_title: row.cover_title,
+        screen_title: row.screen_title,
+        disc_identifications_json: row.disc_identifications_json,
+        ambiguous_candidates_json: row.ambiguous_candidates_json,
+    })
+}
+
 pub(crate) fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
     let game_entry = serde_json::from_str(&row.game_entry_json).ok()?;
 
     let status = str_to_status(&row.status);
     let tag = str_to_tag(&row.tag);
+    let hash_warnings = row
+        .hash_warnings_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str(json).ok())
+        .unwrap_or_default();
+    let disc_verification = str_to_disc_verification(&row.disc_verification);
 
     // Empty string in the row means "not set" — map back to the GUI's Option fields.
     let hashes = if row.crc32.is_empty() {
@@ -548,7 +569,7 @@ pub(crate) fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
             sha1: (!row.sha1.is_empty()).then_some(row.sha1),
             md5: (!row.md5.is_empty()).then_some(row.md5),
             data_size: row.data_size as u64,
-            warnings: vec![],
+            warnings: hash_warnings,
         })
     };
 
@@ -602,6 +623,7 @@ pub(crate) fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
         game_entry,
         identification,
         hashes,
+        disc_verification,
         dat_match,
         status,
         ambiguous_candidates,
@@ -616,11 +638,20 @@ pub(crate) fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
     })
 }
 
+pub(crate) fn detail_to_entry(detail: retro_junk_db::LibraryEntryDetail) -> Option<LibraryEntry> {
+    let mut entry = row_to_entry(detail.row)?;
+    entry.id = Some(detail.id);
+    entry.revision = detail.revision;
+    entry.source_revision = detail.source_revision;
+    Some(entry)
+}
+
 fn status_to_str(status: EntryStatus) -> (&'static str, Option<&'static str>) {
     match status {
         EntryStatus::Unknown => ("unknown", None),
         EntryStatus::Unrecognized => ("unrecognized", None),
         EntryStatus::Ambiguous => ("ambiguous", None),
+        EntryStatus::LikelyMatched => ("likely", None),
         EntryStatus::Matched => ("matched", None),
         EntryStatus::Tagged(CatalogTag::Homebrew) => ("tagged", Some("homebrew")),
         EntryStatus::Tagged(CatalogTag::Modded) => ("tagged", Some("modded")),
@@ -631,6 +662,7 @@ fn str_to_status(s: &str) -> EntryStatus {
     match s {
         "unrecognized" => EntryStatus::Unrecognized,
         "ambiguous" => EntryStatus::Ambiguous,
+        "likely" => EntryStatus::LikelyMatched,
         "matched" => EntryStatus::Matched,
         // "unknown", "tagged" (tag column provides the real tag), and anything else
         _ => EntryStatus::Unknown,
@@ -659,5 +691,51 @@ fn str_to_match_method(s: &str) -> MatchMethod {
         "sha1" => MatchMethod::Sha1,
         // "crc32" and anything else default to CRC32
         _ => MatchMethod::Crc32,
+    }
+}
+
+fn disc_verification_to_str(verification: DiscVerification) -> &'static str {
+    match verification {
+        DiscVerification::NotApplicable => "not_applicable",
+        DiscVerification::Complete => "complete",
+        DiscVerification::Incomplete => "incomplete",
+        DiscVerification::InvalidLayout => "invalid_layout",
+    }
+}
+
+fn str_to_disc_verification(value: &str) -> DiscVerification {
+    match value {
+        "complete" => DiscVerification::Complete,
+        "incomplete" => DiscVerification::Incomplete,
+        "invalid_layout" => DiscVerification::InvalidLayout,
+        _ => DiscVerification::NotApplicable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standalone_disc_integrity_and_warnings_survive_row_round_trip() {
+        let mut entry = crate::test_support::test_entry(
+            retro_junk_lib::scanner::GameEntry::SingleFile("game.cue".into()),
+        );
+        entry.hashes = Some(retro_junk_dat::FileHashes {
+            crc32: "12345678".into(),
+            sha1: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            md5: None,
+            data_size: 2352,
+            warnings: vec!["Incomplete disc: DAT Track 2 is missing".into()],
+        });
+        entry.disc_verification = DiscVerification::Incomplete;
+
+        let restored = row_to_entry(entry_to_row(&entry).unwrap()).unwrap();
+
+        assert_eq!(restored.disc_verification, DiscVerification::Incomplete);
+        assert_eq!(
+            restored.hashes.unwrap().warnings,
+            vec!["Incomplete disc: DAT Track 2 is missing"]
+        );
     }
 }

@@ -1,11 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc;
 
 use crate::app::RetroJunkApp;
-use crate::state::{
-    AppMessage, BackgroundOperation, OperationKind, ProgressDisplay, next_operation_id,
-};
+use crate::state::{BackgroundOperation, OperationKind, ProgressDisplay, next_operation_id};
 
 /// Spawn a background operation with the standard boilerplate:
 /// allocates an operation ID, creates a cancellation token, registers
@@ -25,7 +22,7 @@ pub fn spawn_background_op<F>(
     work: F,
 ) -> u64
 where
-    F: FnOnce(u64, Arc<AtomicBool>, mpsc::Sender<AppMessage>) + Send + 'static,
+    F: FnOnce(u64, Arc<AtomicBool>, crate::state::AppMessageSender) + Send + 'static,
 {
     let op_id = next_operation_id();
     let cancel = Arc::new(AtomicBool::new(false));

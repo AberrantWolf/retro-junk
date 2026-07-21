@@ -381,7 +381,10 @@ pub fn clear() -> Result<u64, DatError> {
     if dir.exists() {
         for entry in fs::read_dir(&dir)?.flatten() {
             let path = entry.path();
-            if path.is_file() {
+            // The catalog database intentionally lives beside downloaded DATs.
+            // Never treat catalog.db, its WAL/SHM files, or any future sidecar
+            // as disposable download-cache content.
+            if path.is_file() && is_dat_cache_path(&path) {
                 if let Ok(meta) = fs::metadata(&path) {
                     total_size += meta.len();
                 }
@@ -400,6 +403,25 @@ pub fn clear() -> Result<u64, DatError> {
     }
 
     Ok(total_size)
+}
+
+fn is_dat_cache_path(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("dat"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    #[test]
+    fn dat_cache_filter_never_matches_catalog_database_files() {
+        assert!(super::is_dat_cache_path(Path::new("n64.dat")));
+        assert!(super::is_dat_cache_path(Path::new("N64.DAT")));
+        assert!(!super::is_dat_cache_path(Path::new("catalog.db")));
+        assert!(!super::is_dat_cache_path(Path::new("catalog.db-wal")));
+        assert!(!super::is_dat_cache_path(Path::new("catalog.db-shm")));
+    }
 }
 
 /// Get the total size of cached DAT files.

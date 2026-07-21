@@ -52,7 +52,7 @@ pub fn serial_lookup(
         .cloned()
         .unwrap_or_default();
 
-    let serial = info.serial_number;
+    let serial = info.serial_number.clone();
     if serial.is_empty() {
         return SerialMatchOutcome {
             detected_extension,
@@ -61,7 +61,7 @@ pub fn serial_lookup(
     }
 
     let game_code = analyzer.extract_dat_game_code(&serial);
-    let lookup = index.match_by_serial(&serial, game_code.as_deref());
+    let lookup = index.match_by_serial_with_identification(&serial, game_code.as_deref(), &info);
     let game_code = game_code.unwrap_or_default();
 
     match lookup {

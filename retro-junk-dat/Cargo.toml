@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 retro-junk-core.workspace = true
+retro-junk-catalog.workspace = true
 thiserror.workspace = true
 quick-xml.workspace = true
 reqwest.workspace = true

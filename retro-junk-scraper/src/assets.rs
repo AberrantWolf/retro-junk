@@ -202,20 +202,21 @@ pub async fn download_game_assets(
                 continue;
             }
 
-            downloads.push((at, media.url.clone(), subdir, dest));
+            downloads.push((at, media.url.clone(), subdir, dest, ext.to_owned()));
         }
     }
 
     // Build (AssetType, Future) pairs so we can emit events before each download
     let handles: Vec<_> = downloads
         .into_iter()
-        .map(|(at, url, subdir, dest)| {
+        .map(|(at, url, subdir, dest, format)| {
             let client_url = url.clone();
             let client_ref = client;
             let fut = async move {
                 std::fs::create_dir_all(&subdir)?;
                 let bytes = client_ref.download_media(&client_url).await?;
-                std::fs::write(&dest, &bytes)?;
+                verify_media_bytes(&format, &bytes)?;
+                write_atomic(&dest, &bytes)?;
                 Ok::<PathBuf, ScrapeError>(dest)
             };
             (at, fut)
@@ -241,4 +242,52 @@ pub async fn download_game_assets(
     }
 
     Ok(results)
+}
+
+fn verify_media_bytes(format: &str, bytes: &[u8]) -> Result<(), ScrapeError> {
+    let valid = match format.to_ascii_lowercase().as_str() {
+        "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "jpg" | "jpeg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "webp" => bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP",
+        "mp4" | "m4v" => bytes.get(4..8) == Some(b"ftyp"),
+        _ => !bytes.is_empty(),
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(ScrapeError::Api(format!(
+            "Downloaded media did not match its declared {format} format"
+        )))
+    }
+}
+
+fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), std::io::Error> {
+    use std::io::Write as _;
+    static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "asset path has no parent")
+    })?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("asset");
+    let temp = parent.join(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
 }

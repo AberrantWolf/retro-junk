@@ -170,6 +170,10 @@ pub fn start_compression(app: &mut RetroJunkApp, ctx: &egui::Context) {
         delete_sources,
         ..
     } = prompt;
+    let rescan_target = app
+        .browser
+        .find_by_folder(&folder_name)
+        .and_then(|index| crate::backend::scan::ConsoleScanTarget::durable(app, index));
 
     // D3: the guarantee half of the overlap guard (the menu items are the
     // advisory half). Belt-and-suspenders against a race between opening the
@@ -281,6 +285,7 @@ pub fn start_compression(app: &mut RetroJunkApp, ctx: &egui::Context) {
 
             let _ = tx.send(AppMessage::ChdCompressComplete {
                 folder_name,
+                rescan_target,
                 results,
             });
             let _ = tx.send(AppMessage::OperationComplete { op_id });

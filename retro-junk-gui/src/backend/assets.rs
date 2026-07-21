@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
-use std::sync::mpsc;
 
 use retro_junk_core::Platform;
 use retro_junk_frontend::AssetType;
@@ -17,7 +16,7 @@ use crate::state::{self, AppMessage, OperationKind, ProgressDisplay};
 /// Discovers media files on disk and registers their bytes with egui,
 /// then sends a `AssetsLoaded` message to update the entry's `asset_paths`.
 pub fn load_assets_for_entry(
-    tx: mpsc::Sender<AppMessage>,
+    tx: crate::state::AppMessageSender,
     ctx: egui::Context,
     root_path: PathBuf,
     folder_name: String,
@@ -65,6 +64,7 @@ struct ScrapeWorkItem {
     entry_name: String,
     rom_stem: String,
     filename: String,
+    analysis_path: PathBuf,
     file_size: u64,
     /// Serial from ROM header analysis. Empty = none.
     serial: String,
@@ -139,7 +139,6 @@ fn scrape_media_for_selection(
                 .and_then(|n| n.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            let file_size = std::fs::metadata(analysis_path).map_or(0, |m| m.len());
 
             let serial = entry
                 .identification
@@ -162,7 +161,8 @@ fn scrape_media_for_selection(
                 entry_name: entry.game_entry.display_name().to_string(),
                 rom_stem: entry.game_entry.rom_stem().to_string(),
                 filename,
-                file_size,
+                analysis_path: analysis_path.to_path_buf(),
+                file_size: 0,
                 serial,
                 scraper_serial,
                 hashes: entry.hashes.as_ref().and_then(|h| {
@@ -208,6 +208,15 @@ fn scrape_media_for_selection(
         folder_name.clone(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
+            let mut work = work;
+            for item in &mut work {
+                if cancel.load(Ordering::Relaxed) {
+                    let _ = tx.send(AppMessage::OperationComplete { op_id });
+                    return;
+                }
+                item.file_size =
+                    std::fs::metadata(&item.analysis_path).map_or(0, |metadata| metadata.len());
+            }
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
                 Err(e) => {
@@ -504,44 +513,6 @@ pub fn regenerate_miximages_for_selection(
     );
 }
 
-/// Discover media files for every entry in a console (cheap `path.exists()` calls).
-///
-/// Sends `AssetsLoaded` messages so the table can show media status indicators
-/// without the user opening the detail panel for each entry.
-pub fn discover_assets_for_console(
-    tx: mpsc::Sender<AppMessage>,
-    ctx: egui::Context,
-    root_path: PathBuf,
-    folder_name: String,
-    media_dir_setting: String,
-    entries: Vec<(retro_junk_db::LibraryEntryId, String, String)>,
-) {
-    std::thread::spawn(move || {
-        let media_dir = state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting);
-
-        for (entry_id, _entry_name, rom_stem) in entries {
-            let found = media_dir.as_ref().map_or_else(HashMap::new, |media_dir| {
-                state::collect_existing_assets(media_dir, &rom_stem)
-            });
-
-            // Register image bytes with egui so they're available when the UI renders.
-            for path in found.values() {
-                let uri = format!("bytes://media/{}", path.display());
-                if let Ok(bytes) = std::fs::read(path) {
-                    ctx.include_bytes(uri, bytes);
-                }
-            }
-
-            let _ = tx.send(AppMessage::AssetsLoaded {
-                folder_name: folder_name.clone(),
-                entry_id,
-                assets: found,
-            });
-        }
-        ctx.request_repaint();
-    });
-}
-
 /// Generate a miximage for a single entry from its existing on-disk media.
 ///
 /// Returns the updated media map (existing media + the new miximage) if generation
@@ -573,47 +544,4 @@ fn generate_miximage_for_entry(
 
     // Re-collect to pick up the new/updated miximage
     state::collect_existing_assets(media_dir, rom_stem)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn console_asset_discovery_reports_media_for_each_requested_entry() {
-        let root = tempfile::tempdir().unwrap();
-        let covers = root.path().join("nes").join("covers");
-        std::fs::create_dir_all(&covers).unwrap();
-        std::fs::write(covers.join("Game.png"), b"test image bytes").unwrap();
-        let (tx, rx) = mpsc::channel();
-
-        discover_assets_for_console(
-            tx,
-            egui::Context::default(),
-            root.path().to_path_buf(),
-            "nes".into(),
-            ".".into(),
-            vec![(
-                retro_junk_db::LibraryEntryId(7),
-                "Game.nes".into(),
-                "Game".into(),
-            )],
-        );
-
-        let message = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
-        let AppMessage::AssetsLoaded {
-            folder_name,
-            entry_id,
-            assets,
-        } = message
-        else {
-            panic!("expected asset discovery result");
-        };
-        assert_eq!(folder_name, "nes");
-        assert_eq!(entry_id, retro_junk_db::LibraryEntryId(7));
-        assert_eq!(
-            assets.get(&AssetType::Cover),
-            Some(&covers.join("Game.png"))
-        );
-    }
 }

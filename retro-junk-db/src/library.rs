@@ -68,6 +68,8 @@ pub enum LibraryError {
     NotFound,
     #[error("invalid persisted scan state: {0}")]
     InvalidScanState(String),
+    #[error("catalog mutation failed: {0}")]
+    CatalogMutation(String),
 }
 
 impl From<LibraryError> for crate::schema::SchemaError {
@@ -365,7 +367,7 @@ pub struct LibraryConsoleRow {
 }
 
 /// Compatibility row used by legacy conversion and full-detail serialization.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LibraryEntryRow {
     pub display_name: String,
     pub game_entry_json: String,
@@ -375,6 +377,8 @@ pub struct LibraryEntryRow {
     pub sha1: String,
     pub md5: String,
     pub data_size: i64,
+    pub hash_warnings_json: Option<String>,
+    pub disc_verification: String,
     pub dat_game_name: String,
     pub dat_rom_name: String,
     pub dat_match_method: String,
@@ -435,6 +439,7 @@ pub struct LibraryConsoleSummary {
     pub unknown_count: u64,
     pub unrecognized_count: u64,
     pub ambiguous_count: u64,
+    pub likely_count: u64,
     pub tagged_count: u64,
     pub revision: u64,
 }
@@ -483,6 +488,12 @@ pub struct LibraryEntryListItem {
     pub tag: String,
     pub region_override: String,
     pub data_size: u64,
+    /// Compact columns rendered by the table. Keeping these in the list
+    /// projection avoids loading and deserializing every rich entry payload.
+    pub crc32: String,
+    pub dat_game_name: String,
+    pub has_broken_references: bool,
+    pub has_cue_compat_issues: bool,
     pub revision: u64,
     pub source_revision: u64,
 }
@@ -492,6 +503,7 @@ pub struct LibraryEntryCounts {
     pub matched: u64,
     pub unknown: u64,
     pub ambiguous: u64,
+    pub likely: u64,
     pub unrecognized: u64,
     pub tagged: u64,
 }
@@ -513,6 +525,14 @@ pub struct LibraryEntryDetail {
     pub source_revision: u64,
     pub source_fingerprint: String,
     pub row: LibraryEntryRow,
+}
+
+/// Minimal authoritative projection used by whole-console frontend exports.
+#[derive(Debug, Clone)]
+pub struct LibraryExportEntry {
+    pub game_entry_json: String,
+    pub dat_game_name: String,
+    pub cover_title: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -662,11 +682,12 @@ pub fn reconcile_console_scan(
     entries: &[ScannedLibraryEntry],
 ) -> Result<LibraryChangeSet, LibraryError> {
     let tx = conn.transaction()?;
-    let (root_id, generation): (u64, u64) = tx
+    let (root_id, generation, old_fingerprint, old_scan_state): (u64, u64, String, String) = tx
         .query_row(
-            "SELECT root_id,scan_generation FROM library_consoles WHERE id=?1",
+            "SELECT root_id,scan_generation,fingerprint_hash,scan_state
+             FROM library_consoles WHERE id=?1",
             [token.console_id.0],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()?
         .ok_or(LibraryError::NotFound)?;
@@ -680,12 +701,36 @@ pub fn reconcile_console_scan(
     let mut affected = Vec::new();
     let mut revisions = Vec::new();
     for entry in entries {
-        let existing: Option<(u64,String,u64,u64)> = tx.query_row("SELECT id,source_fingerprint,revision,source_revision FROM library_entries WHERE console_id=?1 AND entry_key=?2", params![token.console_id.0,entry.entry_key.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+        let existing: Option<(u64, String, u64, u64)> = tx
+            .query_row(
+                "SELECT id,source_fingerprint,revision,source_revision FROM library_entries WHERE console_id=?1 AND entry_key=?2",
+                params![token.console_id.0, entry.entry_key.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()?;
         match existing {
             Some((id, old_fp, revision, source_revision)) if old_fp == entry.source_fingerprint => {
-                tx.execute("UPDATE library_entries SET display_name=?1,game_entry_json=?2,revision=revision+1 WHERE id=?3", params![entry.row.display_name,entry.row.game_entry_json,id])?;
-                affected.push(LibraryEntryId(id));
-                revisions.push((LibraryEntryId(id), revision + 1, source_revision));
+                let current =
+                    load_entry_detail(&tx, LibraryEntryId(id))?.ok_or(LibraryError::NotFound)?;
+                let mut merged = entry.clone();
+                // These fields belong to the user, never to a scan.
+                merged.row.tag.clone_from(&current.row.tag);
+                merged
+                    .row
+                    .region_override
+                    .clone_from(&current.row.region_override);
+                // A hash update may have committed after this scan read its
+                // starting snapshot. Preserve that newer, more authoritative
+                // match group while still accepting fresh identification and
+                // diagnostics from the scan.
+                if hash_evidence_differs(&current.row, &entry.row) {
+                    preserve_hash_match_fields(&mut merged.row, &current.row);
+                }
+                if current.row != merged.row {
+                    update_changed_source(&tx, id, &merged, revision + 1, source_revision)?;
+                    affected.push(LibraryEntryId(id));
+                    revisions.push((LibraryEntryId(id), revision + 1, source_revision));
+                }
             }
             Some((id, _, revision, source_revision)) => {
                 update_changed_source(&tx, id, entry, revision + 1, source_revision + 1)?;
@@ -714,6 +759,14 @@ pub fn reconcile_console_scan(
     for id in &removed {
         tx.execute("DELETE FROM library_entries WHERE id=?1", [id.0])?;
     }
+    if affected.is_empty()
+        && removed.is_empty()
+        && old_fingerprint == fingerprint_hash
+        && old_scan_state == "ready"
+    {
+        tx.commit()?;
+        return Ok(LibraryChangeSet::default());
+    }
     tx.execute("UPDATE library_consoles SET fingerprint_hash=?1,scan_state='ready',revision=revision+1 WHERE id=?2", params![fingerprint_hash,token.console_id.0])?;
     tx.execute(
         "UPDATE library_roots SET revision=revision+1 WHERE id=?1",
@@ -729,6 +782,42 @@ pub fn reconcile_console_scan(
         console_revision: Some((token.console_id, cr)),
         entry_revisions: revisions,
     })
+}
+
+fn hash_evidence_differs(current: &LibraryEntryRow, scanned: &LibraryEntryRow) -> bool {
+    current.crc32 != scanned.crc32
+        || current.sha1 != scanned.sha1
+        || current.md5 != scanned.md5
+        || current.data_size != scanned.data_size
+        || current.hash_warnings_json != scanned.hash_warnings_json
+        || current.disc_verification != scanned.disc_verification
+}
+
+fn preserve_hash_match_fields(target: &mut LibraryEntryRow, current: &LibraryEntryRow) {
+    target.status.clone_from(&current.status);
+    target.crc32.clone_from(&current.crc32);
+    target.sha1.clone_from(&current.sha1);
+    target.md5.clone_from(&current.md5);
+    target.data_size = current.data_size;
+    target
+        .hash_warnings_json
+        .clone_from(&current.hash_warnings_json);
+    target
+        .disc_verification
+        .clone_from(&current.disc_verification);
+    target.dat_game_name.clone_from(&current.dat_game_name);
+    target.dat_rom_name.clone_from(&current.dat_rom_name);
+    target
+        .dat_match_method
+        .clone_from(&current.dat_match_method);
+    target.cover_title.clone_from(&current.cover_title);
+    target.screen_title.clone_from(&current.screen_title);
+    target
+        .disc_identifications_json
+        .clone_from(&current.disc_identifications_json);
+    target
+        .ambiguous_candidates_json
+        .clone_from(&current.ambiguous_candidates_json);
 }
 
 pub fn mark_console_stale(
@@ -759,6 +848,35 @@ pub fn set_entry_tag(
     set_user_field(conn, id, "tag", value.unwrap_or(""))
 }
 
+pub fn create_homebrew_and_tag_entry(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    name: &str,
+    platform_id: &str,
+    region: &str,
+) -> Result<LibraryChangeSet, LibraryError> {
+    mutate_entry_with_catalog(conn, id, "homebrew", |tx| {
+        crate::operations::create_homebrew_work(tx, name, platform_id, region)
+            .map(|_| ())
+            .map_err(|error| LibraryError::CatalogMutation(error.to_string()))
+    })
+}
+
+pub fn create_modded_and_tag_entry(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    work_id: &str,
+    platform_id: &str,
+    region: &str,
+    hashes: Option<&crate::operations::MediaHashes>,
+) -> Result<LibraryChangeSet, LibraryError> {
+    mutate_entry_with_catalog(conn, id, "modded", |tx| {
+        crate::operations::create_modded_media(tx, work_id, platform_id, region, hashes)
+            .map(|_| ())
+            .map_err(|error| LibraryError::CatalogMutation(error.to_string()))
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct EntryAnalysisUpdate {
     pub status: String,
@@ -766,6 +884,8 @@ pub struct EntryAnalysisUpdate {
     pub sha1: String,
     pub md5: String,
     pub data_size: i64,
+    pub hash_warnings_json: Option<String>,
+    pub disc_verification: String,
     pub dat_game_name: String,
     pub dat_rom_name: String,
     pub dat_match_method: String,
@@ -778,6 +898,35 @@ pub struct EntryAnalysisUpdate {
     pub cue_compat_issues_json: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct EntryAnalysisCommand {
+    pub entry_id: LibraryEntryId,
+    pub expected_source_revision: u64,
+    pub update: EntryAnalysisUpdate,
+}
+
+/// Hash/match fields produced by an explicit checksum job. Keeping this
+/// separate from [`EntryAnalysisUpdate`] prevents a long-running hash from
+/// overwriting newer diagnostics or identification data that completed while
+/// it was running.
+#[derive(Debug, Clone)]
+pub struct EntryHashUpdate {
+    pub status: String,
+    pub crc32: String,
+    pub sha1: String,
+    pub md5: String,
+    pub data_size: i64,
+    pub hash_warnings_json: Option<String>,
+    pub disc_verification: String,
+    pub dat_game_name: String,
+    pub dat_rom_name: String,
+    pub dat_match_method: String,
+    pub cover_title: String,
+    pub screen_title: String,
+    pub disc_identifications_json: Option<String>,
+    pub ambiguous_candidates_json: Option<String>,
+}
+
 pub fn apply_entry_analysis(
     conn: &mut Connection,
     id: LibraryEntryId,
@@ -785,10 +934,114 @@ pub fn apply_entry_analysis(
     a: &EntryAnalysisUpdate,
 ) -> Result<LibraryChangeSet, LibraryError> {
     mutate_entry(conn, id, expected_source_revision, |tx| {
-        tx.execute("UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,dat_game_name=?6,dat_rom_name=?7,dat_match_method=?8,cover_title=?9,screen_title=?10,identification_json=?11,disc_identifications_json=?12,broken_references_json=?13,ambiguous_candidates_json=?14,cue_compat_issues_json=?15,revision=revision+1 WHERE id=?16",params![a.status,a.crc32,a.sha1,a.md5,a.data_size,a.dat_game_name,a.dat_rom_name,a.dat_match_method,a.cover_title,a.screen_title,a.identification_json,a.disc_identifications_json,a.broken_references_json,a.ambiguous_candidates_json,a.cue_compat_issues_json,id.0])?;
+        tx.execute("UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_warnings_json=?6,disc_verification=?7,dat_game_name=?8,dat_rom_name=?9,dat_match_method=?10,cover_title=?11,screen_title=?12,identification_json=?13,disc_identifications_json=?14,broken_references_json=?15,ambiguous_candidates_json=?16,cue_compat_issues_json=?17,revision=revision+1 WHERE id=?18",params![a.status,a.crc32,a.sha1,a.md5,a.data_size,a.hash_warnings_json,a.disc_verification,a.dat_game_name,a.dat_rom_name,a.dat_match_method,a.cover_title,a.screen_title,a.identification_json,a.disc_identifications_json,a.broken_references_json,a.ambiguous_candidates_json,a.cue_compat_issues_json,id.0])?;
         Ok(())
     })
 }
+
+/// Apply a same-console analysis batch in one transaction. Entries whose
+/// source changed or disappeared while analysis was running are skipped;
+/// unaffected entries still commit.
+pub fn apply_entry_analysis_batch(
+    conn: &mut Connection,
+    commands: &[EntryAnalysisCommand],
+) -> Result<LibraryChangeSet, LibraryError> {
+    if commands.is_empty() {
+        return Ok(LibraryChangeSet::default());
+    }
+    let tx = conn.transaction()?;
+    let mut affected = Vec::new();
+    let mut scope: Option<(u64, u64)> = None;
+    for command in commands {
+        let current: Option<(u64, u64, u64)> = tx
+            .query_row(
+                "SELECT console_id,(SELECT root_id FROM library_consoles WHERE id=console_id),source_revision FROM library_entries WHERE id=?1",
+                [command.entry_id.0],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        let Some((console_id, root_id, source_revision)) = current else {
+            continue;
+        };
+        if source_revision != command.expected_source_revision {
+            continue;
+        }
+        if let Some(existing) = scope {
+            if existing != (console_id, root_id) {
+                return Err(LibraryError::StaleCommand);
+            }
+        } else {
+            scope = Some((console_id, root_id));
+        }
+        let a = &command.update;
+        tx.execute("UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_warnings_json=?6,disc_verification=?7,dat_game_name=?8,dat_rom_name=?9,dat_match_method=?10,cover_title=?11,screen_title=?12,identification_json=?13,disc_identifications_json=?14,broken_references_json=?15,ambiguous_candidates_json=?16,cue_compat_issues_json=?17,revision=revision+1 WHERE id=?18",params![a.status,a.crc32,a.sha1,a.md5,a.data_size,a.hash_warnings_json,a.disc_verification,a.dat_game_name,a.dat_rom_name,a.dat_match_method,a.cover_title,a.screen_title,a.identification_json,a.disc_identifications_json,a.broken_references_json,a.ambiguous_candidates_json,a.cue_compat_issues_json,command.entry_id.0])?;
+        affected.push(command.entry_id);
+    }
+    let Some((console_id, root_id)) = scope else {
+        tx.commit()?;
+        return Ok(LibraryChangeSet::default());
+    };
+    tx.execute(
+        "UPDATE library_consoles SET revision=revision+1 WHERE id=?1",
+        [console_id],
+    )?;
+    tx.execute(
+        "UPDATE library_roots SET revision=revision+1 WHERE id=?1",
+        [root_id],
+    )?;
+    let entry_revisions = affected
+        .iter()
+        .map(|id| {
+            tx.query_row(
+                "SELECT revision,source_revision FROM library_entries WHERE id=?1",
+                [id.0],
+                |row| Ok((*id, row.get(0)?, row.get(1)?)),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let console_revision = revision_of(&tx, "library_consoles", console_id)?;
+    let root_revision = revision_of(&tx, "library_roots", root_id)?;
+    tx.commit()?;
+    Ok(LibraryChangeSet {
+        affected_entries: affected,
+        root_revision: Some((LibraryRootId(root_id), root_revision)),
+        console_revision: Some((LibraryConsoleId(console_id), console_revision)),
+        entry_revisions,
+        ..Default::default()
+    })
+}
+
+pub fn apply_entry_hash_update(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    expected_source_revision: u64,
+    update: &EntryHashUpdate,
+) -> Result<LibraryChangeSet, LibraryError> {
+    mutate_entry(conn, id, expected_source_revision, |tx| {
+        tx.execute(
+            "UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_warnings_json=?6,disc_verification=?7,dat_game_name=?8,dat_rom_name=?9,dat_match_method=?10,cover_title=?11,screen_title=?12,disc_identifications_json=?13,ambiguous_candidates_json=?14,revision=revision+1 WHERE id=?15",
+            params![
+                update.status,
+                update.crc32,
+                update.sha1,
+                update.md5,
+                update.data_size,
+                update.hash_warnings_json,
+                update.disc_verification,
+                update.dat_game_name,
+                update.dat_rom_name,
+                update.dat_match_method,
+                update.cover_title,
+                update.screen_title,
+                update.disc_identifications_json,
+                update.ambiguous_candidates_json,
+                id.0,
+            ],
+        )?;
+        Ok(())
+    })
+}
+
 pub fn apply_filesystem_transition(
     conn: &mut Connection,
     id: LibraryEntryId,
@@ -811,7 +1064,7 @@ pub fn list_console_summaries(
     conn: &Connection,
     root_id: LibraryRootId,
 ) -> Result<Vec<LibraryConsoleSummary>, LibraryError> {
-    let mut stmt=conn.prepare("SELECT c.id,c.platform,c.folder_name,c.folder_path,c.scan_state,c.dat_game_count,c.revision,COUNT(e.id),COALESCE(SUM(CASE WHEN e.status='matched' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='unknown' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='unrecognized' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='ambiguous' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.tag<>'' THEN 1 ELSE 0 END),0) FROM library_consoles c LEFT JOIN library_entries e ON e.console_id=c.id WHERE c.root_id=?1 GROUP BY c.id ORDER BY c.folder_name COLLATE NOCASE,c.id")?;
+    let mut stmt=conn.prepare("SELECT c.id,c.platform,c.folder_name,c.folder_path,c.scan_state,c.dat_game_count,c.revision,COUNT(e.id),COALESCE(SUM(CASE WHEN e.status='matched' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='unknown' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='unrecognized' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='ambiguous' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='likely' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.tag<>'' THEN 1 ELSE 0 END),0) FROM library_consoles c LEFT JOIN library_entries e ON e.console_id=c.id WHERE c.root_id=?1 GROUP BY c.id ORDER BY c.folder_name COLLATE NOCASE,c.id")?;
     let rows = stmt.query_map([root_id.0], |r| {
         Ok((
             r.get::<_, u64>(0)?,
@@ -827,6 +1080,7 @@ pub fn list_console_summaries(
             r.get::<_, u64>(10)?,
             r.get::<_, u64>(11)?,
             r.get::<_, u64>(12)?,
+            r.get::<_, u64>(13)?,
         ))
     })?;
     rows.map(|r| {
@@ -843,6 +1097,7 @@ pub fn list_console_summaries(
             unknown,
             unrecognized,
             ambiguous,
+            likely,
             tagged,
         ) = r?;
         Ok(LibraryConsoleSummary {
@@ -858,6 +1113,7 @@ pub fn list_console_summaries(
             unknown_count: unknown,
             unrecognized_count: unrecognized,
             ambiguous_count: ambiguous,
+            likely_count: likely,
             tagged_count: tagged,
             revision: rev,
         })
@@ -871,7 +1127,13 @@ pub fn query_entry_list(
 ) -> Result<LibraryEntryListPage, LibraryError> {
     let revision = revision_of(conn, "library_consoles", q.console_id.0)?;
     let filter = filter_sql(q.filter);
-    let pattern = format!("%{}%", q.search.replace('%', "\\%").replace('_', "\\_"));
+    let pattern = format!(
+        "%{}%",
+        q.search
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
     let where_sql =
         format!("console_id=?1 AND display_name LIKE ?2 ESCAPE '\\' COLLATE NOCASE {filter}");
     let total = conn.query_row(
@@ -882,7 +1144,13 @@ pub fn query_entry_list(
     let counts = entry_counts(conn, q.console_id)?;
     let order = order_sql(q.sort, q.direction);
     let sql = format!(
-        "SELECT id,display_name,status,tag,region_override,data_size,revision,source_revision FROM library_entries WHERE {where_sql} ORDER BY {order} LIMIT ?3 OFFSET ?4"
+        "SELECT id,display_name,status,tag,region_override,data_size,
+                crc32,dat_game_name,
+                broken_references_json IS NOT NULL AND broken_references_json <> '[]',
+                cue_compat_issues_json IS NOT NULL AND cue_compat_issues_json <> '[]',
+                revision,source_revision
+         FROM library_entries WHERE {where_sql}
+         ORDER BY {order} LIMIT ?3 OFFSET ?4"
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
@@ -896,8 +1164,12 @@ pub fn query_entry_list(
                     tag: r.get(3)?,
                     region_override: r.get(4)?,
                     data_size: r.get::<_, u64>(5)?,
-                    revision: r.get(6)?,
-                    source_revision: r.get(7)?,
+                    crc32: r.get(6)?,
+                    dat_game_name: r.get(7)?,
+                    has_broken_references: r.get(8)?,
+                    has_cue_compat_issues: r.get(9)?,
+                    revision: r.get(10)?,
+                    source_revision: r.get(11)?,
                 })
             },
         )?
@@ -916,7 +1188,7 @@ pub fn load_entry_detail(
     conn: &Connection,
     id: LibraryEntryId,
 ) -> Result<Option<LibraryEntryDetail>, LibraryError> {
-    let sql = "SELECT console_id,entry_key,revision,source_revision,source_fingerprint,display_name,game_entry_json,status,tag,crc32,sha1,md5,data_size,dat_game_name,dat_rom_name,dat_match_method,region_override,cover_title,screen_title,identification_json,disc_identifications_json,broken_references_json,ambiguous_candidates_json,cue_compat_issues_json FROM library_entries WHERE id=?1";
+    let sql = "SELECT console_id,entry_key,revision,source_revision,source_fingerprint,display_name,game_entry_json,status,tag,crc32,sha1,md5,data_size,hash_warnings_json,disc_verification,dat_game_name,dat_rom_name,dat_match_method,region_override,cover_title,screen_title,identification_json,disc_identifications_json,broken_references_json,ambiguous_candidates_json,cue_compat_issues_json FROM library_entries WHERE id=?1";
     Ok(conn
         .query_row(sql, [id.0], |r| {
             Ok(LibraryEntryDetail {
@@ -935,21 +1207,79 @@ pub fn load_entry_detail(
                     sha1: r.get(10)?,
                     md5: r.get(11)?,
                     data_size: r.get(12)?,
-                    dat_game_name: r.get(13)?,
-                    dat_rom_name: r.get(14)?,
-                    dat_match_method: r.get(15)?,
-                    region_override: r.get(16)?,
-                    cover_title: r.get(17)?,
-                    screen_title: r.get(18)?,
-                    identification_json: r.get(19)?,
-                    disc_identifications_json: r.get(20)?,
-                    broken_references_json: r.get(21)?,
-                    ambiguous_candidates_json: r.get(22)?,
-                    cue_compat_issues_json: r.get(23)?,
+                    hash_warnings_json: r.get(13)?,
+                    disc_verification: r.get(14)?,
+                    dat_game_name: r.get(15)?,
+                    dat_rom_name: r.get(16)?,
+                    dat_match_method: r.get(17)?,
+                    region_override: r.get(18)?,
+                    cover_title: r.get(19)?,
+                    screen_title: r.get(20)?,
+                    identification_json: r.get(21)?,
+                    disc_identifications_json: r.get(22)?,
+                    broken_references_json: r.get(23)?,
+                    ambiguous_candidates_json: r.get(24)?,
+                    cue_compat_issues_json: r.get(25)?,
                 },
             })
         })
         .optional()?)
+}
+
+pub fn load_entry_details(
+    conn: &Connection,
+    ids: &[LibraryEntryId],
+) -> Result<Vec<LibraryEntryDetail>, LibraryError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id,console_id,entry_key,revision,source_revision,source_fingerprint,
+                display_name,game_entry_json,status,tag,crc32,sha1,md5,data_size,
+                hash_warnings_json,disc_verification,dat_game_name,dat_rom_name,dat_match_method,region_override,cover_title,
+                screen_title,identification_json,disc_identifications_json,
+                broken_references_json,ambiguous_candidates_json,cue_compat_issues_json
+         FROM library_entries WHERE id IN ({placeholders})"
+    );
+    Ok(conn
+        .prepare(&sql)?
+        .query_map(rusqlite::params_from_iter(ids.iter().map(|id| id.0)), |r| {
+            Ok(LibraryEntryDetail {
+                id: LibraryEntryId(r.get(0)?),
+                console_id: LibraryConsoleId(r.get(1)?),
+                entry_key: LibrarySourceKey(r.get(2)?),
+                revision: r.get(3)?,
+                source_revision: r.get(4)?,
+                source_fingerprint: r.get(5)?,
+                row: LibraryEntryRow {
+                    display_name: r.get(6)?,
+                    game_entry_json: r.get(7)?,
+                    status: r.get(8)?,
+                    tag: r.get(9)?,
+                    crc32: r.get(10)?,
+                    sha1: r.get(11)?,
+                    md5: r.get(12)?,
+                    data_size: r.get(13)?,
+                    hash_warnings_json: r.get(14)?,
+                    disc_verification: r.get(15)?,
+                    dat_game_name: r.get(16)?,
+                    dat_rom_name: r.get(17)?,
+                    dat_match_method: r.get(18)?,
+                    region_override: r.get(19)?,
+                    cover_title: r.get(20)?,
+                    screen_title: r.get(21)?,
+                    identification_json: r.get(22)?,
+                    disc_identifications_json: r.get(23)?,
+                    broken_references_json: r.get(24)?,
+                    ambiguous_candidates_json: r.get(25)?,
+                    cue_compat_issues_json: r.get(26)?,
+                },
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?)
 }
 
 pub fn load_entries_for_console(
@@ -962,19 +1292,73 @@ pub fn load_entries_for_console(
         .collect()
 }
 
+pub fn load_export_entries_for_console(
+    conn: &Connection,
+    console_id: LibraryConsoleId,
+) -> Result<Vec<LibraryExportEntry>, LibraryError> {
+    Ok(conn
+        .prepare(
+            "SELECT game_entry_json,dat_game_name,cover_title
+             FROM library_entries WHERE console_id=?1
+             ORDER BY display_name COLLATE NOCASE,id",
+        )?
+        .query_map([console_id.0], |r| {
+            Ok(LibraryExportEntry {
+                game_entry_json: r.get(0)?,
+                dat_game_name: r.get(1)?,
+                cover_title: r.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?)
+}
+
 pub fn load_entry_details_for_console(
     conn: &Connection,
     console_id: LibraryConsoleId,
 ) -> Result<Vec<LibraryEntryDetail>, LibraryError> {
-    let ids = conn
-        .prepare(
-            "SELECT id FROM library_entries WHERE console_id=?1 ORDER BY display_name COLLATE NOCASE,id",
-        )?
-        .query_map([console_id.0], |r| r.get::<_, u64>(0).map(LibraryEntryId))?
-        .collect::<Result<Vec<_>, _>>()?;
-    ids.into_iter()
-        .map(|id| load_entry_detail(conn, id)?.ok_or(LibraryError::NotFound))
-        .collect()
+    let sql = "SELECT id,entry_key,revision,source_revision,source_fingerprint,
+                      display_name,game_entry_json,status,tag,crc32,sha1,md5,data_size,
+                      hash_warnings_json,disc_verification,dat_game_name,dat_rom_name,dat_match_method,region_override,
+                      cover_title,screen_title,identification_json,disc_identifications_json,
+                      broken_references_json,ambiguous_candidates_json,cue_compat_issues_json
+               FROM library_entries WHERE console_id=?1
+               ORDER BY display_name COLLATE NOCASE,id";
+    Ok(conn
+        .prepare(sql)?
+        .query_map([console_id.0], |r| {
+            Ok(LibraryEntryDetail {
+                id: LibraryEntryId(r.get(0)?),
+                console_id,
+                entry_key: LibrarySourceKey(r.get(1)?),
+                revision: r.get(2)?,
+                source_revision: r.get(3)?,
+                source_fingerprint: r.get(4)?,
+                row: LibraryEntryRow {
+                    display_name: r.get(5)?,
+                    game_entry_json: r.get(6)?,
+                    status: r.get(7)?,
+                    tag: r.get(8)?,
+                    crc32: r.get(9)?,
+                    sha1: r.get(10)?,
+                    md5: r.get(11)?,
+                    data_size: r.get(12)?,
+                    hash_warnings_json: r.get(13)?,
+                    disc_verification: r.get(14)?,
+                    dat_game_name: r.get(15)?,
+                    dat_rom_name: r.get(16)?,
+                    dat_match_method: r.get(17)?,
+                    region_override: r.get(18)?,
+                    cover_title: r.get(19)?,
+                    screen_title: r.get(20)?,
+                    identification_json: r.get(21)?,
+                    disc_identifications_json: r.get(22)?,
+                    broken_references_json: r.get(23)?,
+                    ambiguous_candidates_json: r.get(24)?,
+                    cue_compat_issues_json: r.get(25)?,
+                },
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?)
 }
 
 fn insert_scanned_entry(
@@ -982,7 +1366,44 @@ fn insert_scanned_entry(
     cid: LibraryConsoleId,
     e: &ScannedLibraryEntry,
 ) -> Result<(), LibraryError> {
-    conn.execute("INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json,source_fingerprint,status,tag,region_override)VALUES(?1,?2,?3,?4,?5,'unknown',?6,?7)",params![cid.0,e.entry_key.as_str(),e.row.display_name,e.row.game_entry_json,e.source_fingerprint,e.row.tag,e.row.region_override])?;
+    conn.execute(
+        "INSERT INTO library_entries(
+            console_id,entry_key,display_name,game_entry_json,source_fingerprint,
+            status,tag,crc32,sha1,md5,data_size,hash_warnings_json,disc_verification,dat_game_name,dat_rom_name,
+            dat_match_method,region_override,cover_title,screen_title,
+            identification_json,disc_identifications_json,broken_references_json,
+            ambiguous_candidates_json,cue_compat_issues_json
+         ) VALUES(
+            ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
+            ?18,?19,?20,?21,?22,?23,?24
+         )",
+        params![
+            cid.0,
+            e.entry_key.as_str(),
+            e.row.display_name,
+            e.row.game_entry_json,
+            e.source_fingerprint,
+            e.row.status,
+            e.row.tag,
+            e.row.crc32,
+            e.row.sha1,
+            e.row.md5,
+            e.row.data_size,
+            e.row.hash_warnings_json,
+            e.row.disc_verification,
+            e.row.dat_game_name,
+            e.row.dat_rom_name,
+            e.row.dat_match_method,
+            e.row.region_override,
+            e.row.cover_title,
+            e.row.screen_title,
+            e.row.identification_json,
+            e.row.disc_identifications_json,
+            e.row.broken_references_json,
+            e.row.ambiguous_candidates_json,
+            e.row.cue_compat_issues_json,
+        ],
+    )?;
     Ok(())
 }
 fn update_changed_source(
@@ -992,7 +1413,43 @@ fn update_changed_source(
     revision: u64,
     source_revision: u64,
 ) -> Result<(), LibraryError> {
-    conn.execute("UPDATE library_entries SET entry_key=?1,display_name=?2,game_entry_json=?3,revision=?4,source_revision=?5,source_fingerprint=?6,status='unknown',crc32='',sha1='',md5='',data_size=0,dat_game_name='',dat_rom_name='',dat_match_method='',cover_title='',screen_title='',identification_json=NULL,disc_identifications_json=NULL,broken_references_json=NULL,ambiguous_candidates_json=NULL,cue_compat_issues_json=NULL WHERE id=?7",params![e.entry_key.as_str(),e.row.display_name,e.row.game_entry_json,revision,source_revision,e.source_fingerprint,id])?;
+    conn.execute(
+        "UPDATE library_entries SET
+            entry_key=?1,display_name=?2,game_entry_json=?3,revision=?4,
+            source_revision=?5,source_fingerprint=?6,status=?7,crc32=?8,sha1=?9,
+            md5=?10,data_size=?11,hash_warnings_json=?12,disc_verification=?13,dat_game_name=?14,dat_rom_name=?15,
+            dat_match_method=?16,cover_title=?17,screen_title=?18,
+            identification_json=?19,disc_identifications_json=?20,
+            broken_references_json=?21,ambiguous_candidates_json=?22,
+            cue_compat_issues_json=?23
+         WHERE id=?24",
+        params![
+            e.entry_key.as_str(),
+            e.row.display_name,
+            e.row.game_entry_json,
+            revision,
+            source_revision,
+            e.source_fingerprint,
+            e.row.status,
+            e.row.crc32,
+            e.row.sha1,
+            e.row.md5,
+            e.row.data_size,
+            e.row.hash_warnings_json,
+            e.row.disc_verification,
+            e.row.dat_game_name,
+            e.row.dat_rom_name,
+            e.row.dat_match_method,
+            e.row.cover_title,
+            e.row.screen_title,
+            e.row.identification_json,
+            e.row.disc_identifications_json,
+            e.row.broken_references_json,
+            e.row.ambiguous_candidates_json,
+            e.row.cue_compat_issues_json,
+            id,
+        ],
+    )?;
     Ok(())
 }
 
@@ -1006,6 +1463,56 @@ fn set_user_field(
     mutate_entry_any(conn, id, |tx| {
         tx.execute(&sql, params![value, id.0])?;
         Ok(())
+    })
+}
+
+fn mutate_entry_with_catalog<F>(
+    conn: &mut Connection,
+    id: LibraryEntryId,
+    tag: &str,
+    catalog_mutation: F,
+) -> Result<LibraryChangeSet, LibraryError>
+where
+    F: FnOnce(&Transaction<'_>) -> Result<(), LibraryError>,
+{
+    let tx = conn.transaction()?;
+    let (console_id, root_id): (u64, u64) = tx
+        .query_row(
+            "SELECT console_id,(SELECT root_id FROM library_consoles WHERE id=console_id)
+             FROM library_entries WHERE id=?1",
+            [id.0],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or(LibraryError::NotFound)?;
+    catalog_mutation(&tx)?;
+    tx.execute(
+        "UPDATE library_entries SET tag=?1,revision=revision+1 WHERE id=?2",
+        params![tag, id.0],
+    )?;
+    tx.execute(
+        "UPDATE library_consoles SET revision=revision+1 WHERE id=?1",
+        [console_id],
+    )?;
+    tx.execute(
+        "UPDATE library_roots SET revision=revision+1 WHERE id=?1",
+        [root_id],
+    )?;
+    let entry_revision = revision_of(&tx, "library_entries", id.0)?;
+    let source_revision = tx.query_row(
+        "SELECT source_revision FROM library_entries WHERE id=?1",
+        [id.0],
+        |row| row.get(0),
+    )?;
+    let console_revision = revision_of(&tx, "library_consoles", console_id)?;
+    let root_revision = revision_of(&tx, "library_roots", root_id)?;
+    tx.commit()?;
+    Ok(LibraryChangeSet {
+        affected_entries: vec![id],
+        root_revision: Some((LibraryRootId(root_id), root_revision)),
+        console_revision: Some((LibraryConsoleId(console_id), console_revision)),
+        entry_revisions: vec![(id, entry_revision, source_revision)],
+        ..Default::default()
     })
 }
 fn mutate_entry<F>(
@@ -1143,7 +1650,7 @@ fn entry_counts(
     conn: &Connection,
     cid: LibraryConsoleId,
 ) -> Result<LibraryEntryCounts, LibraryError> {
-    Ok(conn.query_row("SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='matched' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='unknown' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='ambiguous' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='unrecognized' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN tag<>'' THEN 1 ELSE 0 END),0) FROM library_entries WHERE console_id=?1",[cid.0],|r|Ok(LibraryEntryCounts{total:r.get(0)?,matched:r.get(1)?,unknown:r.get(2)?,ambiguous:r.get(3)?,unrecognized:r.get(4)?,tagged:r.get(5)?}))?)
+    Ok(conn.query_row("SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='matched' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='unknown' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='ambiguous' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='likely' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='unrecognized' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN tag<>'' THEN 1 ELSE 0 END),0) FROM library_entries WHERE console_id=?1",[cid.0],|r|Ok(LibraryEntryCounts{total:r.get(0)?,matched:r.get(1)?,unknown:r.get(2)?,ambiguous:r.get(3)?,likely:r.get(4)?,unrecognized:r.get(5)?,tagged:r.get(6)?}))?)
 }
 
 /// v9 -> v10 library migration. It never touches the ROM filesystem.

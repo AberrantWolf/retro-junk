@@ -31,6 +31,7 @@ pub fn organize_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::
             let Some(registered) = context.get_by_platform(platform) else {
                 let _ = tx.send(AppMessage::OrganizeComplete {
                     folder_name,
+                    rescan_target: None,
                     jobs_executed: 0,
                     files_moved: 0,
                     unmatched: 0,
@@ -79,6 +80,7 @@ pub fn organize_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::
                 Err(e) => {
                     let _ = tx.send(AppMessage::OrganizeComplete {
                         folder_name,
+                        rescan_target: None,
                         jobs_executed: 0,
                         files_moved: 0,
                         unmatched: 0,
@@ -114,6 +116,10 @@ pub fn execute_organize_plan(
     plan: OrganizePlan,
     ctx: &egui::Context,
 ) {
+    let rescan_target = app
+        .browser
+        .find_by_folder(&folder_name)
+        .and_then(|index| crate::backend::scan::ConsoleScanTarget::durable(app, index));
     let description = format!("Moving disc files in {folder_name}");
     let ctx = ctx.clone();
     let scope = folder_name.clone();
@@ -152,6 +158,7 @@ pub fn execute_organize_plan(
 
             let _ = tx.send(AppMessage::OrganizeComplete {
                 folder_name,
+                rescan_target,
                 jobs_executed,
                 files_moved,
                 unmatched,

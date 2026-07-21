@@ -20,7 +20,6 @@ mod tests;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 
 use retro_junk_lib::async_util::{cancellable, run_with_events};
 use retro_junk_lib::context::RegisteredConsole;
@@ -89,7 +88,7 @@ fn targets<'a>(
 struct WorkerCtx<'a> {
     op_id: u64,
     cancel: &'a AtomicBool,
-    tx: &'a mpsc::Sender<AppMessage>,
+    tx: &'a crate::state::AppMessageSender,
     ctx: &'a egui::Context,
 }
 
@@ -117,7 +116,7 @@ impl WorkerCtx<'_> {
 
 /// Send the terminal message pair: remove the progress bar, then signal that
 /// catalog data changed (refresh + clear the in-flight guard).
-fn finish(tx: &mpsc::Sender<AppMessage>, op_id: u64, ctx: &egui::Context) {
+fn finish(tx: &crate::state::AppMessageSender, op_id: u64, ctx: &egui::Context) {
     let _ = tx.send(AppMessage::OperationComplete { op_id });
     let _ = tx.send(AppMessage::CatalogDataChanged);
     ctx.request_repaint();
@@ -129,7 +128,7 @@ fn finish(tx: &mpsc::Sender<AppMessage>, op_id: u64, ctx: &egui::Context) {
 /// `commands/catalog/import.rs`, but forwards to the activity-bar progress bar.
 struct GuiImportProgress {
     op_id: u64,
-    tx: mpsc::Sender<AppMessage>,
+    tx: crate::state::AppMessageSender,
     ctx: egui::Context,
 }
 

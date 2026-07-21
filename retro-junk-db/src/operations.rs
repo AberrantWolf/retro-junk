@@ -446,6 +446,25 @@ pub fn find_media_by_dat_name(
     row_to_media(&mut stmt, params![dat_name])
 }
 
+/// Find the specific ROM representation attached to a release.
+///
+/// A DAT can contain multiple records with the same game name but different
+/// ROM byte orders or container formats (notably N64 `.z64` and `.v64`).  The
+/// ROM filename, not the display/game name, distinguishes those fingerprints.
+pub fn find_media_by_release_and_rom_name(
+    conn: &Connection,
+    release_id: &str,
+    rom_name: &str,
+) -> Result<Option<Media>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, release_id, media_serial, disc_number, disc_label,
+                revision, status, tag, dat_name, rom_name, dat_source, file_size,
+                crc32, sha1, md5, created_at, updated_at
+         FROM media WHERE release_id = ?1 AND rom_name = ?2 LIMIT 1",
+    )?;
+    row_to_media(&mut stmt, params![release_id, rom_name])
+}
+
 fn row_to_media(
     stmt: &mut rusqlite::Statement<'_>,
     params: impl rusqlite::Params,
@@ -483,6 +502,7 @@ fn row_to_media(
 // ── Media Track Operations ─────────────────────────────────────────────────
 
 /// A single track within a disc-based media entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaTrack {
     pub media_id: String,
     pub track_number: i32,
@@ -541,6 +561,46 @@ pub fn find_media_tracks(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(tracks)
+}
+
+/// Find every track belonging to a cluster of catalog media in one query.
+pub fn find_media_tracks_for_media_ids(
+    conn: &Connection,
+    media_ids: &[String],
+) -> Result<Vec<MediaTrack>, OperationError> {
+    if media_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    // Stay below SQLite's commonly configured 999-variable limit while
+    // retaining clustered lookups rather than falling back to one query per
+    // candidate.
+    for cluster in media_ids.chunks(900) {
+        let placeholders = std::iter::repeat_n("?", cluster.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT media_id,track_number,track_name,file_size,crc32,sha1,md5 \
+             FROM media_tracks WHERE media_id IN ({placeholders}) \
+             ORDER BY media_id,track_number"
+        );
+        found.extend(
+            conn.prepare(&sql)?
+                .query_map(rusqlite::params_from_iter(cluster), |row| {
+                    Ok(MediaTrack {
+                        media_id: row.get(0)?,
+                        track_number: row.get(1)?,
+                        track_name: row.get(2)?,
+                        file_size: row.get(3)?,
+                        crc32: row.get(4)?,
+                        sha1: row.get(5)?,
+                        md5: row.get(6)?,
+                    })
+                })?
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+    }
+    Ok(found)
 }
 
 // ── Tag Operations ─────────────────────────────────────────────────────────
@@ -618,6 +678,7 @@ pub fn create_homebrew_work(
 }
 
 /// Hash parameters for creating a media entry.
+#[derive(Debug, Clone)]
 pub struct MediaHashes {
     pub crc32: String,
     pub sha1: Option<String>,

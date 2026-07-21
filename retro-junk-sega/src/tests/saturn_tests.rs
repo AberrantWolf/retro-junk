@@ -83,6 +83,13 @@ fn test_parse_ip_bin_valid() {
 }
 
 #[test]
+fn test_identification_promotes_header_version_for_matching() {
+    let header = parse_ip_bin(&make_saturn_ip_bin("MK-81009", "U", "NiGHTS")).unwrap();
+    let identification = SaturnAnalyzer::build_identification(&header);
+    assert_eq!(identification.version, "V1.000");
+}
+
+#[test]
 fn test_parse_ip_bin_wrong_magic() {
     let mut data = [0u8; 2048];
     data[0..16].copy_from_slice(b"NOT SEGA SATURN ");

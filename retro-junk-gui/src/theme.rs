@@ -8,6 +8,9 @@
 /// Green: successful/verified/complete.
 pub const STATUS_OK: egui::Color32 = egui::Color32::from_rgb(50, 180, 50);
 
+/// Blue: identified/informational, but not integrity-verified.
+pub const STATUS_INFO: egui::Color32 = egui::Color32::from_rgb(70, 140, 220);
+
 /// Red: errors and unrecoverable problems.
 pub const STATUS_ERR: egui::Color32 = egui::Color32::from_rgb(220, 50, 50);
 

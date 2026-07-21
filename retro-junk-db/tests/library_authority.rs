@@ -12,6 +12,8 @@ fn row(path: &str, display: &str) -> LibraryEntryRow {
         sha1: String::new(),
         md5: String::new(),
         data_size: 0,
+        hash_warnings_json: None,
+        disc_verification: "not_applicable".into(),
         dat_game_name: String::new(),
         dat_rom_name: String::new(),
         dat_match_method: String::new(),
@@ -68,6 +70,8 @@ fn setup(entries: &[LibraryEntryRow]) -> (Connection, LibraryRootId, LibraryCons
                 sha1: source.sha1.clone(),
                 md5: source.md5.clone(),
                 data_size: source.data_size,
+                hash_warnings_json: source.hash_warnings_json.clone(),
+                disc_verification: source.disc_verification.clone(),
                 dat_game_name: source.dat_game_name.clone(),
                 dat_rom_name: source.dat_rom_name.clone(),
                 dat_match_method: source.dat_match_method.clone(),
@@ -94,6 +98,23 @@ fn scanned(path: &str, display: &str, fingerprint: &str) -> ScannedLibraryEntry 
         source_fingerprint: fingerprint.into(),
         row: row(path, display),
     }
+}
+
+fn analyzed_scanned(path: &str, display: &str, fingerprint: &str) -> ScannedLibraryEntry {
+    let mut scanned = scanned(path, display, fingerprint);
+    scanned.row.status = "matched".into();
+    scanned.row.crc32 = "89abcdef".into();
+    scanned.row.sha1 = "0123456789abcdef".into();
+    scanned.row.md5 = "fedcba9876543210".into();
+    scanned.row.data_size = 42;
+    scanned.row.dat_game_name = "Catalog Game".into();
+    scanned.row.dat_rom_name = "game.nes".into();
+    scanned.row.dat_match_method = "sha1".into();
+    scanned.row.cover_title = "Cover".into();
+    scanned.row.screen_title = "Screen".into();
+    scanned.row.identification_json = Some(r#"{"serial_number":"TEST-1"}"#.into());
+    scanned.row.broken_references_json = Some("[]".into());
+    scanned
 }
 
 #[test]
@@ -177,6 +198,35 @@ fn duplicate_display_names_have_distinct_durable_ids_and_deterministic_pages() {
 }
 
 #[test]
+fn list_search_treats_sql_wildcards_and_escape_characters_literally() {
+    let (conn, _, console) = setup(&[
+        row("percent.nes", "100% fun"),
+        row("underscore.nes", "under_score"),
+        row("slash.nes", r"back\slash"),
+        row("ordinary.nes", "ordinary"),
+    ]);
+    let find = |search: &str| {
+        query_entry_list(
+            &conn,
+            &LibraryEntryListQuery {
+                console_id: console,
+                search: search.into(),
+                filter: LibraryEntryFilter::All,
+                sort: LibraryEntrySortField::DisplayName,
+                direction: SortDirection::Ascending,
+                offset: 0,
+                limit: 300,
+            },
+        )
+        .unwrap()
+        .rows
+    };
+    assert_eq!(find("%").len(), 1);
+    assert_eq!(find("_").len(), 1);
+    assert_eq!(find(r"\").len(), 1);
+}
+
+#[test]
 fn console_summaries_report_complete_effective_status_aggregates() {
     let mut matched = row("matched.nes", "matched.nes");
     matched.status = "matched".into();
@@ -186,19 +236,22 @@ fn console_summaries_report_complete_effective_status_aggregates() {
     unrecognized.status = "unrecognized".into();
     let mut ambiguous = row("maybe.nes", "maybe.nes");
     ambiguous.status = "ambiguous".into();
+    let mut likely = row("likely.nes", "likely.nes");
+    likely.status = "likely".into();
     let mut tagged = row("homebrew.nes", "homebrew.nes");
     tagged.status = "unrecognized".into();
     tagged.tag = "homebrew".into();
 
-    let (conn, root, _) = setup(&[matched, unknown, unrecognized, ambiguous, tagged]);
+    let (conn, root, _) = setup(&[matched, unknown, unrecognized, ambiguous, likely, tagged]);
     let summaries = list_console_summaries(&conn, root).unwrap();
     let summary = &summaries[0];
 
-    assert_eq!(summary.entry_count, 5);
+    assert_eq!(summary.entry_count, 6);
     assert_eq!(summary.matched_count, 1);
     assert_eq!(summary.unknown_count, 1);
     assert_eq!(summary.unrecognized_count, 1);
     assert_eq!(summary.ambiguous_count, 1);
+    assert_eq!(summary.likely_count, 1);
     assert_eq!(summary.tagged_count, 1);
 
     let page = query_entry_list(
@@ -218,6 +271,7 @@ fn console_summaries_report_complete_effective_status_aggregates() {
     assert_eq!(page.counts.unknown, 1);
     assert_eq!(page.counts.unrecognized, 1);
     assert_eq!(page.counts.ambiguous, 1);
+    assert_eq!(page.counts.likely, 1);
     assert_eq!(page.counts.tagged, 1);
 
     let unrecognized = query_entry_list(
@@ -286,6 +340,247 @@ fn unchanged_and_changed_scans_preserve_identity_but_invalidate_only_when_needed
 }
 
 #[test]
+fn reconciliation_persists_completed_analysis_for_new_and_changed_sources() {
+    let mut conn = open_memory().unwrap();
+    let root = upsert_library_root(&conn, "/roms").unwrap();
+    let console = ensure_library_console(
+        &conn,
+        &LibraryConsoleDescriptor {
+            root_id: root,
+            platform: "NES".into(),
+            folder_name: "nes".into(),
+            folder_path: "/roms/nes".into(),
+        },
+    )
+    .unwrap();
+
+    let token = begin_console_scan(&conn, console).unwrap();
+    reconcile_console_scan(
+        &mut conn,
+        token,
+        "folder-1",
+        &[analyzed_scanned("game.nes", "game.nes", "source-1")],
+    )
+    .unwrap();
+    let first = load_entry_details_for_console(&conn, console)
+        .unwrap()
+        .remove(0);
+    assert_eq!(first.row.status, "matched");
+    assert_eq!(first.row.crc32, "89abcdef");
+    assert_eq!(first.row.data_size, 42);
+    assert_eq!(first.row.dat_game_name, "Catalog Game");
+    assert!(first.row.identification_json.is_some());
+
+    set_entry_tag(&mut conn, first.id, Some("homebrew")).unwrap();
+    set_entry_region_override(&mut conn, first.id, Some("US")).unwrap();
+    let token = begin_console_scan(&conn, console).unwrap();
+    let mut changed = analyzed_scanned("game.nes", "renamed.nes", "source-2");
+    changed.row.crc32 = "changed".into();
+    reconcile_console_scan(&mut conn, token, "folder-2", &[changed]).unwrap();
+
+    let second = load_entry_detail(&conn, first.id).unwrap().unwrap();
+    assert_eq!(second.row.status, "matched");
+    assert_eq!(second.row.crc32, "changed");
+    assert_eq!(second.row.tag, "homebrew");
+    assert_eq!(second.row.region_override, "US");
+    assert_eq!(second.source_revision, first.source_revision + 1);
+}
+
+#[test]
+fn identical_reconciliation_does_not_dirty_entry_revisions() {
+    let (mut conn, _, console) = setup(&[row("game.nes", "game.nes")]);
+    let before = load_entry_details_for_console(&conn, console)
+        .unwrap()
+        .remove(0);
+    let token = begin_console_scan(&conn, console).unwrap();
+    let changes = reconcile_console_scan(
+        &mut conn,
+        token,
+        "folder-1",
+        &[scanned("game.nes", "game.nes", "")],
+    )
+    .unwrap();
+    let after = load_entry_detail(&conn, before.id).unwrap().unwrap();
+    assert_eq!(after.revision, before.revision);
+    assert_eq!(after.source_revision, before.source_revision);
+    assert!(changes.affected_entries.is_empty());
+    assert!(changes.entry_revisions.is_empty());
+    assert!(changes.console_revision.is_none());
+    assert!(changes.root_revision.is_none());
+}
+
+#[test]
+fn unchanged_source_reconciliation_refreshes_analysis_and_preserves_user_fields() {
+    let (mut conn, _, console) = setup(&[row("game.nes", "game.nes")]);
+    let before = load_entry_details_for_console(&conn, console)
+        .unwrap()
+        .remove(0);
+    set_entry_tag(&mut conn, before.id, Some("homebrew")).unwrap();
+    set_entry_region_override(&mut conn, before.id, Some("JP")).unwrap();
+
+    let mut rescanned = scanned("game.nes", "game.nes", "");
+    rescanned.row.status = "likely".into();
+    rescanned.row.dat_game_name = "Header Match".into();
+    rescanned.row.dat_match_method = "serial".into();
+    rescanned.row.identification_json = Some(r#"{"serial_number":"TEST-1"}"#.into());
+    let token = begin_console_scan(&conn, console).unwrap();
+    reconcile_console_scan(&mut conn, token, "folder-2", &[rescanned]).unwrap();
+
+    let after = load_entry_detail(&conn, before.id).unwrap().unwrap();
+    assert_eq!(after.row.status, "likely");
+    assert_eq!(after.row.dat_game_name, "Header Match");
+    assert_eq!(after.row.tag, "homebrew");
+    assert_eq!(after.row.region_override, "JP");
+    assert_eq!(after.source_revision, before.source_revision);
+}
+
+#[test]
+fn reconciliation_does_not_overwrite_a_hash_that_committed_after_scan_snapshot() {
+    let (mut conn, _, console) = setup(&[row("game.nes", "game.nes")]);
+    let snapshot = load_entry_details_for_console(&conn, console)
+        .unwrap()
+        .remove(0);
+    apply_entry_hash_update(
+        &mut conn,
+        snapshot.id,
+        snapshot.source_revision,
+        &EntryHashUpdate {
+            status: "matched".into(),
+            crc32: "12345678".into(),
+            sha1: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+            md5: String::new(),
+            data_size: 64,
+            hash_warnings_json: None,
+            disc_verification: "not_applicable".into(),
+            dat_game_name: "Hash Match".into(),
+            dat_rom_name: "game.nes".into(),
+            dat_match_method: "sha1".into(),
+            cover_title: "Hash Match".into(),
+            screen_title: String::new(),
+            disc_identifications_json: None,
+            ambiguous_candidates_json: Some("[]".into()),
+        },
+    )
+    .unwrap();
+
+    let mut stale_scan = scanned("game.nes", "game.nes", "");
+    stale_scan.row.status = "likely".into();
+    stale_scan.row.dat_game_name = "Header Match".into();
+    stale_scan.row.identification_json = Some(r#"{"serial_number":"TEST-1"}"#.into());
+    let token = begin_console_scan(&conn, console).unwrap();
+    reconcile_console_scan(&mut conn, token, "folder-2", &[stale_scan]).unwrap();
+
+    let after = load_entry_detail(&conn, snapshot.id).unwrap().unwrap();
+    assert_eq!(after.row.status, "matched");
+    assert_eq!(after.row.crc32, "12345678");
+    assert_eq!(after.row.dat_game_name, "Hash Match");
+    assert!(after.row.identification_json.is_some());
+    assert_eq!(after.source_revision, snapshot.source_revision);
+}
+
+#[test]
+fn analysis_batch_commits_valid_entries_and_skips_stale_sources() {
+    let (mut conn, _, console) = setup(&[row("a.nes", "a.nes"), row("b.nes", "b.nes")]);
+    let details = load_entry_details_for_console(&conn, console).unwrap();
+    let a = details
+        .iter()
+        .find(|detail| detail.row.display_name == "a.nes")
+        .unwrap();
+    let b = details
+        .iter()
+        .find(|detail| detail.row.display_name == "b.nes")
+        .unwrap();
+    let token = begin_console_scan(&conn, console).unwrap();
+    reconcile_console_scan(
+        &mut conn,
+        token,
+        "folder-2",
+        &[
+            scanned("a.nes", "a.nes", ""),
+            scanned("b.nes", "b.nes", "changed"),
+        ],
+    )
+    .unwrap();
+
+    let update = |name: &str| EntryAnalysisUpdate {
+        status: "likely".into(),
+        crc32: String::new(),
+        sha1: String::new(),
+        md5: String::new(),
+        data_size: 0,
+        hash_warnings_json: None,
+        disc_verification: "not_applicable".into(),
+        dat_game_name: name.into(),
+        dat_rom_name: String::new(),
+        dat_match_method: "serial".into(),
+        cover_title: String::new(),
+        screen_title: String::new(),
+        identification_json: None,
+        disc_identifications_json: None,
+        broken_references_json: Some("[]".into()),
+        ambiguous_candidates_json: Some("[]".into()),
+        cue_compat_issues_json: Some("[]".into()),
+    };
+    let changes = apply_entry_analysis_batch(
+        &mut conn,
+        &[
+            EntryAnalysisCommand {
+                entry_id: a.id,
+                expected_source_revision: a.source_revision,
+                update: update("A match"),
+            },
+            EntryAnalysisCommand {
+                entry_id: b.id,
+                expected_source_revision: b.source_revision,
+                update: update("stale B match"),
+            },
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(changes.affected_entries, vec![a.id]);
+    assert_eq!(
+        load_entry_detail(&conn, a.id).unwrap().unwrap().row.status,
+        "likely"
+    );
+    assert_eq!(
+        load_entry_detail(&conn, b.id).unwrap().unwrap().row.status,
+        "unknown"
+    );
+}
+
+#[test]
+fn catalog_creation_and_library_tagging_are_one_transaction() {
+    let (mut conn, _, console) = setup(&[row("game.nes", "game.nes")]);
+    let entry = load_entry_details_for_console(&conn, console)
+        .unwrap()
+        .remove(0);
+
+    // No such platform exists, so the catalog release insert violates its FK.
+    // The library tag must roll back with the catalog work/media rows.
+    assert!(
+        create_homebrew_and_tag_entry(
+            &mut conn,
+            entry.id,
+            "Test Homebrew",
+            "missing-platform",
+            "us",
+        )
+        .is_err()
+    );
+    let after = load_entry_detail(&conn, entry.id).unwrap().unwrap();
+    assert!(after.row.tag.is_empty());
+    let work_count: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM works WHERE canonical_name='Test Homebrew'",
+            [],
+            |result| result.get(0),
+        )
+        .unwrap();
+    assert_eq!(work_count, 0);
+}
+
+#[test]
 fn stale_analysis_and_stale_scan_are_atomic_noops() {
     let (mut conn, _, console) = setup(&[row("game.nes", "game.nes")]);
     let id = query_entry_list(
@@ -325,6 +620,8 @@ fn stale_analysis_and_stale_scan_are_atomic_noops() {
         sha1: String::new(),
         md5: String::new(),
         data_size: 1,
+        hash_warnings_json: None,
+        disc_verification: "not_applicable".into(),
         dat_game_name: String::new(),
         dat_rom_name: String::new(),
         dat_match_method: String::new(),
@@ -341,6 +638,70 @@ fn stale_analysis_and_stale_scan_are_atomic_noops() {
         Err(LibraryError::StaleCommand)
     ));
     assert_eq!(load_entry_detail(&conn, id).unwrap().unwrap().row.crc32, "");
+}
+
+#[test]
+fn hash_updates_are_partial_and_reject_changed_sources() {
+    let mut initial = row("game.nes", "game.nes");
+    initial.identification_json = Some(r#"{"serial_number":"TEST"}"#.into());
+    initial.broken_references_json = Some(r#"[{"path":"missing.bin"}]"#.into());
+    initial.cue_compat_issues_json = Some(r#"[{"summary":"keep me"}]"#.into());
+    let (mut conn, _, console) = setup(&[initial.clone()]);
+    let detail = load_entry_details_for_console(&conn, console)
+        .unwrap()
+        .remove(0);
+
+    let update = EntryHashUpdate {
+        status: "matched".into(),
+        crc32: "12345678".into(),
+        sha1: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+        md5: String::new(),
+        data_size: 64,
+        hash_warnings_json: None,
+        disc_verification: "not_applicable".into(),
+        dat_game_name: "Game (USA)".into(),
+        dat_rom_name: "Game (USA).nes".into(),
+        dat_match_method: "crc32".into(),
+        cover_title: "Game".into(),
+        screen_title: String::new(),
+        disc_identifications_json: None,
+        ambiguous_candidates_json: Some("[]".into()),
+    };
+    apply_entry_hash_update(&mut conn, detail.id, detail.source_revision, &update).unwrap();
+
+    let updated = load_entry_detail(&conn, detail.id).unwrap().unwrap();
+    assert_eq!(updated.row.status, "matched");
+    assert_eq!(updated.row.crc32, "12345678");
+    assert_eq!(updated.row.identification_json, initial.identification_json);
+    assert_eq!(
+        updated.row.broken_references_json,
+        initial.broken_references_json
+    );
+    assert_eq!(
+        updated.row.cue_compat_issues_json,
+        initial.cue_compat_issues_json
+    );
+
+    let token = begin_console_scan(&conn, console).unwrap();
+    reconcile_console_scan(
+        &mut conn,
+        token,
+        "changed-again",
+        &[scanned("game.nes", "game.nes", "changed-source")],
+    )
+    .unwrap();
+    assert!(matches!(
+        apply_entry_hash_update(&mut conn, detail.id, detail.source_revision, &update),
+        Err(LibraryError::StaleCommand)
+    ));
+    assert_eq!(
+        load_entry_detail(&conn, detail.id)
+            .unwrap()
+            .unwrap()
+            .row
+            .crc32,
+        ""
+    );
 }
 
 #[test]

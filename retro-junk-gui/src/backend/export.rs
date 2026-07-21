@@ -9,29 +9,22 @@ use crate::state::{self, AppMessage, OperationKind, ProgressDisplay};
 pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
     let console = &app.browser.consoles[console_idx];
     let folder_name = console.folder_name.clone();
+    let Some(console_id) = console.id else {
+        app.push_error(
+            "Export",
+            "This console has not been committed to the library yet",
+        );
+        return;
+    };
 
     let Some(root_path) = app.root_path.clone() else {
         return;
     };
 
-    // Collect the data we need from each entry before moving to the background thread.
-    let entry_data: Vec<EntrySnapshot> = console
-        .entries
-        .iter()
-        .map(|entry| EntrySnapshot {
-            rom_stem: entry.game_entry.rom_stem().to_string(),
-            rom_filename: entry.game_entry.display_name().to_string(),
-            name: entry.dat_match.as_ref().map_or_else(
-                || entry.game_entry.display_name().to_string(),
-                |m| m.game_name.clone(),
-            ),
-            cover_title: entry.cover_title.clone(),
-        })
-        .collect();
-
-    if entry_data.is_empty() {
+    let Some(db_path) = app.db_path.clone() else {
+        app.push_error("Export", "The library database is unavailable");
         return;
-    }
+    };
 
     let metadata_dir_setting = app.settings.general.metadata_dir.clone();
     let media_dir_setting = app.settings.general.assets_dir.clone();
@@ -42,16 +35,46 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
         app,
         description,
         OperationKind::Other,
-        String::new(),
+        folder_name.clone(),
         ProgressDisplay::Count,
-        move |op_id, _cancel, tx| {
-            let result = do_generate(
-                &root_path,
-                &folder_name,
-                &entry_data,
-                &metadata_dir_setting,
-                &media_dir_setting,
-            );
+        move |op_id, cancel, tx| {
+            let result = (|| {
+                let conn = retro_junk_db::open_database(&db_path).map_err(|e| e.to_string())?;
+                let rows = retro_junk_db::load_export_entries_for_console(&conn, console_id)
+                    .map_err(|e| e.to_string())?;
+                let entry_data = rows
+                    .into_iter()
+                    .map(|row| {
+                        let game_entry: retro_junk_lib::scanner::GameEntry =
+                            serde_json::from_str(&row.game_entry_json)
+                                .map_err(|e| format!("Invalid library entry: {e}"))?;
+                        Ok(EntrySnapshot {
+                            rom_stem: game_entry.rom_stem().to_owned(),
+                            rom_filename: game_entry.display_name().to_owned(),
+                            name: if row.dat_game_name.is_empty() {
+                                game_entry.display_name().to_owned()
+                            } else {
+                                row.dat_game_name
+                            },
+                            cover_title: row.cover_title,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                if entry_data.is_empty() {
+                    return Err("The console has no committed entries to export".to_owned());
+                }
+                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                    return Err("Export cancelled".to_owned());
+                }
+                do_generate(
+                    &root_path,
+                    &folder_name,
+                    &entry_data,
+                    &metadata_dir_setting,
+                    &media_dir_setting,
+                    &cancel,
+                )
+            })();
 
             let _ = tx.send(AppMessage::ExportComplete {
                 folder_name,
@@ -78,6 +101,7 @@ fn do_generate(
     entries: &[EntrySnapshot],
     metadata_dir_setting: &str,
     media_dir_setting: &str,
+    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<String, String> {
     let rom_dir = root_path.join(folder_name);
     let media_dir = state::asset_dir_for_console(root_path, folder_name, media_dir_setting)
@@ -88,9 +112,12 @@ fn do_generate(
     let games: Vec<ScrapedGame> = entries
         .iter()
         .map(|e| {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("Export cancelled".to_owned());
+            }
             let assets = state::collect_existing_assets(&media_dir, &e.rom_stem);
             // Convert HashMap<AssetType, PathBuf> — already the right type
-            ScrapedGame {
+            Ok(ScrapedGame {
                 rom_stem: e.rom_stem.clone(),
                 rom_filename: e.rom_filename.clone(),
                 name: e.name.clone(),
@@ -103,9 +130,13 @@ fn do_generate(
                 release_date: String::new(),
                 assets,
                 cover_title: e.cover_title.clone(),
-            }
+            })
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
+
+    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err("Export cancelled".to_owned());
+    }
 
     let frontend = EsDeFrontend;
     frontend

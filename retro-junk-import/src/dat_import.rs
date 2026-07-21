@@ -153,6 +153,15 @@ fn import_game(
     // (e.g., "USA, Europe" → release for "usa")
     let primary_region = &regions[0];
     let revision = compute_release_revision(&parsed);
+    let media_revision = if revision.is_empty() {
+        game.version
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_default()
+            .to_owned()
+    } else {
+        revision.clone()
+    };
     let variant = compute_release_variant(&parsed);
     let release_id = make_release_id(&work_id, platform_id, primary_region, &revision, &variant);
 
@@ -221,14 +230,29 @@ fn import_game(
         return Ok(());
     };
 
-    let media_id = make_media_id(&effective_release_id, &game.name);
-
-    // Check if this media already exists
-    let existing = operations::find_media_by_dat_name(conn, &game.name)?;
+    // A DAT may carry multiple byte-order/container representations under the
+    // same game name. N64 DATs, for example, have separate `.z64` and `.v64`
+    // records with different hashes. Treat the ROM filename as part of the
+    // media identity so one representation cannot overwrite another.
+    let existing = operations::find_media_by_release_and_rom_name(
+        conn,
+        &effective_release_id,
+        &primary_rom.name,
+    )?;
+    let existing = if existing.is_some() {
+        existing
+    } else {
+        // Very old catalogs did not persist the ROM filename. Claim that row
+        // only when it belongs to this release and is genuinely blank; a
+        // non-empty different filename is a distinct DAT representation.
+        operations::find_media_by_dat_name(conn, &game.name)?
+            .filter(|media| media.release_id == effective_release_id && media.rom_name.is_empty())
+    };
     if let Some(ref existing_media) = existing {
         let same_hashes = existing_media.crc32 == primary_rom.crc
             && existing_media.sha1 == primary_rom.sha1.as_deref().unwrap_or("")
-            && existing_media.file_size == i64::try_from(primary_rom.size).unwrap_or(0);
+            && existing_media.file_size == i64::try_from(primary_rom.size).unwrap_or(0)
+            && existing_media.revision == media_revision;
         if same_hashes && existing_media.rom_name == primary_rom.name {
             stats.media_unchanged += 1;
             return Ok(());
@@ -237,6 +261,14 @@ fn import_game(
     } else {
         stats.media_created += 1;
     }
+
+    // Preserve an existing ID when upgrading a catalog created by the old
+    // game-name key. This repairs it in place on re-import without orphaning
+    // collection rows or media assets that reference that ID.
+    let media_id = existing.as_ref().map_or_else(
+        || make_media_id(&effective_release_id, &primary_rom.name),
+        |media| media.id.clone(),
+    );
 
     let media_serial = game
         .serial
@@ -253,7 +285,7 @@ fn import_game(
             .and_then(|n| i32::try_from(n).ok())
             .unwrap_or(0),
         disc_label: parsed.disc_label.clone().unwrap_or_default(),
-        revision: parsed.revision.clone().unwrap_or_default(),
+        revision: media_revision,
         status: media_status,
         tag: None,
         dat_name: game.name.clone(),

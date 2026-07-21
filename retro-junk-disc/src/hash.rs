@@ -574,8 +574,16 @@ pub fn hash_cue_track1(
     let bin_size = bin_file.seek(SeekFrom::End(0))?;
     bin_file.seek(SeekFrom::Start(0))?;
 
-    // Multi-BIN CUE: hash first data track file entirely
-    if sheet.files.len() > 1 {
+    // Multi-BIN CUE: hash the first data track file entirely. Ignore orphan
+    // FILE directives with no TRACK children here: strict whole-disc
+    // verification rejects them, but identification should still be able to
+    // recover a valid data-track hash from a damaged descriptor.
+    let files_with_tracks = sheet
+        .files
+        .iter()
+        .filter(|file| !file.tracks.is_empty())
+        .count();
+    if files_with_tracks > 1 {
         log::info!(
             "CUE hash: multi-file CUE, hashing first data file '{}' ({} bytes)",
             data_file.filename,

@@ -208,11 +208,33 @@ impl DatIndex {
     /// `extract_dat_game_code()` method.
     #[must_use]
     pub fn match_by_serial(&self, serial: &str, game_code: Option<&str>) -> SerialLookupResult {
+        self.match_by_serial_impl(serial, game_code, None)
+    }
+
+    /// Match by serial and use trustworthy ROM-header fields to resolve
+    /// collisions between revisions, regions, or differently sized releases.
+    /// This remains a serial match; header evidence does not verify dump bytes.
+    #[must_use]
+    pub fn match_by_serial_with_identification(
+        &self,
+        serial: &str,
+        game_code: Option<&str>,
+        identification: &retro_junk_core::RomIdentification,
+    ) -> SerialLookupResult {
+        self.match_by_serial_impl(serial, game_code, Some(identification))
+    }
+
+    fn match_by_serial_impl(
+        &self,
+        serial: &str,
+        game_code: Option<&str>,
+        identification: Option<&retro_junk_core::RomIdentification>,
+    ) -> SerialLookupResult {
         let norm = normalize_serial(serial);
 
         // Try exact match first
         if let Some(entries) = self.by_serial.get(&norm) {
-            let result = self.resolve_serial_entries(entries, &norm);
+            let result = self.resolve_serial_entries(entries, &norm, identification);
             if !matches!(result, SerialLookupResult::NotFound) {
                 return result;
             }
@@ -222,7 +244,7 @@ impl DatIndex {
         if let Some(code) = game_code {
             let norm_code = normalize_serial(code);
             if let Some(entries) = self.by_serial.get(&norm_code) {
-                let result = self.resolve_serial_entries(entries, &norm_code);
+                let result = self.resolve_serial_entries(entries, &norm_code, identification);
                 if !matches!(result, SerialLookupResult::NotFound) {
                     return result;
                 }
@@ -235,7 +257,7 @@ impl DatIndex {
         for suffix in b'0'..=b'9' {
             let suffixed = format!("{norm}{}", suffix as char);
             if let Some(entries) = self.by_serial.get(&suffixed) {
-                let result = self.resolve_serial_entries(entries, &suffixed);
+                let result = self.resolve_serial_entries(entries, &suffixed, identification);
                 if !matches!(result, SerialLookupResult::NotFound) {
                     return result;
                 }
@@ -251,7 +273,12 @@ impl DatIndex {
     /// - Multiple entries but a `-0` suffix resolves uniquely → use that
     ///   (preserves multi-disc behavior where bare serial is shared)
     /// - Multiple entries with no suffix resolution → Ambiguous
-    fn resolve_serial_entries(&self, entries: &[(usize, usize)], norm: &str) -> SerialLookupResult {
+    fn resolve_serial_entries(
+        &self,
+        entries: &[(usize, usize)],
+        norm: &str,
+        identification: Option<&retro_junk_core::RomIdentification>,
+    ) -> SerialLookupResult {
         if entries.len() == 1 {
             let (gi, ri) = entries[0];
             // Check if a "-0" suffixed entry exists — if so, the bare serial
@@ -283,6 +310,41 @@ impl DatIndex {
             return SerialLookupResult::Match(MatchResult {
                 game_index: sgi,
                 rom_index: sri,
+                method: MatchMethod::Serial,
+            });
+        }
+
+        let mut entries = entries.to_vec();
+        if let Some(identification) = identification {
+            let evidence: Vec<_> = entries
+                .iter()
+                .map(|&(game_index, rom_index)| {
+                    (
+                        dat_game_revision(&self.games[game_index]),
+                        self.games[game_index].region.clone().unwrap_or_default(),
+                        self.games[game_index].roms[rom_index].size,
+                    )
+                })
+                .collect();
+            entries = retro_junk_core::matching::header_candidate_indices(
+                &evidence,
+                &identification.version,
+                &identification.regions,
+                Some(identification.file_size),
+                |candidate| candidate.0.as_str(),
+                |candidate| candidate.1.as_str(),
+                |candidate| candidate.2,
+            )
+            .into_iter()
+            .filter_map(|index| entries.get(index).copied())
+            .collect();
+        }
+
+        if entries.len() == 1 {
+            let (gi, ri) = entries[0];
+            return SerialLookupResult::Match(MatchResult {
+                game_index: gi,
+                rom_index: ri,
                 method: MatchMethod::Serial,
             });
         }
@@ -322,6 +384,16 @@ impl DatIndex {
     pub fn candidates_by_size(&self, size: u64) -> Option<&[(usize, usize)]> {
         self.by_size.get(&size).map(std::vec::Vec::as_slice)
     }
+}
+
+fn dat_game_revision(game: &DatGame) -> String {
+    if let Some(version) = game.version.as_deref()
+        && !version.trim().is_empty()
+    {
+        return version.to_owned();
+    }
+    let parsed = retro_junk_catalog::name_parser::parse_dat_name(&game.name);
+    parsed.revision.or(parsed.version).unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -162,6 +162,40 @@ fn import_revision_creates_separate_media() {
 }
 
 #[test]
+fn import_preserves_dat_native_version_when_name_has_no_revision() {
+    let conn = setup_db();
+    let mut dat = sample_dat();
+    dat.games.truncate(1);
+    dat.games[0].version = Some("1.006".to_string());
+
+    import_dat(&conn, &dat, Platform::Nes, "redump", &SilentProgress).unwrap();
+
+    let releases = releases_for_platform(&conn, "nes").unwrap();
+    assert_eq!(releases.len(), 1);
+    assert!(releases[0].revision.is_empty());
+    let media = media_for_release(&conn, &releases[0].id).unwrap();
+    assert_eq!(media[0].revision, "1.006");
+}
+
+#[test]
+fn reimport_backfills_dat_native_version_without_duplicate_release() {
+    let conn = setup_db();
+    let mut dat = sample_dat();
+    dat.games.truncate(1);
+    import_dat(&conn, &dat, Platform::Nes, "redump", &SilentProgress).unwrap();
+
+    dat.games[0].version = Some("1.006".to_string());
+    let stats = import_dat(&conn, &dat, Platform::Nes, "redump", &SilentProgress).unwrap();
+
+    assert_eq!(stats.media_updated, 1);
+    let releases = releases_for_platform(&conn, "nes").unwrap();
+    assert_eq!(releases.len(), 1);
+    let media = media_for_release(&conn, &releases[0].id).unwrap();
+    assert_eq!(media.len(), 1);
+    assert_eq!(media[0].revision, "1.006");
+}
+
+#[test]
 fn reimport_is_idempotent() {
     let conn = setup_db();
     let dat = sample_dat();
@@ -190,6 +224,57 @@ fn reimport_backfills_primary_rom_name() {
         find_media_by_crc32(&conn, "d445f698").unwrap()[0].rom_name,
         "Super Mario Bros. (USA).nes"
     );
+}
+
+#[test]
+fn same_game_name_preserves_distinct_rom_representations() {
+    let conn = setup_db();
+    let dat = DatFile {
+        name: "Nintendo - Nintendo 64".to_string(),
+        description: "Nintendo - Nintendo 64".to_string(),
+        version: "1".to_string(),
+        games: vec![
+            DatGame {
+                name: "Super Mario 64 (USA)".to_string(),
+                region: Some("USA".to_string()),
+                serial: Some("NSME".to_string()),
+                version: None,
+                category: None,
+                roms: vec![DatRom {
+                    name: "Super Mario 64 (USA).z64".to_string(),
+                    size: 8_388_608,
+                    crc: "3ce60709".to_string(),
+                    sha1: Some("9bef1128717f958171a4afac3ed78ee2bb4e86ce".to_string()),
+                    md5: None,
+                    serial: Some("NSME".to_string()),
+                }],
+            },
+            DatGame {
+                name: "Super Mario 64 (USA)".to_string(),
+                region: Some("USA".to_string()),
+                serial: Some("NSME".to_string()),
+                version: None,
+                category: None,
+                roms: vec![DatRom {
+                    name: "Super Mario 64 (USA).v64".to_string(),
+                    size: 8_388_608,
+                    crc: "42c43204".to_string(),
+                    sha1: Some("1002dd7b56aa0a59a9103f1fb3d57d6b161f8da7".to_string()),
+                    md5: None,
+                    serial: Some("NSME".to_string()),
+                }],
+            },
+        ],
+    };
+
+    let stats = import_dat(&conn, &dat, Platform::Nes, "no-intro", &SilentProgress).unwrap();
+    assert_eq!(stats.media_created, 2);
+    assert_eq!(find_media_by_crc32(&conn, "3ce60709").unwrap().len(), 1);
+    assert_eq!(find_media_by_crc32(&conn, "42c43204").unwrap().len(), 1);
+
+    let second = import_dat(&conn, &dat, Platform::Nes, "no-intro", &SilentProgress).unwrap();
+    assert_eq!(second.media_created, 0);
+    assert_eq!(second.media_unchanged, 2);
 }
 
 #[test]

@@ -36,7 +36,7 @@ fn v11_marks_lossy_all_unknown_library_consoles_stale() {
         )
         .unwrap();
         conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'NES','nes','/roms/nes','fp','ready'),(2,1,'SNES','snes','/roms/snes','fp','ready')", []).unwrap();
-        conn.execute("INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json,status) VALUES(1,'file:a.nes','a.nes','{}','unknown'),(2,'file:b.sfc','b.sfc','{}','matched')", []).unwrap();
+        conn.execute("INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json,status) VALUES(1,'file:a.nes','a.nes','{}','unknown'),(2,'file:b.sfc','b.sfc','{}','likely')", []).unwrap();
     }
 
     let conn = open_database(&db_path).unwrap();
@@ -56,6 +56,118 @@ fn v11_marks_lossy_all_unknown_library_consoles_stale() {
         .unwrap();
     assert_eq!(stale, "stale");
     assert_eq!(ready, "ready");
+}
+
+#[test]
+fn v15_invalidates_only_cached_match_verdicts_that_need_recomputing() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("v14.db");
+    {
+        let conn = open_database(&db_path).unwrap();
+        conn.execute("DELETE FROM schema_version", []).unwrap();
+        conn.execute("INSERT INTO schema_version(version) VALUES (14)", [])
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO platforms(id,display_name,short_name,manufacturer,media_type)
+               VALUES('nds','Nintendo DS','nds','Nintendo','cartridge');
+             INSERT INTO works(id,canonical_name) VALUES('work','Game');
+             INSERT INTO releases(id,work_id,platform_id,region,title)
+               VALUES('release','work','nds','usa','Game');
+             INSERT INTO media(id,release_id,file_size,crc32,sha1)
+               VALUES('media','release',64,'11111111','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+             INSERT INTO library_roots(id,root_path) VALUES(1,'/roms');
+             INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state)
+               VALUES
+                 (1,1,'nds','wrong-verified','/roms/1','fp','ready'),
+                 (2,1,'nds','right-verified','/roms/2','fp','ready'),
+                 (3,1,'nds','right-likely','/roms/3','fp','ready'),
+                 (4,1,'nds','wrong-likely','/roms/4','fp','ready'),
+                 (5,1,'nds','unrecognized','/roms/5','fp','ready');
+             INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json,status,crc32,data_size)
+               VALUES
+                 (1,'file:1','1','{}','matched','22222222',64),
+                 (2,'file:2','2','{}','matched','11111111',64),
+                 (3,'file:3','3','{}','likely','11111111',64),
+                 (4,'file:4','4','{}','likely','22222222',64),
+                 (5,'file:5','5','{}','unrecognized','',0);",
+        )
+        .unwrap();
+    }
+
+    let conn = open_database(&db_path).unwrap();
+    let states: Vec<String> = conn
+        .prepare("SELECT scan_state FROM library_consoles ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        states,
+        ["stale", "ready", "stale", "ready", "stale"],
+        "only unresolved or hash-inconsistent cached verdicts should be rebuilt"
+    );
+}
+
+#[test]
+fn v16_invalidates_legacy_cue_verdicts_without_touching_flat_rom_hashes() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("v15.db");
+    {
+        let conn = open_database(&db_path).unwrap();
+        conn.execute("DELETE FROM schema_version", []).unwrap();
+        conn.execute("INSERT INTO schema_version(version) VALUES (15)", [])
+            .unwrap();
+        conn.execute_batch(
+            "INSERT INTO library_roots(id,root_path) VALUES(1,'/roms');
+             INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state)
+               VALUES
+                 (1,1,'ps1','psx','/roms/psx','fp','ready'),
+                 (2,1,'nes','nes','/roms/nes','fp','ready');
+             INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json,status,crc32,data_size,dat_game_name,dat_match_method,disc_identifications_json)
+               VALUES
+                 (1,'file:game.cue','game.cue','{\"SingleFile\":\"/roms/psx/game.cue\"}','matched','11111111',100,'Game','crc32','[]'),
+                 (2,'file:game.nes','game.nes','{\"SingleFile\":\"/roms/nes/game.nes\"}','matched','22222222',200,'Game','crc32',NULL);",
+        )
+        .unwrap();
+    }
+
+    let conn = open_database(&db_path).unwrap();
+    let cue: (String, String, i64, Option<String>) = conn
+        .query_row(
+            "SELECT status,crc32,data_size,disc_identifications_json FROM library_entries WHERE console_id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(cue, ("unknown".into(), String::new(), 0, None));
+    assert_eq!(
+        conn.query_row(
+            "SELECT scan_state FROM library_consoles WHERE id=1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "stale"
+    );
+
+    let flat: (String, String, i64) = conn
+        .query_row(
+            "SELECT status,crc32,data_size FROM library_entries WHERE console_id=2",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(flat, ("matched".into(), "22222222".into(), 200));
+    assert_eq!(
+        conn.query_row(
+            "SELECT scan_state FROM library_consoles WHERE id=2",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap(),
+        "ready"
+    );
 }
 
 #[test]

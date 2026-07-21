@@ -50,6 +50,8 @@ fn first_index_frame(track: &CueTrack) -> Result<u64, AnalysisError> {
 /// sizes bound the final track of each file.
 pub fn cue_track_spans(sheet: &CueSheet, cue_dir: &Path) -> Result<Vec<TrackSpan>, AnalysisError> {
     let mut spans = Vec::new();
+    let mut seen_track_numbers = std::collections::HashSet::new();
+    let mut previous_track_number = None;
 
     for file in &sheet.files {
         let path = cue_dir.join(&file.filename);
@@ -64,6 +66,20 @@ pub fn cue_track_spans(sheet: &CueSheet, cue_dir: &Path) -> Result<Vec<TrackSpan
                 "CUE FILE \"{}\" has no tracks",
                 file.filename
             )));
+        }
+        for track in &file.tracks {
+            if !seen_track_numbers.insert(track.number) {
+                return Err(AnalysisError::invalid_format(format!(
+                    "CUE declares TRACK {:02} more than once",
+                    track.number
+                )));
+            }
+            if previous_track_number.is_some_and(|previous| track.number <= previous) {
+                return Err(AnalysisError::invalid_format(
+                    "CUE track numbers are not strictly increasing",
+                ));
+            }
+            previous_track_number = Some(track.number);
         }
 
         // INDEX times are frame counts from the start of the file, so byte
@@ -96,9 +112,9 @@ pub fn cue_track_spans(sheet: &CueSheet, cue_dir: &Path) -> Result<Vec<TrackSpan
         for (i, track) in file.tracks.iter().enumerate() {
             let start = starts[i];
             let end = starts.get(i + 1).copied().unwrap_or(file_size);
-            if start > end || end > file_size {
+            if start >= end || end > file_size {
                 return Err(AnalysisError::invalid_format(format!(
-                    "CUE TRACK {:02} spans bytes {start}..{end}, beyond \"{}\" ({file_size} bytes)",
+                    "CUE TRACK {:02} has invalid byte span {start}..{end} in \"{}\" ({file_size} bytes)",
                     track.number, file.filename
                 )));
             }

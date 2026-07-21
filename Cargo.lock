@@ -4400,6 +4400,7 @@ dependencies = [
  "log",
  "quick-xml 0.37.5",
  "reqwest",
+ "retro-junk-catalog",
  "retro-junk-core",
  "serde",
  "serde_json",

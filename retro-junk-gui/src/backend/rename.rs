@@ -55,6 +55,7 @@ struct M3uJob {
 pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
     let console = &app.browser.consoles[console_idx];
     let folder_name = console.folder_name.clone();
+    let rescan_target = crate::backend::scan::ConsoleScanTarget::durable(app, console_idx);
 
     let mut jobs: Vec<RenameJob> = Vec::new();
     let mut cue_jobs: Vec<CueSetJob> = Vec::new();
@@ -219,6 +220,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
         if !results.is_empty() {
             let _ = app.message_tx.send(AppMessage::RenameComplete {
                 folder_name,
+                rescan_target,
                 results,
             });
             ctx.request_repaint();
@@ -493,6 +495,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
             let _ = tx.send(AppMessage::RenameComplete {
                 folder_name,
+                rescan_target,
                 results,
             });
             let _ = tx.send(AppMessage::OperationComplete { op_id });
@@ -676,13 +679,14 @@ fn get_target_rom_name(
     }
 
     let conn = app.catalog_db.as_ref()?;
-    let platform_id = app
+    let platform = app
         .browser
         .consoles
         .iter()
         .find(|c| c.folder_name == folder_name)?
-        .platform
-        .short_name();
+        .platform;
+    let platform_id = platform.short_name();
+    let mut candidates = Vec::new();
     if let Some(hashes) = entry.hashes.as_ref()
         && let Ok(matches) = retro_junk_db::match_media_by_hash(
             conn,
@@ -691,16 +695,32 @@ fn get_target_rom_name(
             (!hashes.crc32.is_empty()).then_some(hashes.crc32.as_str()),
             hashes.sha1.as_deref(),
         )
-        && let Some(found) = matches.first()
     {
-        return Some(found.media.rom_name.clone());
+        candidates.extend(matches);
     }
     if let Some(id) = entry.identification.as_ref()
-        && let Ok(matches) =
-            retro_junk_db::match_media_by_serial(conn, platform_id, &id.serial_number)
-        && let Some(found) = matches.first()
+        && let Some(registered) = app.context.get_by_platform(platform)
+        && let Some(lookup_serial) =
+            retro_junk_lib::catalog_match::catalog_serial_key(registered.analyzer.as_ref(), id)
+        && let Ok(matches) = retro_junk_db::match_media_by_serial(conn, platform_id, &lookup_serial)
     {
-        return Some(found.media.rom_name.clone());
+        for candidate in matches {
+            if !candidates
+                .iter()
+                .any(|existing| existing.media.id == candidate.media.id)
+            {
+                candidates.push(candidate);
+            }
+        }
+    }
+    if let retro_junk_lib::catalog_match::CatalogMatchResolution::Match { candidate, .. } =
+        retro_junk_lib::catalog_match::resolve_catalog_match(
+            &candidates,
+            entry.identification.as_ref(),
+            entry.hashes.as_ref(),
+        )
+    {
+        return Some(candidate.media.rom_name.clone());
     }
 
     None

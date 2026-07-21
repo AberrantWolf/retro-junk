@@ -217,13 +217,13 @@ fn test_version_nonzero() {
 }
 
 #[test]
-fn test_version_zero_is_empty() {
+fn test_version_zero_identifies_original_release() {
     let disc = make_gc_disc(*b"GALE", *b"01", 0, "GAME");
     let analyzer = GameCubeAnalyzer;
     let id = analyzer
         .analyze(&mut Cursor::new(disc), &AnalysisOptions::default())
         .unwrap();
-    assert_eq!(id.version, "");
+    assert_eq!(id.version, "1.00");
 }
 
 #[test]

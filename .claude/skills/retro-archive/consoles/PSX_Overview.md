@@ -43,6 +43,7 @@
 ## ROM Format Reference
 - [PSX.md](../formats/PSX.md) — SYSTEM.CNF format, serial extraction, and detection method.
 - [CHD.md](../formats/CHD.md) — CHD compressed disc format used for PlayStation disc images.
+- [Redump.md](../formats/Redump.md) — per-track checksums and complete-disc verification rules.
 
 ## Digital Storage Considerations
 - **Space Requirements**: Moderate to high

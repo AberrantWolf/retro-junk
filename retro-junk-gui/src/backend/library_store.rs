@@ -50,10 +50,29 @@ pub enum LibraryStoreRequest {
         entry_id: LibraryEntryId,
         value: Option<String>,
     },
+    CreateHomebrewAndTag {
+        entry_id: LibraryEntryId,
+        name: String,
+        platform_id: String,
+        region: String,
+    },
+    CreateModdedAndTag {
+        entry_id: LibraryEntryId,
+        work_id: String,
+        platform_id: String,
+        region: String,
+        hashes: Option<retro_junk_db::MediaHashes>,
+    },
     ApplyAnalysis {
         entry_id: LibraryEntryId,
         expected_source_revision: u64,
         update: EntryAnalysisUpdate,
+    },
+    ApplyAnalysisBatch(Vec<retro_junk_db::EntryAnalysisCommand>),
+    ApplyHashUpdate {
+        entry_id: LibraryEntryId,
+        expected_source_revision: u64,
+        update: retro_junk_db::EntryHashUpdate,
     },
     ApplyFilesystemTransition {
         console_id: LibraryConsoleId,
@@ -95,31 +114,46 @@ pub enum LibraryStoreValue {
 pub type LibraryStoreReply = StoreEnvelope<Result<LibraryStoreValue, String>>;
 
 pub struct LibraryStore {
-    request_tx: mpsc::Sender<StoreEnvelope<LibraryStoreRequest>>,
+    write_tx: mpsc::SyncSender<StoreEnvelope<LibraryStoreRequest>>,
+    read_tx: mpsc::SyncSender<StoreEnvelope<LibraryStoreRequest>>,
     reply_rx: mpsc::Receiver<LibraryStoreReply>,
-    thread: Option<thread::JoinHandle<()>>,
+    threads: Vec<thread::JoinHandle<()>>,
 }
 
 impl LibraryStore {
     pub fn start(path: PathBuf) -> Result<Self, String> {
-        let (request_tx, request_rx) = mpsc::channel();
+        // Bound queued database work so rapid filtering/navigation cannot grow
+        // memory without limit behind a long reconciliation transaction.
+        let (write_tx, write_rx) = mpsc::sync_channel(256);
+        let (read_tx, read_rx) = mpsc::sync_channel(256);
         let (reply_tx, reply_rx) = mpsc::channel();
-        let thread = thread::Builder::new()
-            .name("library-store".into())
-            .spawn(move || worker_main(path, request_rx, reply_tx))
+        let write_path = path.clone();
+        let write_replies = reply_tx.clone();
+        let writer = thread::Builder::new()
+            .name("library-store-writer".into())
+            .spawn(move || worker_main(write_path, write_rx, write_replies))
+            .map_err(|e| e.to_string())?;
+        let reader = thread::Builder::new()
+            .name("library-store-reader".into())
+            .spawn(move || worker_main(path, read_rx, reply_tx))
             .map_err(|e| e.to_string())?;
         Ok(Self {
-            request_tx,
+            write_tx,
+            read_tx,
             reply_rx,
-            thread: Some(thread),
+            threads: vec![writer, reader],
         })
     }
 
     pub fn submit(
         &self,
         envelope: StoreEnvelope<LibraryStoreRequest>,
-    ) -> Result<(), mpsc::SendError<StoreEnvelope<LibraryStoreRequest>>> {
-        self.request_tx.send(envelope)
+    ) -> Result<(), mpsc::TrySendError<StoreEnvelope<LibraryStoreRequest>>> {
+        if is_read_request(&envelope.payload) {
+            self.read_tx.try_send(envelope)
+        } else {
+            self.write_tx.try_send(envelope)
+        }
     }
 
     pub fn try_recv(&self) -> Result<LibraryStoreReply, mpsc::TryRecvError> {
@@ -136,18 +170,34 @@ impl LibraryStore {
     /// FIFO channels guarantee that all commands submitted before shutdown
     /// finish before the worker acknowledges shutdown.
     pub fn shutdown_and_join(&mut self, generation: UiSessionGeneration) {
-        if self.thread.is_none() {
+        if self.threads.is_empty() {
             return;
         }
-        let _ = self.submit(StoreEnvelope {
+        let _ = self.write_tx.send(StoreEnvelope {
             session_generation: generation,
             request_id: u64::MAX,
             payload: LibraryStoreRequest::Shutdown,
         });
-        if let Some(handle) = self.thread.take() {
+        let _ = self.read_tx.send(StoreEnvelope {
+            session_generation: generation,
+            request_id: u64::MAX - 1,
+            payload: LibraryStoreRequest::Shutdown,
+        });
+        for handle in self.threads.drain(..) {
             let _ = handle.join();
         }
     }
+}
+
+fn is_read_request(request: &LibraryStoreRequest) -> bool {
+    matches!(
+        request,
+        LibraryStoreRequest::ConsoleSummaries(_)
+            | LibraryStoreRequest::EntryList(_)
+            | LibraryStoreRequest::EntryDetail(_)
+            | LibraryStoreRequest::EntryDetails(_)
+            | LibraryStoreRequest::ConsoleEntryDetails(_)
+    )
 }
 
 impl Drop for LibraryStore {
@@ -235,11 +285,9 @@ fn execute(
         R::EntryDetail(id) => {
             LibraryStoreValue::EntryDetail(retro_junk_db::load_entry_detail(conn, id)?)
         }
-        R::EntryDetails(ids) => LibraryStoreValue::EntryDetails(
-            ids.into_iter()
-                .filter_map(|id| retro_junk_db::load_entry_detail(conn, id).transpose())
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
+        R::EntryDetails(ids) => {
+            LibraryStoreValue::EntryDetails(retro_junk_db::load_entry_details(conn, &ids)?)
+        }
         R::ConsoleEntryDetails(console_id) => LibraryStoreValue::EntryDetails(
             retro_junk_db::load_entry_details_for_console(conn, console_id)?,
         ),
@@ -249,11 +297,50 @@ fn execute(
         R::SetTag { entry_id, value } => LibraryStoreValue::ChangeSet(
             retro_junk_db::set_entry_tag(conn, entry_id, value.as_deref())?,
         ),
+        R::CreateHomebrewAndTag {
+            entry_id,
+            name,
+            platform_id,
+            region,
+        } => LibraryStoreValue::ChangeSet(retro_junk_db::create_homebrew_and_tag_entry(
+            conn,
+            entry_id,
+            &name,
+            &platform_id,
+            &region,
+        )?),
+        R::CreateModdedAndTag {
+            entry_id,
+            work_id,
+            platform_id,
+            region,
+            hashes,
+        } => LibraryStoreValue::ChangeSet(retro_junk_db::create_modded_and_tag_entry(
+            conn,
+            entry_id,
+            &work_id,
+            &platform_id,
+            &region,
+            hashes.as_ref(),
+        )?),
         R::ApplyAnalysis {
             entry_id,
             expected_source_revision,
             update,
         } => LibraryStoreValue::ChangeSet(retro_junk_db::apply_entry_analysis(
+            conn,
+            entry_id,
+            expected_source_revision,
+            &update,
+        )?),
+        R::ApplyAnalysisBatch(commands) => LibraryStoreValue::ChangeSet(
+            retro_junk_db::apply_entry_analysis_batch(conn, &commands)?,
+        ),
+        R::ApplyHashUpdate {
+            entry_id,
+            expected_source_revision,
+            update,
+        } => LibraryStoreValue::ChangeSet(retro_junk_db::apply_entry_hash_update(
             conn,
             entry_id,
             expected_source_revision,
@@ -477,6 +564,8 @@ mod tests {
                 sha1: String::new(),
                 md5: String::new(),
                 data_size: 0,
+                hash_warnings_json: None,
+                disc_verification: "not_applicable".into(),
                 dat_game_name: String::new(),
                 dat_rom_name: String::new(),
                 dat_match_method: String::new(),
@@ -586,7 +675,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_serializes_requests_and_joins_after_shutdown() {
+    fn store_reads_and_joins_both_workers_after_shutdown() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("catalog.db");
         let conn = retro_junk_db::open_database(&path).unwrap();
@@ -611,7 +700,7 @@ mod tests {
             Ok(LibraryStoreValue::ConsoleSummaries(ref rows)) if rows.is_empty()
         ));
         store.shutdown_and_join(8);
-        assert!(store.thread.is_none());
+        assert!(store.threads.is_empty());
     }
 
     #[test]

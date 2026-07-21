@@ -63,6 +63,29 @@ pub fn entries() -> Vec<LogEntry> {
         .unwrap_or_default()
 }
 
+/// Clone only rows that can actually be rendered for the active filter.
+pub fn entries_filtered(level: log::LevelFilter) -> Vec<LogEntry> {
+    INSTANCE
+        .get()
+        .and_then(|capture| capture.entries.lock().ok())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter(|entry| entry.level <= level)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn clear() {
+    if let Some(capture) = INSTANCE.get()
+        && let Ok(mut entries) = capture.entries.lock()
+    {
+        entries.clear();
+    }
+}
+
 /// Return the most recent log entry, if any.
 pub fn latest() -> Option<LogEntry> {
     INSTANCE

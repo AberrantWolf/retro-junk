@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
@@ -77,21 +77,30 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     // Status summary
     let total = page.counts.total;
     let matched = page.counts.matched;
+    let likely = page.counts.likely;
     let ambiguous = page.counts.ambiguous;
     let unrecognized = page.counts.unrecognized;
     let tagged = page.counts.tagged;
     let showing = page.rows.len();
+
+    // Rich rows are sparse (focus/selection only). Index them once so a large
+    // selected page does not turn projection building into O(page × details).
+    let entry_lookup: HashMap<_, _> = console
+        .entries
+        .iter()
+        .filter_map(|entry| entry.id.map(|id| (id, entry)))
+        .collect();
 
     // Pre-extract row data to avoid borrowing issues
     let row_data: Vec<RowData> = page
         .rows
         .iter()
         .map(|projection| {
-            let entry = console.entry_by_id(projection.id);
+            let entry = entry_lookup.get(&projection.id).copied();
             RowData {
                 entry_id: projection.id,
                 status: projection_status(&projection.status, &projection.tag),
-                has_broken_refs: entry.is_some_and(crate::state::LibraryEntry::has_broken_refs),
+                has_broken_refs: projection.has_broken_references,
                 has_hash_warnings: entry
                     .and_then(|entry| entry.hashes.as_ref())
                     .as_ref()
@@ -103,8 +112,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                                 .iter()
                                 .any(|d| d.hashes.as_ref().is_some_and(|h| !h.warnings.is_empty()))
                         }),
-                has_cue_compat_issues: entry
-                    .is_some_and(crate::state::LibraryEntry::has_cue_compat_issues),
+                has_cue_compat_issues: projection.has_cue_compat_issues,
                 asset_status: entry.map_or(
                     AssetStatus::Unknown,
                     crate::state::LibraryEntry::asset_status,
@@ -135,18 +143,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 crc32: entry
                     .and_then(|entry| entry.hashes.as_ref())
                     .map(|h| h.crc32.clone())
-                    .unwrap_or_default(),
+                    .unwrap_or_else(|| projection.crc32.clone()),
                 dat_match: entry
                     .and_then(|entry| entry.dat_match.as_ref())
                     .map(|dm| dm.game_name.clone())
-                    .unwrap_or_default(),
+                    .unwrap_or_else(|| projection.dat_game_name.clone()),
             }
         })
         .collect();
 
     ui.horizontal(|ui| {
         let mut summary = format!(
-            "{total} entries | {matched} matched | {ambiguous} ambiguous | {unrecognized} unrecognized"
+            "{total} entries | {matched} verified | {likely} likely | {ambiguous} ambiguous | {unrecognized} unrecognized"
         );
         if tagged > 0 {
             let _ = write!(summary, " | {tagged} tagged");
@@ -294,6 +302,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                                 app.ui_state.selected_entries.insert(data.entry_id);
                             }
                             app.ui_state.focused_entry = Some(data.entry_id);
+                            app.request_entry_detail(data.entry_id, ctx);
                         }
 
                         // Left-click
@@ -302,6 +311,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             let visible_ids: Vec<_> =
                                 row_data.iter().map(|row| row.entry_id).collect();
                             handle_row_click(app, data.entry_id, modifiers, &visible_ids);
+                            app.request_entry_detail(data.entry_id, ctx);
                             app.ui_state.focused_panel = FocusedPanel::GameTable;
                         }
 
@@ -315,6 +325,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     // Clear scroll-to-row after rendering
     app.ui_state.scroll_to_row = None;
+    app.request_selected_entry_details(ctx);
 }
 
 /// Render the context menu for a game table row.
@@ -325,6 +336,11 @@ fn show_row_context_menu(
     console_idx: usize,
     data: &RowData,
 ) {
+    if !app.selected_entry_details_loaded() {
+        ui.spinner();
+        ui.label("Loading the complete selection…");
+        return;
+    }
     let Some(file_path) = data.file_path.as_ref() else {
         ui.label("Loading entry details…");
         return;
@@ -633,6 +649,7 @@ fn projection_status(status: &str, tag: &str) -> EntryStatus {
         "modded" => EntryStatus::Tagged(retro_junk_catalog::CatalogTag::Modded),
         _ => match status {
             "matched" => EntryStatus::Matched,
+            "likely" => EntryStatus::LikelyMatched,
             "ambiguous" => EntryStatus::Ambiguous,
             "unrecognized" => EntryStatus::Unrecognized,
             _ => EntryStatus::Unknown,
@@ -775,5 +792,6 @@ mod tests {
             EntryStatus::Tagged(CatalogTag::Modded)
         );
         assert_eq!(projection_status("ambiguous", ""), EntryStatus::Ambiguous);
+        assert_eq!(projection_status("likely", ""), EntryStatus::LikelyMatched);
     }
 }

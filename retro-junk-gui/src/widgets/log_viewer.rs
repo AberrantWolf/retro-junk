@@ -74,29 +74,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut LogViewerState) {
                 ui.toggle_value(&mut state.auto_scroll, "Auto-scroll");
 
                 if ui.small_button("Clear").clicked() {
-                    // Clear is best-effort — we just filter client-side
-                    // since the ring buffer is shared. Not worth the complexity
-                    // of a clear mechanism for a debug tool.
+                    log_capture::clear();
                 }
             });
 
             ui.separator();
 
             // Log entries
-            let entries = log_capture::entries();
-            let filtered: Vec<_> = entries
-                .iter()
-                .filter(|e| e.level <= state.level_filter)
-                .collect();
+            let entries = log_capture::entries_filtered(state.level_filter);
 
             let row_height = ui.text_style_height(&egui::TextStyle::Small) + 2.0;
-            let num_rows = filtered.len();
+            let num_rows = entries.len();
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .stick_to_bottom(state.auto_scroll)
                 .show_rows(ui, row_height, num_rows, |ui, row_range| {
-                    for &entry in &filtered[row_range] {
+                    for entry in &entries[row_range] {
                         ui.horizontal(|ui| {
                             // Timestamp
                             let time = entry.timestamp.format("%H:%M:%S%.3f").to_string();

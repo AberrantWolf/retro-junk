@@ -146,35 +146,11 @@ impl ConsoleState {
             .and_then(|index| self.entries.get_mut(index))
     }
 
-    /// Name lookup for entries in a not-yet-committed scan snapshot.
-    pub fn find_entry_mut(&mut self, name: &str) -> Option<&mut LibraryEntry> {
-        self.entries
-            .iter_mut()
-            .find(|e| e.game_entry.display_name() == name)
-    }
-
-    pub fn analysis_entry_mut(
-        &mut self,
-        id: Option<retro_junk_db::LibraryEntryId>,
-        scan_name: &str,
-    ) -> Option<&mut LibraryEntry> {
-        match id {
-            Some(id) => self.entry_by_id_mut(id),
-            None => self.find_entry_mut(scan_name),
-        }
-    }
-
-    /// Look up an entry by one of its constituent files.
-    ///
-    /// Unlike [`Self::find_entry_mut`] (keyed on the display name, which can
-    /// go stale across a rename or CHD compression within the same batch),
-    /// this matches by path — the entry still holds its pre-compression path
-    /// even after the file is deleted, so matching a job's `input` against
-    /// `all_files()` is exact and rename-proof for the batch that just ran.
+    #[cfg(test)]
     pub fn find_entry_by_file_mut(&mut self, file: &Path) -> Option<&mut LibraryEntry> {
         self.entries
             .iter_mut()
-            .find(|e| e.game_entry.all_files().iter().any(|f| f == file))
+            .find(|entry| entry.game_entry.all_files().iter().any(|path| path == file))
     }
 }
 
@@ -283,6 +259,40 @@ pub struct DiscIdentification {
     pub hashes: Option<FileHashes>,
     #[serde(default)]
     pub dat_match: Option<DatMatchInfo>,
+    #[serde(default)]
+    pub ambiguous_candidates: Vec<String>,
+    /// Whether a disc container was verified as a complete DAT track set.
+    #[serde(default)]
+    pub disc_verification: DiscVerification,
+}
+
+/// One successfully completed file/disc checksum from a batched entry job.
+#[derive(Clone)]
+pub struct EntryHashResult {
+    pub disc_path: Option<PathBuf>,
+    pub hashes: FileHashes,
+    pub catalog_matches: Vec<retro_junk_db::CatalogMediaMatch>,
+    pub disc_verification: DiscVerification,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiscVerification {
+    /// Ordinary flat-file hashing, or legacy data created before disc-set
+    /// verification existed.
+    #[default]
+    NotApplicable,
+    /// Every logical track matched one catalog media entry.
+    Complete,
+    /// The disc was identified, but one or more tracks were absent or wrong.
+    Incomplete,
+    /// The descriptor did not define a safe, coherent logical track layout.
+    InvalidLayout,
+}
+
+impl DiscVerification {
+    fn permits_verified_status(self) -> bool {
+        matches!(self, Self::NotApplicable | Self::Complete)
+    }
 }
 
 #[derive(Clone)]
@@ -294,6 +304,9 @@ pub struct LibraryEntry {
     pub game_entry: GameEntry,
     pub identification: Option<RomIdentification>,
     pub hashes: Option<FileHashes>,
+    /// Complete-disc verification for a standalone disc container. Multi-disc
+    /// entries store this on each [`DiscIdentification`].
+    pub disc_verification: DiscVerification,
     pub dat_match: Option<DatMatchInfo>,
     pub status: EntryStatus,
     /// When status is Ambiguous, holds the candidate game names from the DAT.
@@ -374,12 +387,6 @@ impl LibraryEntry {
     }
 
     /// Whether this entry has broken CUE/M3U file references.
-    pub fn has_broken_refs(&self) -> bool {
-        self.broken_references
-            .as_ref()
-            .is_some_and(|refs| !refs.is_empty())
-    }
-
     /// Whether this entry has a generated miximage on disk.
     pub fn has_miximage(&self) -> bool {
         self.asset_paths
@@ -425,7 +432,10 @@ pub enum EntryStatus {
     Unrecognized,
     /// Serial found but no DAT confirmation (or ambiguous)
     Ambiguous,
-    /// DAT-matched (hash or serial confirmed)
+    /// A unique DAT entry was identified, but it is not completely verified
+    /// (for example, serial-only or a disc with missing/mismatched tracks).
+    LikelyMatched,
+    /// Definitively matched to a DAT fingerprint by hash.
     Matched,
     /// User-tagged as homebrew or modded
     Tagged(CatalogTag),
@@ -437,6 +447,7 @@ impl EntryStatus {
             EntryStatus::Unknown => egui::Color32::GRAY,
             EntryStatus::Unrecognized => crate::theme::STATUS_ERR,
             EntryStatus::Ambiguous => crate::theme::STATUS_WARN,
+            EntryStatus::LikelyMatched => crate::theme::STATUS_INFO,
             EntryStatus::Matched => crate::theme::STATUS_OK,
             EntryStatus::Tagged(_) => egui::Color32::from_rgb(100, 150, 220),
         }
@@ -448,6 +459,9 @@ impl EntryStatus {
             EntryStatus::Unknown => "Not yet analyzed",
             EntryStatus::Unrecognized => "Not recognized \u{2013} no serial or hash match found",
             EntryStatus::Ambiguous => "Possible match \u{2013} hash verification needed to confirm",
+            EntryStatus::LikelyMatched => {
+                "Likely match \u{2013} identity is known, but the complete content is not hash-verified"
+            }
             EntryStatus::Matched => "Verified match in database",
             EntryStatus::Tagged(CatalogTag::Homebrew) => "Homebrew game",
             EntryStatus::Tagged(CatalogTag::Modded) => "Modded ROM",
@@ -602,6 +616,8 @@ pub enum ChdCompressOutcome {
 /// further overlap-guards as needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationKind {
+    /// Work whose result exists only to populate the current UI projection.
+    UiFetch,
     Scan,
     Hash,
     Rename,
@@ -705,6 +721,49 @@ pub fn next_operation_id() -> u64 {
     NEXT_OP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// A background-to-UI message stamped with the root session that created it.
+/// Old workers retain their original sender when the user switches roots, so
+/// their late results can be rejected without relying on folder-name matches.
+pub struct AppMessageEnvelope {
+    pub session_generation: crate::backend::library_store::UiSessionGeneration,
+    pub payload: AppMessage,
+}
+
+#[derive(Clone)]
+pub struct AppMessageSender {
+    sender: std::sync::mpsc::Sender<AppMessageEnvelope>,
+    session_generation: crate::backend::library_store::UiSessionGeneration,
+}
+
+impl AppMessageSender {
+    pub fn new(sender: std::sync::mpsc::Sender<AppMessageEnvelope>) -> Self {
+        Self {
+            sender,
+            session_generation: 0,
+        }
+    }
+
+    pub fn for_generation(
+        &self,
+        session_generation: crate::backend::library_store::UiSessionGeneration,
+    ) -> Self {
+        Self {
+            sender: self.sender.clone(),
+            session_generation,
+        }
+    }
+
+    pub fn send(
+        &self,
+        payload: AppMessage,
+    ) -> Result<(), std::sync::mpsc::SendError<AppMessageEnvelope>> {
+        self.sender.send(AppMessageEnvelope {
+            session_generation: self.session_generation,
+            payload,
+        })
+    }
+}
+
 /// Messages sent from background threads to the UI thread.
 ///
 /// All messages use `folder_name: String` (not `Platform`) to identify which
@@ -727,46 +786,19 @@ pub enum AppMessage {
     FolderScanComplete,
 
     // -- Quick scan --
-    ConsoleScanComplete {
+    ScanProjectionInfo {
         folder_name: String,
-        entries: Vec<GameEntry>,
         loose_disc_files: Vec<PathBuf>,
-    },
-    EntryAnalyzed {
-        folder_name: String,
-        entry_id: Option<retro_junk_db::LibraryEntryId>,
-        entry_name: String,
-        result: Result<RomIdentification, AnalysisError>,
-        catalog_matches: Vec<retro_junk_db::CatalogMediaMatch>,
-    },
-    MultiDiscAnalyzed {
-        folder_name: String,
-        entry_id: Option<retro_junk_db::LibraryEntryId>,
-        entry_name: String,
-        disc_results: Vec<(PathBuf, Result<RomIdentification, AnalysisError>)>,
-        catalog_matches: Vec<Vec<retro_junk_db::CatalogMediaMatch>>,
-    },
-    BrokenRefsChecked {
-        folder_name: String,
-        entry_id: Option<retro_junk_db::LibraryEntryId>,
-        entry_name: String,
-        broken_refs: Vec<BrokenReference>,
-    },
-    CueCompatChecked {
-        folder_name: String,
-        entry_id: Option<retro_junk_db::LibraryEntryId>,
-        entry_name: String,
-        issues: Vec<CueCompatIssue>,
-    },
-    EntryDiagnosticsChecked {
-        folder_name: String,
-        entry_id: retro_junk_db::LibraryEntryId,
-        broken_refs: Vec<BrokenReference>,
-        issues: Vec<CueCompatIssue>,
-    },
-    ConsoleScanDone {
-        folder_name: String,
         fingerprint: crate::fingerprint::FolderFingerprint,
+    },
+    EntryAnalysisSnapshotsComplete {
+        folder_name: String,
+        entries: Vec<LibraryEntry>,
+    },
+    ConsoleScanFailed {
+        folder_name: String,
+        /// None means user cancellation; a concrete error is surfaced.
+        error: Option<String>,
     },
     ScanSnapshotPrepared {
         folder_name: String,
@@ -776,18 +808,12 @@ pub enum AppMessage {
 
     // -- DAT --
     // -- Hashing --
-    HashComplete {
+    EntryHashBatchComplete {
         folder_name: String,
-        entry_id: retro_junk_db::LibraryEntryId,
-        hashes: FileHashes,
-        catalog_matches: Vec<retro_junk_db::CatalogMediaMatch>,
-    },
-    DiscHashComplete {
-        folder_name: String,
-        entry_id: retro_junk_db::LibraryEntryId,
-        disc_path: PathBuf,
-        hashes: FileHashes,
-        catalog_matches: Vec<retro_junk_db::CatalogMediaMatch>,
+        /// Stable start-of-job state used for the durable write even when its
+        /// console has since been evicted from the visible projection.
+        entry: Box<LibraryEntry>,
+        results: Vec<EntryHashResult>,
     },
     HashFailed {
         folder_name: String,
@@ -812,6 +838,10 @@ pub enum AppMessage {
         message: String,
         op_id: u64,
     },
+    ModSearchResults {
+        query: String,
+        result: Result<Vec<retro_junk_db::WorkRow>, String>,
+    },
 
     // -- Library discovery --
     StartFolderScan,
@@ -825,6 +855,7 @@ pub enum AppMessage {
     // -- Rename --
     RenameComplete {
         folder_name: String,
+        rescan_target: Option<crate::backend::scan::ConsoleScanTarget>,
         results: Vec<RenameResult>,
     },
 
@@ -835,6 +866,7 @@ pub enum AppMessage {
     },
     OrganizeComplete {
         folder_name: String,
+        rescan_target: Option<crate::backend::scan::ConsoleScanTarget>,
         jobs_executed: usize,
         files_moved: usize,
         unmatched: usize,
@@ -844,6 +876,7 @@ pub enum AppMessage {
     // -- CUE fix --
     CueFixComplete {
         folder_name: String,
+        rescan_target: Option<crate::backend::scan::ConsoleScanTarget>,
         results: Vec<CueFixResult>,
     },
 
@@ -856,6 +889,7 @@ pub enum AppMessage {
     },
     ChdCompressComplete {
         folder_name: String,
+        rescan_target: Option<crate::backend::scan::ConsoleScanTarget>,
         results: Vec<ChdCompressResult>,
     },
 
@@ -878,6 +912,13 @@ pub enum AppMessage {
         current: u64,
         total: u64,
     },
+    OperationPhase {
+        op_id: u64,
+        description: String,
+        display: ProgressDisplay,
+        current: u64,
+        total: u64,
+    },
     OperationComplete {
         op_id: u64,
     },
@@ -892,6 +933,31 @@ pub enum AppMessage {
         dat: Vec<retro_junk_dat::cache::CacheEntry>,
         gdb: Vec<retro_junk_dat::gdb_cache::GdbCacheEntry>,
     },
+}
+
+impl AppMessage {
+    /// Messages that refer to the active filesystem/library projection. These
+    /// must never cross a root-session boundary. Process-global catalog and
+    /// settings work, plus operation lifecycle bookkeeping, remains valid.
+    pub fn is_root_scoped(&self) -> bool {
+        !matches!(
+            self,
+            Self::StartupReady { .. }
+                | Self::ChdmanProbeResult { .. }
+                | Self::OperationProgress { .. }
+                | Self::OperationPhase { .. }
+                | Self::OperationComplete { .. }
+                | Self::CatalogDataChanged
+                | Self::CacheListsLoaded { .. }
+                | Self::ScanSnapshotPrepared { .. }
+                | Self::EntryAnalysisSnapshotsComplete { .. }
+                | Self::EntryHashBatchComplete { .. }
+                | Self::RenameComplete { .. }
+                | Self::OrganizeComplete { .. }
+                | Self::CueFixComplete { .. }
+                | Self::ChdCompressComplete { .. }
+        )
+    }
 }
 
 // -- Helpers --
@@ -949,35 +1015,33 @@ fn start_next_auto_scan(app: &mut crate::app::RetroJunkApp, ctx: &egui::Context)
     }
 }
 
-/// Re-check broken references and CUE compat for invalidated entries in a console.
-///
-/// Collects entries whose `broken_references` is `None` (i.e., were just
-/// invalidated) and spawns `check_broken_refs_background` to re-scan them.
-fn recheck_invalidated_entries(
-    app: &crate::app::RetroJunkApp,
-    console_idx: usize,
+pub fn finish_auto_scan(
+    app: &mut crate::app::RetroJunkApp,
     folder_name: &str,
+    succeeded: bool,
     ctx: &egui::Context,
 ) {
-    let unchecked: Vec<_> = app.browser.consoles[console_idx]
-        .entries
-        .iter()
-        .filter(|e| e.broken_references.is_none())
-        .filter_map(|e| Some((folder_name.to_string(), e.id?, e.game_entry.clone())))
-        .collect();
-    if !unchecked.is_empty() {
-        crate::backend::scan::check_broken_refs_background(
-            app.message_tx.clone(),
-            unchecked,
-            ctx.clone(),
-        );
+    if app.ui_state.auto_scan_in_flight.as_deref() != Some(folder_name) {
+        return;
     }
+    app.ui_state.auto_scan_in_flight = None;
+    if succeeded
+        && let Some(op_id) = app.ui_state.auto_scan_op_id
+        && let Some(operation) = app
+            .operations
+            .iter_mut()
+            .find(|operation| operation.id == op_id)
+    {
+        operation.progress_current = (operation.progress_current + 1).min(operation.progress_total);
+    }
+    start_next_auto_scan(app, ctx);
 }
 
 /// Re-enumerate a `MultiDisc` entry's folder after its files changed on disk
 /// (rename, CHD compression): refreshes the entry's `files` list and remaps
 /// `disc_identifications` paths to the new files (matching by filename stem,
 /// then by extension). No-op for single-file entries.
+#[cfg(test)]
 fn refresh_multidisc_files(
     entry: &mut LibraryEntry,
     folder: &std::path::Path,
@@ -1031,72 +1095,383 @@ fn refresh_multidisc_files(
 /// Check whether detected regions match the DAT entry's region string.
 /// Returns `true` if any detected region name appears in the DAT region string.
 fn regions_match_dat(detected: &[Region], dat_region: &str) -> bool {
-    if detected.is_empty() {
-        return true; // No detected regions — can't flag a mismatch
-    }
-    detected.iter().any(|r| {
-        let name = r.name();
-        dat_region.contains(name) || name.contains(dat_region)
-    })
+    retro_junk_lib::catalog_match::regions_match_catalog(detected, dat_region)
 }
 
-fn select_catalog_hash_match<'a>(
-    matches: &'a [retro_junk_db::CatalogMediaMatch],
-    _hashes: &FileHashes,
-    detected_regions: &[Region],
-) -> Option<&'a retro_junk_db::CatalogMediaMatch> {
-    matches
-        .iter()
-        .find(|m| regions_match_dat(detected_regions, &m.region))
-        .or_else(|| matches.first())
+enum CatalogUiResolution {
+    Match {
+        info: DatMatchInfo,
+        cover_title: String,
+        screen_title: String,
+    },
+    Ambiguous(Vec<String>),
+    NotFound,
 }
 
-fn catalog_match_info(
-    selected: &retro_junk_db::CatalogMediaMatch,
-    hashes: &FileHashes,
-    detected_regions: &[Region],
-) -> DatMatchInfo {
-    let crc_match = !hashes.crc32.is_empty()
-        && u64::try_from(selected.media.file_size).ok() == Some(hashes.data_size)
-        && selected.media.crc32.eq_ignore_ascii_case(&hashes.crc32);
-    DatMatchInfo {
-        game_name: selected.media.dat_name.clone(),
-        rom_name: selected.media.rom_name.clone(),
-        method: if crc_match {
-            MatchMethod::Crc32
-        } else {
-            MatchMethod::Sha1
-        },
-        region: selected.region.clone(),
-        cross_region: !selected.region.is_empty()
-            && !regions_match_dat(detected_regions, &selected.region),
-    }
-}
-
-fn catalog_serial_match_candidates(
+fn resolve_catalog_candidates(
     matches: &[retro_junk_db::CatalogMediaMatch],
-    detected_regions: &[Region],
-) -> Result<DatMatchInfo, Vec<String>> {
-    if matches.is_empty() {
-        return Err(Vec::new());
+    identification: Option<&RomIdentification>,
+    hashes: Option<&FileHashes>,
+    disc_verification: DiscVerification,
+) -> CatalogUiResolution {
+    let resolution =
+        retro_junk_lib::catalog_match::resolve_catalog_match(matches, identification, hashes);
+    match resolution {
+        retro_junk_lib::catalog_match::CatalogMatchResolution::Match {
+            candidate,
+            mut method,
+        } => {
+            if disc_verification == DiscVerification::Complete
+                && matches!(method, MatchMethod::Serial)
+            {
+                // Complete per-track verification is definitive even when the
+                // catalog's representative media hash is not the data track.
+                method = MatchMethod::Crc32;
+            }
+            let detected_regions = identification.map_or(&[][..], |id| id.regions.as_slice());
+            CatalogUiResolution::Match {
+                info: DatMatchInfo {
+                    game_name: candidate.media.dat_name.clone(),
+                    rom_name: candidate.media.rom_name.clone(),
+                    method,
+                    region: candidate.region.clone(),
+                    cross_region: !candidate.region.is_empty()
+                        && !regions_match_dat(detected_regions, &candidate.region),
+                },
+                cover_title: candidate.cover_title.clone(),
+                screen_title: candidate.screen_title.clone(),
+            }
+        }
+        retro_junk_lib::catalog_match::CatalogMatchResolution::Ambiguous { candidates } => {
+            CatalogUiResolution::Ambiguous(candidates)
+        }
+        retro_junk_lib::catalog_match::CatalogMatchResolution::NotFound
+            if disc_verification == DiscVerification::Complete && matches.len() == 1 =>
+        {
+            let candidate = &matches[0];
+            let detected_regions = identification.map_or(&[][..], |id| id.regions.as_slice());
+            CatalogUiResolution::Match {
+                info: DatMatchInfo {
+                    game_name: candidate.media.dat_name.clone(),
+                    rom_name: candidate.media.rom_name.clone(),
+                    method: MatchMethod::Crc32,
+                    region: candidate.region.clone(),
+                    cross_region: !candidate.region.is_empty()
+                        && !regions_match_dat(detected_regions, &candidate.region),
+                },
+                cover_title: candidate.cover_title.clone(),
+                screen_title: candidate.screen_title.clone(),
+            }
+        }
+        retro_junk_lib::catalog_match::CatalogMatchResolution::NotFound => {
+            CatalogUiResolution::NotFound
+        }
     }
-    let distinct: std::collections::HashSet<_> =
-        matches.iter().map(|m| m.media.dat_name.as_str()).collect();
-    if distinct.len() > 1 {
-        return Err(distinct.into_iter().map(str::to_string).collect());
+}
+
+fn apply_catalog_resolution(
+    entry: &mut LibraryEntry,
+    matches: &[retro_junk_db::CatalogMediaMatch],
+) {
+    match resolve_catalog_candidates(
+        matches,
+        entry.identification.as_ref(),
+        entry.hashes.as_ref(),
+        entry.disc_verification,
+    ) {
+        CatalogUiResolution::Match {
+            info,
+            cover_title,
+            screen_title,
+        } => {
+            entry.status = match info.method {
+                MatchMethod::Serial => EntryStatus::LikelyMatched,
+                MatchMethod::Crc32 | MatchMethod::Sha1
+                    if entry.disc_verification.permits_verified_status() =>
+                {
+                    EntryStatus::Matched
+                }
+                MatchMethod::Crc32 | MatchMethod::Sha1 => EntryStatus::LikelyMatched,
+            };
+            entry.dat_match = Some(info);
+            entry.ambiguous_candidates.clear();
+            if !cover_title.is_empty() {
+                entry.cover_title = cover_title;
+            }
+            if !screen_title.is_empty() {
+                entry.screen_title = screen_title;
+            }
+        }
+        CatalogUiResolution::Ambiguous(candidates) => {
+            entry.status = EntryStatus::Ambiguous;
+            entry.dat_match = None;
+            entry.ambiguous_candidates = candidates;
+        }
+        CatalogUiResolution::NotFound => {
+            entry.status = if entry.identification.is_some() {
+                EntryStatus::Unrecognized
+            } else {
+                EntryStatus::Unknown
+            };
+            entry.dat_match = None;
+            entry.ambiguous_candidates.clear();
+        }
     }
-    let selected = matches
+}
+
+fn apply_multi_disc_resolution(entry: &mut LibraryEntry) {
+    let Some(discs) = entry.disc_identifications.as_ref() else {
+        return;
+    };
+    let mut ambiguous_candidates: Vec<String> = discs
         .iter()
-        .find(|m| regions_match_dat(detected_regions, &m.region))
-        .unwrap_or(&matches[0]);
-    Ok(DatMatchInfo {
-        game_name: selected.media.dat_name.clone(),
-        rom_name: selected.media.rom_name.clone(),
-        method: MatchMethod::Serial,
-        region: selected.region.clone(),
-        cross_region: !selected.region.is_empty()
-            && !regions_match_dat(detected_regions, &selected.region),
-    })
+        .flat_map(|disc| disc.ambiguous_candidates.iter().cloned())
+        .collect();
+    ambiguous_candidates.sort();
+    ambiguous_candidates.dedup();
+
+    let matched: Vec<_> = discs
+        .iter()
+        .filter_map(|disc| disc.dat_match.as_ref())
+        .collect();
+    if matched.is_empty() {
+        entry.dat_match = retro_junk_core::disc::candidates_are_same_game(&ambiguous_candidates)
+            .map(|game_name| DatMatchInfo {
+                game_name,
+                rom_name: String::new(),
+                method: MatchMethod::Serial,
+                region: String::new(),
+                cross_region: false,
+            });
+        if entry.dat_match.is_some() {
+            entry.status = EntryStatus::LikelyMatched;
+            entry.ambiguous_candidates.clear();
+        } else if ambiguous_candidates.is_empty() {
+            entry.status = EntryStatus::Unrecognized;
+            entry.ambiguous_candidates.clear();
+        } else {
+            entry.status = EntryStatus::Ambiguous;
+            entry.ambiguous_candidates = ambiguous_candidates;
+        }
+        return;
+    }
+
+    if !ambiguous_candidates.is_empty()
+        && retro_junk_core::disc::candidates_are_same_game(&ambiguous_candidates).is_none()
+    {
+        entry.dat_match = None;
+        entry.status = EntryStatus::Ambiguous;
+        entry.ambiguous_candidates = ambiguous_candidates;
+        return;
+    }
+
+    let names: Vec<_> = matched
+        .iter()
+        .map(|matched| matched.game_name.as_str())
+        .collect();
+    let first = matched[0];
+    let all_hash_verified = !discs.is_empty()
+        && discs.iter().all(|disc| {
+            disc.disc_verification.permits_verified_status()
+                && disc
+                    .dat_match
+                    .as_ref()
+                    .is_some_and(|matched| !matches!(matched.method, MatchMethod::Serial))
+        });
+    entry.dat_match = Some(DatMatchInfo {
+        game_name: retro_junk_core::disc::derive_base_game_name(&names),
+        rom_name: first.rom_name.clone(),
+        method: if all_hash_verified {
+            first.method.clone()
+        } else {
+            MatchMethod::Serial
+        },
+        region: first.region.clone(),
+        cross_region: matched.iter().any(|matched| matched.cross_region),
+    });
+    entry.status = if all_hash_verified {
+        EntryStatus::Matched
+    } else {
+        EntryStatus::LikelyMatched
+    };
+    entry.ambiguous_candidates.clear();
+}
+
+/// Apply every successful checksum for one library entry as a unit. This is
+/// shared by the durable snapshot and the optional live UI projection, so
+/// navigation cannot change matching behavior.
+fn apply_entry_hash_results(entry: &mut LibraryEntry, results: &[EntryHashResult]) {
+    if entry.disc_identifications.is_none() {
+        if let Some(result) = results.iter().find(|result| result.disc_path.is_none()) {
+            entry.hashes = Some(result.hashes.clone());
+            entry.disc_verification = result.disc_verification;
+            apply_catalog_resolution(entry, &result.catalog_matches);
+        }
+        return;
+    }
+
+    if let Some(discs) = entry.disc_identifications.as_mut() {
+        for result in results {
+            let Some(disc_path) = result.disc_path.as_ref() else {
+                continue;
+            };
+            let Some(disc) = discs.iter_mut().find(|disc| &disc.path == disc_path) else {
+                continue;
+            };
+            disc.hashes = Some(result.hashes.clone());
+            disc.disc_verification = result.disc_verification;
+            match resolve_catalog_candidates(
+                &result.catalog_matches,
+                Some(&disc.identification),
+                disc.hashes.as_ref(),
+                disc.disc_verification,
+            ) {
+                CatalogUiResolution::Match {
+                    info,
+                    cover_title,
+                    screen_title,
+                } => {
+                    disc.dat_match = Some(info);
+                    disc.ambiguous_candidates.clear();
+                    if entry.cover_title.is_empty() && !cover_title.is_empty() {
+                        entry.cover_title = cover_title;
+                    }
+                    if entry.screen_title.is_empty() && !screen_title.is_empty() {
+                        entry.screen_title = screen_title;
+                    }
+                }
+                CatalogUiResolution::Ambiguous(candidates) => {
+                    disc.dat_match = None;
+                    disc.ambiguous_candidates = candidates;
+                }
+                CatalogUiResolution::NotFound => {
+                    disc.dat_match = None;
+                    disc.ambiguous_candidates.clear();
+                }
+            }
+        }
+    }
+    apply_multi_disc_resolution(entry);
+}
+
+pub(crate) fn apply_single_analysis_result(
+    entry: &mut LibraryEntry,
+    result: Result<RomIdentification, AnalysisError>,
+    catalog_matches: &[retro_junk_db::CatalogMediaMatch],
+) {
+    match result {
+        Ok(identification) => {
+            entry.identification = Some(identification);
+            entry.disc_identifications = None;
+            apply_catalog_resolution(entry, catalog_matches);
+        }
+        Err(_) => {
+            entry.identification = None;
+            entry.disc_identifications = None;
+            apply_catalog_resolution(entry, catalog_matches);
+            if entry.status == EntryStatus::Unknown {
+                entry.status = EntryStatus::Unrecognized;
+            }
+        }
+    }
+}
+
+pub(crate) fn apply_multi_disc_analysis_results(
+    entry: &mut LibraryEntry,
+    disc_results: &[(PathBuf, Result<RomIdentification, AnalysisError>)],
+    catalog_matches: &[Vec<retro_junk_db::CatalogMediaMatch>],
+) {
+    let old_disc_data: HashMap<
+        PathBuf,
+        (
+            Option<FileHashes>,
+            Option<DatMatchInfo>,
+            Vec<String>,
+            DiscVerification,
+        ),
+    > = entry
+        .disc_identifications
+        .as_ref()
+        .map(|discs| {
+            discs
+                .iter()
+                .map(|disc| {
+                    (
+                        disc.path.clone(),
+                        (
+                            disc.hashes.clone(),
+                            disc.dat_match.clone(),
+                            disc.ambiguous_candidates.clone(),
+                            disc.disc_verification,
+                        ),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut disc_ids = Vec::new();
+    for ((path, result), candidates) in disc_results.iter().zip(catalog_matches) {
+        match result {
+            Ok(identification) => {
+                let (cached_hashes, cached_dat_match, cached_candidates, cached_disc_verification) =
+                    old_disc_data.get(path).cloned().unwrap_or_default();
+                let mut disc = DiscIdentification {
+                    path: path.clone(),
+                    identification: identification.clone(),
+                    hashes: cached_hashes,
+                    dat_match: cached_dat_match,
+                    ambiguous_candidates: cached_candidates,
+                    disc_verification: cached_disc_verification,
+                };
+                match resolve_catalog_candidates(
+                    candidates,
+                    Some(&disc.identification),
+                    disc.hashes.as_ref(),
+                    disc.disc_verification,
+                ) {
+                    CatalogUiResolution::Match { info, .. } => {
+                        disc.dat_match = Some(info);
+                        disc.ambiguous_candidates.clear();
+                    }
+                    CatalogUiResolution::Ambiguous(candidates) => {
+                        disc.dat_match = None;
+                        disc.ambiguous_candidates = candidates;
+                    }
+                    CatalogUiResolution::NotFound => {
+                        disc.dat_match = None;
+                        disc.ambiguous_candidates.clear();
+                    }
+                }
+                disc_ids.push(disc);
+            }
+            Err(error) => log::warn!("Disc analysis failed for {}: {error}", path.display()),
+        }
+    }
+
+    let mut regions = Vec::new();
+    for disc in &disc_ids {
+        for region in &disc.identification.regions {
+            if !regions.contains(region) {
+                regions.push(*region);
+            }
+        }
+    }
+    let disc_files: Vec<_> = disc_results.iter().map(|(path, _)| path.clone()).collect();
+    let mut game_id = RomIdentification::new();
+    game_id.regions = regions;
+    game_id
+        .extra
+        .insert("format".to_owned(), describe_m3u_format(&disc_files));
+    game_id
+        .extra
+        .insert("disc_count".to_owned(), disc_results.len().to_string());
+    entry.identification = Some(game_id);
+    entry.disc_identifications = Some(disc_ids);
+    entry.status = EntryStatus::Unrecognized;
+    entry.dat_match = None;
+    entry.ambiguous_candidates.clear();
+    apply_multi_disc_resolution(entry);
 }
 
 // -- Message handler --
@@ -1227,416 +1602,44 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
         }
 
-        AppMessage::ConsoleScanComplete {
+        AppMessage::ScanProjectionInfo {
             folder_name,
-            entries,
             loose_disc_files,
-        } => {
-            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                let console = &mut app.browser.consoles[ci];
-                console.loose_disc_files = loose_disc_files;
-
-                // Build a lookup from display_name to existing entry so we can
-                // preserve cached data (hashes, status, dat_match, etc.) across
-                // re-scans instead of starting from scratch.
-                let existing: HashMap<String, LibraryEntry> = console
-                    .entries
-                    .drain(..)
-                    .map(|e| (e.game_entry.display_name().to_owned(), e))
-                    .collect();
-
-                console.entries = entries
-                    .into_iter()
-                    .map(|ge| {
-                        if let Some(cached) = existing.get(ge.display_name()) {
-                            // File still exists — keep cached analysis data
-                            LibraryEntry {
-                                id: cached.id,
-                                revision: cached.revision,
-                                source_revision: cached.source_revision,
-                                game_entry: ge,
-                                identification: cached.identification.clone(),
-                                hashes: cached.hashes.clone(),
-                                dat_match: cached.dat_match.clone(),
-                                status: cached.status,
-                                ambiguous_candidates: cached.ambiguous_candidates.clone(),
-                                asset_paths: cached.asset_paths.clone(),
-                                region_override: cached.region_override,
-                                cover_title: cached.cover_title.clone(),
-                                screen_title: cached.screen_title.clone(),
-                                disc_identifications: cached.disc_identifications.clone(),
-                                broken_references: cached.broken_references.clone(),
-                                cue_compat_issues: cached.cue_compat_issues.clone(),
-                                tag: cached.tag,
-                            }
-                        } else {
-                            // New file — start fresh
-                            LibraryEntry {
-                                id: None,
-                                revision: 0,
-                                source_revision: 0,
-                                game_entry: ge,
-                                identification: None,
-                                hashes: None,
-                                dat_match: None,
-                                status: EntryStatus::Unknown,
-                                ambiguous_candidates: Vec::new(),
-                                asset_paths: None,
-                                region_override: None,
-                                cover_title: String::new(),
-                                screen_title: String::new(),
-                                disc_identifications: None,
-                                broken_references: None,
-                                cue_compat_issues: None,
-                                tag: None,
-                            }
-                        }
-                    })
-                    .collect();
-                console.scan_status = ScanStatus::Scanning;
-            }
-        }
-
-        AppMessage::EntryAnalyzed {
-            folder_name,
-            entry_id,
-            entry_name,
-            result,
-            catalog_matches,
-        } => {
-            if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) =
-                    app.browser.consoles[ci].analysis_entry_mut(entry_id, &entry_name)
-            {
-                let prior_status = entry.status;
-                let had_prior_dat_match = entry.dat_match.is_some();
-
-                match result {
-                    Ok(id) => {
-                        let has_serial = !id.serial_number.is_empty();
-                        entry.identification = Some(id);
-                        entry.status = if has_serial {
-                            EntryStatus::Ambiguous
-                        } else {
-                            EntryStatus::Unrecognized
-                        };
-                    }
-                    Err(_) => {
-                        entry.status = EntryStatus::Unrecognized;
-                    }
-                }
-
-                if entry.disc_identifications.is_none() {
-                    if let Some(ref id) = entry.identification
-                        && !id.serial_number.is_empty()
-                    {
-                        if entry.cover_title.is_empty()
-                            && let Some(found) = catalog_matches
-                                .iter()
-                                .find(|found| regions_match_dat(&id.regions, &found.region))
-                                .or_else(|| catalog_matches.first())
-                        {
-                            entry.cover_title.clone_from(&found.cover_title);
-                            entry.screen_title.clone_from(&found.screen_title);
-                        }
-                        match catalog_serial_match_candidates(&catalog_matches, &id.regions) {
-                            Ok(dm) => {
-                                entry.dat_match = Some(dm);
-                                entry.status = EntryStatus::Matched;
-                                entry.ambiguous_candidates.clear();
-                            }
-                            Err(candidates) if !candidates.is_empty() => {
-                                entry.status = EntryStatus::Ambiguous;
-                                entry.ambiguous_candidates = candidates;
-                            }
-                            Err(_) => {}
-                        }
-                    }
-                }
-                // If re-matching couldn't run (DATs not loaded yet) or didn't
-                // find anything, but the entry already had a valid DAT match
-                // from a prior cycle, restore its old status. The cached
-                // dat_match is still valid — only the identification was refreshed.
-                if entry.status != EntryStatus::Matched && had_prior_dat_match {
-                    entry.status = prior_status;
-                }
-            }
-            if let Some(entry_id) = entry_id {
-                app.publish_entry_analysis(entry_id, ctx);
-            }
-        }
-
-        AppMessage::MultiDiscAnalyzed {
-            folder_name,
-            entry_id,
-            entry_name,
-            disc_results,
-            catalog_matches,
-        } => {
-            if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) =
-                    app.browser.consoles[ci].analysis_entry_mut(entry_id, &entry_name)
-            {
-                // Save old per-disc hashes so we can carry them forward.
-                // Analysis doesn't produce hashes, so without this a rescan
-                // would wipe previously-computed per-disc hashes and DAT matches.
-                let old_disc_data: HashMap<PathBuf, (Option<FileHashes>, Option<DatMatchInfo>)> =
-                    entry
-                        .disc_identifications
-                        .as_ref()
-                        .map(|discs| {
-                            discs
-                                .iter()
-                                .map(|d| (d.path.clone(), (d.hashes.clone(), d.dat_match.clone())))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-
-                // Collect successful disc identifications, carrying forward cached data.
-                for (path, result) in &disc_results {
-                    match result {
-                        Ok(_) => log::debug!("MultiDiscAnalyzed: disc {} => Ok", path.display()),
-                        Err(e) => {
-                            log::warn!("MultiDiscAnalyzed: disc {} => Err({})", path.display(), e);
-                        }
-                    }
-                }
-                let disc_ids: Vec<DiscIdentification> = disc_results
-                    .iter()
-                    .filter_map(|(path, result)| {
-                        result.as_ref().ok().map(|id| {
-                            let (cached_hashes, cached_dat_match) =
-                                old_disc_data.get(path).cloned().unwrap_or_default();
-                            DiscIdentification {
-                                path: path.clone(),
-                                identification: id.clone(),
-                                hashes: cached_hashes,
-                                dat_match: cached_dat_match,
-                            }
-                        })
-                    })
-                    .collect();
-
-                // Build game-level identification by merging disc data
-                let mut regions = Vec::new();
-                let mut has_serial = false;
-                for disc in &disc_ids {
-                    for r in &disc.identification.regions {
-                        if !regions.contains(r) {
-                            regions.push(*r);
-                        }
-                    }
-                    if !disc.identification.serial_number.is_empty() {
-                        has_serial = true;
-                    }
-                }
-
-                let disc_files: Vec<PathBuf> =
-                    disc_results.iter().map(|(p, _)| p.clone()).collect();
-                let format_str = describe_m3u_format(&disc_files);
-
-                let mut game_id = RomIdentification::new();
-                game_id.regions = regions;
-                game_id.extra.insert("format".to_string(), format_str);
-                game_id
-                    .extra
-                    .insert("disc_count".to_string(), disc_results.len().to_string());
-
-                entry.identification = Some(game_id);
-                entry.disc_identifications = Some(disc_ids);
-
-                // Remember whether the entry had a prior DAT match so we can
-                // preserve its status if DAT re-matching can't run (e.g. DATs
-                // still loading asynchronously after app restart).
-                let prior_status = entry.status;
-                let had_prior_dat_match = entry.dat_match.is_some();
-
-                entry.status = if has_serial {
-                    EntryStatus::Ambiguous
-                } else {
-                    EntryStatus::Unrecognized
-                };
-
-                {
-                    let mut matched_names: Vec<String> = Vec::new();
-                    let mut first_rom_name = String::new();
-                    let mut any_ambiguous = false;
-                    let mut all_candidates: Vec<String> = Vec::new();
-
-                    if let Some(ref mut discs) = entry.disc_identifications {
-                        for (disc, candidates) in discs.iter_mut().zip(&catalog_matches) {
-                            let serial = &disc.identification.serial_number;
-                            if !serial.is_empty() {
-                                match catalog_serial_match_candidates(
-                                    candidates,
-                                    &disc.identification.regions,
-                                ) {
-                                    Ok(dm) => {
-                                        if first_rom_name.is_empty() {
-                                            first_rom_name.clone_from(&dm.rom_name);
-                                        }
-                                        matched_names.push(dm.game_name.clone());
-                                        disc.dat_match = Some(dm);
-                                    }
-                                    Err(candidates) if !candidates.is_empty() => {
-                                        any_ambiguous = true;
-                                        for c in candidates {
-                                            if !all_candidates.contains(&c) {
-                                                all_candidates.push(c);
-                                            }
-                                        }
-                                    }
-                                    Err(_) => {}
-                                }
-                            }
-                        }
-                    }
-
-                    if !matched_names.is_empty() {
-                        let name_refs: Vec<&str> = matched_names
-                            .iter()
-                            .map(std::string::String::as_str)
-                            .collect();
-                        let combined = retro_junk_core::disc::derive_base_game_name(&name_refs);
-                        entry.dat_match = Some(DatMatchInfo {
-                            game_name: combined,
-                            rom_name: first_rom_name.clone(),
-                            method: MatchMethod::Serial,
-                            region: String::new(),
-                            cross_region: false,
-                        });
-                        if any_ambiguous {
-                            // Check if "ambiguous" candidates are just different discs of the same game
-                            if retro_junk_core::disc::candidates_are_same_game(&all_candidates)
-                                .is_some()
-                            {
-                                entry.status = EntryStatus::Matched;
-                                entry.ambiguous_candidates.clear();
-                            } else {
-                                entry.status = EntryStatus::Ambiguous;
-                                entry.ambiguous_candidates = all_candidates;
-                            }
-                        } else {
-                            entry.status = EntryStatus::Matched;
-                            entry.ambiguous_candidates.clear();
-                        }
-                    } else if any_ambiguous {
-                        if let Some(base_name) =
-                            retro_junk_core::disc::candidates_are_same_game(&all_candidates)
-                        {
-                            entry.status = EntryStatus::Matched;
-                            entry.ambiguous_candidates.clear();
-                            entry.dat_match = Some(DatMatchInfo {
-                                game_name: base_name,
-                                rom_name: first_rom_name,
-                                method: MatchMethod::Serial,
-                                region: String::new(),
-                                cross_region: false,
-                            });
-                        } else {
-                            entry.status = EntryStatus::Ambiguous;
-                            entry.ambiguous_candidates = all_candidates;
-                        }
-                    }
-                }
-
-                // If re-matching couldn't run (DATs not loaded yet) or didn't
-                // find anything, but the entry already had a valid DAT match
-                // from a prior cycle, restore its old status. The cached
-                // dat_match is still valid — only the identification was refreshed.
-                if entry.status != EntryStatus::Matched && had_prior_dat_match {
-                    entry.status = prior_status;
-                }
-            }
-            if let Some(entry_id) = entry_id {
-                app.publish_entry_analysis(entry_id, ctx);
-            }
-        }
-
-        AppMessage::BrokenRefsChecked {
-            folder_name,
-            entry_id,
-            entry_name,
-            broken_refs,
-        } => {
-            if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) =
-                    app.browser.consoles[ci].analysis_entry_mut(entry_id, &entry_name)
-            {
-                entry.broken_references = Some(broken_refs);
-            }
-            if let Some(entry_id) = entry_id {
-                app.publish_entry_analysis(entry_id, ctx);
-            }
-        }
-
-        AppMessage::CueCompatChecked {
-            folder_name,
-            entry_id,
-            entry_name,
-            issues,
-        } => {
-            if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) =
-                    app.browser.consoles[ci].analysis_entry_mut(entry_id, &entry_name)
-            {
-                entry.cue_compat_issues = Some(issues);
-            }
-            if let Some(entry_id) = entry_id {
-                app.publish_entry_analysis(entry_id, ctx);
-            }
-        }
-
-        AppMessage::EntryDiagnosticsChecked {
-            folder_name,
-            entry_id,
-            broken_refs,
-            issues,
-        } => {
-            if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
-            {
-                entry.broken_references = Some(broken_refs);
-                entry.cue_compat_issues = Some(issues);
-                app.publish_entry_analysis(entry_id, ctx);
-            }
-        }
-
-        AppMessage::ConsoleScanDone {
-            folder_name,
             fingerprint,
         } => {
             if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                let console = &mut app.browser.consoles[ci];
-                console.scan_status = ScanStatus::Scanned;
-                // Cache the quick folder fingerprint for stale-state checks.
-                // Fingerprint is computed in the scan worker to keep network I/O off the UI thread.
-                console.fingerprint = Some(fingerprint);
+                app.browser.consoles[ci].loose_disc_files = loose_disc_files;
+                app.browser.consoles[ci].fingerprint = Some(fingerprint);
             }
-            let desc_match = "Scanning ".to_string();
-            app.operations.retain(|op| {
-                // Match operations like "Scanning Super Nintendo..."
-                !(op.description.starts_with(&desc_match))
-                    || !app.browser.find_by_folder(&folder_name).is_some_and(|ci| {
-                        op.description
-                            .contains(app.browser.consoles[ci].platform_name)
-                    })
-            });
-            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.prepare_completed_scan(ci, ctx);
-            }
+        }
 
-            // Advance the auto-scan queue only when the in-flight queued scan
-            // finishes — manual scans run by the user don't pop the queue.
-            if app.ui_state.auto_scan_in_flight.as_deref() == Some(folder_name.as_str()) {
-                app.ui_state.auto_scan_in_flight = None;
-                if let Some(op_id) = app.ui_state.auto_scan_op_id
-                    && let Some(op) = app.operations.iter_mut().find(|o| o.id == op_id)
+        AppMessage::EntryAnalysisSnapshotsComplete {
+            folder_name,
+            entries,
+        } => {
+            log::debug!(
+                "Persisting {} background analysis result(s) for {folder_name}",
+                entries.len()
+            );
+            app.publish_entry_analysis_snapshots(&entries, ctx);
+        }
+
+        AppMessage::ConsoleScanFailed { folder_name, error } => {
+            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
+                app.browser.consoles[ci].scan_status = ScanStatus::NotScanned;
+                app.browser.consoles[ci].entries.clear();
+                if app.ui_state.selected_console == app.browser.consoles[ci].id
+                    && let Some(console_id) = app.browser.consoles[ci].id
                 {
-                    op.progress_current = (op.progress_current + 1).min(op.progress_total);
+                    // Throw away any uncommitted scan projection and restore
+                    // the last authoritative database page.
+                    app.request_console_page(console_id, ctx);
                 }
-                start_next_auto_scan(app, ctx);
             }
+            if let Some(error) = error {
+                app.push_error("Library scan", error);
+            }
+            finish_auto_scan(app, &folder_name, false, ctx);
         }
 
         AppMessage::ScanSnapshotPrepared {
@@ -1649,120 +1652,37 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 if let Some(console_id) = console_id {
                     app.browser.entry_counts.insert(console_id, count);
                 }
-                app.submit_store(
-                    crate::backend::library_store::LibraryStoreRequest::CommitConsoleScan(snapshot),
-                    ctx,
-                );
+                app.commit_completed_scan(snapshot, ctx);
             }
             Err(error) => {
                 log::warn!("Failed to publish {folder_name} scan: {error}");
                 app.push_error("Library scan", error);
+                finish_auto_scan(app, &folder_name, false, ctx);
             }
         },
 
-        AppMessage::HashComplete {
+        AppMessage::EntryHashBatchComplete {
             folder_name,
-            entry_id,
-            hashes,
-            catalog_matches,
+            entry,
+            results,
         } => {
+            let mut durable_entry = *entry;
+            let entry_id = durable_entry.id;
+            let expected_source_revision = durable_entry.source_revision;
+            let mut updated_live_projection = false;
             if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
+                && let Some(entry_id) = entry_id
+                && let Some(live) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
+                && live.source_revision == expected_source_revision
             {
-                if entry.disc_identifications.is_none()
-                    && let Some(selected) = select_catalog_hash_match(
-                        &catalog_matches,
-                        &hashes,
-                        entry
-                            .identification
-                            .as_ref()
-                            .map(|id| id.regions.as_slice())
-                            .unwrap_or_default(),
-                    )
-                {
-                    entry.dat_match = Some(catalog_match_info(
-                        selected,
-                        &hashes,
-                        entry
-                            .identification
-                            .as_ref()
-                            .map(|id| id.regions.as_slice())
-                            .unwrap_or_default(),
-                    ));
-                    entry.cover_title.clone_from(&selected.cover_title);
-                    entry.screen_title.clone_from(&selected.screen_title);
-                    entry.status = EntryStatus::Matched;
-                    entry.ambiguous_candidates.clear();
-                }
-                entry.hashes = Some(hashes);
+                apply_entry_hash_results(live, &results);
+                durable_entry = live.clone();
+                updated_live_projection = true;
             }
-            app.publish_entry_analysis(entry_id, ctx);
-        }
-
-        AppMessage::DiscHashComplete {
-            folder_name,
-            entry_id,
-            disc_path,
-            hashes,
-            catalog_matches,
-        } => {
-            if let Some(ci) = app.browser.find_by_folder(&folder_name)
-                && let Some(entry) = app.browser.consoles[ci].entry_by_id_mut(entry_id)
-                && let Some(ref mut discs) = entry.disc_identifications
-            {
-                // Find the matching disc and store its hashes
-                if let Some(disc) = discs.iter_mut().find(|d| d.path == disc_path) {
-                    if let Some(selected) = select_catalog_hash_match(
-                        &catalog_matches,
-                        &hashes,
-                        disc.identification.regions.as_slice(),
-                    ) {
-                        disc.dat_match = Some(catalog_match_info(
-                            selected,
-                            &hashes,
-                            disc.identification.regions.as_slice(),
-                        ));
-                    }
-                    disc.hashes = Some(hashes);
-                }
-
-                // Check if ALL discs now have hashes and at least one has a DAT match
-                let all_hashed = discs.iter().all(|d| d.hashes.is_some());
-                if all_hashed && discs.iter().any(|d| d.dat_match.is_some()) {
-                    let names: Vec<&str> = discs
-                        .iter()
-                        .filter_map(|d| d.dat_match.as_ref().map(|dm| dm.game_name.as_str()))
-                        .collect();
-                    let game_name = retro_junk_core::disc::derive_base_game_name(&names);
-                    let first_match = discs.iter().find_map(|d| d.dat_match.as_ref());
-                    let first_rom_name = first_match
-                        .map(|dm| dm.rom_name.clone())
-                        .unwrap_or_default();
-                    let method = first_match.map_or(MatchMethod::Crc32, |dm| dm.method.clone());
-                    let region = first_match.map(|dm| dm.region.clone()).unwrap_or_default();
-                    // Cross-region if any disc has a cross-region match
-                    let cross_region = discs
-                        .iter()
-                        .any(|d| d.dat_match.as_ref().is_some_and(|dm| dm.cross_region));
-                    entry.dat_match = Some(DatMatchInfo {
-                        game_name,
-                        rom_name: first_rom_name,
-                        method,
-                        region,
-                        cross_region,
-                    });
-                    entry.status = EntryStatus::Matched;
-                    entry.ambiguous_candidates.clear();
-                }
-
-                if entry.cover_title.is_empty()
-                    && let Some(found) = catalog_matches.first()
-                {
-                    entry.cover_title.clone_from(&found.cover_title);
-                    entry.screen_title.clone_from(&found.screen_title);
-                }
+            if !updated_live_projection {
+                apply_entry_hash_results(&mut durable_entry, &results);
             }
-            app.publish_entry_analysis(entry_id, ctx);
+            app.publish_entry_hash_update(&durable_entry, ctx);
         }
 
         AppMessage::HashFailed {
@@ -1857,76 +1777,27 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::RenameComplete {
             folder_name,
+            rescan_target,
             results,
         } => {
             let mut renamed = 0usize;
             let mut already = 0usize;
             let mut failed = 0usize;
-            let mut transitioned_ids = Vec::new();
-
-            // Extension set for the console's platform, used by
-            // `refresh_multidisc_files` (D5) to re-collect a renamed
-            // multi-disc folder's contents via the scanner's playlist logic.
-            let extensions = app
-                .browser
-                .find_by_folder(&folder_name)
-                .and_then(|ci| {
-                    app.context
-                        .get_by_platform(app.browser.consoles[ci].platform)
-                })
-                .map(|r| retro_junk_lib::scanner::extension_set(r.analyzer.file_extensions()))
-                .unwrap_or_default();
-
-            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                for r in &results {
-                    match &r.outcome {
-                        RenameOutcome::Renamed { target, .. } => {
-                            renamed += 1;
-                            // Update the GameEntry path to reflect the new filename
-                            if let Some(entry) =
-                                app.browser.consoles[ci].entry_by_id_mut(r.entry_id)
-                            {
-                                transitioned_ids.extend(entry.id);
-                                entry.game_entry =
-                                    retro_junk_lib::scanner::GameEntry::SingleFile(target.clone());
-                                // Invalidate cached checks so background re-check picks them up
-                                entry.broken_references = None;
-                                entry.cue_compat_issues = None;
-                            }
-                        }
-                        RenameOutcome::M3uRenamed {
-                            target_folder,
-                            discs_renamed,
-                            errors: m3u_errors,
-                            ..
-                        } => {
-                            renamed += discs_renamed;
-                            failed += m3u_errors.len();
-                            // Update the MultiDisc GameEntry to reflect the new folder
-                            if let Some(entry) =
-                                app.browser.consoles[ci].entry_by_id_mut(r.entry_id)
-                            {
-                                transitioned_ids.extend(entry.id);
-                                // Update folder name from the target folder
-                                if let retro_junk_lib::scanner::GameEntry::MultiDisc {
-                                    ref mut name,
-                                    ..
-                                } = entry.game_entry
-                                    && let Some(folder_stem) =
-                                        target_folder.file_name().and_then(|n| n.to_str())
-                                {
-                                    *name = folder_stem.to_string();
-                                }
-                                refresh_multidisc_files(entry, target_folder, &extensions);
-                                // Invalidate cached checks so background re-check picks them up
-                                entry.broken_references = None;
-                                entry.cue_compat_issues = None;
-                            }
-                        }
-                        RenameOutcome::AlreadyCorrect => already += 1,
-                        RenameOutcome::NoMatch { .. } | RenameOutcome::Error { .. } => {
-                            failed += 1;
-                        }
+            for r in &results {
+                log::debug!("Rename result for library entry {}", r.entry_id.0);
+                match &r.outcome {
+                    RenameOutcome::Renamed { .. } => renamed += 1,
+                    RenameOutcome::M3uRenamed {
+                        discs_renamed,
+                        errors: m3u_errors,
+                        ..
+                    } => {
+                        renamed += discs_renamed;
+                        failed += m3u_errors.len();
+                    }
+                    RenameOutcome::AlreadyCorrect => already += 1,
+                    RenameOutcome::NoMatch { .. } | RenameOutcome::Error { .. } => {
+                        failed += 1;
                     }
                 }
             }
@@ -1935,17 +1806,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             );
             app.ui_state.results_dialog = crate::app::ResultsDialog::Rename(results);
 
-            // Invalidate fingerprint so the next save recomputes it from the
-            // actual (post-rename) file names on disk.
-            if renamed > 0
-                && let Some(ci) = app.browser.find_by_folder(&folder_name)
-            {
-                app.browser.consoles[ci].fingerprint = None;
-            }
-            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                app.publish_filesystem_entries(ci, transitioned_ids, ctx);
-                if renamed > 0 {
-                    recheck_invalidated_entries(app, ci, &folder_name, ctx);
+            if renamed > 0 {
+                if let Some(target) = rescan_target {
+                    crate::backend::scan::restart_console_scan(app, target, ctx);
+                } else {
+                    app.push_error(
+                        "Library rescan",
+                        format!("No durable console ID for {folder_name}"),
+                    );
                 }
             }
         }
@@ -1962,6 +1830,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::OrganizeComplete {
             folder_name,
+            rescan_target,
             jobs_executed,
             files_moved,
             unmatched,
@@ -1971,12 +1840,13 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 log::info!(
                     "Organized {folder_name}: created {jobs_executed} folders, moved {files_moved} files",
                 );
-                // Trigger rescan since folder structure changed
-                if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                    let console = &mut app.browser.consoles[ci];
-                    console.scan_status = ScanStatus::NotScanned;
-                    console.loose_disc_files.clear();
-                    crate::backend::scan::quick_scan_console(app, ci, ctx);
+                if let Some(target) = rescan_target {
+                    crate::backend::scan::restart_console_scan(app, target, ctx);
+                } else {
+                    app.push_error(
+                        "Library rescan",
+                        format!("No durable console ID for {folder_name}"),
+                    );
                 }
             }
             if unmatched > 0 {
@@ -1989,6 +1859,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::CueFixComplete {
             folder_name,
+            rescan_target,
             results,
         } => {
             let fixed = results
@@ -2011,45 +1882,22 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             log::info!(
                 "CUE fix {folder_name}: {fixed} fixed, {already} already standard, {failed} failed"
             );
-            // Invalidate cached checks on affected entries and re-check
-            if fixed > 0
-                && let Some(ci) = app.browser.find_by_folder(&folder_name)
-            {
-                let fixed_files: std::collections::HashSet<&str> = results
-                    .iter()
-                    .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
-                    .map(|r| r.file_name.as_str())
-                    .collect();
-                let mut affected_ids = Vec::new();
-                for entry in &mut app.browser.consoles[ci].entries {
-                    let dominated = entry.cue_compat_issues.as_ref().is_some_and(|issues| {
-                        issues
-                            .iter()
-                            .any(|i| fixed_files.contains(i.file_name.as_str()))
-                    }) || entry.broken_references.as_ref().is_some_and(|refs| {
-                        refs.iter().any(|r| {
-                            r.ref_file
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .is_some_and(|n| fixed_files.contains(n))
-                        })
-                    });
-                    if dominated {
-                        affected_ids.extend(entry.id);
-                        entry.broken_references = None;
-                        entry.cue_compat_issues = None;
-                    }
+            if fixed > 0 {
+                if let Some(target) = rescan_target {
+                    crate::backend::scan::restart_console_scan(app, target, ctx);
+                } else {
+                    app.push_error(
+                        "Library rescan",
+                        format!("No durable console ID for {folder_name}"),
+                    );
                 }
-                for id in affected_ids {
-                    app.publish_entry_analysis(id, ctx);
-                }
-                recheck_invalidated_entries(app, ci, &folder_name, ctx);
             }
             app.ui_state.results_dialog = crate::app::ResultsDialog::CueFix(results);
         }
 
         AppMessage::ChdCompressComplete {
             folder_name,
+            rescan_target,
             results,
         } => {
             let compressed = results
@@ -2057,106 +1905,25 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 .filter(|r| matches!(r.outcome, ChdCompressOutcome::Compressed { .. }))
                 .count();
             let failed = results.len() - compressed;
+            for result in &results {
+                log::debug!(
+                    "CHD result for {} -> {}",
+                    result.job.input.display(),
+                    result.job.output.display()
+                );
+            }
             log::info!(
                 "CHD compression {folder_name}: {compressed} compressed, {failed} failed/skipped"
             );
 
-            // Extension set for the console's platform, used by
-            // `refresh_multidisc_files` (D5) when a compressed disc belongs
-            // to a MultiDisc entry.
-            let extensions = app
-                .browser
-                .find_by_folder(&folder_name)
-                .and_then(|ci| {
-                    app.context
-                        .get_by_platform(app.browser.consoles[ci].platform)
-                })
-                .map(|r| retro_junk_lib::scanner::extension_set(r.analyzer.file_extensions()))
-                .unwrap_or_default();
-
-            if let Some(ci) = app.browser.find_by_folder(&folder_name) {
-                let mut changed = false;
-                let mut deleted_files: std::collections::HashSet<PathBuf> =
-                    std::collections::HashSet::new();
-                let mut any_sources_deleted = false;
-                let mut transitioned_ids = Vec::new();
-
-                // Process every Compressed outcome, not just ones with
-                // sources_deleted: with the dialog default (keep originals),
-                // a verified compression still needs the fingerprint cleared
-                // so the next scan reconciles the new sibling .chd instead of
-                // silently going stale.
-                for r in &results {
-                    let ChdCompressOutcome::Compressed {
-                        sources_deleted, ..
-                    } = &r.outcome
-                    else {
-                        continue;
-                    };
-                    changed = true;
-
-                    // Path-keyed lookup (not display-name): the entry still
-                    // holds its pre-compression path even after the file is
-                    // deleted, so matching this job's input against
-                    // `all_files()` is exact and rename-proof for this batch.
-                    let Some(entry) = app.browser.consoles[ci].find_entry_by_file_mut(&r.job.input)
-                    else {
-                        log::warn!(
-                            "CHD compress complete: no library entry found for input {}",
-                            r.job.input.display()
-                        );
-                        continue;
-                    };
-
-                    if *sources_deleted {
-                        transitioned_ids.extend(entry.id);
-                        any_sources_deleted = true;
-                        deleted_files.extend(r.job.source_files.iter().cloned());
-                        match entry.game_entry {
-                            retro_junk_lib::scanner::GameEntry::SingleFile(ref mut path) => {
-                                path.clone_from(&r.job.output);
-                            }
-                            retro_junk_lib::scanner::GameEntry::MultiDisc { .. } => {
-                                if let Some(folder) = r.job.output.parent() {
-                                    let folder = folder.to_path_buf();
-                                    refresh_multidisc_files(entry, &folder, &extensions);
-                                }
-                            }
-                        }
-                        // The cached hashes describe the old container; the
-                        // cue checks no longer apply to a .chd.
-                        entry.hashes = None;
-                        entry.broken_references = None;
-                        entry.cue_compat_issues = None;
-                    }
-                    // Else: sources kept — the entry stays on the cue/iso and
-                    // its hashes remain valid. The fingerprint invalidation
-                    // below lets the next scan pick up the new sibling .chd
-                    // (deduped onto this same entry by the scanner's stem
-                    // dedup, which now covers ".chd" — see D4).
-                }
-
-                if any_sources_deleted {
-                    // Drop entries whose every file was deleted: removes
-                    // dangling "(Track N).bin" SingleFile ghosts the scanner
-                    // kept as separate entries (stem-only dedup). Entries
-                    // updated above now point at the .chd, so they survive
-                    // this filter.
-                    app.browser.consoles[ci].entries.retain(|e| {
-                        !e.game_entry
-                            .all_files()
-                            .iter()
-                            .all(|f| deleted_files.contains(f))
-                    });
-                }
-
-                if changed {
-                    app.browser.consoles[ci].fingerprint = None;
-                    app.publish_filesystem_entries(ci, transitioned_ids, ctx);
-                    app.mark_console_stale(ci, ctx);
-                    recheck_invalidated_entries(app, ci, &folder_name, ctx);
-                    app.browser.consoles[ci].scan_status = ScanStatus::NotScanned;
-                    crate::backend::scan::quick_scan_console(app, ci, ctx);
+            if compressed > 0 {
+                if let Some(target) = rescan_target {
+                    crate::backend::scan::restart_console_scan(app, target, ctx);
+                } else {
+                    app.push_error(
+                        "Library rescan",
+                        format!("No durable console ID for {folder_name}"),
+                    );
                 }
             }
             app.ui_state.results_dialog = crate::app::ResultsDialog::ChdCompress(results);
@@ -2168,6 +1935,21 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             total,
         } => {
             if let Some(op) = app.operations.iter_mut().find(|op| op.id == op_id) {
+                op.progress_current = current;
+                op.progress_total = total;
+            }
+        }
+
+        AppMessage::OperationPhase {
+            op_id,
+            description,
+            display,
+            current,
+            total,
+        } => {
+            if let Some(op) = app.operations.iter_mut().find(|op| op.id == op_id) {
+                op.description = description;
+                op.display = display;
                 op.progress_current = current;
                 op.progress_total = total;
             }
@@ -2197,6 +1979,23 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         AppMessage::CacheListsLoaded { dat, gdb } => {
             app.ui_state.tools_state.data.dat_cache_entries = dat;
             app.ui_state.tools_state.data.gdb_cache_entries = gdb;
+        }
+
+        AppMessage::ModSearchResults { query, result } => {
+            if let crate::state::TagDialog::ModSearch {
+                query: current,
+                results,
+                selected,
+                ..
+            } = &mut app.ui_state.tag_dialog
+                && *current == query
+            {
+                *selected = None;
+                match result {
+                    Ok(rows) => *results = rows,
+                    Err(error) => app.push_error("Catalog search", error),
+                }
+            }
         }
 
         AppMessage::ChdCompressPromptReady { prompt } => {

@@ -1,5 +1,3 @@
-use retro_junk_catalog::CatalogTag;
-
 use crate::app::RetroJunkApp;
 use crate::state::TagDialog;
 
@@ -62,31 +60,25 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 return;
             };
 
-            // Create in DB if available
-            if let Some(ref conn) = app.catalog_db
-                && let Some(console) = app.browser.consoles.get(console_idx)
-            {
-                let platform_id = console.folder_name.as_str();
-                let region = console
-                    .entries
-                    .get(entry_idx)
-                    .and_then(|e: &crate::state::LibraryEntry| {
-                        e.effective_regions().first().map(|r| r.code().to_string())
-                    })
-                    .unwrap_or_else(|| "unknown".to_string());
-
-                if let Err(e) =
-                    retro_junk_db::create_homebrew_work(conn, &name, platform_id, &region)
-                {
-                    log::error!("Failed to create homebrew work: {e}");
-                    app.push_error(
-                        "Database Error",
-                        format!("Failed to create homebrew work: {e}"),
-                    );
-                }
-            }
-
-            app.set_entry_tags([entry_id], Some(CatalogTag::Homebrew), ctx);
+            let console = &app.browser.consoles[console_idx];
+            let platform_id = app
+                .context
+                .get_by_platform(console.platform)
+                .map(|registered| registered.analyzer.short_name().to_owned())
+                .unwrap_or_else(|| console.folder_name.clone());
+            let region = console.entries[entry_idx]
+                .effective_regions()
+                .first()
+                .map_or_else(|| "unknown".to_owned(), |region| region.code().to_owned());
+            app.submit_store(
+                crate::backend::library_store::LibraryStoreRequest::CreateHomebrewAndTag {
+                    entry_id,
+                    name,
+                    platform_id,
+                    region,
+                },
+                ctx,
+            );
         }
         app.ui_state.tag_dialog = TagDialog::None;
     } else if cancelled {
@@ -123,9 +115,29 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
 
                 // Run search when query changes
                 if query_changed && query.len() >= 2 {
-                    if let Some(ref conn) = app.catalog_db {
-                        *results =
-                            retro_junk_db::search_works(conn, query, 20, 0).unwrap_or_default();
+                    results.clear();
+                    if let Some(db_path) = app.db_path.clone() {
+                        let requested_query = query.clone();
+                        let tx = app.message_tx.clone();
+                        let repaint = ctx.clone();
+                        std::thread::spawn(move || {
+                            let result = retro_junk_db::open_database(&db_path)
+                                .map_err(|error| error.to_string())
+                                .and_then(|connection| {
+                                    retro_junk_db::search_works(
+                                        &connection,
+                                        &requested_query,
+                                        20,
+                                        0,
+                                    )
+                                    .map_err(|error| error.to_string())
+                                });
+                            let _ = tx.send(crate::state::AppMessage::ModSearchResults {
+                                query: requested_query,
+                                result,
+                            });
+                            repaint.request_repaint();
+                        });
                     }
                 } else if query.len() < 2 {
                     results.clear();
@@ -187,11 +199,12 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 return;
             };
 
-            // Create in DB if available
-            if let Some(ref conn) = app.catalog_db
-                && let Some(console) = app.browser.consoles.get(console_idx)
-            {
-                let platform_id = console.folder_name.as_str();
+            if let Some(console) = app.browser.consoles.get(console_idx) {
+                let platform_id = app
+                    .context
+                    .get_by_platform(console.platform)
+                    .map(|registered| registered.analyzer.short_name().to_owned())
+                    .unwrap_or_else(|| console.folder_name.clone());
                 let entry_ref = console.entries.get(entry_idx);
                 let region = entry_ref
                     .and_then(|e: &crate::state::LibraryEntry| {
@@ -210,22 +223,17 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                             file_size: h.data_size as i64,
                         });
 
-                if let Err(e) = retro_junk_db::create_modded_media(
-                    conn,
-                    &work_id,
-                    platform_id,
-                    &region,
-                    hashes.as_ref(),
-                ) {
-                    log::error!("Failed to create modded media: {e}");
-                    app.push_error(
-                        "Database Error",
-                        format!("Failed to create modded media: {e}"),
-                    );
-                }
+                app.submit_store(
+                    crate::backend::library_store::LibraryStoreRequest::CreateModdedAndTag {
+                        entry_id,
+                        work_id,
+                        platform_id,
+                        region,
+                        hashes,
+                    },
+                    ctx,
+                );
             }
-
-            app.set_entry_tags([entry_id], Some(CatalogTag::Modded), ctx);
         }
         app.ui_state.tag_dialog = TagDialog::None;
     } else if cancelled {

@@ -206,12 +206,7 @@ fn show_console_context_menu(
         )
         .clicked()
     {
-        app.ui_state.selected_entries = app.browser.consoles[console_idx]
-            .entries
-            .iter()
-            .filter_map(|entry| entry.id)
-            .collect();
-        backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
+        app.scrape_all_media(console_idx, ctx);
         ui.close();
     }
 
@@ -251,8 +246,7 @@ fn show_console_context_menu(
             )
             .on_disabled_hover_text("A CHD compression is already running for this console");
         if button.clicked() {
-            let all_entries: Vec<usize> = (0..entry_count).collect();
-            backend::chd_compress::open_compress_dialog(app, console_idx, &all_entries);
+            app.compress_all_to_chd(console_idx, ctx);
             ui.close();
         }
     }

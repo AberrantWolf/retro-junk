@@ -142,8 +142,7 @@ impl Frontend for EsDeFrontend {
         xml.push_str("</gameList>\n");
 
         let gamelist_path = metadata_dir.join("gamelist.xml");
-        let mut file = fs::File::create(&gamelist_path)?;
-        file.write_all(xml.as_bytes())?;
+        write_atomic(&gamelist_path, xml.as_bytes())?;
 
         Ok(())
     }
@@ -161,6 +160,43 @@ impl Frontend for EsDeFrontend {
             ("videos", AssetType::Video),
         ]
     }
+}
+
+fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), FrontendError> {
+    static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "metadata path has no parent",
+        )
+    })?;
+    let name = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("metadata");
+    let temp = parent.join(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let result = (|| -> Result<(), std::io::Error> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temp, path)?;
+        if let Ok(directory) = fs::File::open(parent) {
+            let _ = directory.sync_all();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result.map_err(FrontendError::from)
 }
 
 fn write_tag(xml: &mut String, tag: &str, value: &str) {

@@ -13,6 +13,7 @@ use crate::state::{AppMessage, CueFixOutcome, CueFixResult, OperationKind, Progr
 pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
     let console = &app.browser.consoles[console_idx];
     let folder_name = console.folder_name.clone();
+    let rescan_target = crate::backend::scan::ConsoleScanTarget::durable(app, console_idx);
 
     // Collect CUE file paths from selected entries
     let mut cue_files: Vec<(String, PathBuf)> = Vec::new();
@@ -69,6 +70,7 @@ pub fn fix_cue_for_selection(app: &mut RetroJunkApp, console_idx: usize, ctx: &e
 
             let _ = tx.send(AppMessage::CueFixComplete {
                 folder_name,
+                rescan_target,
                 results,
             });
             let _ = tx.send(AppMessage::OperationComplete { op_id });

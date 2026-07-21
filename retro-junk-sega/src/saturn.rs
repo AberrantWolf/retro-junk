@@ -274,6 +274,7 @@ impl SaturnAnalyzer {
             id.extra.insert("maker_id".into(), header.maker_id.clone());
         }
         if !header.version.is_empty() {
+            id.version.clone_from(&header.version);
             id.extra.insert("version".into(), header.version.clone());
         }
         if !header.release_date.is_empty() {
