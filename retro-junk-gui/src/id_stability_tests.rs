@@ -49,6 +49,7 @@ fn reset() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 fn panel_toggles_do_not_reassign_widget_ids() {
     let _ = log::set_logger(&LOGGER);
     log::set_max_level(log::LevelFilter::Warn);

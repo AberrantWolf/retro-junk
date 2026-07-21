@@ -306,6 +306,7 @@ impl RetroJunkApp {
         // true same-frame ID-clash detection enabled; disable only this
         // virtualization-incompatible heuristic. ID-stability tests explicitly
         // re-enable it while exercising non-virtualized layout transitions.
+        #[cfg(debug_assertions)]
         egui_ctx.all_styles_mut(|style| style.debug.warn_if_rect_changes_id = false);
         let (raw_tx, rx) = mpsc::channel();
         let tx = AppMessageSender::new(raw_tx);

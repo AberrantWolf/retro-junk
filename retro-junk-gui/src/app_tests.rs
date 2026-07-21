@@ -35,6 +35,7 @@ fn first_launch_shows_sidebar_and_welcome() {
 }
 
 #[test]
+#[cfg(debug_assertions)]
 fn app_disables_virtual_list_incompatible_rect_id_warning() {
     let harness = harness();
     assert!(
