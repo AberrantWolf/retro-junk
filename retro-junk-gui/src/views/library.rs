@@ -88,12 +88,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             let has_selection = !app.ui_state.selected_entries.is_empty();
             let selection_ready = has_selection && app.selected_entry_details_loaded();
             let hash_button = ui
-                .add_enabled(selection_ready, egui::Button::new("Calculate Hashes"))
+                .add_enabled(
+                    selection_ready,
+                    egui::Button::new("Calculate Missing Hashes"),
+                )
                 .on_disabled_hover_text(if has_selection {
                     "Loading the selected entry details…"
                 } else {
                     "Select one or more entries"
-                });
+                })
+                .on_hover_text("Keeps stored results for unchanged files");
             if hash_button.clicked()
                 && let Some(ci) = app.selected_console_index()
             {

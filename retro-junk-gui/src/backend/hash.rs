@@ -45,9 +45,11 @@ struct CompletedHash {
 /// multi-disc entries get one item per disc.
 fn collect_hash_work<'a>(
     entries: impl Iterator<Item = &'a LibraryEntry>,
+    include_cached: bool,
 ) -> (Vec<HashWork>, Vec<LibraryEntry>) {
     let entries: Vec<_> = entries
         .filter_map(|entry| entry.id.map(|id| (id, entry)))
+        .filter(|(_, entry)| include_cached || !entry_has_complete_hashes(entry))
         .collect();
     let snapshots = entries.iter().map(|(_, entry)| (*entry).clone()).collect();
     let work = entries
@@ -89,6 +91,13 @@ fn collect_hash_work<'a>(
         })
         .collect();
     (work, snapshots)
+}
+
+fn entry_has_complete_hashes(entry: &LibraryEntry) -> bool {
+    entry.disc_identifications.as_ref().map_or_else(
+        || entry.hashes.is_some(),
+        |discs| !discs.is_empty() && discs.iter().all(|disc| disc.hashes.is_some()),
+    )
 }
 
 /// Open and hash a single work item, forwarding scaled byte progress
@@ -353,6 +362,21 @@ fn describe_incomplete_disc(
 
 /// Compute hashes for selected entries in the active console.
 pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) {
+    compute_hashes_for_selection_inner(app, console_idx, false);
+}
+
+/// Recompute hashes even when the current source fingerprint already has a
+/// durable result. This is deliberately separate from the normal action so a
+/// verification click does not reread unchanged network-hosted media.
+pub fn recompute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) {
+    compute_hashes_for_selection_inner(app, console_idx, true);
+}
+
+fn compute_hashes_for_selection_inner(
+    app: &mut RetroJunkApp,
+    console_idx: usize,
+    include_cached: bool,
+) {
     let console = &app.browser.consoles[console_idx];
 
     log::debug!(
@@ -368,6 +392,7 @@ pub fn compute_hashes_for_selection(app: &mut RetroJunkApp, console_idx: usize) 
             .iter()
             .copied()
             .filter_map(|id| console.entry_by_id(id)),
+        include_cached,
     );
 
     spawn_hash_work(app, console_idx, work, snapshots);
@@ -710,6 +735,30 @@ fn spawn_hash_work(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normal_hash_work_reuses_complete_results_but_force_includes_them() {
+        let mut cached = crate::test_support::test_entry(
+            retro_junk_lib::scanner::GameEntry::SingleFile("cached.nes".into()),
+        );
+        cached.hashes = Some(FileHashes {
+            crc32: "12345678".into(),
+            sha1: Some("abc".into()),
+            md5: None,
+            data_size: 3,
+            warnings: Vec::new(),
+        });
+        let missing = crate::test_support::test_entry(
+            retro_junk_lib::scanner::GameEntry::SingleFile("missing.nes".into()),
+        );
+
+        let (normal, _) = collect_hash_work([&cached, &missing].into_iter(), false);
+        assert_eq!(normal.len(), 1);
+        assert_eq!(normal[0].entry_name, "missing.nes");
+
+        let (forced, _) = collect_hash_work([&cached, &missing].into_iter(), true);
+        assert_eq!(forced.len(), 2);
+    }
 
     fn disc_candidate() -> retro_junk_db::CatalogMediaMatch {
         retro_junk_db::CatalogMediaMatch {

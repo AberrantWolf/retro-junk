@@ -111,7 +111,9 @@ track sector domain rather than the complete CHD logical domain.
 
 The GUI exposes the two expensive phases separately as **Caching locally** and
 **Decoding and hashing**. Staging checks local free space before reading the
-network source and retains a 64 MiB safety reserve.
+network source and retains a 64 MiB safety reserve. **Calculate Missing
+Hashes** reuses the durable result while the library source fingerprint is
+unchanged; **Recalculate Hashes** is the explicit full reread path.
 
 ### DVD-media CHDs (`createdvd`) need a different hashing path
 

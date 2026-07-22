@@ -335,8 +335,12 @@ fn show_row_context_menu(
         ui.close();
     }
 
-    if ui.button("Calculate Hashes").clicked() {
+    if ui.button("Calculate Missing Hashes").clicked() {
         backend::hash::compute_hashes_for_selection(app, console_idx);
+        ui.close();
+    }
+    if ui.button("Recalculate Hashes").clicked() {
+        backend::hash::recompute_hashes_for_selection(app, console_idx);
         ui.close();
     }
 
