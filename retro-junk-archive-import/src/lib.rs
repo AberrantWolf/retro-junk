@@ -151,6 +151,21 @@ pub struct ImportProgress {
     pub total_bytes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanningProgressKind {
+    Indeterminate,
+    Bytes,
+    Items,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlanningProgress {
+    pub description: String,
+    pub kind: PlanningProgressKind,
+    pub current: u64,
+    pub total: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct DumpImportBatchResult {
     pub results: Vec<CandidateImportResult>,
@@ -180,18 +195,36 @@ pub fn plan_import(
     catalog: &retro_junk_db::Connection,
     cancel: &AtomicBool,
     on_progress: impl Fn(u64, u64),
+    on_phase: impl Fn(PlanningProgress),
 ) -> Result<DumpImportPlan, ImportError> {
+    on_phase(PlanningProgress {
+        description: format!("Discovering dump packages in {}", request.source.display()),
+        kind: PlanningProgressKind::Indeterminate,
+        current: 0,
+        total: 0,
+    });
     let sources = discover_packages(&request.source, context)?;
+    on_phase(PlanningProgress {
+        description: "Reading the existing archive index".to_owned(),
+        kind: PlanningProgressKind::Indeterminate,
+        current: 0,
+        total: 0,
+    });
     let archive = retro_junk_archive::scan_archive(&request.archive_root)
         .map_err(|error| ImportError::Archive(error.to_string()))?;
-    let staged_plans = sources
-        .into_iter()
-        .map(|source| {
-            check_cancel(cancel)?;
-            let plan = retro_junk_io::plan_package(&source)?;
-            Ok((source, plan))
-        })
-        .collect::<Result<Vec<_>, ImportError>>()?;
+    let source_count = sources.len() as u64;
+    let mut staged_plans = Vec::with_capacity(sources.len());
+    for (index, source) in sources.into_iter().enumerate() {
+        check_cancel(cancel)?;
+        on_phase(PlanningProgress {
+            description: format!("Enumerating package files: {}", source.display()),
+            kind: PlanningProgressKind::Items,
+            current: index as u64,
+            total: source_count,
+        });
+        let plan = retro_junk_io::plan_package(&source)?;
+        staged_plans.push((source, plan));
+    }
     let total_hint = staged_plans.iter().fold(0_u64, |total, (_, plan)| {
         total.saturating_add(plan.total_bytes)
     });
@@ -203,8 +236,32 @@ pub fn plan_import(
         .workspace_root
         .clone()
         .unwrap_or_else(retro_junk_io::default_transient_workspace);
-    for (source, staging_plan) in staged_plans {
+    on_phase(PlanningProgress {
+        description: format!(
+            "Copying packages to local workspace {} while calculating hashes",
+            workspace_root.display()
+        ),
+        kind: PlanningProgressKind::Bytes,
+        current: 0,
+        total: total_hint,
+    });
+    let analysis_total = staged_plans.len() as u64;
+    let report_analysis_complete = |completed| {
+        on_phase(PlanningProgress {
+            description: "Resolving package identities against the local catalog".to_owned(),
+            kind: PlanningProgressKind::Items,
+            current: completed,
+            total: analysis_total,
+        });
+    };
+    for (analysis_index, (source, staging_plan)) in staged_plans.into_iter().enumerate() {
         check_cancel(cancel)?;
+        on_phase(PlanningProgress {
+            description: format!("Copying package to local workspace: {}", source.display()),
+            kind: PlanningProgressKind::Bytes,
+            current: hashed,
+            total: total_hint,
+        });
         let prepared = retro_junk_io::stage_planned_package(
             &staging_plan,
             &workspace_root,
@@ -217,6 +274,12 @@ pub fn plan_import(
         let staged_source = prepared.local_source.clone();
         let package = inventory_prepared(&prepared);
         staging_leases.push(prepared.lease().clone());
+        on_phase(PlanningProgress {
+            description: format!("Analyzing staged package: {}", source.display()),
+            kind: PlanningProgressKind::Items,
+            current: analysis_index as u64,
+            total: analysis_total,
+        });
         let format = detect_format(&source, &package);
         let carrier_kind = carrier_kind_for_format(&format);
         let inferred_platform = request
@@ -253,6 +316,7 @@ pub fn plan_import(
                 verification_tool: None,
                 verification_detail: String::new(),
             });
+            report_analysis_complete((analysis_index + 1) as u64);
             continue;
         }
         if let Some((dump_id, directory)) = find_exact_duplicate(&archive, &package) {
@@ -271,6 +335,7 @@ pub fn plan_import(
                 verification_tool: None,
                 verification_detail: String::new(),
             });
+            report_analysis_complete((analysis_index + 1) as u64);
             continue;
         }
 
@@ -293,6 +358,7 @@ pub fn plan_import(
             context,
             catalog,
             cancel,
+            &on_phase,
         )?;
         let (mut matches, resolution) = if !exact_matches.is_empty() {
             (
@@ -419,6 +485,7 @@ pub fn plan_import(
             verification_tool,
             verification_detail,
         });
+        report_analysis_complete((analysis_index + 1) as u64);
     }
     let total_source_bytes = candidates
         .iter()
@@ -438,7 +505,14 @@ pub fn execute_import(
     consume: bool,
     cancel: &AtomicBool,
     on_progress: impl Fn(ImportProgress),
+    on_phase: impl Fn(PlanningProgress),
 ) -> Result<DumpImportBatchResult, ImportError> {
+    on_phase(PlanningProgress {
+        description: "Preparing the archive transaction".to_owned(),
+        kind: PlanningProgressKind::Indeterminate,
+        current: 0,
+        total: 0,
+    });
     let _lock = retro_junk_archive::ArchiveLock::acquire(&plan.request.archive_root)
         .map_err(|error| ImportError::Archive(error.to_string()))?;
     retro_junk_archive::upgrade_legacy_regional_physical_platforms(&plan.request.archive_root)
@@ -459,6 +533,15 @@ pub fn execute_import(
             ));
             continue;
         }
+        on_phase(PlanningProgress {
+            description: format!(
+                "Publishing archival package: {}",
+                candidate.source.display()
+            ),
+            kind: PlanningProgressKind::Bytes,
+            current: copied_bytes,
+            total: plan.total_source_bytes,
+        });
         let batch_key = batch_duplicate_key(&candidate);
         if let Some((directory, manifest)) = imported_packages.get(&batch_key) {
             append_playable_adoption(
@@ -468,6 +551,9 @@ pub fn execute_import(
                 manifest,
                 has_current_catalog_evidence(directory, manifest),
             )?;
+            if consume {
+                report_consume_verification(&on_phase, &candidate);
+            }
             let removed = consume && verify_and_consume(&candidate, directory, manifest, cancel)?;
             results.push(result(
                 &candidate,
@@ -480,6 +566,12 @@ pub fn execute_import(
                 total_candidates,
                 copied_bytes,
                 total_bytes: plan.total_source_bytes,
+            });
+            on_phase(PlanningProgress {
+                description: "Finalizing manifests and evidence".to_owned(),
+                kind: PlanningProgressKind::Items,
+                current: (index + 1) as u64,
+                total: total_candidates,
             });
             continue;
         }
@@ -576,6 +668,9 @@ pub fn execute_import(
                             batch_key,
                             (imported.dump_directory.clone(), imported.dump.clone()),
                         );
+                        if consume {
+                            report_consume_verification(&on_phase, &candidate);
+                        }
                         let removed = consume
                             && verify_and_consume(
                                 &candidate,
@@ -603,6 +698,9 @@ pub fn execute_import(
                     &directory.join("dump.toml"),
                 )
                 .map_err(|error| ImportError::Archive(error.to_string()))?;
+                if consume {
+                    report_consume_verification(&on_phase, &candidate);
+                }
                 let removed =
                     consume && verify_and_consume(&candidate, directory, &manifest, cancel)?;
                 append_playable_adoption(
@@ -632,8 +730,29 @@ pub fn execute_import(
             copied_bytes,
             total_bytes: plan.total_source_bytes,
         });
+        on_phase(PlanningProgress {
+            description: "Finalizing manifests and evidence".to_owned(),
+            kind: PlanningProgressKind::Items,
+            current: (index + 1) as u64,
+            total: total_candidates,
+        });
     }
     Ok(DumpImportBatchResult { results })
+}
+
+fn report_consume_verification(
+    on_phase: &impl Fn(PlanningProgress),
+    candidate: &DumpImportCandidate,
+) {
+    on_phase(PlanningProgress {
+        description: format!(
+            "Verifying source and archived copy before removal: {}",
+            candidate.source.display()
+        ),
+        kind: PlanningProgressKind::Indeterminate,
+        current: 0,
+        total: 0,
+    });
 }
 
 fn discover_packages(
@@ -1191,7 +1310,7 @@ impl ExactCatalogMatch {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn exact_catalog_matches(
     source: &Path,
     package: &SourcePackageInventory,
@@ -1201,14 +1320,32 @@ fn exact_catalog_matches(
     context: &retro_junk_lib::AnalysisContext,
     catalog: &retro_junk_db::Connection,
     cancel: &AtomicBool,
+    on_phase: &impl Fn(PlanningProgress),
 ) -> Result<ExactCatalogMatch, ImportError> {
     if matches!(format, RepresentationFormat::CueBin) {
         let Some(cue) = analysis_entrypoint(source, package) else {
             return Ok(ExactCatalogMatch::empty());
         };
         validate_cue_references(source, package, &cue)?;
-        let hashes = retro_junk_lib::disc_hash::hash_cue_disc(&cue, &|_, _| {})
-            .map_err(|error| ImportError::Archive(error.to_string()))?;
+        on_phase(PlanningProgress {
+            description: format!("Hashing staged disc tracks: {}", cue.display()),
+            kind: PlanningProgressKind::Bytes,
+            current: 0,
+            total: package.total_bytes,
+        });
+        let last_reported = std::cell::Cell::new(0_u64);
+        let hashes = retro_junk_lib::disc_hash::hash_cue_disc(&cue, &|current, total| {
+            if current == total || current.saturating_sub(last_reported.get()) >= 4 * 1024 * 1024 {
+                last_reported.set(current);
+                on_phase(PlanningProgress {
+                    description: format!("Hashing staged disc tracks: {}", cue.display()),
+                    kind: PlanningProgressKind::Bytes,
+                    current,
+                    total,
+                });
+            }
+        })
+        .map_err(|error| ImportError::Archive(error.to_string()))?;
         let tracks = hashes
             .tracks
             .into_iter()
@@ -1240,6 +1377,12 @@ fn exact_catalog_matches(
                 request
                     .archive_root
                     .join(".retro-junk/work/import-identification")
+            });
+            on_phase(PlanningProgress {
+                description: format!("Running Redumper analysis for {}", source.display()),
+                kind: PlanningProgressKind::Indeterminate,
+                current: 0,
+                total: 0,
             });
             if let Ok(audit) = redumper.audit(source, &workspace, cancel) {
                 let matches = retro_junk_db::match_complete_catalog_media_any_platform(
@@ -1641,6 +1784,7 @@ mod tests {
 
         let cancel = AtomicBool::new(false);
         let progress = std::cell::RefCell::new(Vec::new());
+        let phases = std::cell::RefCell::new(Vec::new());
         let plan = plan_import(
             DumpImportRequest {
                 source: inbox,
@@ -1656,12 +1800,26 @@ mod tests {
             &catalog,
             &cancel,
             |current, total| progress.borrow_mut().push((current, total)),
+            |phase| phases.borrow_mut().push(phase),
         )
         .unwrap();
         let progress = progress.into_inner();
         assert_eq!(progress.first(), Some(&(0, 16)));
         assert_eq!(progress.last(), Some(&(16, 16)));
         assert!(progress.iter().all(|(_, total)| *total == 16));
+        let phases = phases.into_inner();
+        assert!(phases.iter().any(|phase| {
+            phase.kind == PlanningProgressKind::Indeterminate
+                && phase.description.contains("archive index")
+        }));
+        assert!(
+            phases
+                .iter()
+                .any(|phase| { phase.kind == PlanningProgressKind::Bytes && phase.total == 16 })
+        );
+        assert!(phases.iter().any(|phase| {
+            phase.kind == PlanningProgressKind::Items && phase.current == 2 && phase.total == 2
+        }));
         assert_eq!(plan.candidates.len(), 2);
         assert!(plan.candidates.iter().all(|candidate| {
             matches!(candidate.disposition, ImportDisposition::Ready)
@@ -1673,7 +1831,23 @@ mod tests {
                 )
         }));
 
-        let result = execute_import(plan, false, &cancel, |_| {}).unwrap();
+        let execution_phases = std::cell::RefCell::new(Vec::new());
+        let result = execute_import(
+            plan,
+            false,
+            &cancel,
+            |_| {},
+            |phase| execution_phases.borrow_mut().push(phase),
+        )
+        .unwrap();
+        let execution_phases = execution_phases.into_inner();
+        assert!(execution_phases.iter().any(|phase| {
+            phase.kind == PlanningProgressKind::Bytes
+                && phase.description.contains("Publishing archival package")
+        }));
+        assert!(execution_phases.iter().any(|phase| {
+            phase.kind == PlanningProgressKind::Items && phase.current == 2 && phase.total == 2
+        }));
         assert!(result.results.iter().all(|candidate| {
             candidate.outcome == CandidateImportOutcome::Imported && !candidate.source_removed
         }));
@@ -1881,6 +2055,7 @@ mod tests {
             &catalog,
             &cancel,
             |_, _| {},
+            |_| {},
         )
         .unwrap();
         assert_eq!(plan.candidates.len(), 1);
@@ -1892,7 +2067,7 @@ mod tests {
         ));
         plan.candidates.push(plan.candidates[0].clone());
 
-        let result = execute_import(plan, false, &cancel, |_| {}).unwrap();
+        let result = execute_import(plan, false, &cancel, |_| {}, |_| {}).unwrap();
         assert_eq!(result.results[0].outcome, CandidateImportOutcome::Imported);
         assert_eq!(
             result.results[1].outcome,

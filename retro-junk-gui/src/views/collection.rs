@@ -545,8 +545,6 @@ fn start_dump_import_planning(
     let progress_sender = sender.clone();
     let context = Arc::clone(&app.context);
     let playable_root = promote_playable.then(|| source.clone());
-    let staging_source = source.clone();
-    let staging_workspace = profile.workspace_root.clone();
     let request = retro_junk_archive_import::DumpImportRequest {
         source,
         archive_root: profile.archive_root.clone(),
@@ -567,35 +565,29 @@ fn start_dump_import_planning(
                 &catalog,
                 &cancel,
                 |current, total| {
-                    let message = if total > 0 && current == 0 {
-                        AppMessage::OperationPhase {
-                            op_id,
-                            description: format!(
-                                "Copying {} to local workspace {} while calculating hashes",
-                                staging_source.display(),
-                                staging_workspace.display()
-                            ),
-                            display: ProgressDisplay::Bytes,
-                            current,
-                            total,
+                    let _ = progress_sender.send(AppMessage::OperationProgress {
+                        op_id,
+                        current,
+                        total,
+                    });
+                },
+                |phase| {
+                    let display = match phase.kind {
+                        retro_junk_archive_import::PlanningProgressKind::Bytes => {
+                            ProgressDisplay::Bytes
                         }
-                    } else if total == 0 || current >= total {
-                        AppMessage::OperationPhase {
-                            op_id,
-                            description: "Analyzing staged files and matching the local catalog"
-                                .to_owned(),
-                            display: ProgressDisplay::Count,
-                            current: 0,
-                            total: 0,
-                        }
-                    } else {
-                        AppMessage::OperationProgress {
-                            op_id,
-                            current,
-                            total,
+                        retro_junk_archive_import::PlanningProgressKind::Items
+                        | retro_junk_archive_import::PlanningProgressKind::Indeterminate => {
+                            ProgressDisplay::Count
                         }
                     };
-                    let _ = progress_sender.send(message);
+                    let _ = progress_sender.send(AppMessage::OperationPhase {
+                        op_id,
+                        description: phase.description,
+                        display,
+                        current: phase.current,
+                        total: phase.total,
+                    });
                 },
             )
             .map_err(|error| error.to_string())
@@ -629,31 +621,60 @@ fn start_dump_import(
     let db_path = app.db_path.clone();
     let profile = profile.clone();
     let handle = std::thread::spawn(move || {
-        let result =
-            retro_junk_archive_import::execute_import(plan, consume, &cancel, |progress| {
+        let result = retro_junk_archive_import::execute_import(
+            plan,
+            consume,
+            &cancel,
+            |progress| {
                 let _ = progress_sender.send(AppMessage::OperationProgress {
                     op_id,
                     current: progress.copied_bytes,
                     total: progress.total_bytes,
                 });
-            })
-            .map_err(|error| error.to_string())
-            .and_then(|result| {
-                if let Some(db_path) = db_path {
-                    let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
-                        .map_err(|error| error.to_string())?;
-                    let mut connection = retro_junk_db::open_database(&db_path)
-                        .map_err(|error| error.to_string())?;
-                    retro_junk_db::reconcile_archive_snapshot(
-                        &mut connection,
-                        &snapshot,
-                        &profile.playable_root,
-                        &profile.workspace_root,
-                    )
+            },
+            |phase| {
+                let display = match phase.kind {
+                    retro_junk_archive_import::PlanningProgressKind::Bytes => {
+                        ProgressDisplay::Bytes
+                    }
+                    retro_junk_archive_import::PlanningProgressKind::Items
+                    | retro_junk_archive_import::PlanningProgressKind::Indeterminate => {
+                        ProgressDisplay::Count
+                    }
+                };
+                let _ = progress_sender.send(AppMessage::OperationPhase {
+                    op_id,
+                    description: phase.description,
+                    display,
+                    current: phase.current,
+                    total: phase.total,
+                });
+            },
+        )
+        .map_err(|error| error.to_string())
+        .and_then(|result| {
+            if let Some(db_path) = db_path {
+                let _ = progress_sender.send(AppMessage::OperationPhase {
+                    op_id,
+                    description: "Refreshing the collection index".to_owned(),
+                    display: ProgressDisplay::Count,
+                    current: 0,
+                    total: 0,
+                });
+                let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
                     .map_err(|error| error.to_string())?;
-                }
-                Ok(result)
-            });
+                let mut connection =
+                    retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
+                retro_junk_db::reconcile_archive_snapshot(
+                    &mut connection,
+                    &snapshot,
+                    &profile.playable_root,
+                    &profile.workspace_root,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            Ok(result)
+        });
         let _ = sender.send(AppMessage::ArchiveImportComplete { op_id, result });
     });
     app.op_threads.insert(op_id, handle);
@@ -889,11 +910,20 @@ fn show_import_progress(ui: &mut egui::Ui, app: &RetroJunkApp, op_id: u64) {
         ui.strong(&operation.description);
         if operation.progress_total > 0 {
             ui.add(egui::ProgressBar::new(operation.progress_fraction()).show_percentage());
-            ui.weak(format!(
-                "{} / {}",
-                format_bytes(operation.progress_current),
-                format_bytes(operation.progress_total)
-            ));
+            ui.weak(match operation.display {
+                ProgressDisplay::Bytes => format!(
+                    "{} / {}",
+                    format_bytes(operation.progress_current),
+                    format_bytes(operation.progress_total)
+                ),
+                ProgressDisplay::Count => format!(
+                    "{} / {} items",
+                    operation.progress_current, operation.progress_total
+                ),
+                ProgressDisplay::Percent => {
+                    format!("{:.0}%", operation.progress_fraction() * 100.0)
+                }
+            });
         } else {
             ui.spinner();
         }

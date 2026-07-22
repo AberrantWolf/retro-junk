@@ -379,6 +379,7 @@ fn run_import(
         &connection,
         &cancelled,
         |_, _| {},
+        |_| {},
     )
     .map_err(|error| CliError::other(error.to_string()))?;
 
@@ -441,8 +442,9 @@ fn run_import(
             return Ok(());
         }
     }
-    let result = retro_junk_archive_import::execute_import(plan, consume, &cancelled, |_| {})
-        .map_err(|error| CliError::other(error.to_string()))?;
+    let result =
+        retro_junk_archive_import::execute_import(plan, consume, &cancelled, |_| {}, |_| {})
+            .map_err(|error| CliError::other(error.to_string()))?;
     for item in &result.results {
         log::info!(
             "{:?}: {}{} ({})",
