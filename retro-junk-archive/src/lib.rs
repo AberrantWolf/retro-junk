@@ -44,6 +44,6 @@ pub use assets::{
     add_release_file,
 };
 pub use collection::{
-    CollectionError, IngestedCarrierDump, NewCarrierDump, ingest_new_carrier_dump,
-    initialize_archive, upgrade_legacy_regional_physical_platforms,
+    CollectionError, ExpectedSourceFile, IngestedCarrierDump, NewCarrierDump,
+    ingest_new_carrier_dump, initialize_archive, upgrade_legacy_regional_physical_platforms,
 };

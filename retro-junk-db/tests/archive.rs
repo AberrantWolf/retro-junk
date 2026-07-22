@@ -135,6 +135,7 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
                 ..Default::default()
             },
             source_package: retro_junk_archive::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
             physical_copy_id: None,
         },
         &AtomicBool::new(false),

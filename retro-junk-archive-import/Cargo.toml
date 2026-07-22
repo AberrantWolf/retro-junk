@@ -9,6 +9,7 @@ retro-junk-core.workspace = true
 retro-junk-lib.workspace = true
 retro-junk-db.workspace = true
 retro-junk-disc.workspace = true
+retro-junk-io.workspace = true
 sha2.workspace = true
 chrono.workspace = true
 thiserror.workspace = true

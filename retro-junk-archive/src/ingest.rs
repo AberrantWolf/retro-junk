@@ -45,6 +45,7 @@ pub struct PlannedFile {
     pub source: PathBuf,
     pub relative_path: String,
     pub size: u64,
+    pub expected_digests: Option<FileDigests>,
 }
 
 pub struct IngestRequest {
@@ -78,6 +79,7 @@ pub fn plan_ingest(source: &Path, destination: &Path) -> Result<IngestPlan, Inge
             source: source.to_path_buf(),
             relative_path: normalize_relative_path(Path::new(name))?,
             size: metadata.len(),
+            expected_digests: None,
         });
     } else if metadata.is_dir() {
         collect_files(source, source, &mut files)?;
@@ -130,6 +132,7 @@ fn collect_files(
                 source: path,
                 relative_path,
                 size: metadata.len(),
+                expected_digests: None,
             });
         }
     }
@@ -210,24 +213,32 @@ fn ingest_into_staging(
                 source,
             })?;
         }
-        let source_hash = copy_hashing(&planned.source, &target, cancel, |bytes| {
+        let source_hashes = copy_hashing(&planned.source, &target, cancel, |bytes| {
             copied_bytes += bytes;
             on_progress(IngestProgress {
                 copied_bytes,
                 total_bytes: request.plan.total_bytes,
             });
         })?;
-        let target_hashes = hash_file_digests(&target, cancel)?;
-        if target_hashes.size != planned.size || target_hashes.sha256 != source_hash {
+        if source_hashes.size != planned.size
+            || planned
+                .expected_digests
+                .as_ref()
+                .is_some_and(|expected| expected != &source_hashes)
+        {
+            return Err(IngestError::CopyMismatch(planned.relative_path.clone()));
+        }
+        let (target_size, target_sha256) = hash_file(&target, cancel)?;
+        if target_size != source_hashes.size || target_sha256 != source_hashes.sha256 {
             return Err(IngestError::CopyMismatch(planned.relative_path.clone()));
         }
         archived.push(ArchivedFile {
             path: planned.relative_path.clone(),
-            size: target_hashes.size,
-            crc32: target_hashes.crc32,
-            md5: target_hashes.md5,
-            sha1: target_hashes.sha1,
-            sha256: target_hashes.sha256,
+            size: source_hashes.size,
+            crc32: source_hashes.crc32,
+            md5: source_hashes.md5,
+            sha1: source_hashes.sha1,
+            sha256: source_hashes.sha256,
         });
     }
     request.manifest.files = archived;
@@ -240,7 +251,7 @@ fn copy_hashing(
     target_path: &Path,
     cancel: &AtomicBool,
     mut on_bytes: impl FnMut(u64),
-) -> Result<String, IngestError> {
+) -> Result<FileDigests, IngestError> {
     let mut source = File::open(source_path).map_err(|source| IngestError::Io {
         path: source_path.display().to_string(),
         source,
@@ -253,8 +264,12 @@ fn copy_hashing(
             path: target_path.display().to_string(),
             source,
         })?;
-    let mut hash = Sha256::new();
-    let mut buffer = vec![0_u8; 1024 * 1024];
+    let mut sha256 = Sha256::new();
+    let mut sha1 = Sha1::new();
+    let mut md5 = md5::Context::new();
+    let mut crc32 = crc32fast::Hasher::new();
+    let mut size = 0_u64;
+    let mut buffer = vec![0_u8; 8 * 1024 * 1024];
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(IngestError::Cancelled);
@@ -272,19 +287,49 @@ fn copy_hashing(
                 path: target_path.display().to_string(),
                 source,
             })?;
-        hash.update(&buffer[..count]);
+        size = size.saturating_add(count as u64);
+        sha256.update(&buffer[..count]);
+        sha1.update(&buffer[..count]);
+        md5.consume(&buffer[..count]);
+        crc32.update(&buffer[..count]);
         on_bytes(count as u64);
     }
     target.sync_all().map_err(|source| IngestError::Io {
         path: target_path.display().to_string(),
         source,
     })?;
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(FileDigests {
+        size,
+        crc32: format!("{:08x}", crc32.finalize()),
+        md5: format!("{:x}", md5.compute()),
+        sha1: format!("{:x}", sha1.finalize()),
+        sha256: format!("{:x}", sha256.finalize()),
+    })
 }
 
 pub(crate) fn hash_file(path: &Path, cancel: &AtomicBool) -> Result<(u64, String), IngestError> {
-    let hashes = hash_file_digests(path, cancel)?;
-    Ok((hashes.size, hashes.sha256))
+    let mut file = File::open(path).map_err(|source| IngestError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut sha256 = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = vec![0_u8; 8 * 1024 * 1024];
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(IngestError::Cancelled);
+        }
+        let count = file.read(&mut buffer).map_err(|source| IngestError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        if count == 0 {
+            break;
+        }
+        size = size.saturating_add(count as u64);
+        sha256.update(&buffer[..count]);
+    }
+    Ok((size, format!("{:x}", sha256.finalize())))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -306,7 +351,7 @@ pub fn hash_file_digests(path: &Path, cancel: &AtomicBool) -> Result<FileDigests
     let mut md5 = md5::Context::new();
     let mut crc32 = crc32fast::Hasher::new();
     let mut size = 0_u64;
-    let mut buffer = vec![0_u8; 1024 * 1024];
+    let mut buffer = vec![0_u8; 8 * 1024 * 1024];
     loop {
         if cancel.load(Ordering::Relaxed) {
             return Err(IngestError::Cancelled);

@@ -97,6 +97,8 @@ fn hash_one(
     item: &HashWork,
     analyzer: &dyn RomAnalyzer,
     progress: &dyn Fn(u64, u64),
+    workspace_root: &std::path::Path,
+    cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<HashOutcome, String> {
     log::debug!("compute_hashes: opening file {}", item.path.display());
     if item
@@ -136,11 +138,51 @@ fn hash_one(
             }
         }
     }
-    let mut file = std::fs::File::open(&item.path).map_err(|e| e.to_string())?;
+    let is_chd = item
+        .path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("chd"));
+    let staged = if is_chd {
+        log::info!(
+            "Staging CHD locally before seek-heavy verification: {}",
+            item.path.display()
+        );
+        let mut staged_bytes = 0_u64;
+        Some(
+            retro_junk_io::stage_package(&item.path, workspace_root, cancel, |bytes| {
+                staged_bytes = staged_bytes.saturating_add(bytes);
+                progress(staged_bytes, item.file_size.saturating_mul(2));
+            })
+            .map_err(|error| error.to_string())?,
+        )
+    } else {
+        None
+    };
+    let hash_path = staged.as_ref().map_or(item.path.as_path(), |package| {
+        package.local_source.as_path()
+    });
+    let mut file = std::io::BufReader::with_capacity(
+        8 * 1024 * 1024,
+        std::fs::File::open(hash_path).map_err(|e| e.to_string())?,
+    );
     log::debug!("compute_hashes: calling hasher for {}", item.path.display());
-    let primary =
-        hasher::compute_crc32_sha1_with_progress(&mut file, analyzer, progress, Some(&item.path))
-            .map_err(|e| e.to_string())?;
+    let hash_progress = |done: u64, total: u64| {
+        if is_chd {
+            progress(
+                item.file_size.saturating_add(done),
+                item.file_size.saturating_add(total),
+            );
+        } else {
+            progress(done, total);
+        }
+    };
+    let primary = hasher::compute_crc32_sha1_with_progress(
+        &mut file,
+        analyzer,
+        &hash_progress,
+        Some(hash_path),
+    )
+    .map_err(|e| e.to_string())?;
     Ok(HashOutcome {
         primary,
         cue_tracks: None,
@@ -328,6 +370,13 @@ fn spawn_hash_work(
 
     let context = app.context.clone();
     let db_path = app.db_path.clone();
+    let workspace_root = app
+        .settings
+        .library
+        .active_profile()
+        .map_or_else(retro_junk_io::default_transient_workspace, |profile| {
+            profile.workspace_root.clone()
+        });
     let description = format!("Computing hashes ({} files)", work.len());
     let scope = folder_name.clone();
 
@@ -393,7 +442,13 @@ fn spawn_hash_work(
                     }
                 };
 
-                match hash_one(item, registered.analyzer.as_ref(), &throttled_progress) {
+                match hash_one(
+                    item,
+                    registered.analyzer.as_ref(),
+                    &throttled_progress,
+                    &workspace_root,
+                    &cancel,
+                ) {
                     Ok(outcome) => {
                         log::debug!(
                             "compute_hashes: success for {}, crc32={}, data_size={}",
@@ -700,9 +755,15 @@ mod tests {
         };
         let progress = Cell::new((0_u64, 0_u64));
 
-        let hashes = hash_one(&item, &retro_junk_sony::Ps1Analyzer, &|done, total| {
-            progress.set((done, total));
-        })
+        let hashes = hash_one(
+            &item,
+            &retro_junk_sony::Ps1Analyzer,
+            &|done, total| {
+                progress.set((done, total));
+            },
+            dir.path(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
         .unwrap();
 
         assert_eq!(hashes.primary.data_size, bin_size as u64);
@@ -738,7 +799,14 @@ mod tests {
             identification: None,
         };
 
-        let result = hash_one(&item, &retro_junk_sony::Ps1Analyzer, &|_, _| {}).unwrap();
+        let result = hash_one(
+            &item,
+            &retro_junk_sony::Ps1Analyzer,
+            &|_, _| {},
+            dir.path(),
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
 
         assert_eq!(result.primary.data_size, 2 * 2352);
         assert_eq!(result.disc_verification, DiscVerification::InvalidLayout);

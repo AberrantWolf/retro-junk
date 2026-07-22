@@ -46,7 +46,16 @@ pub struct NewCarrierDump {
     pub format: RepresentationFormat,
     pub catalog_binding: CatalogBinding,
     pub source_package: crate::SourcePackageRecord,
+    /// Digests calculated while staging the source. When supplied, archive
+    /// copy reads must reproduce them before publication.
+    pub expected_files: Vec<ExpectedSourceFile>,
     pub physical_copy_id: Option<PhysicalCopyId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExpectedSourceFile {
+    pub relative_path: String,
+    pub digests: crate::FileDigests,
 }
 
 #[derive(Debug, Clone)]
@@ -405,7 +414,25 @@ pub fn ingest_new_carrier_dump(
     dump.source_package = spec.source_package;
 
     let dump_dir = ArchiveLayout::dump_dir(&carrier_dir, &dump.captured_at, dump.dump_id);
-    let plan = plan_ingest(source, &dump_dir)?;
+    let mut plan = plan_ingest(source, &dump_dir)?;
+    for planned in &mut plan.files {
+        if let Some(expected) = spec
+            .expected_files
+            .iter()
+            .find(|expected| expected.relative_path == planned.relative_path)
+        {
+            planned.expected_digests = Some(expected.digests.clone());
+        }
+    }
+    if !spec.expected_files.is_empty()
+        && (plan.files.len() != spec.expected_files.len()
+            || plan
+                .files
+                .iter()
+                .any(|planned| planned.expected_digests.is_none()))
+    {
+        return Err(IngestError::CopyMismatch(source.display().to_string()).into());
+    }
 
     std::fs::create_dir_all(&carrier_dir).map_err(|source| CollectionError::Io {
         path: carrier_dir.display().to_string(),

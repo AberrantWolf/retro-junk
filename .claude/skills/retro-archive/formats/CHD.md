@@ -98,6 +98,17 @@ Redump DATs store checksums of **raw 2352-byte sectors** (without subchannel dat
 
 The `retro-junk-disc` crate's `hash_chd_raw_sectors()` function implements this.
 
+### Network-hosted CHDs
+
+The regular-library verifier stages a CHD into the device-local collection
+workspace with one large-buffered sequential read before opening it through a
+buffered local reader. Hunk decoding can otherwise translate into many
+latency-sensitive seek/read operations against SMB or NFS. The temporary file
+is lease-owned and removed after hashing. Hash results remain stored in the
+library database while its source fingerprint is current. The CHD header hash
+cannot replace this work because Redump verification hashes the applicable raw
+track sector domain rather than the complete CHD logical domain.
+
 ### DVD-media CHDs (`createdvd`) need a different hashing path
 
 Verified 2026-07-15 while wiring PSP's `compute_container_hashes` (CHD

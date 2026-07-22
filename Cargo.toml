@@ -18,6 +18,7 @@ members = [
     "retro-junk-disc",
     "retro-junk-archive",
     "retro-junk-archive-import",
+    "retro-junk-io",
 ]
 
 [workspace.package]
@@ -52,6 +53,7 @@ retro-junk-dat = { path = "retro-junk-dat" }
 retro-junk-disc = { path = "retro-junk-disc" }
 retro-junk-archive = { path = "retro-junk-archive" }
 retro-junk-archive-import = { path = "retro-junk-archive-import" }
+retro-junk-io = { path = "retro-junk-io" }
 retro-junk-catalog = { path = "retro-junk-catalog" }
 retro-junk-db = { path = "retro-junk-db" }
 retro-junk-import = { path = "retro-junk-import" }

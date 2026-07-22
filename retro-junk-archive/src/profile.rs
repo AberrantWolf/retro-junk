@@ -27,10 +27,11 @@ impl CollectionProfile {
             .unwrap_or("Retro Collection")
             .to_owned();
         let archive_root = parent.join("archive");
+        let profile_id = ArchiveProfileId::new();
         Self {
-            profile_id: ArchiveProfileId::new(),
+            profile_id,
             display_name,
-            workspace_root: archive_root.join(".retro-junk").join("work"),
+            workspace_root: retro_junk_io::default_profile_workspace(profile_id.0),
             archive_root,
             playable_root: playable_root.to_path_buf(),
             platform_defaults: Vec::new(),

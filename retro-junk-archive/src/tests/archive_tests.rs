@@ -55,6 +55,7 @@ fn legacy_japanese_nes_release_is_moved_to_famicom_without_recopying_dump() {
             format: RepresentationFormat::Rom,
             catalog_binding: crate::CatalogBinding::default(),
             source_package: crate::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
             physical_copy_id: None,
         },
         &AtomicBool::new(false),
@@ -135,6 +136,7 @@ fn portable_hierarchy_and_append_only_evidence_are_scannable() {
             format: RepresentationFormat::Rom,
             catalog_binding: crate::CatalogBinding::default(),
             source_package: crate::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
             physical_copy_id: None,
         },
         &AtomicBool::new(false),
@@ -216,6 +218,32 @@ fn ingest_copies_hashes_publishes_and_verifies() {
             .iter()
             .any(|failure| failure.path == "unrecorded.txt")
     );
+}
+
+#[test]
+fn ingest_rejects_bytes_that_differ_from_precomputed_staging_digests() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("game.rom");
+    std::fs::write(&source, b"changed bytes").unwrap();
+    let destination = temp.path().join("archive/dump-1");
+    let mut plan = plan_ingest(&source, &destination).unwrap();
+    plan.files[0].expected_digests = Some(crate::FileDigests {
+        size: 13,
+        crc32: "00000000".to_owned(),
+        md5: "wrong".to_owned(),
+        sha1: "wrong".to_owned(),
+        sha256: "wrong".to_owned(),
+    });
+    let manifest = DumpManifest::new(CarrierId::new(), RepresentationFormat::Rom);
+    assert!(matches!(
+        execute_ingest(
+            IngestRequest { plan, manifest },
+            &AtomicBool::new(false),
+            |_| {},
+        ),
+        Err(crate::IngestError::CopyMismatch(_))
+    ));
+    assert!(!destination.exists());
 }
 
 #[test]
@@ -365,6 +393,7 @@ fn release_assets_are_copied_and_indexed_as_authoritative_originals() {
             format: RepresentationFormat::Rom,
             catalog_binding: crate::CatalogBinding::default(),
             source_package: crate::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
             physical_copy_id: None,
         },
         &AtomicBool::new(false),

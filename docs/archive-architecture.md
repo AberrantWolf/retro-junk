@@ -8,6 +8,8 @@ Version 0.4 separates two jobs that cannot be represented honestly by one file:
 
 Device-local paths live in a collection profile. The archive itself is portable and contains no absolute paths. SQLite is a rebuildable search/index projection; TOML manifests and JSON evidence in the archive are authoritative.
 
+The profile workspace defaults to a device-local cache directory rather than beneath the archive. Imports copy each source package into a disposable workspace lease with one sequential source read while calculating CRC32, MD5, SHA-1, and SHA-256. Identification, normalized ROM hashing, CUE track hashing, and Redumper inspection use that local package. Archive publication then compares its copy pass with the staged digests and re-reads the archive destination with SHA-256 before publishing it. This deliberately trades temporary local space for fewer network reads; `--consume` retains an additional source verification before deletion.
+
 ## Layout
 
 ```text

@@ -107,6 +107,12 @@ fn migrate_legacy_profile(mut settings: AppSettings) -> AppSettings {
         settings.library.current_profile = Some(profile.profile_id);
         settings.library.profiles.push(profile);
     }
+    for profile in &mut settings.library.profiles {
+        let legacy_workspace = profile.archive_root.join(".retro-junk").join("work");
+        if profile.workspace_root == legacy_workspace {
+            profile.workspace_root = retro_junk_io::default_profile_workspace(profile.profile_id.0);
+        }
+    }
     settings
 }
 
@@ -153,4 +159,49 @@ pub fn save_settings(settings: &AppSettings) -> std::io::Result<()> {
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generated_archive_relative_workspace_moves_to_device_local_cache() {
+        let playable = PathBuf::from("/collections/roms");
+        let mut profile =
+            retro_junk_archive::CollectionProfile::from_legacy_playable_root(&playable);
+        profile.workspace_root = profile.archive_root.join(".retro-junk/work");
+        let expected = retro_junk_io::default_profile_workspace(profile.profile_id.0);
+        let settings = migrate_legacy_profile(AppSettings {
+            library: LibrarySettings {
+                current_profile: Some(profile.profile_id),
+                profiles: vec![profile],
+                current_root: Some(playable),
+                recent_roots: Vec::new(),
+            },
+            general: GeneralSettings::default(),
+        });
+        assert_eq!(settings.library.profiles[0].workspace_root, expected);
+    }
+
+    #[test]
+    fn explicitly_configured_workspace_is_preserved() {
+        let playable = PathBuf::from("/collections/roms");
+        let mut profile =
+            retro_junk_archive::CollectionProfile::from_legacy_playable_root(&playable);
+        profile.workspace_root = PathBuf::from("/fast-scratch/retro-junk");
+        let settings = migrate_legacy_profile(AppSettings {
+            library: LibrarySettings {
+                current_profile: Some(profile.profile_id),
+                profiles: vec![profile],
+                current_root: Some(playable),
+                recent_roots: Vec::new(),
+            },
+            general: GeneralSettings::default(),
+        });
+        assert_eq!(
+            settings.library.profiles[0].workspace_root,
+            PathBuf::from("/fast-scratch/retro-junk")
+        );
+    }
 }

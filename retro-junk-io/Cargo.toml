@@ -1,0 +1,20 @@
+[package]
+name = "retro-junk-io"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+crc32fast.workspace = true
+dirs.workspace = true
+md5.workspace = true
+log.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

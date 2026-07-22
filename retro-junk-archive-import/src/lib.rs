@@ -26,6 +26,8 @@ pub enum ImportError {
     Catalog(String),
     #[error("archive error: {0}")]
     Archive(String),
+    #[error(transparent)]
+    Stage(#[from] retro_junk_io::StageError),
     #[error("I/O error for {path}: {source}")]
     Io {
         path: String,
@@ -52,11 +54,15 @@ pub struct DumpImportPlan {
     pub request: DumpImportRequest,
     pub candidates: Vec<DumpImportCandidate>,
     pub total_source_bytes: u64,
+    _staging_leases: Vec<retro_junk_io::StagingLease>,
 }
 
 #[derive(Debug, Clone)]
 pub struct DumpImportCandidate {
     pub source: PathBuf,
+    /// Device-local package used for repeated identification and archive-copy
+    /// reads. `source` remains the provenance and optional consume target.
+    pub staged_source: PathBuf,
     pub package: SourcePackageInventory,
     pub format: RepresentationFormat,
     pub carrier_kind: CarrierKind,
@@ -184,12 +190,20 @@ pub fn plan_import(
         .sum();
     let mut hashed = 0_u64;
     let mut candidates = Vec::with_capacity(sources.len());
+    let mut staging_leases = Vec::with_capacity(sources.len());
+    let workspace_root = request
+        .workspace_root
+        .clone()
+        .unwrap_or_else(retro_junk_io::default_transient_workspace);
     for source in sources {
         check_cancel(cancel)?;
-        let package = inventory_package(&source, cancel, |bytes| {
+        let prepared = retro_junk_io::stage_package(&source, &workspace_root, cancel, |bytes| {
             hashed = hashed.saturating_add(bytes);
             on_progress(hashed, total_hint.max(hashed));
         })?;
+        let staged_source = prepared.local_source.clone();
+        let package = inventory_prepared(&prepared);
+        staging_leases.push(prepared.lease().clone());
         let format = detect_format(&source, &package);
         let carrier_kind = carrier_kind_for_format(&format);
         let inferred_platform = request
@@ -211,6 +225,7 @@ pub fn plan_import(
         {
             candidates.push(DumpImportCandidate {
                 source,
+                staged_source,
                 package,
                 format,
                 carrier_kind,
@@ -230,6 +245,7 @@ pub fn plan_import(
         if let Some((dump_id, directory)) = find_exact_duplicate(&archive, &package) {
             candidates.push(DumpImportCandidate {
                 source,
+                staged_source,
                 package,
                 format,
                 carrier_kind,
@@ -245,7 +261,7 @@ pub fn plan_import(
             continue;
         }
 
-        let entrypoint = analysis_entrypoint(&source, &package);
+        let entrypoint = analysis_entrypoint(&staged_source, &package);
         let header = entrypoint
             .as_deref()
             .and_then(|path| analyze_header(path, context, effective_platform_hint));
@@ -256,7 +272,7 @@ pub fn plan_import(
             method: exact_method,
             detail: verification_detail,
         } = exact_catalog_matches(
-            &source,
+            &staged_source,
             &package,
             &format,
             &request,
@@ -377,6 +393,7 @@ pub fn plan_import(
             };
         candidates.push(DumpImportCandidate {
             source,
+            staged_source,
             package,
             format,
             carrier_kind,
@@ -398,6 +415,7 @@ pub fn plan_import(
         request,
         candidates,
         total_source_bytes,
+        _staging_leases: staging_leases,
     })
 }
 
@@ -494,11 +512,20 @@ pub fn execute_import(
                     format: candidate.format.clone(),
                     catalog_binding: binding,
                     source_package,
+                    expected_files: candidate
+                        .package
+                        .files
+                        .iter()
+                        .map(|file| retro_junk_archive::ExpectedSourceFile {
+                            relative_path: file.relative_path.clone(),
+                            digests: file.digests.clone(),
+                        })
+                        .collect(),
                     physical_copy_id,
                 };
                 let imported = retro_junk_archive::ingest_new_carrier_dump(
                     &plan.request.archive_root,
-                    &candidate.source,
+                    &candidate.staged_source,
                     spec,
                     cancel,
                     |progress| {
@@ -915,6 +942,33 @@ fn inventory_package(
     })
 }
 
+fn inventory_prepared(prepared: &retro_junk_io::PreparedPackage) -> SourcePackageInventory {
+    let files = prepared
+        .files
+        .iter()
+        .map(|file| InventoryFile {
+            relative_path: file.relative_path.clone(),
+            digests: FileDigests {
+                size: file.digests.size,
+                crc32: file.digests.crc32.clone(),
+                md5: file.digests.md5.clone(),
+                sha1: file.digests.sha1.clone(),
+                sha256: file.digests.sha256.clone(),
+            },
+        })
+        .collect::<Vec<_>>();
+    let package_sha256 = fingerprint_inventory(&files);
+    let (observed_captured_at, timestamp_source) =
+        find_observed_timestamp(&prepared.local_source, &files);
+    SourcePackageInventory {
+        files,
+        total_bytes: prepared.total_bytes,
+        package_sha256,
+        observed_captured_at,
+        timestamp_source,
+    }
+}
+
 fn package_files(source: &Path) -> Result<Vec<(PathBuf, String)>, ImportError> {
     if source.is_file() {
         return Ok(vec![(
@@ -1209,6 +1263,9 @@ fn exact_catalog_matches(
     } else {
         source.join(&primary.relative_path)
     };
+    if let Some(stored) = stored_catalog_match(catalog, &primary.digests)? {
+        return Ok(stored);
+    }
     if matches!(format, RepresentationFormat::Rom) {
         let normalized =
             format_aware_catalog_matches(&primary_path, platform_hint, context, catalog, cancel)?;
@@ -1222,15 +1279,25 @@ fn exact_catalog_matches(
             });
         }
     }
-    let matches = retro_junk_db::match_catalog_file_any_platform(catalog, &primary.digests)
+    Ok(ExactCatalogMatch::empty())
+}
+
+fn stored_catalog_match(
+    catalog: &retro_junk_db::Connection,
+    digests: &FileDigests,
+) -> Result<Option<ExactCatalogMatch>, ImportError> {
+    let matches = retro_junk_db::match_catalog_file_any_platform(catalog, digests)
         .map_err(|error| ImportError::Catalog(error.to_string()))?;
-    Ok(ExactCatalogMatch {
+    if matches.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(ExactCatalogMatch {
         matches: matches.into_iter().map(CatalogCandidate::from).collect(),
         tracks: Vec::new(),
         tool: None,
         method: IdentificationMethod::ExactFileHash,
         detail: "Exact stored-file hash matched the catalog".to_owned(),
-    })
+    }))
 }
 
 fn format_aware_catalog_matches(
