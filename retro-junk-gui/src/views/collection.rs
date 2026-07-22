@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
+use egui_extras::{Column, TableBuilder};
+
 use crate::app::RetroJunkApp;
 use crate::state::{
     AppMessage, BackgroundOperation, DumpImportDialogState, OperationKind, PhysicalCopyEditor,
@@ -99,100 +101,168 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         return;
     }
     ui.add_space(8.0);
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        egui::Grid::new("archive_collection_grid")
-            .striped(true)
-            .min_col_width(72.0)
-            .show(ui, |ui| {
-                ui.strong("Platform");
-                ui.strong("Release");
-                ui.strong("Physical");
-                ui.strong("Masters");
-                ui.strong("Playable");
-                ui.strong("Desired");
-                ui.strong("Evidence");
-                ui.end_row();
-                for release in summaries {
-                    ui.label(release.platform_id);
-                    let suffix = match (release.region.is_empty(), release.revision.is_empty()) {
-                        (true, true) => String::new(),
-                        (false, true) => format!(" ({})", release.region),
-                        (true, false) => format!(" ({})", release.revision),
-                        (false, false) => format!(" ({}, {})", release.region, release.revision),
-                    };
-                    if ui
-                        .button(format!("{}{}", release.title, suffix))
-                        .on_hover_text("Edit the physical copy and playable policy")
-                        .clicked()
-                    {
-                        match load_editor(&profile.archive_root, &release.archive_release_id) {
-                            Ok(editor) => app.ui_state.collection_editor = Some(editor),
-                            Err(error) => app.push_error("Collection details", error),
-                        }
+    let selected_release_id = app
+        .ui_state
+        .collection_editor
+        .as_ref()
+        .map(|editor| editor.archive_release_id.as_str());
+    let body_height = if selected_release_id.is_some() {
+        (ui.available_height() * 0.42).clamp(140.0, 360.0)
+    } else {
+        (ui.available_height() - 24.0).max(140.0)
+    };
+    let row_height = egui::TextStyle::Body
+        .resolve(ui.style())
+        .size
+        .max(ui.spacing().interact_size.y);
+    let mut clicked_release = None;
+    egui::ScrollArea::horizontal()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            TableBuilder::new(ui)
+                .striped(true)
+                .resizable(true)
+                .sense(egui::Sense::click())
+                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                .column(Column::initial(90.0).at_least(55.0))
+                .column(Column::initial(300.0).at_least(120.0))
+                .column(Column::initial(145.0).at_least(90.0))
+                .column(Column::initial(115.0).at_least(80.0))
+                .column(Column::initial(115.0).at_least(80.0))
+                .column(Column::initial(85.0).at_least(65.0))
+                .column(Column::initial(230.0).at_least(120.0))
+                .min_scrolled_height(0.0)
+                .max_scroll_height(body_height)
+                .header(24.0, |mut header| {
+                    for label in [
+                        "Platform", "Release", "Physical", "Masters", "Playable", "Desired",
+                        "Evidence",
+                    ] {
+                        header.col(|ui| {
+                            ui.strong(label);
+                        });
                     }
-                    ui.label(format!(
-                        "{} copy / {} carrier",
-                        release.physical_copy_count, release.carrier_count
-                    ));
-                    ui.label(format!(
-                        "{}/{} present",
-                        release.preservation_present_count, release.preservation_count
-                    ));
-                    ui.label(format!(
-                        "{}/{} present",
-                        release.playable_present_count, release.playable_count
-                    ));
-                    ui.label(
-                        if release.desired_playable_count > release.satisfied_playable_count {
-                            "pending"
-                        } else if release.desired_playable_count > 0 {
-                            "satisfied"
-                        } else {
-                            "—"
-                        },
-                    );
-                    ui.label(format!(
-                        "I {} · Repro {} · Catalog {} · RT {}",
-                        release.integrity_verified_count,
-                        release.reproduction_verified_count,
-                        release.catalog_verified_count,
-                        release.round_trip_verified_count
-                    ));
-                    ui.end_row();
-                }
-            });
-        show_editor(ui, app, &profile);
-    });
+                })
+                .body(|body| {
+                    body.rows(row_height, summaries.len(), |mut row| {
+                        let release = &summaries[row.index()];
+                        row.set_selected(
+                            selected_release_id == Some(release.archive_release_id.as_str()),
+                        );
+                        let mut response =
+                            row.col(|ui| paint_cell_text(ui, &release.platform_id)).1;
+                        response |= row
+                            .col(|ui| paint_cell_text(ui, &release_display_title(release)))
+                            .1;
+                        response |= row
+                            .col(|ui| {
+                                paint_cell_text(
+                                    ui,
+                                    &format!(
+                                        "{} copy / {} carrier",
+                                        release.physical_copy_count, release.carrier_count
+                                    ),
+                                );
+                            })
+                            .1;
+                        response |= row
+                            .col(|ui| {
+                                paint_cell_text(
+                                    ui,
+                                    &format!(
+                                        "{}/{} present",
+                                        release.preservation_present_count,
+                                        release.preservation_count
+                                    ),
+                                );
+                            })
+                            .1;
+                        response |= row
+                            .col(|ui| {
+                                paint_cell_text(
+                                    ui,
+                                    &format!(
+                                        "{}/{} present",
+                                        release.playable_present_count, release.playable_count
+                                    ),
+                                );
+                            })
+                            .1;
+                        let desired =
+                            if release.desired_playable_count > release.satisfied_playable_count {
+                                "pending"
+                            } else if release.desired_playable_count > 0 {
+                                "satisfied"
+                            } else {
+                                "—"
+                            };
+                        response |= row.col(|ui| paint_cell_text(ui, desired)).1;
+                        response |= row
+                            .col(|ui| {
+                                paint_cell_text(
+                                    ui,
+                                    &format!(
+                                        "I {} · Repro {} · Catalog {} · RT {}",
+                                        release.integrity_verified_count,
+                                        release.reproduction_verified_count,
+                                        release.catalog_verified_count,
+                                        release.round_trip_verified_count
+                                    ),
+                                );
+                            })
+                            .1;
+                        if response.clicked() {
+                            clicked_release = Some(release.archive_release_id.clone());
+                        }
+                        response.on_hover_text("Show game, physical-copy, and playable details");
+                    });
+                });
+        });
+    if let Some(release_id) = clicked_release {
+        let loaded = app.catalog_db.as_ref().map_or_else(
+            || Err("Catalog database is unavailable".to_owned()),
+            |connection| load_editor(connection, &profile.archive_root, &release_id),
+        );
+        match loaded {
+            Ok(editor) => app.ui_state.collection_editor = Some(editor),
+            Err(error) => app.push_error("Collection details", error),
+        }
+    }
+    show_editor(ui, app, &profile);
 }
 
-fn load_editor(root: &std::path::Path, release_id: &str) -> Result<PhysicalCopyEditor, String> {
-    let snapshot = retro_junk_archive::scan_archive(root).map_err(|error| error.to_string())?;
-    let release = snapshot
-        .releases
-        .iter()
-        .find(|release| release.manifest.archive_release_id.to_string() == release_id)
-        .ok_or_else(|| "release is no longer present in the archive".to_owned())?;
-    let physical_copy = release
-        .physical_copies
-        .first()
-        .ok_or_else(|| "release has no physical copy".to_owned())?;
-    let carrier = physical_copy
-        .carriers
-        .first()
-        .ok_or_else(|| "physical copy has no carrier".to_owned())?;
-    let policy = carrier.manifest.playable_policy.as_ref();
+fn load_editor(
+    connection: &retro_junk_db::Connection,
+    root: &std::path::Path,
+    release_id: &str,
+) -> Result<PhysicalCopyEditor, String> {
+    let details = retro_junk_db::load_archive_collection_details(connection, release_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "release is no longer present in the archive index".to_owned())?;
     Ok(PhysicalCopyEditor {
-        physical_copy_id: physical_copy.manifest.physical_copy_id.to_string(),
-        physical_copy_manifest_path: physical_copy.directory.join("physical-copy.toml"),
-        carrier_manifest_path: carrier.directory.join("carrier.toml"),
-        label: physical_copy.manifest.label.clone(),
-        condition: physical_copy.manifest.condition.clone(),
-        notes: physical_copy.manifest.notes.clone(),
-        date_acquired: physical_copy.manifest.date_acquired.clone(),
-        provenance: physical_copy.manifest.provenance.clone(),
-        desired_format: policy.map_or_else(String::new, |policy| format_key(&policy.format)),
-        retain_intermediate: policy.is_some_and(|policy| policy.retain_canonical_intermediate),
-        allow_unverified: policy.is_some_and(|policy| policy.allow_unverified),
+        archive_release_id: details.archive_release_id,
+        platform_id: details.platform_id,
+        title: details.title,
+        region: details.region,
+        revision: details.revision,
+        variant: details.variant,
+        catalog_release_id: details.catalog_release_id.unwrap_or_default(),
+        catalog_source: details.catalog_source,
+        release_binding_state: details.release_binding_state,
+        carrier_kind: details.carrier_kind,
+        carrier_serial: details.carrier_serial,
+        carrier_binding_state: details.carrier_binding_state,
+        physical_copy_id: details.physical_copy_id,
+        physical_copy_manifest_path: root.join(details.physical_copy_manifest_path),
+        carrier_manifest_path: root.join(details.carrier_manifest_path),
+        label: details.label,
+        condition: details.condition,
+        notes: details.notes,
+        date_acquired: details.date_acquired,
+        provenance: details.provenance,
+        desired_format: details.desired_format.unwrap_or_default().replace('_', "-"),
+        retain_intermediate: details.retain_intermediate,
+        allow_unverified: details.allow_unverified,
         ingest_format: "rom".to_owned(),
     })
 }
@@ -206,7 +276,39 @@ fn show_editor(
         return;
     };
     ui.separator();
+    ui.heading(&editor.title);
+    egui::Grid::new("archive_game_identity")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label("Platform");
+            ui.label(&editor.platform_id);
+            ui.end_row();
+            ui.label("Release");
+            ui.label(release_identity(editor));
+            ui.end_row();
+            ui.label("Catalog");
+            if editor.catalog_release_id.is_empty() {
+                ui.colored_label(egui::Color32::YELLOW, &editor.release_binding_state);
+            } else {
+                ui.label(format!(
+                    "{} · {}",
+                    editor.catalog_source, editor.release_binding_state
+                ))
+                .on_hover_text(&editor.catalog_release_id);
+            }
+            ui.end_row();
+            ui.label("Carrier");
+            let carrier = if editor.carrier_serial.is_empty() {
+                editor.carrier_kind.clone()
+            } else {
+                format!("{} · {}", editor.carrier_kind, editor.carrier_serial)
+            };
+            ui.label(format!("{} · {}", carrier, editor.carrier_binding_state));
+            ui.end_row();
+        });
+    ui.add_space(6.0);
     ui.heading("Physical copy and playable policy");
+    ui.weak("Physical condition, acquisition, and provenance are intentionally user-supplied; catalog identity is shown separately above.");
     egui::Grid::new("physical_copy_editor").show(ui, |ui| {
         ui.label("Label");
         ui.text_edit_singleline(&mut editor.label);
@@ -376,19 +478,6 @@ fn parse_format(value: &str) -> Result<retro_junk_archive::RepresentationFormat,
         "cue-bin" => Ok(retro_junk_archive::RepresentationFormat::CueBin),
         _ => Err(format!("unsupported playable format: {value}")),
     }
-}
-
-fn format_key(format: &retro_junk_archive::RepresentationFormat) -> String {
-    match format {
-        retro_junk_archive::RepresentationFormat::Rom => "rom",
-        retro_junk_archive::RepresentationFormat::Chd => "chd",
-        retro_junk_archive::RepresentationFormat::Rvz => "rvz",
-        retro_junk_archive::RepresentationFormat::Iso => "iso",
-        retro_junk_archive::RepresentationFormat::CueBin => "cue-bin",
-        retro_junk_archive::RepresentationFormat::RedumperRaw => "redumper-raw",
-        retro_junk_archive::RepresentationFormat::Other(value) => value,
-    }
-    .to_owned()
 }
 
 fn reindex(
@@ -768,6 +857,44 @@ fn format_bytes(bytes: u64) -> String {
     } else {
         format!("{bytes} B")
     }
+}
+
+fn release_display_title(release: &retro_junk_db::ArchiveReleaseSummary) -> String {
+    let suffix = match (release.region.is_empty(), release.revision.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!(" ({})", release.region),
+        (true, false) => format!(" ({})", release.revision),
+        (false, false) => format!(" ({}, {})", release.region, release.revision),
+    };
+    format!("{}{}", release.title, suffix)
+}
+
+fn release_identity(editor: &PhysicalCopyEditor) -> String {
+    [
+        (!editor.region.is_empty()).then_some(editor.region.as_str()),
+        (!editor.revision.is_empty()).then_some(editor.revision.as_str()),
+        (!editor.variant.is_empty()).then_some(editor.variant.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ")
+}
+
+fn paint_cell_text(ui: &mut egui::Ui, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    let rect = ui.max_rect();
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let color = ui.visuals().text_color();
+    ui.painter().with_clip_rect(rect).text(
+        rect.left_center(),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font_id,
+        color,
+    );
 }
 
 fn start_archive_operation(

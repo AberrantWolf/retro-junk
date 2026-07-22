@@ -656,6 +656,18 @@ pub enum DumpImportDialogState {
 
 #[derive(Debug, Clone, Default)]
 pub struct PhysicalCopyEditor {
+    pub archive_release_id: String,
+    pub platform_id: String,
+    pub title: String,
+    pub region: String,
+    pub revision: String,
+    pub variant: String,
+    pub catalog_release_id: String,
+    pub catalog_source: String,
+    pub release_binding_state: String,
+    pub carrier_kind: String,
+    pub carrier_serial: String,
+    pub carrier_binding_state: String,
     pub physical_copy_id: String,
     pub physical_copy_manifest_path: PathBuf,
     pub carrier_manifest_path: PathBuf,

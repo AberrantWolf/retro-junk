@@ -34,6 +34,33 @@ pub struct ArchiveReleaseSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveCollectionDetails {
+    pub archive_release_id: String,
+    pub platform_id: String,
+    pub title: String,
+    pub region: String,
+    pub revision: String,
+    pub variant: String,
+    pub catalog_release_id: Option<String>,
+    pub release_binding_state: String,
+    pub catalog_source: String,
+    pub physical_copy_id: String,
+    pub physical_copy_manifest_path: String,
+    pub label: String,
+    pub condition: String,
+    pub notes: String,
+    pub date_acquired: String,
+    pub provenance: String,
+    pub carrier_manifest_path: String,
+    pub carrier_kind: String,
+    pub carrier_serial: String,
+    pub carrier_binding_state: String,
+    pub desired_format: Option<String>,
+    pub retain_intermediate: bool,
+    pub allow_unverified: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompleteCatalogMediaMatch {
     pub media_id: String,
     pub release_id: String,
@@ -619,6 +646,38 @@ pub fn reconcile_archive_snapshot(
             }
         }
     }
+
+    // Rebuild the bridge between the playable-library projection and archival
+    // carriers from their shared, normalized catalog hashes. In particular,
+    // cartridge library hashes omit format headers (for example iNES), just as
+    // the catalog does; comparing archive-file sizes here would miss them.
+    tx.execute(
+        "DELETE FROM library_entry_media_bindings WHERE match_method='archive_projection'",
+        [],
+    )?;
+    tx.execute(
+        "INSERT OR REPLACE INTO library_entry_media_bindings(library_entry_id,catalog_media_id,representation_id,match_method)
+         SELECT DISTINCT le.id,c.catalog_media_id,
+                (SELECT rep.id FROM representations rep
+                 WHERE rep.carrier_id=c.id AND rep.role='playable'
+                   AND replace(rep.relative_path,'\\','/')=
+                       replace(lc.folder_name || '/' || substr(le.entry_key,6),'\\','/')
+                 ORDER BY rep.id LIMIT 1),
+                'archive_projection'
+         FROM carriers c
+         JOIN physical_copies pc ON pc.id=c.physical_copy_id
+         JOIN archive_releases ar ON ar.id=pc.archive_release_id
+         JOIN media m ON m.id=c.catalog_media_id
+         JOIN library_consoles lc
+           ON lower(lc.folder_name)=lower(ar.platform_id)
+              OR lower(lc.platform)=lower(ar.platform_id)
+         JOIN library_entries le ON le.console_id=lc.id AND le.data_size=m.file_size
+         WHERE c.catalog_media_id IS NOT NULL
+           AND ((le.sha1<>'' AND m.sha1<>'' AND le.sha1=m.sha1)
+                OR (le.md5<>'' AND m.md5<>'' AND le.md5=m.md5)
+                OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))",
+        [],
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -693,6 +752,57 @@ pub fn list_archive_release_summaries(
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+pub fn load_archive_collection_details(
+    conn: &Connection,
+    archive_release_id: &str,
+) -> Result<Option<ArchiveCollectionDetails>, OperationError> {
+    conn.query_row(
+        "SELECT ar.id,ar.platform_id,ar.title,ar.region,ar.revision,ar.variant,
+                ar.catalog_release_id,ar.binding_state,COALESCE(m.dat_source,''),
+                pc.id,pc.manifest_path,pc.label,pc.condition,pc.notes,pc.date_acquired,pc.provenance,
+                c.manifest_path,c.kind,c.serial,c.binding_state,
+                pp.format,COALESCE(pp.retain_intermediate,0),COALESCE(pp.allow_unverified,0)
+         FROM archive_releases ar
+         JOIN physical_copies pc ON pc.archive_release_id=ar.id
+         JOIN carriers c ON c.physical_copy_id=pc.id
+         LEFT JOIN media m ON m.id=c.catalog_media_id
+         LEFT JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=c.id
+         WHERE ar.id=?1
+         ORDER BY pc.copy_number,c.sequence_number,c.id
+         LIMIT 1",
+        [archive_release_id],
+        |row| {
+            Ok(ArchiveCollectionDetails {
+                archive_release_id: row.get(0)?,
+                platform_id: row.get(1)?,
+                title: row.get(2)?,
+                region: row.get(3)?,
+                revision: row.get(4)?,
+                variant: row.get(5)?,
+                catalog_release_id: row.get(6)?,
+                release_binding_state: row.get(7)?,
+                catalog_source: row.get(8)?,
+                physical_copy_id: row.get(9)?,
+                physical_copy_manifest_path: row.get(10)?,
+                label: row.get(11)?,
+                condition: row.get(12)?,
+                notes: row.get(13)?,
+                date_acquired: row.get(14)?,
+                provenance: row.get(15)?,
+                carrier_manifest_path: row.get(16)?,
+                carrier_kind: row.get(17)?,
+                carrier_serial: row.get(18)?,
+                carrier_binding_state: row.get(19)?,
+                desired_format: row.get(20)?,
+                retain_intermediate: row.get(21)?,
+                allow_unverified: row.get(22)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 fn existing_id(
