@@ -531,7 +531,7 @@ fn start_dump_import_planning(
     let cancel = Arc::new(AtomicBool::new(false));
     app.operations.push(BackgroundOperation::new(
         op_id,
-        format!("Inspecting dumps in {}", source.display()),
+        format!("Enumerating package files in {}", source.display()),
         Arc::clone(&cancel),
         OperationKind::ArchiveImport,
         "archive".to_owned(),
@@ -545,6 +545,8 @@ fn start_dump_import_planning(
     let progress_sender = sender.clone();
     let context = Arc::clone(&app.context);
     let playable_root = promote_playable.then(|| source.clone());
+    let staging_source = source.clone();
+    let staging_workspace = profile.workspace_root.clone();
     let request = retro_junk_archive_import::DumpImportRequest {
         source,
         archive_root: profile.archive_root.clone(),
@@ -565,11 +567,35 @@ fn start_dump_import_planning(
                 &catalog,
                 &cancel,
                 |current, total| {
-                    let _ = progress_sender.send(AppMessage::OperationProgress {
-                        op_id,
-                        current,
-                        total,
-                    });
+                    let message = if total > 0 && current == 0 {
+                        AppMessage::OperationPhase {
+                            op_id,
+                            description: format!(
+                                "Copying {} to local workspace {} while calculating hashes",
+                                staging_source.display(),
+                                staging_workspace.display()
+                            ),
+                            display: ProgressDisplay::Bytes,
+                            current,
+                            total,
+                        }
+                    } else if total == 0 || current >= total {
+                        AppMessage::OperationPhase {
+                            op_id,
+                            description: "Analyzing staged files and matching the local catalog"
+                                .to_owned(),
+                            display: ProgressDisplay::Count,
+                            current: 0,
+                            total: 0,
+                        }
+                    } else {
+                        AppMessage::OperationProgress {
+                            op_id,
+                            current,
+                            total,
+                        }
+                    };
+                    let _ = progress_sender.send(message);
                 },
             )
             .map_err(|error| error.to_string())
@@ -643,7 +669,26 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
         match &mut dialog {
             DumpImportDialogState::Planning { op_id, source } => {
                 ui.heading("Inspecting dump packages");
-                ui.label(source.display().to_string());
+                egui::Grid::new("archive_import_planning_paths")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        ui.label("Source");
+                        ui.label(source.display().to_string());
+                        ui.end_row();
+                        ui.label("Local workspace");
+                        ui.label(
+                            app.settings
+                                .library
+                                .active_profile()
+                                .map_or_else(|| "Unavailable".to_owned(), |profile| {
+                                    profile.workspace_root.display().to_string()
+                                }),
+                        );
+                        ui.end_row();
+                    });
+                ui.weak(
+                    "Package files are staged locally once, and preservation hashes are calculated during that copy.",
+                );
                 show_import_progress(ui, app, *op_id);
                 if ui.button("Cancel").clicked() {
                     cancel_operation(app, *op_id);
@@ -841,13 +886,16 @@ fn show_import_progress(ui: &mut egui::Ui, app: &RetroJunkApp, op_id: u64) {
         .iter()
         .find(|operation| operation.id == op_id)
     {
-        ui.add(egui::ProgressBar::new(operation.progress_fraction()).show_percentage());
+        ui.strong(&operation.description);
         if operation.progress_total > 0 {
+            ui.add(egui::ProgressBar::new(operation.progress_fraction()).show_percentage());
             ui.weak(format!(
                 "{} / {}",
                 format_bytes(operation.progress_current),
                 format_bytes(operation.progress_total)
             ));
+        } else {
+            ui.spinner();
         }
     }
 }

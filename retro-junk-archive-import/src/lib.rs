@@ -184,23 +184,36 @@ pub fn plan_import(
     let sources = discover_packages(&request.source, context)?;
     let archive = retro_junk_archive::scan_archive(&request.archive_root)
         .map_err(|error| ImportError::Archive(error.to_string()))?;
-    let total_hint: u64 = sources
-        .iter()
-        .filter_map(|path| path.metadata().ok().map(|metadata| metadata.len()))
-        .sum();
+    let staged_plans = sources
+        .into_iter()
+        .map(|source| {
+            check_cancel(cancel)?;
+            let plan = retro_junk_io::plan_package(&source)?;
+            Ok((source, plan))
+        })
+        .collect::<Result<Vec<_>, ImportError>>()?;
+    let total_hint = staged_plans.iter().fold(0_u64, |total, (_, plan)| {
+        total.saturating_add(plan.total_bytes)
+    });
     let mut hashed = 0_u64;
-    let mut candidates = Vec::with_capacity(sources.len());
-    let mut staging_leases = Vec::with_capacity(sources.len());
+    on_progress(0, total_hint);
+    let mut candidates = Vec::with_capacity(staged_plans.len());
+    let mut staging_leases = Vec::with_capacity(staged_plans.len());
     let workspace_root = request
         .workspace_root
         .clone()
         .unwrap_or_else(retro_junk_io::default_transient_workspace);
-    for source in sources {
+    for (source, staging_plan) in staged_plans {
         check_cancel(cancel)?;
-        let prepared = retro_junk_io::stage_package(&source, &workspace_root, cancel, |bytes| {
-            hashed = hashed.saturating_add(bytes);
-            on_progress(hashed, total_hint.max(hashed));
-        })?;
+        let prepared = retro_junk_io::stage_planned_package(
+            &staging_plan,
+            &workspace_root,
+            cancel,
+            |bytes| {
+                hashed = hashed.saturating_add(bytes);
+                on_progress(hashed, total_hint);
+            },
+        )?;
         let staged_source = prepared.local_source.clone();
         let package = inventory_prepared(&prepared);
         staging_leases.push(prepared.lease().clone());
@@ -1627,6 +1640,7 @@ mod tests {
             .unwrap();
 
         let cancel = AtomicBool::new(false);
+        let progress = std::cell::RefCell::new(Vec::new());
         let plan = plan_import(
             DumpImportRequest {
                 source: inbox,
@@ -1641,9 +1655,13 @@ mod tests {
             &retro_junk_lib::AnalysisContext::new(),
             &catalog,
             &cancel,
-            |_, _| {},
+            |current, total| progress.borrow_mut().push((current, total)),
         )
         .unwrap();
+        let progress = progress.into_inner();
+        assert_eq!(progress.first(), Some(&(0, 16)));
+        assert_eq!(progress.last(), Some(&(16, 16)));
+        assert!(progress.iter().all(|(_, total)| *total == 16));
         assert_eq!(plan.candidates.len(), 2);
         assert!(plan.candidates.iter().all(|candidate| {
             matches!(candidate.disposition, ImportDisposition::Ready)

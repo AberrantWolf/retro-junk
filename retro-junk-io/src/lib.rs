@@ -40,6 +40,24 @@ pub struct PreparedPackage {
     pub total_bytes: u64,
 }
 
+/// An enumerate-once package plan. Planning performs metadata reads but no
+/// content reads, allowing callers to establish an accurate aggregate byte
+/// total before staging begins.
+#[derive(Debug, Clone)]
+pub struct StagingPlan {
+    source: PathBuf,
+    source_is_file: bool,
+    files: Vec<PlannedSourceFile>,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedSourceFile {
+    original_path: PathBuf,
+    relative_path: PathBuf,
+    size: u64,
+}
+
 impl PreparedPackage {
     #[must_use]
     pub fn lease(&self) -> &StagingLease {
@@ -130,36 +148,46 @@ pub fn default_transient_workspace() -> PathBuf {
         .join("retro-junk/workspaces/transient")
 }
 
-/// Copy a file or directory package into a disposable local lease while
-/// calculating every preservation digest in the same source read.
-pub fn stage_package(
-    source: &Path,
+/// Enumerate a package without reading file contents.
+pub fn plan_package(source: &Path) -> Result<StagingPlan, StageError> {
+    let metadata = checked_metadata(source)?;
+    let files = if metadata.is_file() {
+        vec![PlannedSourceFile {
+            original_path: source.to_path_buf(),
+            relative_path: safe_relative(Path::new(source.file_name().unwrap_or_default()))?,
+            size: metadata.len(),
+        }]
+    } else if metadata.is_dir() {
+        let mut files = Vec::new();
+        collect_files(source, source, &mut files)?;
+        files
+    } else {
+        return Err(StageError::InvalidSource(source.display().to_string()));
+    };
+    let total_bytes = files
+        .iter()
+        .fold(0_u64, |total, file| total.saturating_add(file.size));
+    Ok(StagingPlan {
+        source: source.to_path_buf(),
+        source_is_file: metadata.is_file(),
+        files,
+        total_bytes,
+    })
+}
+
+/// Execute an enumerate-once package plan while calculating every
+/// preservation digest in the same source content read.
+pub fn stage_planned_package(
+    plan: &StagingPlan,
     workspace_root: &Path,
     cancel: &AtomicBool,
     mut on_bytes: impl FnMut(u64),
 ) -> Result<PreparedPackage, StageError> {
-    let metadata = checked_metadata(source)?;
-    let paths = if metadata.is_file() {
-        vec![(
-            source.to_path_buf(),
-            safe_relative(Path::new(source.file_name().unwrap_or_default()))?,
-            metadata.len(),
-        )]
-    } else if metadata.is_dir() {
-        let mut paths = Vec::new();
-        collect_files(source, source, &mut paths)?;
-        paths
-    } else {
-        return Err(StageError::InvalidSource(source.display().to_string()));
-    };
-    let required_bytes = paths
-        .iter()
-        .fold(0_u64, |total, (_, _, size)| total.saturating_add(*size));
     std::fs::create_dir_all(workspace_root).map_err(|source| StageError::Io {
         path: workspace_root.display().to_string(),
         source,
     })?;
-    ensure_staging_capacity(workspace_root, required_bytes)?;
+    ensure_staging_capacity(workspace_root, plan.total_bytes)?;
 
     let lease_directory = workspace_root
         .join("staging")
@@ -173,12 +201,14 @@ pub fn stage_package(
         directory: lease_directory,
     }));
 
-    let mut files = Vec::with_capacity(paths.len());
+    let mut files = Vec::with_capacity(plan.files.len());
     let mut total_bytes = 0_u64;
-    for (original_path, relative_path, _) in paths {
+    for planned in &plan.files {
         if cancel.load(Ordering::Relaxed) {
             return Err(StageError::Cancelled);
         }
+        let original_path = planned.original_path.clone();
+        let relative_path = planned.relative_path.clone();
         let local_path = package_directory.join(&relative_path);
         if let Some(parent) = local_path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| StageError::Io {
@@ -207,7 +237,7 @@ pub fn stage_package(
         });
     }
     files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    let local_source = if metadata.is_file() {
+    let local_source = if plan.source_is_file {
         files
             .first()
             .map(|file| file.local_path.clone())
@@ -217,11 +247,23 @@ pub fn stage_package(
     };
     Ok(PreparedPackage {
         lease,
-        original_source: source.to_path_buf(),
+        original_source: plan.source.clone(),
         local_source,
         files,
         total_bytes,
     })
+}
+
+/// Copy a file or directory package into a disposable local lease while
+/// calculating every preservation digest in the same source read.
+pub fn stage_package(
+    source: &Path,
+    workspace_root: &Path,
+    cancel: &AtomicBool,
+    on_bytes: impl FnMut(u64),
+) -> Result<PreparedPackage, StageError> {
+    let plan = plan_package(source)?;
+    stage_planned_package(&plan, workspace_root, cancel, on_bytes)
 }
 
 fn ensure_staging_capacity(workspace_root: &Path, required_bytes: u64) -> Result<(), StageError> {
@@ -335,7 +377,7 @@ fn copy_and_hash(
 fn collect_files(
     root: &Path,
     directory: &Path,
-    output: &mut Vec<(PathBuf, PathBuf, u64)>,
+    output: &mut Vec<PlannedSourceFile>,
 ) -> Result<(), StageError> {
     let mut entries = std::fs::read_dir(directory)
         .map_err(|source| StageError::Io {
@@ -358,7 +400,11 @@ fn collect_files(
                 .strip_prefix(root)
                 .map_err(|_| StageError::UnsafePath(path.display().to_string()))?;
             let relative = safe_relative(relative)?;
-            output.push((path, relative, metadata.len()));
+            output.push(PlannedSourceFile {
+                original_path: path,
+                relative_path: relative,
+                size: metadata.len(),
+            });
         }
     }
     Ok(())
