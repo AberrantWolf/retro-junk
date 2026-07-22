@@ -70,6 +70,89 @@ fn sidebar_click_switches_to_settings_view() {
 }
 
 #[test]
+fn collection_row_opens_resizable_details_with_log_viewer_open() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive_root = temp.path().join("archive");
+    let playable_root = temp.path().join("roms");
+    let workspace_root = temp.path().join("work");
+    let archive_manifest = retro_junk_archive::ArchiveRootManifest::new("Test collection");
+    retro_junk_archive::initialize_archive(&archive_root, &archive_manifest).unwrap();
+    let profile = retro_junk_archive::CollectionProfile {
+        profile_id: archive_manifest.profile_id,
+        display_name: "Test collection".to_owned(),
+        archive_root: archive_root.clone(),
+        playable_root: playable_root.clone(),
+        workspace_root: workspace_root.clone(),
+        platform_defaults: Vec::new(),
+    };
+    let mut settings = crate::settings::AppSettings::default();
+    settings.library.current_profile = Some(profile.profile_id);
+    settings.library.profiles.push(profile);
+
+    let conn = retro_junk_db::open_memory().unwrap();
+    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes')", []).unwrap();
+    conn.execute(
+        "INSERT INTO works(id,canonical_name) VALUES('work','Game')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('catalog-release','work','nes','usa','Game')", []).unwrap();
+    conn.execute("INSERT INTO media(id,release_id,dat_source) VALUES('catalog-media','catalog-release','no-intro')", []).unwrap();
+    conn.execute(
+        "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,playable_root,workspace_root)
+         VALUES(?1,'Test collection','retro-junk-archive.toml','hash',?2,?3,?4)",
+        (
+            archive_manifest.profile_id.to_string(),
+            archive_root.to_string_lossy().into_owned(),
+            playable_root.to_string_lossy().into_owned(),
+            workspace_root.to_string_lossy().into_owned(),
+        ),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO archive_releases(id,profile_id,catalog_release_id,platform_id,title,region,manifest_path,manifest_sha256,binding_state)
+         VALUES('archive-release',?1,'catalog-release','nes','Game','usa','nes/game/release.toml','hash','resolved')",
+        [archive_manifest.profile_id.to_string()],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO physical_copies(id,archive_release_id,copy_number,manifest_path,manifest_sha256)
+         VALUES('physical-copy','archive-release',1,'nes/game/physical/copy-01/physical-copy.toml','hash')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO carriers(id,physical_copy_id,catalog_media_id,kind,manifest_path,manifest_sha256,binding_state)
+         VALUES('carrier','physical-copy','catalog-media','cartridge','nes/game/physical/copy-01/carrier/carrier.toml','hash','resolved')",
+        [],
+    )
+    .unwrap();
+
+    let mut harness = Harness::new_eframe(|cc| {
+        RetroJunkApp::with_parts(&cc.egui_ctx, settings, Some(conn), None)
+    });
+    harness.state_mut().ui_state.current_view = View::Collection;
+    harness.run();
+    harness.get_by_label("Game (usa)").click();
+    harness.run();
+
+    assert_eq!(
+        harness
+            .state()
+            .ui_state
+            .collection_editor
+            .as_ref()
+            .map(|editor| editor.archive_release_id.as_str()),
+        Some("archive-release")
+    );
+    harness.get_by_label("Physical copy and playable policy");
+
+    harness.state_mut().ui_state.log_viewer.open = true;
+    harness.run();
+    harness.get_by_label("Physical copy and playable policy");
+}
+
+#[test]
 fn chd_compress_busy_scopes_to_operation_kind_and_folder() {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;

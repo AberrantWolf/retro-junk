@@ -101,16 +101,29 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         return;
     }
     ui.add_space(8.0);
+    if app.ui_state.collection_editor.is_some() {
+        let available_height = ui.available_height();
+        let detail_min = (available_height * 0.25).clamp(60.0, 140.0);
+        let detail_max = (available_height - 80.0).max(detail_min);
+        let default_height = (available_height * 0.45).clamp(detail_min, detail_max);
+        egui::Panel::bottom("collection_detail_panel")
+            .resizable(true)
+            .show_separator_line(true)
+            .default_size(default_height)
+            .size_range(detail_min..=detail_max)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("collection_detail_scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| show_editor(ui, app, &profile));
+            });
+    }
     let selected_release_id = app
         .ui_state
         .collection_editor
         .as_ref()
         .map(|editor| editor.archive_release_id.as_str());
-    let body_height = if selected_release_id.is_some() {
-        (ui.available_height() * 0.42).clamp(140.0, 360.0)
-    } else {
-        (ui.available_height() - 24.0).max(140.0)
-    };
+    let body_height = (ui.available_height() - 24.0).max(0.0);
     let row_height = egui::TextStyle::Body
         .resolve(ui.style())
         .size
@@ -146,14 +159,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 .body(|body| {
                     body.rows(row_height, summaries.len(), |mut row| {
                         let release = &summaries[row.index()];
+                        let display_title = release_display_title(release);
                         row.set_selected(
                             selected_release_id == Some(release.archive_release_id.as_str()),
                         );
                         let mut response =
                             row.col(|ui| paint_cell_text(ui, &release.platform_id)).1;
-                        response |= row
-                            .col(|ui| paint_cell_text(ui, &release_display_title(release)))
-                            .1;
+                        response |= row.col(|ui| paint_cell_text(ui, &display_title)).1;
                         response |= row
                             .col(|ui| {
                                 paint_cell_text(
@@ -211,6 +223,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                                 );
                             })
                             .1;
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::SelectableLabel,
+                                true,
+                                &display_title,
+                            )
+                        });
                         if response.clicked() {
                             clicked_release = Some(release.archive_release_id.clone());
                         }
@@ -228,7 +247,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             Err(error) => app.push_error("Collection details", error),
         }
     }
-    show_editor(ui, app, &profile);
 }
 
 fn load_editor(
