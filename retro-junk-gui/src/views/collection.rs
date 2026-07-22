@@ -674,6 +674,7 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     "Create a new physical copy instead of reusing an archived copy",
                 );
                 ui.add_space(6.0);
+                let import_request = plan.request.clone();
                 egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
                     for (index, candidate) in plan.candidates.iter_mut().enumerate() {
                         ui.group(|ui| {
@@ -683,6 +684,13 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                                 ui.separator();
                                 ui.label(format!("{:?}", candidate.identification));
                                 ui.separator();
+                                if let Some(selected) = candidate.selected_match.as_ref() {
+                                    ui.label(format!(
+                                        "archive: {} · catalog: {}",
+                                        candidate.archive_platform_id, selected.platform_id
+                                    ));
+                                    ui.separator();
+                                }
                                 if *new_physical_copy
                                     && matches!(candidate.disposition, retro_junk_archive_import::ImportDisposition::NeedsPhysicalCopyChoice { .. })
                                 {
@@ -703,8 +711,14 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                                                     selection = Some(catalog_candidate);
                                                 }
                                             }
-                                        });
+                                    });
                                     if let Some(selected) = selection {
+                                        candidate.archive_platform_id =
+                                            retro_junk_archive_import::physical_archive_platform(
+                                                &import_request,
+                                                &candidate.source,
+                                                &selected,
+                                            );
                                         candidate.selected_match = Some(selected);
                                         candidate.identification = retro_junk_archive_import::IdentificationResolution::Identified {
                                             method: retro_junk_archive_import::IdentificationMethod::UserSelection,
@@ -941,6 +955,8 @@ fn start_archive_operation(
     let handle = std::thread::spawn(move || {
         let result = (|| -> Result<String, String> {
             let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            retro_junk_archive::upgrade_legacy_regional_physical_platforms(&profile.archive_root)
                 .map_err(|error| error.to_string())?;
             let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
                 .map_err(|error| error.to_string())?;

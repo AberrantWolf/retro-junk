@@ -668,9 +668,10 @@ pub fn reconcile_archive_snapshot(
          JOIN physical_copies pc ON pc.id=c.physical_copy_id
          JOIN archive_releases ar ON ar.id=pc.archive_release_id
          JOIN media m ON m.id=c.catalog_media_id
+         JOIN releases cr ON cr.id=m.release_id
          JOIN library_consoles lc
-           ON lower(lc.folder_name)=lower(ar.platform_id)
-              OR lower(lc.platform)=lower(ar.platform_id)
+           ON lower(lc.folder_name)=lower(cr.platform_id)
+              OR lower(lc.platform)=lower(cr.platform_id)
          JOIN library_entries le ON le.console_id=lc.id AND le.data_size=m.file_size
          WHERE c.catalog_media_id IS NOT NULL
            AND ((le.sha1<>'' AND m.sha1<>'' AND le.sha1=m.sha1)

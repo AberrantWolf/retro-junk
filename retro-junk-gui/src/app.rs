@@ -275,20 +275,25 @@ impl RetroJunkApp {
                     .join("retro-junk-archive.toml")
                     .is_file()
             {
-                match retro_junk_archive::scan_archive(&profile.archive_root).and_then(|snapshot| {
+                let rebuild = (|| -> Result<(), String> {
+                    let _archive_lock =
+                        retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                            .map_err(|error| error.to_string())?;
+                    retro_junk_archive::upgrade_legacy_regional_physical_platforms(
+                        &profile.archive_root,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                        .map_err(|error| error.to_string())?;
                     retro_junk_db::reconcile_archive_snapshot(
                         connection,
                         &snapshot,
                         &profile.playable_root,
                         &profile.workspace_root,
                     )
-                    .map_err(|error| {
-                        retro_junk_archive::index::IndexError::Io {
-                            path: profile.archive_root.display().to_string(),
-                            source: std::io::Error::other(error.to_string()),
-                        }
-                    })
-                }) {
+                    .map_err(|error| error.to_string())
+                })();
+                match rebuild {
                     Ok(()) => {}
                     Err(error) => log::warn!("Could not rebuild archive projection: {error}"),
                 }

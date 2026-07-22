@@ -2206,6 +2206,10 @@ fn run_reindex(
     workspace_root: Option<PathBuf>,
     db: Option<PathBuf>,
 ) -> Result<(), CliError> {
+    let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&archive_root)
+        .map_err(|error| CliError::other(error.to_string()))?;
+    let upgraded = retro_junk_archive::upgrade_legacy_regional_physical_platforms(&archive_root)
+        .map_err(|error| CliError::other(error.to_string()))?;
     let snapshot =
         scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
     let playable_root = playable_root.unwrap_or_else(|| {
@@ -2229,6 +2233,9 @@ fn run_reindex(
         &workspace_root,
     )
     .map_err(|error| CliError::database(error.to_string()))?;
+    if upgraded > 0 {
+        log::info!("Reclassified {upgraded} release(s) under their regional physical platform");
+    }
     log::info!("Rebuilt archive index in {}", db.display());
     Ok(())
 }

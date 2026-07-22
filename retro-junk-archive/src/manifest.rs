@@ -6,6 +6,8 @@ use uuid::Uuid;
 
 use crate::MANIFEST_SCHEMA_VERSION;
 
+pub const REGIONAL_PHYSICAL_PLATFORM_MIGRATION: &str = "regional-physical-platform-v1";
+
 macro_rules! archive_id {
     ($name:ident) => {
         #[derive(
@@ -60,6 +62,8 @@ pub struct ArchiveRootManifest {
     pub display_name: String,
     #[serde(default)]
     pub platform_defaults: Vec<PlatformPlayableDefault>,
+    #[serde(default)]
+    pub applied_migrations: Vec<String>,
 }
 
 impl ArchiveRootManifest {
@@ -70,6 +74,7 @@ impl ArchiveRootManifest {
             profile_id: ArchiveProfileId::new(),
             display_name: display_name.into(),
             platform_defaults: Vec::new(),
+            applied_migrations: vec![REGIONAL_PHYSICAL_PLATFORM_MIGRATION.to_owned()],
         }
     }
 }

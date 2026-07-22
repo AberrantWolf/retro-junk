@@ -199,12 +199,11 @@ fn apply_profile_action(app: &mut RetroJunkApp, action: ProfileAction) {
         }
         ProfileAction::Workspace(path) => profile.workspace_root = path,
         ProfileAction::Initialize => {
-            let manifest = retro_junk_archive::ArchiveRootManifest {
-                schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
-                profile_id: profile.profile_id,
-                display_name: profile.display_name.clone(),
-                platform_defaults: profile.platform_defaults.clone(),
-            };
+            let mut manifest = retro_junk_archive::ArchiveRootManifest::new(&profile.display_name);
+            manifest.profile_id = profile.profile_id;
+            manifest
+                .platform_defaults
+                .clone_from(&profile.platform_defaults);
             if let Err(error) =
                 retro_junk_archive::initialize_archive(&profile.archive_root, &manifest)
             {

@@ -115,6 +115,152 @@ pub fn initialize_archive(
     Ok(())
 }
 
+/// Upgrade 0.4 pre-release archives that used a combined catalog platform as
+/// the physical platform. Directory renames remain on the same archive
+/// filesystem; dump payloads are never recopied.
+pub fn upgrade_legacy_regional_physical_platforms(root: &Path) -> Result<usize, CollectionError> {
+    let root_manifest_path = root.join("retro-junk-archive.toml");
+    let mut root_manifest: ArchiveRootManifest = read_toml(&root_manifest_path)?;
+    if root_manifest
+        .applied_migrations
+        .iter()
+        .any(|migration| migration == crate::REGIONAL_PHYSICAL_PLATFORM_MIGRATION)
+    {
+        return Ok(0);
+    }
+    let mut upgraded = 0;
+    for platform_entry in std::fs::read_dir(root).map_err(|source| CollectionError::Io {
+        path: root.display().to_string(),
+        source,
+    })? {
+        let platform_entry = platform_entry.map_err(|source| CollectionError::Io {
+            path: root.display().to_string(),
+            source,
+        })?;
+        if !platform_entry
+            .file_type()
+            .map_err(|source| CollectionError::Io {
+                path: platform_entry.path().display().to_string(),
+                source,
+            })?
+            .is_dir()
+        {
+            continue;
+        }
+        let platform_directory = platform_entry.path();
+        let platform_folder = platform_entry.file_name().to_string_lossy().into_owned();
+        for release_entry in
+            std::fs::read_dir(&platform_directory).map_err(|source| CollectionError::Io {
+                path: platform_directory.display().to_string(),
+                source,
+            })?
+        {
+            let release_entry = release_entry.map_err(|source| CollectionError::Io {
+                path: platform_directory.display().to_string(),
+                source,
+            })?;
+            if !release_entry
+                .file_type()
+                .map_err(|source| CollectionError::Io {
+                    path: release_entry.path().display().to_string(),
+                    source,
+                })?
+                .is_dir()
+            {
+                continue;
+            }
+            let source_directory = release_entry.path();
+            let source_manifest_path = source_directory.join("release.toml");
+            if !source_manifest_path.is_file() {
+                continue;
+            }
+            upgraded += usize::from(upgrade_legacy_regional_release(root, &source_directory)?);
+        }
+        if matches!(
+            platform_folder.to_ascii_lowercase().as_str(),
+            "nes" | "snes" | "genesis" | "pce"
+        ) {
+            let _ = std::fs::remove_dir(&platform_directory);
+        }
+    }
+    root_manifest
+        .applied_migrations
+        .push(crate::REGIONAL_PHYSICAL_PLATFORM_MIGRATION.to_owned());
+    write_toml_atomic(&root_manifest_path, &root_manifest)?;
+    Ok(upgraded)
+}
+
+fn upgrade_legacy_regional_release(
+    root: &Path,
+    source_directory: &Path,
+) -> Result<bool, CollectionError> {
+    let mut manifest: ReleaseManifest = read_toml(&source_directory.join("release.toml"))?;
+    let Some(target_platform) = regional_physical_platform(&manifest.platform_id, &manifest.region)
+    else {
+        return Ok(false);
+    };
+    if target_platform.eq_ignore_ascii_case(&manifest.platform_id) {
+        return Ok(false);
+    }
+    manifest.platform_id.clear();
+    manifest.platform_id.push_str(target_platform);
+    let target_parent = root.join(target_platform);
+    std::fs::create_dir_all(&target_parent).map_err(|source| CollectionError::Io {
+        path: target_parent.display().to_string(),
+        source,
+    })?;
+    let name = source_directory.file_name().unwrap_or_default();
+    let mut target_directory = target_parent.join(name);
+    if target_directory != source_directory && target_directory.exists() {
+        target_directory = target_parent.join(format!(
+            "{}--{}",
+            name.to_string_lossy(),
+            &manifest.archive_release_id.to_string()[..8]
+        ));
+    }
+    if target_directory != source_directory {
+        std::fs::rename(source_directory, &target_directory).map_err(|source| {
+            CollectionError::Io {
+                path: format!(
+                    "{} -> {}",
+                    source_directory.display(),
+                    target_directory.display()
+                ),
+                source,
+            }
+        })?;
+    }
+    let target_manifest_path = target_directory.join("release.toml");
+    if let Err(error) = write_toml_atomic(&target_manifest_path, &manifest) {
+        if target_directory != source_directory {
+            let _ = std::fs::rename(&target_directory, source_directory);
+        }
+        return Err(error.into());
+    }
+    Ok(true)
+}
+
+fn regional_physical_platform(platform: &str, region: &str) -> Option<&'static str> {
+    let platform = platform.trim().to_ascii_lowercase();
+    let region = region.trim().to_ascii_lowercase();
+    match platform.as_str() {
+        "nes" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("famicom"),
+        "snes" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("super-famicom"),
+        "genesis"
+            if matches!(
+                region.as_str(),
+                "japan" | "jp" | "jpn" | "europe" | "eur" | "australia" | "brazil" | "asia"
+            ) =>
+        {
+            Some("megadrive")
+        }
+        "pce" if matches!(region.as_str(), "usa" | "us" | "canada" | "europe" | "eur") => {
+            Some("tg16")
+        }
+        _ => None,
+    }
+}
+
 fn empty_prototype_archive(root: &Path) -> Result<bool, CollectionError> {
     for entry in std::fs::read_dir(root).map_err(|source| CollectionError::Io {
         path: root.display().to_string(),

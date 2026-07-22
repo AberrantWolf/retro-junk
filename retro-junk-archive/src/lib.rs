@@ -45,5 +45,5 @@ pub use assets::{
 };
 pub use collection::{
     CollectionError, IngestedCarrierDump, NewCarrierDump, ingest_new_carrier_dump,
-    initialize_archive,
+    initialize_archive, upgrade_legacy_regional_physical_platforms,
 };

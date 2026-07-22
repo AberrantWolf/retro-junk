@@ -4,8 +4,8 @@ use crate::{
     ArchiveLayout, ArchiveRootManifest, CarrierId, DumpManifest, IngestRequest, NewCarrierDump,
     RepresentationFormat, VerificationEvidence, VerificationId, VerificationKind,
     VerificationOutcome, execute_ingest, ingest_new_carrier_dump, initialize_archive,
-    normalize_relative_path, plan_ingest, read_toml, scan_archive, verify_dump_integrity,
-    write_json_new,
+    normalize_relative_path, plan_ingest, read_toml, scan_archive,
+    upgrade_legacy_regional_physical_platforms, verify_dump_integrity, write_json_new,
 };
 
 #[test]
@@ -26,6 +26,68 @@ fn archive_lock_is_exclusive_and_released_on_drop() {
     ));
     drop(lock);
     crate::ArchiveLock::acquire(&root).unwrap();
+}
+
+#[test]
+fn legacy_japanese_nes_release_is_moved_to_famicom_without_recopying_dump() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    let mut root_manifest = ArchiveRootManifest::new("Famicom migration");
+    root_manifest.applied_migrations.clear();
+    initialize_archive(&archive, &root_manifest).unwrap();
+    let rom = temp.path().join("game.nes");
+    std::fs::write(&rom, b"preserved bytes").unwrap();
+    let imported = ingest_new_carrier_dump(
+        &archive,
+        &rom,
+        NewCarrierDump {
+            platform_id: "nes".to_owned(),
+            title: "Japanese Game".to_owned(),
+            region: "Japan".to_owned(),
+            revision: String::new(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: String::new(),
+            sequence_number: 0,
+            carrier_label: String::new(),
+            carrier_kind: crate::CarrierKind::Cartridge,
+            format: RepresentationFormat::Rom,
+            catalog_binding: crate::CatalogBinding::default(),
+            source_package: crate::SourcePackageRecord::default(),
+            physical_copy_id: None,
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    let old_release_directory = imported
+        .dump_directory
+        .ancestors()
+        .find(|path| path.join("release.toml").is_file())
+        .unwrap()
+        .to_path_buf();
+
+    assert_eq!(
+        upgrade_legacy_regional_physical_platforms(&archive).unwrap(),
+        1
+    );
+    assert!(!old_release_directory.exists());
+    let snapshot = scan_archive(&archive).unwrap();
+    assert_eq!(snapshot.releases[0].manifest.platform_id, "famicom");
+    assert!(
+        snapshot.releases[0]
+            .directory
+            .starts_with(archive.join("famicom"))
+    );
+    let raw = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0]
+        .directory
+        .join("raw/game.nes");
+    assert_eq!(std::fs::read(raw).unwrap(), b"preserved bytes");
+    assert_eq!(
+        upgrade_legacy_regional_physical_platforms(&archive).unwrap(),
+        0
+    );
 }
 
 #[test]

@@ -107,3 +107,27 @@ fn missing_dir_returns_empty() {
     let result = load_platforms(&missing).unwrap();
     assert!(result.is_empty());
 }
+
+#[test]
+fn shipped_platform_relationships_reference_known_platforms() {
+    let platforms_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("catalog/platforms");
+    let platforms = load_platforms(&platforms_dir).unwrap();
+    let ids = platforms
+        .iter()
+        .map(|platform| platform.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for platform in &platforms {
+        for relationship in &platform.relationships {
+            assert!(
+                ids.contains(relationship.platform.as_str()),
+                "{} references missing platform {}",
+                platform.id,
+                relationship.platform
+            );
+        }
+    }
+}

@@ -1,0 +1,13 @@
+id: pce
+display_name: "NEC PC Engine"
+short_name: PCE
+manufacturer: NEC
+generation: 4
+media_type: cartridge
+release_year: 1987
+regions:
+  - region: japan
+    release_date: "1987-10-30"
+relationships:
+  - platform: tg16
+    type: regional_variant

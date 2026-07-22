@@ -1,0 +1,13 @@
+id: tg16
+display_name: "TurboGrafx-16"
+short_name: TG16
+manufacturer: NEC
+generation: 4
+media_type: cartridge
+release_year: 1989
+regions:
+  - region: usa
+    release_date: "1989-08-29"
+relationships:
+  - platform: pce
+    type: regional_variant

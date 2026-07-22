@@ -60,6 +60,9 @@ pub struct DumpImportCandidate {
     pub package: SourcePackageInventory,
     pub format: RepresentationFormat,
     pub carrier_kind: CarrierKind,
+    /// Physical platform used for archive layout. This may be more specific
+    /// than the shared catalog platform (for example `famicom` vs `nes`).
+    pub archive_platform_id: String,
     pub identification: IdentificationResolution,
     pub disposition: ImportDisposition,
     pub selected_match: Option<CatalogCandidate>,
@@ -193,13 +196,14 @@ pub fn plan_import(
             .playable_root
             .as_deref()
             .and_then(|root| infer_playable_platform(root, &source, context));
-        let effective_platform_hint = request
-            .platform_hint
+        let normalized_platform_hint = request.platform_hint.as_deref().map(catalog_platform_hint);
+        let effective_platform_hint = normalized_platform_hint
             .as_deref()
             .or(inferred_platform.as_deref());
         let is_cartridge_platform = effective_platform_hint
             .and_then(|platform| context.get_by_short_name(platform))
-            .is_some_and(|console| console.analyzer.chd_extensions().is_empty());
+            .is_some_and(|console| console.analyzer.chd_extensions().is_empty())
+            || effective_platform_hint.is_some_and(is_known_cartridge_catalog_platform);
         if request.playable_root.is_some()
             && (!source.is_file()
                 || !matches!(format, RepresentationFormat::Rom)
@@ -210,6 +214,7 @@ pub fn plan_import(
                 package,
                 format,
                 carrier_kind,
+                archive_platform_id: String::new(),
                 identification: IdentificationResolution::Unresolved,
                 disposition: ImportDisposition::Invalid {
                     reason: "playable promotion currently accepts only loose, archival-equivalent cartridge ROM files".to_owned(),
@@ -228,6 +233,7 @@ pub fn plan_import(
                 package,
                 format,
                 carrier_kind,
+                archive_platform_id: String::new(),
                 identification: IdentificationResolution::Unresolved,
                 disposition: ImportDisposition::AlreadyArchived { dump_id, directory },
                 selected_match: None,
@@ -299,75 +305,82 @@ pub fn plan_import(
             }
         }
         deduplicate_matches(&mut matches);
-        let (selected_match, disposition, identification, physical_copy_id) = match matches
-            .as_slice()
-        {
-            [] => (
-                None,
-                ImportDisposition::Unresolved {
-                    reason: "no catalog hash or serial match".to_owned(),
-                },
-                IdentificationResolution::Unresolved,
-                None,
-            ),
-            [selected] => {
-                let copies = archive
-                    .releases
-                    .iter()
-                    .find(|release| {
-                        release.manifest.catalog_binding.catalog_release_id == selected.release_id
-                            || (release.manifest.platform_id == selected.platform_id
-                                && release.manifest.title == selected.title
-                                && release.manifest.region == selected.region
-                                && release.manifest.revision == selected.revision
-                                && release.manifest.variant == selected.variant)
-                    })
-                    .map(|release| {
-                        release
-                            .physical_copies
-                            .iter()
-                            .map(|copy| PhysicalCopyCandidate {
-                                physical_copy_id: copy.manifest.physical_copy_id,
-                                copy_number: copy.manifest.copy_number,
-                                label: copy.manifest.label.clone(),
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
-                if !request.new_physical_copy && copies.len() > 1 {
-                    (
-                        Some(selected.clone()),
-                        ImportDisposition::NeedsPhysicalCopyChoice { copies },
-                        resolution,
-                        None,
-                    )
-                } else {
-                    (
-                        Some(selected.clone()),
-                        ImportDisposition::Ready,
-                        resolution,
-                        if request.new_physical_copy {
-                            None
-                        } else {
-                            copies.first().map(|copy| copy.physical_copy_id)
-                        },
-                    )
+        let (selected_match, disposition, identification, physical_copy_id, archive_platform_id) =
+            match matches.as_slice() {
+                [] => (
+                    None,
+                    ImportDisposition::Unresolved {
+                        reason: "no catalog hash or serial match".to_owned(),
+                    },
+                    IdentificationResolution::Unresolved,
+                    None,
+                    String::new(),
+                ),
+                [selected] => {
+                    let archive_platform_id =
+                        physical_archive_platform(&request, &source, selected);
+                    let copies = archive
+                        .releases
+                        .iter()
+                        .find(|release| {
+                            release.manifest.catalog_binding.catalog_release_id
+                                == selected.release_id
+                                || (release.manifest.platform_id == archive_platform_id
+                                    && release.manifest.title == selected.title
+                                    && release.manifest.region == selected.region
+                                    && release.manifest.revision == selected.revision
+                                    && release.manifest.variant == selected.variant)
+                        })
+                        .map(|release| {
+                            release
+                                .physical_copies
+                                .iter()
+                                .map(|copy| PhysicalCopyCandidate {
+                                    physical_copy_id: copy.manifest.physical_copy_id,
+                                    copy_number: copy.manifest.copy_number,
+                                    label: copy.manifest.label.clone(),
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    if !request.new_physical_copy && copies.len() > 1 {
+                        (
+                            Some(selected.clone()),
+                            ImportDisposition::NeedsPhysicalCopyChoice { copies },
+                            resolution,
+                            None,
+                            archive_platform_id,
+                        )
+                    } else {
+                        (
+                            Some(selected.clone()),
+                            ImportDisposition::Ready,
+                            resolution,
+                            if request.new_physical_copy {
+                                None
+                            } else {
+                                copies.first().map(|copy| copy.physical_copy_id)
+                            },
+                            archive_platform_id,
+                        )
+                    }
                 }
-            }
-            _ => (
-                None,
-                ImportDisposition::NeedsCatalogChoice {
-                    candidates: matches,
-                },
-                IdentificationResolution::Ambiguous,
-                None,
-            ),
-        };
+                _ => (
+                    None,
+                    ImportDisposition::NeedsCatalogChoice {
+                        candidates: matches,
+                    },
+                    IdentificationResolution::Ambiguous,
+                    None,
+                    String::new(),
+                ),
+            };
         candidates.push(DumpImportCandidate {
             source,
             package,
             format,
             carrier_kind,
+            archive_platform_id,
             identification,
             disposition,
             selected_match,
@@ -396,6 +409,8 @@ pub fn execute_import(
     on_progress: impl Fn(ImportProgress),
 ) -> Result<DumpImportBatchResult, ImportError> {
     let _lock = retro_junk_archive::ArchiveLock::acquire(&plan.request.archive_root)
+        .map_err(|error| ImportError::Archive(error.to_string()))?;
+    retro_junk_archive::upgrade_legacy_regional_physical_platforms(&plan.request.archive_root)
         .map_err(|error| ImportError::Archive(error.to_string()))?;
     let total_candidates = plan.candidates.len() as u64;
     let mut copied_bytes = 0_u64;
@@ -461,7 +476,11 @@ pub fn execute_import(
                 };
                 let source_package = source_record(&candidate.source, &candidate.package);
                 let spec = NewCarrierDump {
-                    platform_id: selected.platform_id.clone(),
+                    platform_id: if candidate.archive_platform_id.is_empty() {
+                        selected.platform_id.clone()
+                    } else {
+                        candidate.archive_platform_id.clone()
+                    },
                     title: selected.title.clone(),
                     region: selected.region.clone(),
                     revision: selected.revision.clone(),
@@ -597,7 +616,9 @@ fn discover_packages(
     let source_is_platform_directory = source
         .file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| context.matches_any_console(name));
+        .is_some_and(|name| {
+            context.matches_any_console(name) || catalog_platform_name(name).is_some()
+        });
     if looks_like_package(source) && !source_is_platform_directory {
         return Ok(vec![source.to_path_buf()]);
     }
@@ -617,7 +638,7 @@ fn discover_packages(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .unwrap_or_default();
-            if context.matches_any_console(name) {
+            if context.matches_any_console(name) || catalog_platform_name(name).is_some() {
                 for grandchild in sorted_children(&child)? {
                     if (grandchild.is_dir() && looks_like_package(&grandchild))
                         || (grandchild.is_file() && recognized_file(&grandchild))
@@ -644,7 +665,7 @@ fn infer_playable_platform(
 ) -> Option<String> {
     let root_name = playable_root.file_name().and_then(|name| name.to_str());
     let folder = root_name
-        .filter(|name| context.matches_any_console(name))
+        .filter(|name| context.matches_any_console(name) || catalog_platform_name(name).is_some())
         .or_else(|| {
             source
                 .strip_prefix(playable_root)
@@ -656,6 +677,126 @@ fn infer_playable_platform(
         .find_by_folder(folder)
         .first()
         .map(|console| console.metadata.short_name.to_owned())
+        .or_else(|| catalog_platform_name(folder).map(str::to_owned))
+}
+
+fn catalog_platform_hint(platform: &str) -> String {
+    catalog_platform_name(platform)
+        .unwrap_or(platform)
+        .to_owned()
+}
+
+/// Choose the physical platform used by the archive without changing the
+/// shared catalog namespace used to verify the ROM.
+#[must_use]
+pub fn physical_archive_platform(
+    request: &DumpImportRequest,
+    source: &Path,
+    selected: &CatalogCandidate,
+) -> String {
+    let catalog_platform = selected.platform_id.trim().to_ascii_lowercase();
+    if !matches!(
+        catalog_platform.as_str(),
+        "nes" | "snes" | "genesis" | "pce"
+    ) {
+        return selected.platform_id.clone();
+    }
+    if let Some(explicit) = request.platform_hint.as_deref()
+        && let Some(platform) = named_physical_platform(&catalog_platform, explicit)
+    {
+        return platform.to_owned();
+    }
+    if let Some(platform) = source_platform_folder(request, source)
+        .and_then(|folder| named_physical_platform(&catalog_platform, &folder))
+        .filter(|platform| *platform != catalog_platform)
+    {
+        return platform.to_owned();
+    }
+    regional_physical_platform(&catalog_platform, &selected.region)
+        .unwrap_or(catalog_platform.as_str())
+        .to_owned()
+}
+
+fn source_platform_folder(request: &DumpImportRequest, source: &Path) -> Option<String> {
+    let playable_root = request.playable_root.as_deref()?;
+    let root_name = playable_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if catalog_platform_name(root_name).is_some() {
+        return Some(root_name.to_owned());
+    }
+    source
+        .strip_prefix(playable_root)
+        .ok()
+        .and_then(|relative| relative.components().next())
+        .and_then(|component| component.as_os_str().to_str())
+        .map(str::to_owned)
+}
+
+fn catalog_platform_name(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "nes" | "famicom" | "fc" | "family computer" | "nintendo family computer" => Some("nes"),
+        "snes"
+        | "super nintendo"
+        | "super nintendo entertainment system"
+        | "sfc"
+        | "super famicom"
+        | "super-famicom" => Some("snes"),
+        "genesis" | "sega genesis" | "md" | "mega drive" | "mega-drive" | "megadrive" => {
+            Some("genesis")
+        }
+        "pce" | "pc engine" | "pc-engine" | "pcengine" | "tg16" | "tg-16" | "turbografx"
+        | "turbografx-16" | "turbo grafx 16" => Some("pce"),
+        _ => None,
+    }
+}
+
+fn named_physical_platform(catalog_platform: &str, value: &str) -> Option<&'static str> {
+    let value = value.trim().to_ascii_lowercase();
+    match (catalog_platform, value.as_str()) {
+        ("nes", "nes") => Some("nes"),
+        ("nes", "famicom" | "fc" | "family computer" | "nintendo family computer") => {
+            Some("famicom")
+        }
+        ("snes", "snes" | "super nintendo" | "super nintendo entertainment system") => Some("snes"),
+        ("snes", "sfc" | "super famicom" | "super-famicom") => Some("super-famicom"),
+        ("genesis", "genesis" | "sega genesis") => Some("genesis"),
+        ("genesis", "md" | "mega drive" | "mega-drive" | "megadrive") => Some("megadrive"),
+        ("pce", "pce" | "pc engine" | "pc-engine" | "pcengine") => Some("pce"),
+        ("pce", "tg16" | "tg-16" | "turbografx" | "turbografx-16" | "turbo grafx 16") => {
+            Some("tg16")
+        }
+        _ => None,
+    }
+}
+
+fn regional_physical_platform(catalog_platform: &str, region: &str) -> Option<&'static str> {
+    let region = region.trim().to_ascii_lowercase();
+    match catalog_platform {
+        "nes" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("famicom"),
+        "nes" => Some("nes"),
+        "snes" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("super-famicom"),
+        "snes" => Some("snes"),
+        "genesis"
+            if matches!(
+                region.as_str(),
+                "japan" | "jp" | "jpn" | "europe" | "eur" | "australia" | "brazil" | "asia"
+            ) =>
+        {
+            Some("megadrive")
+        }
+        "genesis" => Some("genesis"),
+        "pce" if matches!(region.as_str(), "usa" | "us" | "canada" | "europe" | "eur") => {
+            Some("tg16")
+        }
+        "pce" => Some("pce"),
+        _ => None,
+    }
+}
+
+fn is_known_cartridge_catalog_platform(platform: &str) -> bool {
+    matches!(platform, "nes" | "snes" | "genesis" | "pce")
 }
 
 fn looks_like_package(path: &Path) -> bool {
@@ -720,6 +861,7 @@ fn recognized_file(path: &Path) -> bool {
             | "gen"
             | "smd"
             | "32x"
+            | "pce"
             | "gg"
     )
 }
@@ -1495,6 +1637,99 @@ mod tests {
             discover_packages(temp.path(), &retro_junk_lib::AnalysisContext::new()).unwrap();
         assert_eq!(packages.len(), 2);
         assert!(packages.iter().all(|package| package.is_file()));
+    }
+
+    #[test]
+    fn combined_catalogs_keep_separate_regional_physical_platforms() {
+        let request = DumpImportRequest {
+            source: PathBuf::from("/roms"),
+            archive_root: PathBuf::from("/archive"),
+            platform_hint: None,
+            owner_id: "default".to_owned(),
+            new_physical_copy: false,
+            redumper_path: None,
+            workspace_root: None,
+            playable_root: Some(PathBuf::from("/roms")),
+        };
+        let mut selected = CatalogCandidate {
+            media_id: "media".to_owned(),
+            release_id: "release".to_owned(),
+            title: "Game".to_owned(),
+            platform_id: "nes".to_owned(),
+            region: "Japan".to_owned(),
+            revision: String::new(),
+            variant: String::new(),
+            serial: String::new(),
+            sequence_number: 0,
+            source: "no-intro".to_owned(),
+            source_version: String::new(),
+        };
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/nes/game.nes"), &selected),
+            "famicom"
+        );
+        selected.region = "USA".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/famicom/game.nes"), &selected),
+            "famicom"
+        );
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/nes/game.nes"), &selected),
+            "nes"
+        );
+
+        selected.platform_id = "snes".to_owned();
+        selected.region = "Japan".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.sfc"), &selected),
+            "super-famicom"
+        );
+        selected.region = "USA".to_owned();
+        assert_eq!(
+            physical_archive_platform(
+                &request,
+                Path::new("/roms/super-famicom/game.sfc"),
+                &selected,
+            ),
+            "super-famicom"
+        );
+
+        selected.platform_id = "genesis".to_owned();
+        selected.region = "Europe".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.md"), &selected),
+            "megadrive"
+        );
+        selected.region = "USA".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.md"), &selected),
+            "genesis"
+        );
+
+        selected.platform_id = "pce".to_owned();
+        selected.region = "USA".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.pce"), &selected),
+            "tg16"
+        );
+        selected.region = "Japan".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.pce"), &selected),
+            "pce"
+        );
+
+        let mut explicit_nes = request;
+        explicit_nes.platform_hint = Some("nes".to_owned());
+        selected.platform_id = "nes".to_owned();
+        selected.region = "Japan".to_owned();
+        assert_eq!(
+            physical_archive_platform(
+                &explicit_nes,
+                Path::new("/roms/famicom/game.nes"),
+                &selected,
+            ),
+            "nes"
+        );
     }
 
     #[test]
