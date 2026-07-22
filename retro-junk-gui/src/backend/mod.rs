@@ -6,6 +6,7 @@ pub mod fix_cue;
 pub mod hash;
 pub mod library_store;
 pub mod organize;
+pub mod playable_build;
 pub mod rename;
 pub mod scan;
 pub mod worker;

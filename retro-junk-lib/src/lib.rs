@@ -14,6 +14,7 @@ pub mod display;
 pub mod fs_txn;
 pub mod hasher;
 pub mod organize;
+pub mod playable_build;
 pub mod rename;
 pub mod repair;
 pub mod scanner;

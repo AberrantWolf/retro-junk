@@ -7,6 +7,7 @@ edition.workspace = true
 retro-junk-core.workspace = true
 retro-junk-dat.workspace = true
 retro-junk-db.workspace = true
+retro-junk-archive.workspace = true
 retro-junk-disc.workspace = true
 retro-junk-nintendo.workspace = true
 retro-junk-sony.workspace = true
@@ -21,6 +22,8 @@ tokio = { workspace = true, features = ["sync", "macros", "rt", "time"] }
 toml.workspace = true
 dirs.workspace = true
 log.workspace = true
+sha2.workspace = true
+chrono.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

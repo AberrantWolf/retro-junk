@@ -106,7 +106,18 @@ fn flat_file_matching_requires_size_and_every_available_catalog_digest() {
 fn archive_projection_is_rebuildable_from_portable_manifests() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("archive");
-    let root_manifest = retro_junk_archive::ArchiveRootManifest::new("Collection");
+    let mut root_manifest = retro_junk_archive::ArchiveRootManifest::new("Collection");
+    root_manifest
+        .platform_defaults
+        .push(retro_junk_archive::PlatformPlayableDefault {
+            platform_id: "nes".to_owned(),
+            policy: retro_junk_archive::DesiredPlayablePolicy {
+                format: retro_junk_archive::RepresentationFormat::Rom,
+                retain_canonical_intermediate: false,
+                allow_unverified: false,
+                options: std::collections::BTreeMap::default(),
+            },
+        });
     retro_junk_archive::initialize_archive(&root, &root_manifest).unwrap();
     let source = temp.path().join("game.nes");
     std::fs::write(&source, b"game").unwrap();
@@ -157,8 +168,8 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     )
     .unwrap();
     conn.execute(
-        "INSERT INTO library_roots(id,root_path) VALUES(1,'/playable')",
-        [],
+        "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
+        [temp.path().join("playable").to_string_lossy().as_ref()],
     )
     .unwrap();
     conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Nes','nes','/playable/nes','fp','ready')", []).unwrap();
@@ -203,6 +214,50 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
             None,
             "archive_projection".to_owned()
         )
+    );
+    let page = retro_junk_db::query_entry_list(
+        &conn,
+        &retro_junk_db::LibraryEntryListQuery {
+            console_id: retro_junk_db::LibraryConsoleId(1),
+            search: String::new(),
+            filter: retro_junk_db::LibraryEntryFilter::All,
+            sort: retro_junk_db::LibraryEntrySortField::DisplayName,
+            direction: retro_junk_db::SortDirection::Ascending,
+            offset: 0,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert!(page.rows[0].archived);
+    assert_eq!(page.rows[0].playable_format, "nes");
+    assert_eq!(page.rows[0].preferred_format.as_deref(), Some("rom"));
+    assert_eq!(page.availability_counts.archived_and_playable, 1);
+    assert_eq!(page.availability_counts.archived_not_playable, 0);
+    assert!(page.archived_playable_gaps.is_empty());
+    conn.execute("DELETE FROM library_entry_media_bindings", [])
+        .unwrap();
+    let gaps = retro_junk_db::query_entry_list(
+        &conn,
+        &retro_junk_db::LibraryEntryListQuery {
+            console_id: retro_junk_db::LibraryConsoleId(1),
+            search: String::new(),
+            filter: retro_junk_db::LibraryEntryFilter::All,
+            sort: retro_junk_db::LibraryEntrySortField::DisplayName,
+            direction: retro_junk_db::SortDirection::Ascending,
+            offset: 0,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(gaps.availability_counts.archived_not_playable, 1);
+    assert_eq!(gaps.archived_playable_gaps[0].title, "Game");
+    assert_eq!(
+        gaps.archived_playable_gaps[0].preferred_format.as_deref(),
+        Some("rom")
+    );
+    assert_eq!(
+        page.rows[0].archive_release_id.as_deref(),
+        Some(summary.archive_release_id.as_str())
     );
     conn.execute("DELETE FROM archive_profiles", []).unwrap();
     retro_junk_db::reconcile_archive_snapshot(

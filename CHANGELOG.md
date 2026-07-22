@@ -14,6 +14,7 @@
 - Added raw Redumper auditing from disposable copies with complete-track catalog matching.
 - Added catalog-gated CHD derivation with mandatory chdman round-trip verification and an explicit unverified opt-in.
 - Added a rebuildable SQLite archive projection and release-centric Collection GUI view.
+- Added Library availability states for playable-only, archived-and-playable, archived-without-playable, and non-preferred playable formats; per-console playable defaults; and an in-app queue that creates byte-verified cartridge mirrors or round-trip-verified CHDs from preservation masters.
 - Moved the durable catalog database from the cache directory to the platform data directory with validated first-run migration.
 - Added policy-driven resumable CHD/RVZ/mirror builds, retained canonical intermediates, multi-disc playlist projection, and explicit integrity/reproduction/catalog/round-trip evidence.
 - Added general CRC32/MD5/SHA-1 catalog verification, per-device present/missing/partial/modified/stale state, legacy playable adoption with an Inbox, and recoverable archive locking/staging recovery.

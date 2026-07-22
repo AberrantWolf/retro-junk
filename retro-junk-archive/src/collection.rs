@@ -67,6 +67,35 @@ pub struct IngestedCarrierDump {
     pub dump_directory: PathBuf,
 }
 
+/// Set or clear the archive-authoritative playable default for one platform.
+pub fn set_platform_playable_default(
+    root: &Path,
+    platform_id: &str,
+    policy: Option<crate::DesiredPlayablePolicy>,
+) -> Result<ArchiveRootManifest, CollectionError> {
+    let path = root.join("retro-junk-archive.toml");
+    if !path.is_file() {
+        return Err(CollectionError::NotInitialized(root.display().to_string()));
+    }
+    let mut manifest: ArchiveRootManifest = read_toml(&path)?;
+    manifest
+        .platform_defaults
+        .retain(|default| !default.platform_id.eq_ignore_ascii_case(platform_id));
+    if let Some(policy) = policy {
+        manifest
+            .platform_defaults
+            .push(crate::PlatformPlayableDefault {
+                platform_id: platform_id.to_owned(),
+                policy,
+            });
+        manifest
+            .platform_defaults
+            .sort_by(|a, b| a.platform_id.cmp(&b.platform_id));
+    }
+    write_toml_atomic(&path, &manifest)?;
+    Ok(manifest)
+}
+
 /// Creates a portable archive root. Existing roots are accepted only when
 /// their manifest has the same profile identity.
 pub fn initialize_archive(

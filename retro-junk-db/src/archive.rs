@@ -321,6 +321,20 @@ pub fn reconcile_archive_snapshot(
 ) -> Result<(), OperationError> {
     let tx = conn.transaction()?;
     let profile_id = snapshot.manifest.profile_id.to_string();
+    // Policies intentionally have no polymorphic foreign key. Remove carrier
+    // policies owned by this projection before cascading its archive rows, or
+    // a rebuild would leave stale rows and collide on reinsertion.
+    tx.execute(
+        "DELETE FROM playable_policies WHERE scope_type='carrier' AND (
+             scope_id IN (
+                 SELECT c.id FROM carriers c
+                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
+                 WHERE ar.profile_id=?1
+             ) OR NOT EXISTS(SELECT 1 FROM carriers c WHERE c.id=scope_id)
+         )",
+        [&profile_id],
+    )?;
     tx.execute("DELETE FROM archive_profiles WHERE id=?1", [&profile_id])?;
     tx.execute(
         "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,playable_root,workspace_root,indexed_at)

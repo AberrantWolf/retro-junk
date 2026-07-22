@@ -319,6 +319,31 @@ fn archive_layout_groups_release_physical_copy_and_carrier() {
     assert!(carrier.to_string_lossy().ends_with("carriers/scus-94163"));
 }
 
+#[test]
+fn platform_playable_default_is_portable_replaceable_and_clearable() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = crate::ArchiveRootManifest::new("Policy test");
+    crate::initialize_archive(temp.path(), &manifest).unwrap();
+    let policy = crate::DesiredPlayablePolicy {
+        format: RepresentationFormat::Chd,
+        retain_canonical_intermediate: true,
+        allow_unverified: false,
+        options: std::collections::BTreeMap::default(),
+    };
+    let updated = crate::set_platform_playable_default(temp.path(), "psx", Some(policy)).unwrap();
+    assert_eq!(updated.platform_defaults.len(), 1);
+    assert_eq!(
+        updated.platform_defaults[0].policy.format,
+        RepresentationFormat::Chd
+    );
+
+    let cleared = crate::set_platform_playable_default(temp.path(), "PSX", None).unwrap();
+    assert!(cleared.platform_defaults.is_empty());
+    let reread: crate::ArchiveRootManifest =
+        crate::read_toml(&temp.path().join("retro-junk-archive.toml")).unwrap();
+    assert!(reread.platform_defaults.is_empty());
+}
+
 #[cfg(unix)]
 #[test]
 fn redumper_audit_uses_disposable_copy_and_parses_track_records() {

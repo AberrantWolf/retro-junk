@@ -46,6 +46,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     // Game table (center, fills remaining space). Stable id so toggling the
     // conditional detail panel above doesn't re-id the toolbar/table widgets.
+    let policy_context = app.selected_console_index().and_then(|index| {
+        let platform_id = app.browser.consoles[index].folder_name.clone();
+        let profile = app.settings.library.active_profile()?;
+        if app.root_path.as_ref() != Some(&profile.playable_root) {
+            return None;
+        }
+        let current = profile
+            .platform_defaults
+            .iter()
+            .find(|default| default.platform_id.eq_ignore_ascii_case(&platform_id))
+            .map(|default| default.policy.format.clone());
+        Some((platform_id, current))
+    });
+    let mut policy_change = None;
+    let mut playable_build = None;
     crate::util::stable_central_panel(ui, "library_center", |ui| {
         // Toolbar
         ui.horizontal(|ui| {
@@ -59,6 +74,30 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             if filter_changed && let Some(console_id) = app.ui_state.selected_console {
                 app.ui_state.page_offset = 0;
                 app.request_console_page(console_id, ctx);
+            }
+
+            if let Some((platform_id, current)) = policy_context.as_ref() {
+                ui.separator();
+                ui.label("Preferred playable:");
+                let mut selected = current.clone();
+                egui::ComboBox::from_id_salt(("preferred_playable", platform_id))
+                    .selected_text(playable_format_label(selected.as_ref()))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut selected, None, "No preference");
+                        for format in [
+                            retro_junk_archive::RepresentationFormat::Rom,
+                            retro_junk_archive::RepresentationFormat::Chd,
+                            retro_junk_archive::RepresentationFormat::Rvz,
+                            retro_junk_archive::RepresentationFormat::Iso,
+                            retro_junk_archive::RepresentationFormat::CueBin,
+                        ] {
+                            let label = playable_format_label(Some(&format));
+                            ui.selectable_value(&mut selected, Some(format), label);
+                        }
+                    });
+                if &selected != current {
+                    policy_change = Some((platform_id.clone(), selected));
+                }
             }
 
             if let Some(page) = app.browser.active_page.as_ref() {
@@ -119,6 +158,81 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
         ui.separator();
 
+        if let Some(page) = app.browser.active_page.as_ref() {
+            let counts = &page.availability_counts;
+            ui.horizontal_wrapped(|ui| {
+                ui.strong("Availability:");
+                availability_chip(ui, counts.archived_and_playable, "Archived + playable");
+                availability_chip(ui, counts.archived_not_playable, "Archived, needs playable");
+                availability_chip(ui, counts.playable_only, "Playable only");
+                availability_chip(ui, counts.preferred_format_mismatch, "Wrong format");
+            });
+            if !page.archived_playable_gaps.is_empty() {
+                egui::CollapsingHeader::new(format!(
+                    "Make archived games playable ({})",
+                    page.archived_playable_gaps.len()
+                ))
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.weak("These preservation masters have no present playable copy in the preferred format.");
+                    egui::ScrollArea::vertical()
+                        .id_salt("archived_playable_gaps")
+                        .max_height(180.0)
+                        .show(ui, |ui| {
+                            for gap in &page.archived_playable_gaps {
+                                ui.horizontal(|ui| {
+                                    let mut label = gap.title.clone();
+                                    if gap.sequence_number > 0 {
+                                        label.push_str(&format!(" — Disc {}", gap.sequence_number));
+                                    }
+                                    ui.label(label).on_hover_text(format!(
+                                        "Archived as {}; catalog verification: {}",
+                                        gap.source_format.as_deref().unwrap_or("unknown"),
+                                        if gap.catalog_verified { "verified" } else { "not verified" },
+                                    ));
+                                    ui.add_space(8.0);
+                                    let ready = gap.dump_id.is_some()
+                                        && gap.preferred_format.is_some()
+                                        && gap.buildable;
+                                    let button = ui.add_enabled(ready, egui::Button::new("Make playable"));
+                                    let button = if gap.preferred_format.is_none() {
+                                        button.on_disabled_hover_text("Choose a preferred playable format for this console first")
+                                    } else if gap.dump_id.is_none() {
+                                        button.on_disabled_hover_text("This carrier has no preservation dump")
+                                    } else if !gap.buildable {
+                                        button.on_disabled_hover_text(format!(
+                                            "No in-app builder is available from {} to {} yet",
+                                            gap.source_format.as_deref().unwrap_or("this source"),
+                                            gap.preferred_format.as_deref().unwrap_or("the preferred format"),
+                                        ))
+                                    } else {
+                                        button.on_hover_text(format!(
+                                            "Build {} from the authoritative dump",
+                                            gap.preferred_format.as_deref().unwrap_or_default().to_ascii_uppercase()
+                                        ))
+                                    };
+                                    if button.clicked()
+                                        && let (Some(dump_id), Some(format)) = (
+                                            gap.dump_id.clone(),
+                                            gap.preferred_format.as_deref().and_then(parse_playable_format),
+                                        )
+                                    {
+                                        playable_build = Some((
+                                            dump_id,
+                                            format,
+                                            gap.title.clone(),
+                                            gap.allow_unverified,
+                                            gap.retain_intermediate,
+                                        ));
+                                    }
+                                });
+                            }
+                        });
+                });
+                ui.separator();
+            }
+        }
+
         // Game table
         if app.ui_state.selected_console.is_some() {
             widgets::game_table::show(ui, app, ctx);
@@ -128,6 +242,119 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             });
         }
     });
+    if let Some((platform_id, format)) = policy_change {
+        set_preferred_playable_format(app, platform_id, format, ctx);
+    }
+    if let Some((dump_id, format, title, allow_unverified, retain_intermediate)) = playable_build {
+        crate::backend::playable_build::start(
+            app,
+            dump_id,
+            format,
+            title,
+            allow_unverified,
+            retain_intermediate,
+            ctx,
+        );
+    }
+}
+
+fn availability_chip(ui: &mut egui::Ui, count: u64, label: &str) {
+    ui.label(format!("{count} {label}"));
+}
+
+fn parse_playable_format(value: &str) -> Option<retro_junk_archive::RepresentationFormat> {
+    match value {
+        "rom" => Some(retro_junk_archive::RepresentationFormat::Rom),
+        "chd" => Some(retro_junk_archive::RepresentationFormat::Chd),
+        "rvz" => Some(retro_junk_archive::RepresentationFormat::Rvz),
+        "iso" => Some(retro_junk_archive::RepresentationFormat::Iso),
+        "cue_bin" | "cue-bin" => Some(retro_junk_archive::RepresentationFormat::CueBin),
+        _ => None,
+    }
+}
+
+fn playable_format_label(
+    format: Option<&retro_junk_archive::RepresentationFormat>,
+) -> &'static str {
+    match format {
+        None => "No preference",
+        Some(retro_junk_archive::RepresentationFormat::Rom) => "ROM (native)",
+        Some(retro_junk_archive::RepresentationFormat::Chd) => "CHD",
+        Some(retro_junk_archive::RepresentationFormat::Rvz) => "RVZ",
+        Some(retro_junk_archive::RepresentationFormat::Iso) => "ISO",
+        Some(retro_junk_archive::RepresentationFormat::CueBin) => "BIN/CUE",
+        Some(_) => "Other",
+    }
+}
+
+fn set_preferred_playable_format(
+    app: &mut RetroJunkApp,
+    platform_id: String,
+    format: Option<retro_junk_archive::RepresentationFormat>,
+    ctx: &egui::Context,
+) {
+    let Some(profile) = app.settings.library.active_profile().cloned() else {
+        app.push_error("Playable policy", "No active collection profile".to_owned());
+        return;
+    };
+    let Some(db_path) = app.db_path.clone() else {
+        app.push_error(
+            "Playable policy",
+            "Catalog database is unavailable".to_owned(),
+        );
+        return;
+    };
+    let op_id = crate::state::next_operation_id();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    app.operations.push(crate::state::BackgroundOperation::new(
+        op_id,
+        format!("Updating {platform_id} playable policy"),
+        cancel,
+        crate::state::OperationKind::Other,
+        platform_id.clone(),
+        crate::state::ProgressDisplay::Count,
+    ));
+    let sender = app.message_tx.clone();
+    let handle = std::thread::spawn(move || {
+        let result = (|| {
+            let policy = format.map(|format| {
+                let mut policy = profile
+                    .platform_defaults
+                    .iter()
+                    .find(|default| default.platform_id.eq_ignore_ascii_case(&platform_id))
+                    .map(|default| default.policy.clone())
+                    .unwrap_or(retro_junk_archive::DesiredPlayablePolicy {
+                        format: format.clone(),
+                        retain_canonical_intermediate: false,
+                        allow_unverified: false,
+                        options: std::collections::BTreeMap::new(),
+                    });
+                policy.format = format;
+                policy
+            });
+            let manifest = retro_junk_archive::set_platform_playable_default(
+                &profile.archive_root,
+                &platform_id,
+                policy,
+            )
+            .map_err(|error| error.to_string())?;
+            let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            let mut connection =
+                retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
+            retro_junk_db::reconcile_archive_snapshot(
+                &mut connection,
+                &snapshot,
+                &profile.playable_root,
+                &profile.workspace_root,
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(manifest)
+        })();
+        let _ = sender.send(crate::state::AppMessage::PlayablePolicyUpdated { op_id, result });
+    });
+    app.op_threads.insert(op_id, handle);
+    ctx.request_repaint_after(std::time::Duration::from_millis(20));
 }
 
 fn show_welcome(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {

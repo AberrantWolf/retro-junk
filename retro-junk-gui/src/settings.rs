@@ -125,6 +125,13 @@ impl LibrarySettings {
             .find(|profile| profile.profile_id == id)
     }
 
+    pub fn active_profile_mut(&mut self) -> Option<&mut retro_junk_archive::CollectionProfile> {
+        let id = self.current_profile?;
+        self.profiles
+            .iter_mut()
+            .find(|profile| profile.profile_id == id)
+    }
+
     pub fn ensure_profile_for_root(
         &mut self,
         playable_root: &std::path::Path,

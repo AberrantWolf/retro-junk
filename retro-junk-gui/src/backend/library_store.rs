@@ -439,6 +439,12 @@ impl LibraryProjectionController {
         self.focused_entry = None;
     }
 
+    pub fn invalidate_lists(&mut self) {
+        self.loaded_pages.clear();
+        self.latest
+            .retain(|key, _| !matches!(key, ProjectionKey::List(_)));
+    }
+
     pub fn schedule_list(
         &mut self,
         query: LibraryEntryListQuery,
@@ -593,6 +599,8 @@ mod tests {
                 console_revision: 4,
                 total_count: 0,
                 counts: Default::default(),
+                availability_counts: Default::default(),
+                archived_playable_gaps: Vec::new(),
                 offset: 0,
                 rows: Vec::new(),
             })),
@@ -617,6 +625,8 @@ mod tests {
                 console_revision: 2,
                 total_count: 0,
                 counts: Default::default(),
+                availability_counts: Default::default(),
+                archived_playable_gaps: Vec::new(),
                 offset: 0,
                 rows: Vec::new(),
             })),
@@ -660,6 +670,8 @@ mod tests {
                     console_revision: 1,
                     total_count: 0,
                     counts: Default::default(),
+                    availability_counts: Default::default(),
+                    archived_playable_gaps: Vec::new(),
                     offset: 0,
                     rows: Vec::new(),
                 })),

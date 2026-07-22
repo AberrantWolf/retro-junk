@@ -125,6 +125,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 regions: projected_regions(projection),
                 crc32: projection.crc32.clone(),
                 dat_match: projection.dat_game_name.clone(),
+                availability: AvailabilityState::from_projection(projection),
             }
         })
         .collect();
@@ -164,7 +165,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::exact(30.0)) // Status badge + media indicator
-                .column(Column::initial(280.0).at_least(100.0)); // Name
+                .column(Column::initial(280.0).at_least(100.0)) // Name
+                .column(Column::initial(145.0).at_least(90.0)); // Availability
             if list_columns.serial {
                 table = table.column(Column::initial(120.0).at_least(60.0));
             }
@@ -189,6 +191,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     });
                     header.col(|ui| {
                         ui.strong("Name");
+                    });
+                    header.col(|ui| {
+                        ui.strong("Availability");
                     });
                     if list_columns.serial {
                         header.col(|ui| {
@@ -258,6 +263,15 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         // Paint text directly in cells so no WidgetRect is created,
                         // allowing the cell response to handle all click interaction.
                         let name_response = row.col(|ui| paint_cell_text(ui, &data.name));
+                        let availability_response = row.col(|ui| {
+                            paint_cell_text(ui, data.availability.label());
+                        });
+                        let availability_response = (
+                            availability_response.0,
+                            availability_response
+                                .1
+                                .on_hover_text(data.availability.tooltip()),
+                        );
 
                         // Scroll-to-row: when keyboard navigation targets this row
                         if app.ui_state.scroll_to_row == Some(row_idx) {
@@ -265,7 +279,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         }
 
                         // Union all column responses for click and context menu
-                        let mut row_resp = r1.1 | name_response.1;
+                        let mut row_resp = r1.1 | name_response.1 | availability_response.1;
                         if list_columns.serial {
                             row_resp |= row.col(|ui| paint_cell_text(ui, &data.serial)).1;
                         }
@@ -656,6 +670,78 @@ struct RowData {
     regions: String,
     crc32: String,
     dat_match: String,
+    availability: AvailabilityState,
+}
+
+#[derive(Clone)]
+enum AvailabilityState {
+    PlayableOnly { format: String },
+    ArchivedAndPlayable { format: String },
+    PreferredFormatMismatch { actual: String, preferred: String },
+}
+
+impl AvailabilityState {
+    fn from_projection(projection: &retro_junk_db::LibraryEntryListItem) -> Self {
+        let format = display_format(&projection.playable_format);
+        if !projection.archived {
+            return Self::PlayableOnly { format };
+        }
+        if let Some(preferred) = projection.preferred_format.as_deref()
+            && !formats_satisfy_policy(&projection.playable_format, preferred)
+        {
+            return Self::PreferredFormatMismatch {
+                actual: format,
+                preferred: display_format(preferred),
+            };
+        }
+        Self::ArchivedAndPlayable { format }
+    }
+
+    fn label(&self) -> &str {
+        match self {
+            Self::PlayableOnly { .. } => "Playable only",
+            Self::ArchivedAndPlayable { .. } => "Archived + playable",
+            Self::PreferredFormatMismatch { .. } => "Wrong playable format",
+        }
+    }
+
+    fn tooltip(&self) -> String {
+        match self {
+            Self::PlayableOnly { format } => {
+                format!("Playable as {format}, but no matching archival carrier is indexed")
+            }
+            Self::ArchivedAndPlayable { format } => {
+                format!("Archived and playable as {format}")
+            }
+            Self::PreferredFormatMismatch { actual, preferred } => {
+                format!("Playable as {actual}; the archive policy prefers {preferred}")
+            }
+        }
+    }
+}
+
+fn formats_satisfy_policy(actual: &str, preferred: &str) -> bool {
+    let actual = actual.to_ascii_lowercase().replace('-', "_");
+    let preferred = preferred.to_ascii_lowercase().replace('-', "_");
+    if actual == preferred {
+        return true;
+    }
+    match preferred.as_str() {
+        "cue_bin" => matches!(actual.as_str(), "cue" | "bin"),
+        "rom" => !matches!(
+            actual.as_str(),
+            "chd" | "rvz" | "iso" | "cue" | "bin" | "gdi" | "cso" | "dax"
+        ),
+        _ => false,
+    }
+}
+
+fn display_format(format: &str) -> String {
+    if format.is_empty() {
+        "unknown format".to_owned()
+    } else {
+        format.to_ascii_uppercase().replace('_', "-")
+    }
 }
 
 fn projection_status(status: &str, tag: &str) -> EntryStatus {
@@ -808,5 +894,13 @@ mod tests {
         );
         assert_eq!(projection_status("ambiguous", ""), EntryStatus::Ambiguous);
         assert_eq!(projection_status("likely", ""), EntryStatus::LikelyMatched);
+    }
+
+    #[test]
+    fn native_rom_extensions_satisfy_rom_policy() {
+        assert!(super::formats_satisfy_policy("nes", "rom"));
+        assert!(super::formats_satisfy_policy("sfc", "rom"));
+        assert!(!super::formats_satisfy_policy("chd", "rom"));
+        assert!(super::formats_satisfy_policy("cue", "cue_bin"));
     }
 }

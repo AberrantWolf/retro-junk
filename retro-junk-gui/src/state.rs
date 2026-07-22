@@ -835,6 +835,14 @@ pub enum AppMessage {
         op_id: u64,
         result: Result<String, String>,
     },
+    PlayablePolicyUpdated {
+        op_id: u64,
+        result: Result<retro_junk_archive::ArchiveRootManifest, String>,
+    },
+    PlayableBuildComplete {
+        op_id: u64,
+        result: Result<std::path::PathBuf, String>,
+    },
     ArchiveImportPlanReady {
         op_id: u64,
         result: Result<retro_junk_archive_import::DumpImportPlan, String>,
@@ -1016,6 +1024,8 @@ impl AppMessage {
             self,
             Self::StartupReady { .. }
                 | Self::ArchiveOperationComplete { .. }
+                | Self::PlayablePolicyUpdated { .. }
+                | Self::PlayableBuildComplete { .. }
                 | Self::ArchiveImportPlanReady { .. }
                 | Self::ArchiveImportComplete { .. }
                 | Self::ChdmanProbeResult { .. }
@@ -1592,8 +1602,43 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 let _ = handle.join();
             }
             match result {
-                Ok(message) => log::info!("{message}"),
+                Ok(message) => {
+                    log::info!("{message}");
+                    refresh_library_availability(app, ctx);
+                }
                 Err(error) => app.push_error("Archive operation", error),
+            }
+        }
+        AppMessage::PlayablePolicyUpdated { op_id, result } => {
+            app.operations.retain(|operation| operation.id != op_id);
+            if let Some(handle) = app.op_threads.remove(&op_id) {
+                let _ = handle.join();
+            }
+            match result {
+                Ok(manifest) => {
+                    if let Some(profile) = app.settings.library.active_profile_mut() {
+                        profile.platform_defaults = manifest.platform_defaults;
+                    }
+                    if let Err(error) = crate::settings::save_settings(&app.settings) {
+                        app.push_error("Save playable policy", error.to_string());
+                    }
+                    refresh_library_availability(app, ctx);
+                }
+                Err(error) => app.push_error("Playable policy", error),
+            }
+        }
+        AppMessage::PlayableBuildComplete { op_id, result } => {
+            app.operations.retain(|operation| operation.id != op_id);
+            if let Some(handle) = app.op_threads.remove(&op_id) {
+                let _ = handle.join();
+            }
+            match result {
+                Ok(output) => {
+                    log::info!("Built playable copy {}", output.display());
+                    refresh_library_availability(app, ctx);
+                    let _ = app.message_tx.send(AppMessage::StartFolderScan);
+                }
+                Err(error) => app.push_error("Build playable copy", error),
             }
         }
         AppMessage::ArchiveImportPlanReady { op_id, result } => {
@@ -2167,6 +2212,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 crate::app::ChdmanProbe::Idle
             };
         }
+    }
+}
+
+fn refresh_library_availability(app: &mut RetroJunkApp, ctx: &egui::Context) {
+    app.library_controller.invalidate_lists();
+    app.browser.active_page = None;
+    if let Some(console_id) = app.ui_state.selected_console {
+        app.request_console_page(console_id, ctx);
     }
 }
 

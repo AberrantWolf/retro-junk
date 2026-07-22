@@ -18,6 +18,12 @@ use crate::state::{
 pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Context) {
     let context = app.context.clone();
     let ctx = ctx.clone();
+    let archive_root = app
+        .settings
+        .library
+        .active_profile()
+        .filter(|profile| profile.playable_root == root)
+        .map(|profile| profile.archive_root.clone());
 
     spawn_background_op(
         app,
@@ -28,7 +34,15 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
         move |_op_id, cancel, tx| {
             let result = context.scan_console_folders(&root, None);
             match result {
-                Ok(scan) => {
+                Ok(mut scan) => {
+                    if let Some(archive_root) = archive_root {
+                        add_archive_only_console_folders(
+                            &context,
+                            &root,
+                            &archive_root,
+                            &mut scan.matches,
+                        );
+                    }
                     for cf in scan.matches {
                         if cancel.load(Ordering::Relaxed) {
                             break;
@@ -52,6 +66,64 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
             ctx.request_repaint();
         },
     );
+}
+
+/// Add empty playable projection folders for archive platforms that otherwise
+/// would have no selectable console in the Library view. The folders contain
+/// no authoritative data; they are merely stable destinations for future
+/// derivatives and let archived-only carriers surface before the first build.
+fn add_archive_only_console_folders(
+    context: &retro_junk_lib::AnalysisContext,
+    playable_root: &std::path::Path,
+    archive_root: &std::path::Path,
+    matches: &mut Vec<retro_junk_lib::ConsoleFolder>,
+) {
+    let Ok(entries) = std::fs::read_dir(archive_root) else {
+        return;
+    };
+    // Platform directories are part of the portable archive layout. Listing
+    // this one level avoids walking and hashing every manifest on a network
+    // archive merely to populate the console tree.
+    let mut platform_ids = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| !name.starts_with('.'))
+        .collect::<Vec<_>>();
+    platform_ids.sort();
+    platform_ids.dedup();
+    for platform_id in platform_ids {
+        if matches
+            .iter()
+            .any(|folder| folder.folder_name.eq_ignore_ascii_case(&platform_id))
+        {
+            continue;
+        }
+        let analyzer_name = match platform_id.as_str() {
+            "super-famicom" => "snes",
+            other => other,
+        };
+        let Some(registered) = context.find_by_folder(analyzer_name).into_iter().next() else {
+            log::warn!(
+                "Archive platform {platform_id} has no registered library analyzer; it remains available in Collection"
+            );
+            continue;
+        };
+        let path = playable_root.join(&platform_id);
+        if let Err(error) = std::fs::create_dir_all(&path) {
+            log::warn!(
+                "Could not create playable projection folder {}: {error}",
+                path.display()
+            );
+            continue;
+        }
+        matches.push(retro_junk_lib::ConsoleFolder {
+            path,
+            folder_name: platform_id,
+            platform: registered.metadata.platform,
+        });
+    }
+    matches.sort_by(|a, b| a.folder_name.cmp(&b.folder_name));
 }
 
 fn fresh_scan_entry(game_entry: scanner::GameEntry) -> LibraryEntry {

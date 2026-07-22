@@ -45,5 +45,6 @@ pub use assets::{
 };
 pub use collection::{
     CollectionError, ExpectedSourceFile, IngestedCarrierDump, NewCarrierDump,
-    ingest_new_carrier_dump, initialize_archive, upgrade_legacy_regional_physical_platforms,
+    ingest_new_carrier_dump, initialize_archive, set_platform_playable_default,
+    upgrade_legacy_regional_physical_platforms,
 };

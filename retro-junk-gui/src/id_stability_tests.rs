@@ -155,6 +155,10 @@ fn panel_toggles_do_not_reassign_widget_ids() {
             has_cue_compat_issues: false,
             revision: 0,
             source_revision: 0,
+            archived: false,
+            playable_format: "bin".into(),
+            preferred_format: None,
+            archive_release_id: None,
         })
         .collect();
     harness.state_mut().browser.consoles = vec![console];
@@ -163,6 +167,8 @@ fn panel_toggles_do_not_reassign_widget_ids() {
         console_revision: 0,
         total_count: 300,
         counts: Default::default(),
+        availability_counts: Default::default(),
+        archived_playable_gaps: Vec::new(),
         offset: 0,
         rows,
     });

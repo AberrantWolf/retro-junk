@@ -481,6 +481,7 @@ impl LibraryEntryListQuery {
     pub const DEFAULT_PAGE_SIZE: u64 = 300;
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct LibraryEntryListItem {
     pub id: LibraryEntryId,
@@ -502,6 +503,15 @@ pub struct LibraryEntryListItem {
     pub has_cue_compat_issues: bool,
     pub revision: u64,
     pub source_revision: u64,
+    /// True when this playable entry is bound to a catalog medium represented
+    /// by a physical carrier in the active archive projection.
+    pub archived: bool,
+    /// Actual playable representation format, from archive evidence when
+    /// available and otherwise inferred from the library filename.
+    pub playable_format: String,
+    /// Effective carrier/platform policy projected from the archive.
+    pub preferred_format: Option<String>,
+    pub archive_release_id: Option<String>,
 }
 #[derive(Debug, Clone, Default)]
 pub struct LibraryEntryCounts {
@@ -513,12 +523,44 @@ pub struct LibraryEntryCounts {
     pub unrecognized: u64,
     pub tagged: u64,
 }
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LibraryAvailabilityCounts {
+    pub playable_only: u64,
+    pub archived_and_playable: u64,
+    pub preferred_format_mismatch: u64,
+    pub archived_not_playable: u64,
+}
+
+/// An archival carrier whose preferred playable representation is not present.
+/// This deliberately is not a `LibraryEntryListItem`: no playable filesystem
+/// entry exists yet, so inventing a library entry ID would blur the authority
+/// boundary and break selection/detail loading.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedPlayableGap {
+    pub archive_release_id: String,
+    pub carrier_id: String,
+    pub dump_id: Option<String>,
+    pub title: String,
+    pub region: String,
+    pub sequence_number: u32,
+    pub source_format: Option<String>,
+    pub preferred_format: Option<String>,
+    pub allow_unverified: bool,
+    pub retain_intermediate: bool,
+    pub catalog_verified: bool,
+    pub buildable: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct LibraryEntryListPage {
     pub console_id: LibraryConsoleId,
     pub console_revision: u64,
     pub total_count: u64,
     pub counts: LibraryEntryCounts,
+    pub availability_counts: LibraryAvailabilityCounts,
+    pub archived_playable_gaps: Vec<ArchivedPlayableGap>,
     pub offset: u64,
     pub rows: Vec<LibraryEntryListItem>,
 }
@@ -1148,6 +1190,7 @@ pub fn query_entry_list(
         |r| r.get(0),
     )?;
     let counts = entry_counts(conn, q.console_id)?;
+    let (availability_counts, archived_playable_gaps) = query_availability(conn, q.console_id)?;
     let order = order_sql(q.sort, q.direction);
     let sql = format!(
         "SELECT id,display_name,status,tag,region_override,data_size,
@@ -1155,7 +1198,48 @@ pub fn query_entry_list(
                 broken_references_json IS NOT NULL AND broken_references_json <> '[]',
                 cue_compat_issues_json IS NOT NULL AND cue_compat_issues_json <> '[]',
                 revision,source_revision,identification_json,hash_warnings_json,
-                disc_identifications_json
+                disc_identifications_json,entry_key,
+                EXISTS(SELECT 1 FROM library_entry_media_bindings b
+                       JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
+                       JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                       JOIN archive_releases ar ON ar.id=pc.archive_release_id
+                       JOIN archive_profiles ap ON ap.id=ar.profile_id
+                       WHERE b.library_entry_id=library_entries.id
+                         AND ap.playable_root=(SELECT lr.root_path FROM library_consoles lc
+                              JOIN library_roots lr ON lr.id=lc.root_id
+                              WHERE lc.id=library_entries.console_id)),
+                (SELECT rep.format FROM library_entry_media_bindings b
+                 JOIN representations rep ON rep.id=b.representation_id
+                 JOIN carriers rc ON rc.id=rep.carrier_id
+                 JOIN physical_copies rpc ON rpc.id=rc.physical_copy_id
+                 JOIN archive_releases rar ON rar.id=rpc.archive_release_id
+                 JOIN archive_profiles rap ON rap.id=rar.profile_id
+                 WHERE b.library_entry_id=library_entries.id AND rep.role='playable'
+                   AND rap.playable_root=(SELECT lr.root_path FROM library_consoles lc
+                        JOIN library_roots lr ON lr.id=lc.root_id
+                        WHERE lc.id=library_entries.console_id)
+                 ORDER BY rep.id LIMIT 1),
+                (SELECT pp.format FROM library_entry_media_bindings b
+                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
+                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
+                 JOIN archive_profiles ap ON ap.id=ar.profile_id
+                 JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=c.id
+                 WHERE b.library_entry_id=library_entries.id
+                   AND ap.playable_root=(SELECT lr.root_path FROM library_consoles lc
+                        JOIN library_roots lr ON lr.id=lc.root_id
+                        WHERE lc.id=library_entries.console_id)
+                 ORDER BY c.id LIMIT 1),
+                (SELECT ar.id FROM library_entry_media_bindings b
+                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
+                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
+                 JOIN archive_profiles ap ON ap.id=ar.profile_id
+                 WHERE b.library_entry_id=library_entries.id
+                   AND ap.playable_root=(SELECT lr.root_path FROM library_consoles lc
+                        JOIN library_roots lr ON lr.id=lc.root_id
+                        WHERE lc.id=library_entries.console_id)
+                 ORDER BY ar.id LIMIT 1)
          FROM library_entries WHERE {where_sql}
          ORDER BY {order} LIMIT ?3 OFFSET ?4"
     );
@@ -1167,6 +1251,8 @@ pub fn query_entry_list(
                 let identification_json: Option<String> = r.get(12)?;
                 let hash_warnings_json: Option<String> = r.get(13)?;
                 let disc_identifications_json: Option<String> = r.get(14)?;
+                let entry_key: String = r.get(15)?;
+                let projected_format: Option<String> = r.get(17)?;
                 let (serial, internal_name, detected_regions) = project_identification(
                     identification_json.as_deref(),
                     disc_identifications_json.as_deref(),
@@ -1189,6 +1275,11 @@ pub fn query_entry_list(
                     has_cue_compat_issues: r.get(9)?,
                     revision: r.get(10)?,
                     source_revision: r.get(11)?,
+                    archived: r.get(16)?,
+                    playable_format: projected_format
+                        .unwrap_or_else(|| playable_format_from_entry_key(&entry_key)),
+                    preferred_format: r.get(18)?,
+                    archive_release_id: r.get(19)?,
                 })
             },
         )?
@@ -1198,9 +1289,179 @@ pub fn query_entry_list(
         console_revision: revision,
         total_count: total,
         counts,
+        availability_counts,
+        archived_playable_gaps,
         offset: q.offset,
         rows,
     })
+}
+
+#[allow(clippy::too_many_lines)]
+fn query_availability(
+    conn: &Connection,
+    console_id: LibraryConsoleId,
+) -> Result<(LibraryAvailabilityCounts, Vec<ArchivedPlayableGap>), LibraryError> {
+    let (folder_name, platform): (String, String) = conn.query_row(
+        "SELECT folder_name,platform FROM library_consoles WHERE id=?1",
+        [console_id.0],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let mut playable_only = 0;
+    let mut archived_and_playable = 0;
+    let mut preferred_format_mismatch = 0;
+    let mut entry_statement = conn.prepare(
+        "SELECT e.entry_key,
+                EXISTS(SELECT 1 FROM library_entry_media_bindings b
+                       JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
+                       JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                       JOIN archive_releases ar ON ar.id=pc.archive_release_id
+                       JOIN archive_profiles ap ON ap.id=ar.profile_id
+                       WHERE b.library_entry_id=e.id
+                         AND ap.playable_root=(SELECT lr.root_path FROM library_roots lr
+                              JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=e.console_id)),
+                (SELECT rep.format FROM library_entry_media_bindings b
+                 JOIN representations rep ON rep.id=b.representation_id
+                 JOIN carriers rc ON rc.id=rep.carrier_id
+                 JOIN physical_copies rpc ON rpc.id=rc.physical_copy_id
+                 JOIN archive_releases rar ON rar.id=rpc.archive_release_id
+                 JOIN archive_profiles rap ON rap.id=rar.profile_id
+                 WHERE b.library_entry_id=e.id AND rep.role='playable'
+                   AND rap.playable_root=(SELECT lr.root_path FROM library_roots lr
+                        JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=e.console_id)
+                 LIMIT 1),
+                (SELECT pp.format FROM library_entry_media_bindings b
+                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
+                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
+                 JOIN archive_profiles ap ON ap.id=ar.profile_id
+                 JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=c.id
+                 WHERE b.library_entry_id=e.id
+                   AND ap.playable_root=(SELECT lr.root_path FROM library_roots lr
+                        JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=e.console_id)
+                 LIMIT 1)
+         FROM library_entries e WHERE e.console_id=?1",
+    )?;
+    let entries = entry_statement.query_map([console_id.0], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, bool>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+    for entry in entries {
+        let (entry_key, archived, projected, preferred) = entry?;
+        if !archived {
+            playable_only += 1;
+            continue;
+        }
+        let actual = projected.unwrap_or_else(|| playable_format_from_entry_key(&entry_key));
+        if preferred
+            .as_deref()
+            .is_some_and(|preferred| !format_satisfies_policy(&actual, preferred))
+        {
+            preferred_format_mismatch += 1;
+        } else {
+            archived_and_playable += 1;
+        }
+    }
+
+    let mut statement = conn.prepare(
+        "SELECT ar.id,c.id,
+                (SELECT de.id FROM dump_events de WHERE de.carrier_id=c.id
+                 ORDER BY de.captured_at DESC,de.id DESC LIMIT 1),
+                ar.title,ar.region,c.sequence_number,
+                (SELECT de.format FROM dump_events de WHERE de.carrier_id=c.id
+                 ORDER BY de.captured_at DESC,de.id DESC LIMIT 1),
+                pp.format,COALESCE(pp.allow_unverified,0),COALESCE(pp.retain_intermediate,0),
+                EXISTS(SELECT 1 FROM dump_events de JOIN verification_events ve
+                       ON ve.representation_id=de.representation_id
+                       WHERE de.carrier_id=c.id AND ve.kind='catalog' AND ve.outcome='verified'),
+                (SELECT COUNT(*) FROM representation_files rf
+                 JOIN dump_events de ON de.representation_id=rf.representation_id
+                 WHERE de.id=(SELECT newest.id FROM dump_events newest WHERE newest.carrier_id=c.id
+                              ORDER BY newest.captured_at DESC,newest.id DESC LIMIT 1))
+         FROM archive_releases ar
+         JOIN archive_profiles ap ON ap.id=ar.profile_id
+         JOIN physical_copies pc ON pc.archive_release_id=ar.id
+         JOIN carriers c ON c.physical_copy_id=pc.id
+         LEFT JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=c.id
+         WHERE (lower(ar.platform_id)=lower(?1) OR lower(ar.platform_id)=lower(?2))
+           AND ap.playable_root=(SELECT lr.root_path FROM library_roots lr
+                                JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=?3)
+           AND NOT EXISTS(SELECT 1 FROM representations rep
+                          WHERE rep.carrier_id=c.id AND rep.role='playable'
+                            AND rep.presence_state='present'
+                            AND (pp.format IS NULL OR rep.format=pp.format))
+           AND NOT EXISTS(SELECT 1 FROM library_entry_media_bindings b
+                          JOIN library_entries e ON e.id=b.library_entry_id
+                          JOIN library_consoles lc ON lc.id=e.console_id
+                          WHERE b.catalog_media_id=c.catalog_media_id
+                            AND (lower(lc.folder_name)=lower(?1) OR lower(lc.platform)=lower(?2))
+                            AND (pp.format IS NULL
+                                 OR (pp.format='rom' AND lower(e.entry_key) NOT LIKE '%.chd'
+                                     AND lower(e.entry_key) NOT LIKE '%.rvz'
+                                     AND lower(e.entry_key) NOT LIKE '%.iso'
+                                     AND lower(e.entry_key) NOT LIKE '%.cue'
+                                     AND lower(e.entry_key) NOT LIKE '%.bin')
+                                 OR (pp.format='cue_bin' AND lower(e.entry_key) LIKE '%.cue')
+                                 OR lower(e.entry_key) LIKE '%.' || pp.format))
+         ORDER BY ar.title COLLATE NOCASE,c.sequence_number,c.id",
+    )?;
+    let archived_playable_gaps = statement
+        .query_map(params![folder_name, platform, console_id.0], |row| {
+            let source_format: Option<String> = row.get(6)?;
+            let preferred_format: Option<String> = row.get(7)?;
+            let file_count: u64 = row.get(11)?;
+            let buildable = match (source_format.as_deref(), preferred_format.as_deref()) {
+                (Some("redumper_raw" | "cue_bin" | "iso"), Some("chd")) => true,
+                (Some(source), Some(preferred)) if source == preferred && file_count == 1 => true,
+                _ => false,
+            };
+            Ok(ArchivedPlayableGap {
+                archive_release_id: row.get(0)?,
+                carrier_id: row.get(1)?,
+                dump_id: row.get(2)?,
+                title: row.get(3)?,
+                region: row.get(4)?,
+                sequence_number: u32::try_from(row.get::<_, i64>(5)?).unwrap_or(0),
+                source_format,
+                preferred_format,
+                allow_unverified: row.get(8)?,
+                retain_intermediate: row.get(9)?,
+                catalog_verified: row.get(10)?,
+                buildable,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let availability_counts = LibraryAvailabilityCounts {
+        playable_only,
+        archived_and_playable,
+        preferred_format_mismatch,
+        archived_not_playable: archived_playable_gaps.len() as u64,
+    };
+    Ok((availability_counts, archived_playable_gaps))
+}
+
+fn format_satisfies_policy(actual: &str, preferred: &str) -> bool {
+    let actual = actual.to_ascii_lowercase().replace('-', "_");
+    let preferred = preferred.to_ascii_lowercase().replace('-', "_");
+    actual == preferred
+        || (preferred == "cue_bin" && matches!(actual.as_str(), "cue" | "bin"))
+        || (preferred == "rom"
+            && !matches!(
+                actual.as_str(),
+                "chd" | "rvz" | "iso" | "cue" | "bin" | "gdi" | "cso" | "dax"
+            ))
+}
+
+fn playable_format_from_entry_key(entry_key: &str) -> String {
+    let path = entry_key.strip_prefix("file:").unwrap_or(entry_key);
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }
 
 fn project_identification(
