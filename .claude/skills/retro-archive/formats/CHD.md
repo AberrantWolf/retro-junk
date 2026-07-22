@@ -109,6 +109,10 @@ library database while its source fingerprint is current. The CHD header hash
 cannot replace this work because Redump verification hashes the applicable raw
 track sector domain rather than the complete CHD logical domain.
 
+The GUI exposes the two expensive phases separately as **Caching locally** and
+**Decoding and hashing**. Staging checks local free space before reading the
+network source and retains a 64 MiB safety reserve.
+
 ### DVD-media CHDs (`createdvd`) need a different hashing path
 
 Verified 2026-07-15 while wiring PSP's `compute_container_hashes` (CHD

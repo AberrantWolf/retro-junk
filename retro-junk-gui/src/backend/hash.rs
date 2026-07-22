@@ -97,6 +97,7 @@ fn hash_one(
     item: &HashWork,
     analyzer: &dyn RomAnalyzer,
     progress: &dyn Fn(u64, u64),
+    phase: &dyn Fn(String, u64, u64),
     workspace_root: &std::path::Path,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<HashOutcome, String> {
@@ -106,6 +107,11 @@ fn hash_one(
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("cue"))
     {
+        phase(
+            format!("Hashing disc tracks for {}", item.entry_name),
+            0,
+            item.file_size,
+        );
         match retro_junk_lib::disc_hash::hash_cue_disc(&item.path, progress) {
             Ok(disc) => {
                 return Ok(HashOutcome {
@@ -143,6 +149,11 @@ fn hash_one(
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("chd"));
     let staged = if is_chd {
+        phase(
+            format!("Caching {} locally", item.entry_name),
+            0,
+            item.file_size.saturating_mul(2),
+        );
         log::info!(
             "Staging CHD locally before seek-heavy verification: {}",
             item.path.display()
@@ -156,6 +167,7 @@ fn hash_one(
             .map_err(|error| error.to_string())?,
         )
     } else {
+        phase(format!("Hashing {}", item.entry_name), 0, item.file_size);
         None
     };
     let hash_path = staged.as_ref().map_or(item.path.as_path(), |package| {
@@ -165,6 +177,13 @@ fn hash_one(
         8 * 1024 * 1024,
         std::fs::File::open(hash_path).map_err(|e| e.to_string())?,
     );
+    if is_chd {
+        phase(
+            format!("Decoding and hashing {}", item.entry_name),
+            item.file_size,
+            item.file_size.saturating_mul(2),
+        );
+    }
     log::debug!("compute_hashes: calling hasher for {}", item.path.display());
     let hash_progress = |done: u64, total: u64| {
         if is_chd {
@@ -441,11 +460,30 @@ fn spawn_hash_work(
                         });
                     }
                 };
+                let report_phase = |description: String, file_bytes_done: u64, file_total: u64| {
+                    if file_total != effective_item_total.get() {
+                        effective_operation_total.set(replace_component_total(
+                            effective_operation_total.get(),
+                            effective_item_total.replace(file_total),
+                            file_total,
+                        ));
+                    }
+                    let current = file_base.saturating_add(file_bytes_done);
+                    last_reported.set(current);
+                    let _ = tx.send(AppMessage::OperationPhase {
+                        op_id,
+                        description,
+                        display: ProgressDisplay::Bytes,
+                        current,
+                        total: effective_operation_total.get(),
+                    });
+                };
 
                 match hash_one(
                     item,
                     registered.analyzer.as_ref(),
                     &throttled_progress,
+                    &report_phase,
                     &workspace_root,
                     &cancel,
                 ) {
@@ -761,6 +799,7 @@ mod tests {
             &|done, total| {
                 progress.set((done, total));
             },
+            &|_, _, _| {},
             dir.path(),
             &std::sync::atomic::AtomicBool::new(false),
         )
@@ -803,6 +842,7 @@ mod tests {
             &item,
             &retro_junk_sony::Ps1Analyzer,
             &|_, _| {},
+            &|_, _, _| {},
             dir.path(),
             &std::sync::atomic::AtomicBool::new(false),
         )

@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 const COPY_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+const MINIMUM_FREE_SPACE_RESERVE: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentDigests {
@@ -90,6 +91,14 @@ pub enum StageError {
     Cancelled,
     #[error("unsafe relative source path: {0}")]
     UnsafePath(String),
+    #[error(
+        "not enough free space to stage {required} bytes in {workspace} ({available} bytes available, including the safety reserve)"
+    )]
+    InsufficientSpace {
+        workspace: String,
+        required: u64,
+        available: u64,
+    },
     #[error("I/O error for {path}: {source}")]
     Io {
         path: String,
@@ -130,6 +139,28 @@ pub fn stage_package(
     mut on_bytes: impl FnMut(u64),
 ) -> Result<PreparedPackage, StageError> {
     let metadata = checked_metadata(source)?;
+    let paths = if metadata.is_file() {
+        vec![(
+            source.to_path_buf(),
+            safe_relative(Path::new(source.file_name().unwrap_or_default()))?,
+            metadata.len(),
+        )]
+    } else if metadata.is_dir() {
+        let mut paths = Vec::new();
+        collect_files(source, source, &mut paths)?;
+        paths
+    } else {
+        return Err(StageError::InvalidSource(source.display().to_string()));
+    };
+    let required_bytes = paths
+        .iter()
+        .fold(0_u64, |total, (_, _, size)| total.saturating_add(*size));
+    std::fs::create_dir_all(workspace_root).map_err(|source| StageError::Io {
+        path: workspace_root.display().to_string(),
+        source,
+    })?;
+    ensure_staging_capacity(workspace_root, required_bytes)?;
+
     let lease_directory = workspace_root
         .join("staging")
         .join(format!("stage-{}", Uuid::now_v7()));
@@ -142,22 +173,9 @@ pub fn stage_package(
         directory: lease_directory,
     }));
 
-    let paths = if metadata.is_file() {
-        vec![(
-            source.to_path_buf(),
-            safe_relative(Path::new(source.file_name().unwrap_or_default()))?,
-        )]
-    } else if metadata.is_dir() {
-        let mut paths = Vec::new();
-        collect_files(source, source, &mut paths)?;
-        paths
-    } else {
-        return Err(StageError::InvalidSource(source.display().to_string()));
-    };
-
     let mut files = Vec::with_capacity(paths.len());
     let mut total_bytes = 0_u64;
-    for (original_path, relative_path) in paths {
+    for (original_path, relative_path, _) in paths {
         if cancel.load(Ordering::Relaxed) {
             return Err(StageError::Cancelled);
         }
@@ -204,6 +222,49 @@ pub fn stage_package(
         files,
         total_bytes,
     })
+}
+
+fn ensure_staging_capacity(workspace_root: &Path, required_bytes: u64) -> Result<(), StageError> {
+    let Some(available) = available_space(workspace_root)? else {
+        return Ok(());
+    };
+    let required_with_reserve = required_bytes.saturating_add(MINIMUM_FREE_SPACE_RESERVE);
+    if available < required_with_reserve {
+        return Err(StageError::InsufficientSpace {
+            workspace: workspace_root.display().to_string(),
+            required: required_with_reserve,
+            available,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn available_space(path: &Path) -> Result<Option<u64>, StageError> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let encoded = CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| StageError::UnsafePath(path.display().to_string()))?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `encoded` is NUL-terminated and `stats` points to writable,
+    // correctly aligned storage for one `statvfs` result.
+    if unsafe { libc::statvfs(encoded.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return Err(StageError::Io {
+            path: path.display().to_string(),
+            source: std::io::Error::last_os_error(),
+        });
+    }
+    // SAFETY: a successful `statvfs` call initialized the structure.
+    let stats = unsafe { stats.assume_init() };
+    Ok(Some(stats.f_bavail.saturating_mul(stats.f_frsize)))
+}
+
+#[cfg(not(unix))]
+fn available_space(_path: &Path) -> Result<Option<u64>, StageError> {
+    // Capacity probing is currently implemented for Unix hosts. Staging still
+    // works elsewhere; the copy itself remains the final authority.
+    Ok(None)
 }
 
 fn copy_and_hash(
@@ -274,7 +335,7 @@ fn copy_and_hash(
 fn collect_files(
     root: &Path,
     directory: &Path,
-    output: &mut Vec<(PathBuf, PathBuf)>,
+    output: &mut Vec<(PathBuf, PathBuf, u64)>,
 ) -> Result<(), StageError> {
     let mut entries = std::fs::read_dir(directory)
         .map_err(|source| StageError::Io {
@@ -297,7 +358,7 @@ fn collect_files(
                 .strip_prefix(root)
                 .map_err(|_| StageError::UnsafePath(path.display().to_string()))?;
             let relative = safe_relative(relative)?;
-            output.push((path, relative));
+            output.push((path, relative, metadata.len()));
         }
     }
     Ok(())
@@ -390,5 +451,13 @@ mod tests {
             digests.sha256,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_stage_that_cannot_fit_before_reading_the_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = ensure_staging_capacity(temp.path(), u64::MAX).unwrap_err();
+        assert!(matches!(error, StageError::InsufficientSpace { .. }));
     }
 }

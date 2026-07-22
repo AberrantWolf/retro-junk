@@ -4552,6 +4552,7 @@ version = "0.4.0"
 dependencies = [
  "crc32fast",
  "dirs",
+ "libc",
  "log",
  "md5",
  "sha1",
