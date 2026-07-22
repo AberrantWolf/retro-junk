@@ -3,11 +3,18 @@
 //! Provides schema creation, CRUD operations, and query APIs
 //! backed by `SQLite` (via rusqlite with bundled feature).
 
+pub mod archive;
 pub mod library;
 pub mod operations;
 pub mod queries;
 pub mod schema;
 
+pub use archive::{
+    ArchiveReleaseSummary, CompleteCatalogMediaMatch, bind_library_entries_by_hash,
+    list_archive_release_summaries, match_catalog_file, match_catalog_file_any_platform,
+    match_catalog_serial_any_platform, match_complete_catalog_media,
+    match_complete_catalog_media_any_platform, reconcile_archive_snapshot,
+};
 pub use library::{
     ConsoleScanToken, EntryAnalysisCommand, EntryAnalysisUpdate, EntryHashUpdate, LibraryChangeSet,
     LibraryConsoleDescriptor, LibraryConsoleId, LibraryConsoleRow, LibraryConsoleSummary,

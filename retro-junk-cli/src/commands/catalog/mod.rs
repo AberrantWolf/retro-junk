@@ -16,9 +16,8 @@ use std::path::PathBuf;
 use retro_junk_lib::util::format_bytes;
 
 pub(crate) fn default_catalog_db_path() -> PathBuf {
-    retro_junk_dat::cache::cache_dir()
-        .unwrap_or_else(|_| PathBuf::from(".cache"))
-        .join("catalog.db")
+    retro_junk_lib::settings::ensure_catalog_database_location()
+        .unwrap_or_else(|_| retro_junk_lib::settings::catalog_database_path())
 }
 
 /// Truncate a string to a maximum width, appending "..." if needed.

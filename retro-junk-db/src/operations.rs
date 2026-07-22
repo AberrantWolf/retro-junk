@@ -15,6 +15,8 @@ pub enum OperationError {
     NotFound { entity_type: String, id: String },
     #[error("Invalid field: {0}")]
     InvalidField(String),
+    #[error("Invalid data: {0}")]
+    InvalidData(String),
 }
 
 // ── Platform Operations ─────────────────────────────────────────────────────

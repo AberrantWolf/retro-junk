@@ -78,6 +78,33 @@ pub fn parse_dat_file(path: &std::path::Path) -> Result<DatFile, DatError> {
     parse_dat(reader)
 }
 
+/// Parse the `<rom .../>` records emitted in a redumper log's `dat:` block.
+///
+/// Redumper emits Logiqx-compatible ROM elements without the surrounding DAT
+/// document. Wrapping those elements keeps attribute decoding and hash
+/// normalization on the same parser path as downloaded Redump DATs.
+pub fn parse_logiqx_rom_lines(text: &str) -> Result<Vec<DatRom>, DatError> {
+    let rom_lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("<rom ") && line.ends_with("/>"))
+        .collect::<Vec<_>>();
+    if rom_lines.is_empty() {
+        return Err(DatError::invalid_dat("No <rom .../> records found"));
+    }
+    let wrapped = format!(
+        "<?xml version=\"1.0\"?><datafile><header><name>redumper output</name></header><game name=\"dump\">{}</game></datafile>",
+        rom_lines.join("")
+    );
+    let dat = parse_dat(std::io::Cursor::new(wrapped.into_bytes()))?;
+    Ok(dat
+        .games
+        .into_iter()
+        .next()
+        .map(|game| game.roms)
+        .unwrap_or_default())
+}
+
 // ---------------------------------------------------------------------------
 // Logiqx XML parser
 // ---------------------------------------------------------------------------

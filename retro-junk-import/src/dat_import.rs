@@ -347,6 +347,11 @@ pub fn log_import(
         disagreements_found: stats.disagreements_found as i64,
     };
     let id = operations::insert_import_log(conn, &log_entry)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO catalog_source_snapshots(source,system,version,imported_at,content_sha256)
+         VALUES(?1,?2,?3,?4,'')",
+        rusqlite::params![source_type, source_name, source_version, log_entry.imported_at],
+    )?;
     Ok(id)
 }
 

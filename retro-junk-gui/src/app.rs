@@ -121,6 +121,10 @@ pub struct UiState {
     pub auto_scan_in_flight: Option<String>,
     /// Activity-bar operation id for the auto-scan batch.
     pub auto_scan_op_id: Option<u64>,
+    /// Selected physical item and playable-policy editor in Collection.
+    pub collection_editor: Option<crate::state::PhysicalCopyEditor>,
+    /// Blocking discovery/review/progress flow for archive dump imports.
+    pub dump_import_dialog: Option<crate::state::DumpImportDialogState>,
 }
 
 impl Default for UiState {
@@ -152,6 +156,8 @@ impl Default for UiState {
             pending_auto_scans: VecDeque::new(),
             auto_scan_in_flight: None,
             auto_scan_op_id: None,
+            collection_editor: None,
+            dump_import_dialog: None,
         }
     }
 }
@@ -242,9 +248,9 @@ impl RetroJunkApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = crate::settings::load_settings();
 
-        let db_path = retro_junk_dat::cache::cache_dir()
-            .ok()
-            .map(|p| p.join("catalog.db"));
+        let db_path = retro_junk_lib::settings::ensure_catalog_database_location()
+            .map_err(|error| log::warn!("Could not prepare catalog database location: {error}"))
+            .ok();
         let mut app = Self::with_parts(&cc.egui_ctx, settings, None, None);
         app.db_path = db_path.clone();
         app.ui_state.startup_status = Some("Opening and migrating the catalog…".to_owned());
@@ -256,11 +262,37 @@ impl RetroJunkApp {
         let ctx = cc.egui_ctx.clone();
         let analysis_context = app.context.clone();
         let configured_root = app.settings.library.current_root.clone();
+        let configured_profile = app.settings.library.active_profile().cloned();
         std::thread::spawn(move || {
             let mut database = db_path
                 .as_ref()
                 .ok_or_else(|| "Could not determine the catalog database path".to_owned())
                 .and_then(|path| retro_junk_db::open_database(path).map_err(|e| e.to_string()));
+            if let (Some(profile), Ok(connection)) =
+                (configured_profile.as_ref(), database.as_mut())
+                && profile
+                    .archive_root
+                    .join("retro-junk-archive.toml")
+                    .is_file()
+            {
+                match retro_junk_archive::scan_archive(&profile.archive_root).and_then(|snapshot| {
+                    retro_junk_db::reconcile_archive_snapshot(
+                        connection,
+                        &snapshot,
+                        &profile.playable_root,
+                        &profile.workspace_root,
+                    )
+                    .map_err(|error| {
+                        retro_junk_archive::index::IndexError::Io {
+                            path: profile.archive_root.display().to_string(),
+                            source: std::io::Error::other(error.to_string()),
+                        }
+                    })
+                }) {
+                    Ok(()) => {}
+                    Err(error) => log::warn!("Could not rebuild archive projection: {error}"),
+                }
+            }
             let mut restored_root = None;
             let mut fragile_mount_kind = None;
             if let Some(root) = configured_root {
@@ -1180,6 +1212,7 @@ impl eframe::App for RetroJunkApp {
                 ui.add_space(4.0);
 
                 let view = &mut self.ui_state.current_view;
+                ui.selectable_value(view, View::Collection, "Collection");
                 ui.selectable_value(view, View::Library, "Library");
                 ui.selectable_value(view, View::Settings, "Settings");
                 ui.selectable_value(view, View::Tools, "Tools");
@@ -1208,6 +1241,7 @@ impl eframe::App for RetroJunkApp {
         // conditional log viewer / activity bar panels above doesn't re-id every
         // widget in the view (see `util::stable_central_panel`).
         util::stable_central_panel(ui, "main_view", |ui| match self.ui_state.current_view {
+            View::Collection => views::collection::show(ui, self),
             View::Library => views::library::show(ui, self, ctx),
             View::Settings => views::settings::show(ui, self),
             View::Tools => views::tools::show(ui, self),
@@ -1244,6 +1278,8 @@ impl eframe::App for RetroJunkApp {
 
         // Compress-to-CHD confirmation dialog
         widgets::chd_compress_dialog::show(ctx, self);
+
+        views::collection::show_import_modal(ctx, self);
 
         // Organize preview dialog
         if self.ui_state.pending_organize_plan.is_some() {
@@ -1282,7 +1318,11 @@ impl eframe::App for RetroJunkApp {
         }
 
         // Save settings
-        self.settings.library.current_root = self.root_path.clone();
+        if let Some(root) = self.root_path.clone() {
+            self.settings.library.ensure_profile_for_root(&root);
+        } else {
+            self.settings.library.current_root = None;
+        }
         if let Err(e) = crate::settings::save_settings(&self.settings) {
             log::warn!("Failed to save settings on exit: {e}");
         }

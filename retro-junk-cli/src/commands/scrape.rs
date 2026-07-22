@@ -14,6 +14,112 @@ use crate::cli_types::{ConsoleFilterArgs, ScrapeArgs};
 use crate::scan_folders;
 use crate::spinner;
 
+fn archive_scraped_assets(
+    archive_root: &Path,
+    platform_id: &str,
+    games: &[retro_junk_frontend::ScrapedGame],
+) -> Result<(), CliError> {
+    let _archive_lock = retro_junk_archive::ArchiveLock::acquire(archive_root)
+        .map_err(|error| CliError::other(error.to_string()))?;
+    let snapshot = retro_junk_archive::scan_archive(archive_root)
+        .map_err(|error| CliError::other(error.to_string()))?;
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let mut known = snapshot
+        .releases
+        .iter()
+        .flat_map(|release| {
+            release.supporting_files.iter().map(move |asset| {
+                (
+                    release.manifest.archive_release_id,
+                    asset.manifest.asset_type.clone(),
+                    asset.manifest.file.sha256.clone(),
+                )
+            })
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    for game in games {
+        let candidates = snapshot
+            .releases
+            .iter()
+            .filter(|release| {
+                release
+                    .manifest
+                    .platform_id
+                    .eq_ignore_ascii_case(platform_id)
+            })
+            .filter(|release| {
+                let managed_filename_match = release
+                    .physical_copies
+                    .iter()
+                    .flat_map(|item| &item.carriers)
+                    .flat_map(|medium| &medium.dumps)
+                    .flat_map(|dump| &dump.builds)
+                    .any(|build| {
+                        std::path::Path::new(&build.evidence.relative_output_path)
+                            .file_name()
+                            .and_then(|value| value.to_str())
+                            .is_some_and(|name| name.eq_ignore_ascii_case(&game.rom_filename))
+                    });
+                release.manifest.title.eq_ignore_ascii_case(&game.name)
+                    || (!game.cover_title.is_empty()
+                        && release
+                            .manifest
+                            .title
+                            .eq_ignore_ascii_case(&game.cover_title))
+                    || (!release.manifest.catalog_binding.dat_name.is_empty()
+                        && release
+                            .manifest
+                            .catalog_binding
+                            .dat_name
+                            .eq_ignore_ascii_case(&game.name))
+                    || managed_filename_match
+            })
+            .collect::<Vec<_>>();
+        let [release] = candidates.as_slice() else {
+            log::warn!(
+                "Could not uniquely bind scraped assets for {} to an archived {platform_id} release",
+                game.name
+            );
+            continue;
+        };
+        for (asset_type, path) in &game.assets {
+            let (_, sha256) = retro_junk_archive::sha256_file(path, &cancelled)
+                .map_err(|error| CliError::other(error.to_string()))?;
+            let asset_type = asset_type.to_string();
+            let key = (
+                release.manifest.archive_release_id,
+                asset_type.clone(),
+                sha256,
+            );
+            if known.contains(&key) {
+                continue;
+            }
+            retro_junk_archive::add_release_file(
+                archive_root,
+                retro_junk_archive::NewReleaseFile {
+                    release_id: release.manifest.archive_release_id,
+                    source_file: path,
+                    category: if asset_type.eq_ignore_ascii_case("video") {
+                        retro_junk_archive::ReleaseFileCategory::Video
+                    } else if asset_type.to_ascii_lowercase().contains("manual") {
+                        retro_junk_archive::ReleaseFileCategory::Document
+                    } else {
+                        retro_junk_archive::ReleaseFileCategory::Artwork
+                    },
+                    asset_type: &asset_type,
+                    source: "screenscraper",
+                    source_url: "",
+                    caption: "",
+                },
+                &cancelled,
+            )
+            .map_err(|error| CliError::other(error.to_string()))?;
+            known.insert(key);
+        }
+    }
+    Ok(())
+}
+
 /// Try to enrich scraped games with `cover_title` from the catalog database.
 ///
 /// Looks up each game by title in the catalog DB. If a release with a
@@ -132,6 +238,7 @@ pub(crate) fn run_scrape(
         no_miximage,
         force_redownload,
         threads,
+        archive_root,
     } = args;
     let root_path = library_path;
 
@@ -494,6 +601,11 @@ pub(crate) fn run_scrape(
                     // Enrich with cover titles from catalog DB
                     let mut games = result.games;
                     enrich_from_catalog(&mut games);
+                    if let Some(archive_root) = archive_root.as_deref()
+                        && !dry_run
+                    {
+                        archive_scraped_assets(archive_root, folder_name, &games)?;
+                    }
 
                     // Write metadata
                     if !games.is_empty() && !dry_run {

@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 retro-junk-lib.workspace = true
+retro-junk-archive.workspace = true
+retro-junk-archive-import.workspace = true
 retro-junk-disc.workspace = true
 retro-junk-dat.workspace = true
 retro-junk-nintendo.workspace = true
@@ -28,6 +30,7 @@ tokio.workspace = true
 chrono.workspace = true
 log.workspace = true
 thiserror.workspace = true
+serde.workspace = true
 strip-ansi-escapes.workspace = true
 
 [dev-dependencies]

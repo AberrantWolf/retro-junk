@@ -16,10 +16,12 @@ members = [
     "retro-junk-db",
     "retro-junk-import",
     "retro-junk-disc",
+    "retro-junk-archive",
+    "retro-junk-archive-import",
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/AberrantWolf/retro-junk"
@@ -48,6 +50,8 @@ retro-junk-sega = { path = "retro-junk-sega" }
 retro-junk-microsoft = { path = "retro-junk-microsoft" }
 retro-junk-dat = { path = "retro-junk-dat" }
 retro-junk-disc = { path = "retro-junk-disc" }
+retro-junk-archive = { path = "retro-junk-archive" }
+retro-junk-archive-import = { path = "retro-junk-archive-import" }
 retro-junk-catalog = { path = "retro-junk-catalog" }
 retro-junk-db = { path = "retro-junk-db" }
 retro-junk-import = { path = "retro-junk-import" }
@@ -80,6 +84,7 @@ strip-ansi-escapes = "0.2"
 csv = "1"
 pathdiff = "0.2"
 env_logger = "0.11"
+uuid = { version = "1", features = ["v7", "serde"] }
 
 # The profile that 'dist' will build with
 [profile.dist]

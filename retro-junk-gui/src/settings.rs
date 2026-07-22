@@ -11,6 +11,14 @@ pub struct AppSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LibrarySettings {
+    /// Active preservation/playable collection profile.
+    #[serde(default)]
+    pub current_profile: Option<retro_junk_archive::ArchiveProfileId>,
+    /// Device-local root mappings for portable collection identities.
+    #[serde(default)]
+    pub profiles: Vec<retro_junk_archive::CollectionProfile>,
+    /// Legacy 0.3 playable root, retained while callers migrate to profiles.
+    #[serde(default)]
     pub current_root: Option<PathBuf>,
     #[serde(default)]
     pub recent_roots: Vec<RecentRoot>,
@@ -80,11 +88,57 @@ pub fn settings_path() -> PathBuf {
 pub fn load_settings() -> AppSettings {
     let path = settings_path();
     match std::fs::read_to_string(&path) {
-        Ok(contents) => toml::from_str(&contents).unwrap_or_else(|e| {
-            log::warn!("Failed to parse settings at {}: {}", path.display(), e);
-            AppSettings::default()
-        }),
+        Ok(contents) => toml::from_str(&contents).map_or_else(
+            |e| {
+                log::warn!("Failed to parse settings at {}: {}", path.display(), e);
+                AppSettings::default()
+            },
+            migrate_legacy_profile,
+        ),
         Err(_) => AppSettings::default(),
+    }
+}
+
+fn migrate_legacy_profile(mut settings: AppSettings) -> AppSettings {
+    if settings.library.profiles.is_empty()
+        && let Some(root) = settings.library.current_root.as_deref()
+    {
+        let profile = retro_junk_archive::CollectionProfile::from_legacy_playable_root(root);
+        settings.library.current_profile = Some(profile.profile_id);
+        settings.library.profiles.push(profile);
+    }
+    settings
+}
+
+impl LibrarySettings {
+    #[must_use]
+    pub fn active_profile(&self) -> Option<&retro_junk_archive::CollectionProfile> {
+        let id = self.current_profile?;
+        self.profiles
+            .iter()
+            .find(|profile| profile.profile_id == id)
+    }
+
+    pub fn ensure_profile_for_root(
+        &mut self,
+        playable_root: &std::path::Path,
+    ) -> retro_junk_archive::ArchiveProfileId {
+        if let Some(profile) = self
+            .profiles
+            .iter()
+            .find(|profile| profile.playable_root == playable_root)
+        {
+            self.current_profile = Some(profile.profile_id);
+            self.current_root = Some(playable_root.to_path_buf());
+            return profile.profile_id;
+        }
+        let profile =
+            retro_junk_archive::CollectionProfile::from_legacy_playable_root(playable_root);
+        let id = profile.profile_id;
+        self.profiles.push(profile);
+        self.current_profile = Some(id);
+        self.current_root = Some(playable_root.to_path_buf());
+        id
     }
 }
 

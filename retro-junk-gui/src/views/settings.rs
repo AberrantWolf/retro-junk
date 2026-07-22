@@ -49,6 +49,51 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
     ui.add_space(8.0);
 
+    let mut profile_action = None;
+    if let Some(profile) = app.settings.library.active_profile() {
+        ui.label(format!("Collection profile: {}", profile.display_name));
+        ui.horizontal(|ui| {
+            ui.label("Archive:");
+            ui.monospace(profile.archive_root.display().to_string());
+            if ui.small_button("Change…").clicked()
+                && let Some(path) = rfd::FileDialog::new().pick_folder()
+            {
+                profile_action = Some(ProfileAction::Archive(path));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Playable:");
+            ui.monospace(profile.playable_root.display().to_string());
+            if ui.small_button("Change…").clicked()
+                && let Some(path) = rfd::FileDialog::new().pick_folder()
+            {
+                profile_action = Some(ProfileAction::Playable(path));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Workspace:");
+            ui.monospace(profile.workspace_root.display().to_string());
+            if ui.small_button("Change…").clicked()
+                && let Some(path) = rfd::FileDialog::new().pick_folder()
+            {
+                profile_action = Some(ProfileAction::Workspace(path));
+            }
+        });
+        let initialized = profile
+            .archive_root
+            .join("retro-junk-archive.toml")
+            .is_file();
+        if initialized {
+            ui.colored_label(STATUS_OK, "Portable archive initialized");
+        } else if ui.button("Initialize archive").clicked() {
+            profile_action = Some(ProfileAction::Initialize);
+        }
+        ui.add_space(8.0);
+    }
+    if let Some(action) = profile_action {
+        apply_profile_action(app, action);
+    }
+
     // Recent roots
     if !app.settings.library.recent_roots.is_empty() {
         ui.label("Recent Roots:");
@@ -104,6 +149,94 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         &mut app.settings.general.warn_on_region_override,
         "Warn when overriding a specific detected region",
     );
+}
+
+enum ProfileAction {
+    Archive(std::path::PathBuf),
+    Playable(std::path::PathBuf),
+    Workspace(std::path::PathBuf),
+    Initialize,
+}
+
+fn apply_profile_action(app: &mut RetroJunkApp, action: ProfileAction) {
+    let Some(id) = app.settings.library.current_profile else {
+        return;
+    };
+    let Some(profile) = app
+        .settings
+        .library
+        .profiles
+        .iter_mut()
+        .find(|profile| profile.profile_id == id)
+    else {
+        return;
+    };
+    match action {
+        ProfileAction::Archive(path) => {
+            profile.archive_root = path;
+            profile.workspace_root = profile.archive_root.join(".retro-junk").join("work");
+            let root_manifest = profile.archive_root.join("retro-junk-archive.toml");
+            if root_manifest.is_file() {
+                match retro_junk_archive::read_toml::<retro_junk_archive::ArchiveRootManifest>(
+                    &root_manifest,
+                ) {
+                    Ok(manifest) => {
+                        profile.profile_id = manifest.profile_id;
+                        profile.display_name = manifest.display_name;
+                        profile.platform_defaults = manifest.platform_defaults;
+                        app.settings.library.current_profile = Some(profile.profile_id);
+                    }
+                    Err(error) => {
+                        app.push_error("Open archive", error.to_string());
+                        return;
+                    }
+                }
+            }
+        }
+        ProfileAction::Playable(path) => {
+            profile.playable_root.clone_from(&path);
+            app.settings.library.current_root = Some(path);
+        }
+        ProfileAction::Workspace(path) => profile.workspace_root = path,
+        ProfileAction::Initialize => {
+            let manifest = retro_junk_archive::ArchiveRootManifest {
+                schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+                profile_id: profile.profile_id,
+                display_name: profile.display_name.clone(),
+                platform_defaults: profile.platform_defaults.clone(),
+            };
+            if let Err(error) =
+                retro_junk_archive::initialize_archive(&profile.archive_root, &manifest)
+            {
+                app.push_error("Archive initialization", error.to_string());
+                return;
+            }
+        }
+    }
+    if let Err(error) = crate::settings::save_settings(&app.settings) {
+        app.push_error("Save settings", error.to_string());
+    }
+    if let Some(profile) = app.settings.library.active_profile().cloned()
+        && let Some(connection) = app.catalog_db.as_mut()
+        && profile
+            .archive_root
+            .join("retro-junk-archive.toml")
+            .is_file()
+    {
+        match retro_junk_archive::scan_archive(&profile.archive_root) {
+            Ok(snapshot) => {
+                if let Err(error) = retro_junk_db::reconcile_archive_snapshot(
+                    connection,
+                    &snapshot,
+                    &profile.playable_root,
+                    &profile.workspace_root,
+                ) {
+                    app.push_error("Archive index", error.to_string());
+                }
+            }
+            Err(error) => app.push_error("Archive index", error.to_string()),
+        }
+    }
 }
 
 fn show_output_directories_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {

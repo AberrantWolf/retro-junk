@@ -79,8 +79,7 @@ pub fn hash_cue_disc(
         file.seek(SeekFrom::Start(span.byte_offset))?;
         let base = completed;
         let per_track = |done: u64, _track_total: u64| progress(base.saturating_add(done), total);
-        let mut hasher =
-            MultiHasher::new(HashAlgorithms::Crc32Sha1, span.byte_len, Some(&per_track));
+        let mut hasher = MultiHasher::new(HashAlgorithms::All, span.byte_len, Some(&per_track));
         let mut remaining = span.byte_len;
         let mut buffer = vec![0_u8; 64 * 1024];
         while remaining > 0 {

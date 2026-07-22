@@ -2,6 +2,8 @@
 
 A CLI tool for analyzing, renaming, and scraping metadata for retro game ROMs and disc images. Supports 23 consoles across Nintendo, Sony, Sega, and Microsoft platforms.
 
+Version 0.4 adds a portable, evidence-backed [preservation archive](docs/archive-architecture.md) alongside the emulator-ready library. Raw masters and provenance remain authoritative while CHD and other playable forms are reproducible derivatives.
+
 ## 📦 Install
 
 **From GitHub Releases** (prebuilt binaries for macOS, Linux, Windows):

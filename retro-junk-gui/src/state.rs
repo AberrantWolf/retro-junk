@@ -72,6 +72,7 @@ use crate::app::RetroJunkApp;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Library,
+    Collection,
     Settings,
     Tools,
 }
@@ -630,7 +631,43 @@ pub enum OperationKind {
     Rename,
     CueFix,
     ChdCompress,
+    ArchiveImport,
     Other,
+}
+
+#[derive(Debug)]
+pub enum DumpImportDialogState {
+    Planning {
+        op_id: u64,
+        source: PathBuf,
+    },
+    Review {
+        plan: retro_junk_archive_import::DumpImportPlan,
+        consume: bool,
+        new_physical_copy: bool,
+    },
+    Importing {
+        op_id: u64,
+    },
+    Complete {
+        result: retro_junk_archive_import::DumpImportBatchResult,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PhysicalCopyEditor {
+    pub physical_copy_id: String,
+    pub physical_copy_manifest_path: PathBuf,
+    pub carrier_manifest_path: PathBuf,
+    pub label: String,
+    pub condition: String,
+    pub notes: String,
+    pub date_acquired: String,
+    pub provenance: String,
+    pub desired_format: String,
+    pub retain_intermediate: bool,
+    pub allow_unverified: bool,
+    pub ingest_format: String,
 }
 
 /// How a `BackgroundOperation`'s `progress_current/progress_total` pair should
@@ -781,6 +818,18 @@ pub enum AppMessage {
         database: Result<retro_junk_db::Connection, String>,
         restored_root: Option<PathBuf>,
         fragile_mount_kind: Option<&'static str>,
+    },
+    ArchiveOperationComplete {
+        op_id: u64,
+        result: Result<String, String>,
+    },
+    ArchiveImportPlanReady {
+        op_id: u64,
+        result: Result<retro_junk_archive_import::DumpImportPlan, String>,
+    },
+    ArchiveImportComplete {
+        op_id: u64,
+        result: Result<retro_junk_archive_import::DumpImportBatchResult, String>,
     },
     // -- Folder scan --
     ConsoleFolderFound {
@@ -954,6 +1003,9 @@ impl AppMessage {
         !matches!(
             self,
             Self::StartupReady { .. }
+                | Self::ArchiveOperationComplete { .. }
+                | Self::ArchiveImportPlanReady { .. }
+                | Self::ArchiveImportComplete { .. }
                 | Self::ChdmanProbeResult { .. }
                 | Self::OperationProgress { .. }
                 | Self::OperationPhase { .. }
@@ -1518,6 +1570,54 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     app.ui_state.loading_library = true;
                     app.open_browser_root(&root, ctx);
                     let _ = app.message_tx.send(AppMessage::StartFolderScan);
+                }
+            }
+        }
+
+        AppMessage::ArchiveOperationComplete { op_id, result } => {
+            app.operations.retain(|operation| operation.id != op_id);
+            if let Some(handle) = app.op_threads.remove(&op_id) {
+                let _ = handle.join();
+            }
+            match result {
+                Ok(message) => log::info!("{message}"),
+                Err(error) => app.push_error("Archive operation", error),
+            }
+        }
+        AppMessage::ArchiveImportPlanReady { op_id, result } => {
+            app.operations.retain(|operation| operation.id != op_id);
+            if let Some(handle) = app.op_threads.remove(&op_id) {
+                let _ = handle.join();
+            }
+            match result {
+                Ok(plan) => {
+                    app.ui_state.dump_import_dialog = Some(DumpImportDialogState::Review {
+                        plan,
+                        consume: false,
+                        new_physical_copy: false,
+                    });
+                }
+                Err(error) => {
+                    app.ui_state.dump_import_dialog = None;
+                    if !error.to_ascii_lowercase().contains("cancelled") {
+                        app.push_error("Archive import planning", error);
+                    }
+                }
+            }
+        }
+        AppMessage::ArchiveImportComplete { op_id, result } => {
+            app.operations.retain(|operation| operation.id != op_id);
+            if let Some(handle) = app.op_threads.remove(&op_id) {
+                let _ = handle.join();
+            }
+            match result {
+                Ok(result) => {
+                    app.ui_state.dump_import_dialog =
+                        Some(DumpImportDialogState::Complete { result });
+                }
+                Err(error) => {
+                    app.ui_state.dump_import_dialog = None;
+                    app.push_error("Archive import", error);
                 }
             }
         }

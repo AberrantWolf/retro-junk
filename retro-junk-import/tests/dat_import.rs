@@ -300,6 +300,21 @@ fn log_import_records_stats() {
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].source_name, "Nintendo - NES");
     assert_eq!(logs[0].records_created, 3);
+    let snapshot: (String, String, String) = conn
+        .query_row(
+            "SELECT source,system,version FROM catalog_source_snapshots",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        snapshot,
+        (
+            "no-intro".to_owned(),
+            "Nintendo - NES".to_owned(),
+            "2024-01-15".to_owned()
+        )
+    );
 }
 
 #[test]

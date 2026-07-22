@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 16;
+pub const CURRENT_VERSION: i32 = 19;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -275,6 +275,177 @@ const TABLES: &[(&str, &str)] = &[
           cue_compat_issues_json TEXT,
           UNIQUE(console_id, entry_key))",
     ),
+    (
+        "archive_profiles",
+        "(id TEXT PRIMARY KEY,
+          display_name TEXT NOT NULL,
+          manifest_path TEXT NOT NULL,
+          manifest_sha256 TEXT NOT NULL,
+          archive_root TEXT NOT NULL,
+          playable_root TEXT NOT NULL DEFAULT '',
+          workspace_root TEXT NOT NULL DEFAULT '',
+          indexed_at TEXT NOT NULL DEFAULT (datetime('now')))",
+    ),
+    (
+        "archive_releases",
+        "(id TEXT PRIMARY KEY,
+          profile_id TEXT NOT NULL REFERENCES archive_profiles(id) ON DELETE CASCADE,
+          catalog_release_id TEXT REFERENCES releases(id) ON DELETE SET NULL,
+          platform_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          region TEXT NOT NULL DEFAULT '',
+          revision TEXT NOT NULL DEFAULT '',
+          variant TEXT NOT NULL DEFAULT '',
+          manifest_path TEXT NOT NULL,
+          manifest_sha256 TEXT NOT NULL,
+          binding_state TEXT NOT NULL DEFAULT 'unresolved',
+          UNIQUE(profile_id, manifest_path))",
+    ),
+    (
+        "physical_copies",
+        "(id TEXT PRIMARY KEY,
+          archive_release_id TEXT NOT NULL REFERENCES archive_releases(id) ON DELETE CASCADE,
+          copy_number INTEGER NOT NULL,
+          owner_id TEXT NOT NULL DEFAULT 'default',
+          label TEXT NOT NULL DEFAULT '',
+          condition TEXT NOT NULL DEFAULT '',
+          notes TEXT NOT NULL DEFAULT '',
+          date_acquired TEXT NOT NULL DEFAULT '',
+          provenance TEXT NOT NULL DEFAULT '',
+          manifest_path TEXT NOT NULL,
+          manifest_sha256 TEXT NOT NULL)",
+    ),
+    (
+        "carriers",
+        "(id TEXT PRIMARY KEY,
+          physical_copy_id TEXT NOT NULL REFERENCES physical_copies(id) ON DELETE CASCADE,
+          catalog_media_id TEXT REFERENCES media(id) ON DELETE SET NULL,
+          kind TEXT NOT NULL DEFAULT 'unknown',
+          serial TEXT NOT NULL DEFAULT '',
+          sequence_number INTEGER NOT NULL DEFAULT 0,
+          label TEXT NOT NULL DEFAULT '',
+          manifest_path TEXT NOT NULL,
+          manifest_sha256 TEXT NOT NULL,
+          binding_state TEXT NOT NULL DEFAULT 'unresolved')",
+    ),
+    (
+        "dump_events",
+        "(id TEXT PRIMARY KEY,
+          carrier_id TEXT NOT NULL REFERENCES carriers(id) ON DELETE CASCADE,
+          representation_id TEXT NOT NULL UNIQUE,
+          format TEXT NOT NULL,
+          captured_at TEXT NOT NULL,
+          manifest_path TEXT NOT NULL,
+          manifest_sha256 TEXT NOT NULL,
+          integrity_state TEXT NOT NULL DEFAULT 'unknown',
+          catalog_state TEXT NOT NULL DEFAULT 'not_attempted')",
+    ),
+    (
+        "representations",
+        "(id TEXT PRIMARY KEY,
+          carrier_id TEXT NOT NULL REFERENCES carriers(id) ON DELETE CASCADE,
+          dump_id TEXT REFERENCES dump_events(id) ON DELETE SET NULL,
+          role TEXT NOT NULL,
+          format TEXT NOT NULL,
+          location_role TEXT NOT NULL,
+          relative_path TEXT NOT NULL,
+          presence_state TEXT NOT NULL DEFAULT 'not_present',
+          input_manifest_sha256 TEXT NOT NULL DEFAULT '',
+          content_sha256 TEXT NOT NULL DEFAULT '',
+          content_size INTEGER NOT NULL DEFAULT 0,
+          catalog_verified BOOLEAN NOT NULL DEFAULT 0,
+          round_trip_verified BOOLEAN NOT NULL DEFAULT 0,
+          recipe_version INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(location_role, relative_path))",
+    ),
+    (
+        "representation_files",
+        "(representation_id TEXT NOT NULL REFERENCES representations(id) ON DELETE CASCADE,
+          relative_path TEXT NOT NULL,
+          file_size INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          PRIMARY KEY(representation_id, relative_path))",
+    ),
+    (
+        "verification_events",
+        "(id TEXT PRIMARY KEY,
+          representation_id TEXT NOT NULL REFERENCES representations(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL,
+          outcome TEXT NOT NULL,
+          performed_at TEXT NOT NULL,
+          input_manifest_sha256 TEXT NOT NULL DEFAULT '',
+          evidence_path TEXT NOT NULL,
+          catalog_source TEXT NOT NULL DEFAULT '',
+          catalog_version TEXT NOT NULL DEFAULT '',
+          catalog_game TEXT NOT NULL DEFAULT '',
+          complete_track_set BOOLEAN NOT NULL DEFAULT 0,
+          detail TEXT NOT NULL DEFAULT '')",
+    ),
+    (
+        "derivations",
+        "(id TEXT PRIMARY KEY,
+          parent_representation_id TEXT NOT NULL REFERENCES representations(id) ON DELETE CASCADE,
+          child_representation_id TEXT NOT NULL REFERENCES representations(id) ON DELETE CASCADE,
+          recipe_version INTEGER NOT NULL,
+          evidence_path TEXT NOT NULL,
+          created_at TEXT NOT NULL)",
+    ),
+    (
+        "playable_policies",
+        "(scope_type TEXT NOT NULL,
+          scope_id TEXT NOT NULL,
+          format TEXT NOT NULL,
+          retain_intermediate BOOLEAN NOT NULL DEFAULT 0,
+          allow_unverified BOOLEAN NOT NULL DEFAULT 0,
+          options_json TEXT NOT NULL DEFAULT '{}',
+          PRIMARY KEY(scope_type, scope_id))",
+    ),
+    (
+        "library_entry_media_bindings",
+        "(library_entry_id INTEGER NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+          catalog_media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+          representation_id TEXT REFERENCES representations(id) ON DELETE SET NULL,
+          match_method TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(library_entry_id, catalog_media_id))",
+    ),
+    (
+        "catalog_source_snapshots",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source TEXT NOT NULL,
+          system TEXT NOT NULL,
+          version TEXT NOT NULL,
+          imported_at TEXT NOT NULL,
+          content_sha256 TEXT NOT NULL DEFAULT '',
+          UNIQUE(source, system, version, content_sha256))",
+    ),
+    (
+        "physical_copy_files",
+        "(id TEXT PRIMARY KEY,
+          physical_copy_id TEXT NOT NULL REFERENCES physical_copies(id) ON DELETE CASCADE,
+          category TEXT NOT NULL,
+          asset_type TEXT NOT NULL,
+          relative_path TEXT NOT NULL,
+          sha256 TEXT NOT NULL DEFAULT '',
+          caption TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL DEFAULT '',
+          UNIQUE(physical_copy_id, relative_path))",
+    ),
+    (
+        "archive_release_files",
+        "(id TEXT PRIMARY KEY,
+          archive_release_id TEXT NOT NULL REFERENCES archive_releases(id) ON DELETE CASCADE,
+          category TEXT NOT NULL,
+          asset_type TEXT NOT NULL,
+          relative_path TEXT NOT NULL,
+          file_size INTEGER NOT NULL,
+          sha256 TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT '',
+          source_url TEXT NOT NULL DEFAULT '',
+          caption TEXT NOT NULL DEFAULT '',
+          captured_at TEXT NOT NULL,
+          manifest_path TEXT NOT NULL,
+          manifest_sha256 TEXT NOT NULL)",
+    ),
 ];
 
 const INDEXES_SQL: &str = "
@@ -293,6 +464,17 @@ CREATE INDEX IF NOT EXISTS idx_media_tracks_crc32 ON media_tracks(crc32);
 CREATE INDEX IF NOT EXISTS idx_media_tracks_sha1 ON media_tracks(sha1);
 CREATE INDEX IF NOT EXISTS idx_library_entries_console ON library_entries(console_id);
 CREATE INDEX IF NOT EXISTS idx_library_entries_display ON library_entries(console_id, display_name COLLATE NOCASE, id);
+";
+
+const ARCHIVE_INDEXES_SQL: &str = "
+CREATE INDEX IF NOT EXISTS idx_archive_releases_profile ON archive_releases(profile_id, platform_id, title);
+CREATE INDEX IF NOT EXISTS idx_physical_copies_release ON physical_copies(archive_release_id);
+CREATE INDEX IF NOT EXISTS idx_carriers_copy ON carriers(physical_copy_id);
+CREATE INDEX IF NOT EXISTS idx_dump_events_media ON dump_events(carrier_id);
+CREATE INDEX IF NOT EXISTS idx_representations_media ON representations(carrier_id, role);
+CREATE INDEX IF NOT EXISTS idx_verifications_representation ON verification_events(representation_id, performed_at);
+CREATE INDEX IF NOT EXISTS idx_library_binding_media ON library_entry_media_bindings(catalog_media_id);
+CREATE INDEX IF NOT EXISTS idx_archive_release_files_release ON archive_release_files(archive_release_id, category, asset_type);
 ";
 
 /// Tables rebuilt by the v8 → v9 migration, with the SELECT expressions that
@@ -366,6 +548,7 @@ pub fn create_schema(conn: &Connection) -> Result<(), SchemaError> {
         conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {name} {body};"))?;
     }
     conn.execute_batch(INDEXES_SQL)?;
+    conn.execute_batch(ARCHIVE_INDEXES_SQL)?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_media_serial_key ON media_serial_keys(serial_key);",
     )?;
@@ -470,6 +653,7 @@ fn rebuild_table(
 }
 
 /// Run migrations from `from_version` up to `CURRENT_VERSION`.
+#[allow(clippy::too_many_lines)]
 fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
     if from_version > CURRENT_VERSION {
         return Err(SchemaError::VersionMismatch {
@@ -668,6 +852,121 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                          );",
                     )?;
                 }
+            }
+            16 => {
+                for name in [
+                    "archive_profiles",
+                    "archive_releases",
+                    "physical_copies",
+                    "carriers",
+                    "dump_events",
+                    "representations",
+                    "representation_files",
+                    "verification_events",
+                    "derivations",
+                    "playable_policies",
+                    "library_entry_media_bindings",
+                    "catalog_source_snapshots",
+                    "physical_copy_files",
+                    "archive_release_files",
+                ] {
+                    let body = table_body(name)?;
+                    conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {name} {body};"))?;
+                }
+                conn.execute_batch(ARCHIVE_INDEXES_SQL)?;
+            }
+            17 => {
+                let has_representations: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='representations')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_representations {
+                    if conn
+                        .prepare("SELECT catalog_verified FROM representations LIMIT 0")
+                        .is_err()
+                    {
+                        conn.execute_batch(
+                            "ALTER TABLE representations ADD COLUMN catalog_verified BOOLEAN NOT NULL DEFAULT 0;",
+                        )?;
+                    }
+                    if conn
+                        .prepare("SELECT round_trip_verified FROM representations LIMIT 0")
+                        .is_err()
+                    {
+                        conn.execute_batch(
+                            "ALTER TABLE representations ADD COLUMN round_trip_verified BOOLEAN NOT NULL DEFAULT 0;",
+                        )?;
+                    }
+                }
+                let has_verifications: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='verification_events')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_verifications
+                    && conn
+                        .prepare("SELECT input_manifest_sha256 FROM verification_events LIMIT 0")
+                        .is_err()
+                {
+                    conn.execute_batch(
+                        "ALTER TABLE verification_events ADD COLUMN input_manifest_sha256 TEXT NOT NULL DEFAULT '';",
+                    )?;
+                }
+            }
+            18 => {
+                // The 0.4 archive prototype was explicitly superseded before release.
+                // Its SQLite state is only a rebuildable projection, so replace it
+                // without touching catalog or playable-library rows.
+                conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN;")?;
+                let result = (|| -> Result<(), SchemaError> {
+                    conn.execute_batch(
+                        "DROP TABLE IF EXISTS library_entry_media_bindings;
+                         DROP TABLE IF EXISTS playable_policies;
+                         DROP TABLE IF EXISTS derivations;
+                         DROP TABLE IF EXISTS verification_events;
+                         DROP TABLE IF EXISTS representation_files;
+                         DROP TABLE IF EXISTS representations;
+                         DROP TABLE IF EXISTS dump_events;
+                         DROP TABLE IF EXISTS physical_copy_files;
+                         DROP TABLE IF EXISTS archive_release_files;
+                         DROP TABLE IF EXISTS carriers;
+                         DROP TABLE IF EXISTS physical_copies;
+                         DROP TABLE IF EXISTS collection_item_assets;
+                         DROP TABLE IF EXISTS archive_release_assets;
+                         DROP TABLE IF EXISTS collection_item_media;
+                         DROP TABLE IF EXISTS collection_items;
+                         DROP TABLE IF EXISTS archive_releases;
+                         DROP TABLE IF EXISTS archive_profiles;",
+                    )?;
+                    for name in [
+                        "archive_profiles",
+                        "archive_releases",
+                        "physical_copies",
+                        "carriers",
+                        "dump_events",
+                        "representations",
+                        "representation_files",
+                        "verification_events",
+                        "derivations",
+                        "playable_policies",
+                        "library_entry_media_bindings",
+                        "physical_copy_files",
+                        "archive_release_files",
+                    ] {
+                        let body = table_body(name)?;
+                        conn.execute_batch(&format!("CREATE TABLE {name} {body};"))?;
+                    }
+                    conn.execute_batch(ARCHIVE_INDEXES_SQL)?;
+                    conn.execute_batch("COMMIT;")?;
+                    Ok(())
+                })();
+                if result.is_err() {
+                    let _ = conn.execute_batch("ROLLBACK;");
+                }
+                conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+                result?;
+                conn.execute_batch("PRAGMA foreign_key_check;")?;
             }
             14 => {
                 let has_match_state: bool = conn.query_row(

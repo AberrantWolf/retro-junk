@@ -14,6 +14,58 @@ pub fn settings_path() -> PathBuf {
     config.join("retro-junk").join("settings.toml")
 }
 
+/// Durable catalog location. Catalog and archive-index rows are long-lived
+/// application data, not disposable DAT cache files.
+#[must_use]
+pub fn catalog_database_path() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("retro-junk")
+        .join("catalog.db")
+}
+
+/// Copy and validate the legacy cache-hosted database on first 0.4 startup.
+/// The legacy file is retained as the migration backup.
+pub fn ensure_catalog_database_location() -> io::Result<PathBuf> {
+    let target = catalog_database_path();
+    if target.exists() {
+        return Ok(target);
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| io::Error::other("catalog database has no parent directory"))?;
+    std::fs::create_dir_all(parent)?;
+    let legacy = retro_junk_dat::cache::cache_dir()
+        .map_err(io::Error::other)?
+        .join("catalog.db");
+    if !legacy.is_file() {
+        return Ok(target);
+    }
+    let temp = parent.join(".catalog.db.migrating");
+    if temp.exists() {
+        std::fs::remove_file(&temp)?;
+    }
+    std::fs::copy(&legacy, &temp)?;
+    {
+        let connection = retro_junk_db::open_database(&temp).map_err(io::Error::other)?;
+        let result: String = connection
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .map_err(io::Error::other)?;
+        if result != "ok" {
+            return Err(io::Error::other(format!(
+                "migrated catalog failed SQLite quick_check: {result}"
+            )));
+        }
+    }
+    std::fs::rename(&temp, &target)?;
+    log::info!(
+        "Migrated catalog database to {}; retained legacy backup at {}",
+        target.display(),
+        legacy.display()
+    );
+    Ok(target)
+}
+
 /// Resolve the library root path using a priority chain:
 ///
 /// 1. CLI override (if `Some`)

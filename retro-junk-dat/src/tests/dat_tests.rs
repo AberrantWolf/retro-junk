@@ -290,3 +290,16 @@ fn test_xml_redump_full_dat_fields() {
     assert_eq!(demo.serial.as_deref(), Some("610-7049"));
     assert_eq!(demo.version, None); // no <version> element
 }
+
+#[test]
+fn parses_redumper_log_rom_records_through_logiqx_parser() {
+    let log = r#"
+dat:
+<rom name="Disc (Track 01).bin" size="2352" crc="AABBCCDD" md5="001122" sha1="AABB0011" />
+<rom name="Disc (Track 02).bin" size="4704" crc="11223344" md5="334455" sha1="CCDD2233" />
+"#;
+    let roms = parse_logiqx_rom_lines(log).unwrap();
+    assert_eq!(roms.len(), 2);
+    assert_eq!(roms[0].crc, "aabbccdd");
+    assert_eq!(roms[1].sha1.as_deref(), Some("ccdd2233"));
+}

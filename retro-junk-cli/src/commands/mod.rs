@@ -1,4 +1,5 @@
 pub(crate) mod analyze;
+pub(crate) mod archive;
 pub(crate) mod cache;
 pub(crate) mod catalog;
 pub(crate) mod compress;

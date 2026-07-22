@@ -231,10 +231,20 @@ pub(crate) struct ScrapeArgs {
     /// Maximum concurrent API threads (default: server-granted max)
     #[arg(long)]
     pub threads: Option<usize>,
+
+    /// Archive downloaded originals before treating frontend media as projections
+    #[arg(long)]
+    pub archive_root: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
+    /// Manage preservation masters and their playable derivatives
+    Archive {
+        #[command(subcommand)]
+        action: ArchiveAction,
+    },
+
     /// Analyze games in a library directory structure
     Analyze(AnalyzeArgs),
 
@@ -290,6 +300,425 @@ pub(crate) enum Commands {
         /// Filter by manufacturer (e.g., Nintendo, Sega, Sony)
         #[arg(long, default_value = "")]
         manufacturer: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ArchiveAction {
+    /// Initialize a portable preservation archive
+    Init {
+        /// Archive root to create
+        archive_root: PathBuf,
+
+        /// Human-readable collection name
+        #[arg(long, default_value = "Retro Collection")]
+        name: String,
+    },
+
+    /// Discover, identify, and import one dump folder or a directory of dump folders
+    Import {
+        source: PathBuf,
+
+        #[arg(long)]
+        archive_root: PathBuf,
+
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        #[arg(long)]
+        platform: Option<String>,
+
+        #[arg(long, default_value = "default")]
+        owner: String,
+
+        #[arg(long)]
+        new_physical_copy: bool,
+
+        /// Path to Redumper for complete-track identification of raw packages
+        #[arg(long)]
+        redumper: Option<PathBuf>,
+
+        /// Disposable workspace used for Redumper identification
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+
+        /// Remove sources only after a verified new import or exact duplicate match
+        #[arg(long)]
+        consume: bool,
+
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Execute without an interactive confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Promote an existing playable library into preservation masters without moving it
+    ImportPlayable {
+        /// Existing ROM-library root, normally containing platform directories
+        playable_root: PathBuf,
+
+        #[arg(long)]
+        archive_root: PathBuf,
+
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        #[arg(long)]
+        platform: Option<String>,
+
+        #[arg(long, default_value = "default")]
+        owner: String,
+
+        #[arg(long)]
+        new_physical_copy: bool,
+
+        #[arg(long)]
+        redumper: Option<PathBuf>,
+
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Execute without an interactive confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Copy a dump into the archive and verify the staged bytes before publishing
+    Ingest {
+        /// File or directory containing one dump event
+        source: PathBuf,
+
+        /// Initialized archive root
+        #[arg(long)]
+        archive_root: PathBuf,
+
+        /// Platform identifier, such as psx, saturn, or nes
+        #[arg(long)]
+        platform: String,
+
+        /// Release title
+        #[arg(long)]
+        title: String,
+
+        /// Preservation representation: redumper-raw, rom, cue-bin, iso, chd, or rvz
+        #[arg(long)]
+        format: String,
+
+        #[arg(long, default_value = "")]
+        region: String,
+
+        #[arg(long, default_value = "")]
+        revision: String,
+
+        #[arg(long, default_value = "")]
+        variant: String,
+
+        #[arg(long, default_value = "")]
+        serial: String,
+
+        #[arg(long, default_value_t = 0)]
+        sequence_number: u32,
+
+        #[arg(long, default_value = "default")]
+        owner: String,
+
+        #[arg(long, default_value = "")]
+        physical_copy_label: String,
+
+        #[arg(long, default_value = "")]
+        carrier_label: String,
+    },
+
+    /// Copy artwork, video, a document, or metadata into an archived release
+    AddReleaseFile {
+        /// Original downloaded image, video, manual, or metadata file
+        source_file: PathBuf,
+
+        #[arg(long)]
+        archive_root: PathBuf,
+
+        #[arg(long)]
+        release_id: retro_junk_archive::ArchiveReleaseId,
+
+        #[arg(long, default_value = "artwork")]
+        category: String,
+
+        /// Semantic type such as box-front, screenshot, video, or manual
+        #[arg(long)]
+        asset_type: String,
+
+        #[arg(long, default_value = "")]
+        source: String,
+
+        #[arg(long, default_value = "")]
+        source_url: String,
+
+        #[arg(long, default_value = "")]
+        caption: String,
+    },
+
+    /// Archive a photo, provenance record, or document for one physical copy
+    AddPhysicalCopyFile {
+        source_file: PathBuf,
+
+        #[arg(long)]
+        archive_root: PathBuf,
+
+        #[arg(long)]
+        physical_copy_id: retro_junk_archive::PhysicalCopyId,
+
+        /// `photo`, `provenance`, or `document`
+        #[arg(long)]
+        category: String,
+
+        #[arg(long)]
+        asset_type: String,
+
+        #[arg(long, default_value = "")]
+        source: String,
+
+        #[arg(long, default_value = "")]
+        caption: String,
+    },
+
+    /// Show a manifest-derived archive summary
+    Status {
+        /// Initialized archive root
+        archive_root: PathBuf,
+    },
+
+    /// Re-hash preservation-master bytes and append verification evidence
+    Verify {
+        /// Initialized archive root
+        archive_root: PathBuf,
+    },
+
+    /// Verify single-file masters against imported DAT catalog hashes
+    VerifyCatalog {
+        /// Initialized archive root
+        archive_root: PathBuf,
+
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Verify only this dump UUID
+        #[arg(long)]
+        dump_id: Option<String>,
+    },
+
+    /// Regenerate Redump-compatible tracks from raw Redumper masters in scratch space
+    AuditRedumper {
+        /// Initialized archive root
+        archive_root: PathBuf,
+
+        /// Audit only this dump UUID
+        #[arg(long)]
+        dump_id: Option<String>,
+
+        /// Scratch root; defaults to ARCHIVE/.retro-junk/work
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+
+        /// Path to redumper; defaults to PATH lookup
+        #[arg(long)]
+        redumper: Option<PathBuf>,
+
+        /// Catalog database used for complete-track Redump matching
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+
+    /// Build and round-trip verify a playable CHD from an archived dump
+    BuildChd {
+        /// Initialized archive root
+        archive_root: PathBuf,
+
+        /// Playable-library root
+        #[arg(long)]
+        playable_root: PathBuf,
+
+        /// Dump UUID to convert
+        #[arg(long)]
+        dump_id: String,
+
+        /// Scratch root; defaults to ARCHIVE/.retro-junk/work
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+
+        /// Path to chdman; defaults to PATH lookup
+        #[arg(long)]
+        chdman: Option<PathBuf>,
+
+        /// Path to redumper when the master is redumper-raw
+        #[arg(long)]
+        redumper: Option<PathBuf>,
+
+        /// Permit a playable derivative before a complete catalog match exists
+        #[arg(long)]
+        allow_unverified: bool,
+    },
+
+    /// Build and round-trip verify a playable RVZ from an archived ISO
+    BuildRvz {
+        archive_root: PathBuf,
+
+        #[arg(long)]
+        playable_root: PathBuf,
+
+        #[arg(long)]
+        dump_id: String,
+
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+
+        /// Path to `DolphinTool`; defaults to PATH lookup
+        #[arg(long)]
+        dolphin_tool: Option<PathBuf>,
+
+        #[arg(long)]
+        allow_unverified: bool,
+    },
+
+    /// Mirror a single-file preservation master into the playable library
+    Mirror {
+        /// Initialized archive root
+        archive_root: PathBuf,
+
+        /// Playable-library root
+        #[arg(long)]
+        playable_root: PathBuf,
+
+        /// Dump UUID to mirror
+        #[arg(long)]
+        dump_id: String,
+    },
+
+    /// Set or clear a carrier's desired playable representation
+    Policy {
+        /// Initialized archive root
+        archive_root: PathBuf,
+
+        /// Physical carrier UUID
+        #[arg(long)]
+        carrier_id: retro_junk_archive::CarrierId,
+
+        /// Desired format, such as chd, rvz, or rom
+        #[arg(long, required_unless_present = "clear")]
+        format: Option<String>,
+
+        /// Remove the carrier override and inherit the platform default
+        #[arg(long)]
+        clear: bool,
+
+        /// Keep generated canonical intermediates such as BIN/CUE
+        #[arg(long)]
+        retain_intermediate: bool,
+
+        /// Permit builds without current catalog verification
+        #[arg(long)]
+        allow_unverified: bool,
+    },
+
+    /// Set or clear the default playable policy for a platform
+    PolicyDefault {
+        /// Initialized archive root
+        archive_root: PathBuf,
+
+        /// Platform identifier such as psx, saturn, or nes
+        #[arg(long)]
+        platform: String,
+
+        /// Desired format inherited by media without an override
+        #[arg(long, required_unless_present = "clear")]
+        format: Option<String>,
+
+        #[arg(long)]
+        clear: bool,
+
+        #[arg(long)]
+        retain_intermediate: bool,
+
+        #[arg(long)]
+        allow_unverified: bool,
+    },
+
+    /// Execute all pending playable policies; reruns skip satisfied outputs
+    Build {
+        /// Initialized archive root
+        archive_root: PathBuf,
+
+        /// Playable-library root
+        #[arg(long)]
+        playable_root: PathBuf,
+
+        /// Scratch root; defaults to ARCHIVE/.retro-junk/work
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+
+        #[arg(long)]
+        chdman: Option<PathBuf>,
+
+        #[arg(long)]
+        redumper: Option<PathBuf>,
+
+        #[arg(long)]
+        dolphin_tool: Option<PathBuf>,
+
+        /// Show pending work without building it
+        #[arg(short = 'n', long)]
+        dry_run: bool,
+
+        /// Process at most this many pending media
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+
+    /// Rebuild frontend media files from archived scraped originals
+    #[command(name = "project-frontend-files")]
+    ProjectFrontendFiles {
+        archive_root: PathBuf,
+
+        /// Frontend media root (platform and asset subdirectories are created below it)
+        #[arg(long)]
+        media_root: PathBuf,
+    },
+
+    /// Adopt existing playable files when they exactly match archived masters
+    AdoptPlayable {
+        archive_root: PathBuf,
+
+        #[arg(long)]
+        playable_root: PathBuf,
+
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+
+    /// Move abandoned staging/work directories into a recoverable quarantine
+    Recover { archive_root: PathBuf },
+
+    /// Rebuild the disposable `SQLite` archive projection from manifests
+    Reindex {
+        /// Initialized archive root
+        archive_root: PathBuf,
+
+        /// Playable-library root paired with this archive
+        #[arg(long)]
+        playable_root: Option<PathBuf>,
+
+        /// Scratch root for splitting and verification
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
     },
 }
 

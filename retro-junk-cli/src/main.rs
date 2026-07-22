@@ -178,6 +178,7 @@ fn run(
     };
 
     match command {
+        Commands::Archive { action } => commands::archive::run_archive(action, ctx)?,
         Commands::Analyze(args) => {
             commands::analyze::run_analyze(ctx, &args, &library_path)?;
         }

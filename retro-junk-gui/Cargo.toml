@@ -14,6 +14,8 @@ path = "src/lib.rs"
 
 [dependencies]
 retro-junk-lib.workspace = true
+retro-junk-archive.workspace = true
+retro-junk-archive-import.workspace = true
 retro-junk-dat.workspace = true
 retro-junk-disc.workspace = true
 retro-junk-core.workspace = true

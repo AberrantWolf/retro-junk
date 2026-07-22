@@ -22,6 +22,31 @@ fn schema_is_idempotent() {
 }
 
 #[test]
+fn v18_adds_current_evidence_and_derived_verification_columns() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("v17.db");
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_version(version INTEGER NOT NULL, applied_at TEXT NOT NULL DEFAULT (datetime('now')));
+             INSERT INTO schema_version(version) VALUES(17);
+             CREATE TABLE representations(id TEXT PRIMARY KEY);
+             CREATE TABLE verification_events(id TEXT PRIMARY KEY);",
+        )
+        .unwrap();
+    }
+    let conn = open_database(&path).unwrap();
+    assert!(
+        conn.prepare("SELECT catalog_verified,round_trip_verified FROM representations LIMIT 0")
+            .is_ok()
+    );
+    assert!(
+        conn.prepare("SELECT input_manifest_sha256 FROM verification_events LIMIT 0")
+            .is_ok()
+    );
+}
+
+#[test]
 fn v11_marks_lossy_all_unknown_library_consoles_stale() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("v10.db");

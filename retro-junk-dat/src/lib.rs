@@ -8,7 +8,7 @@ pub mod matcher;
 pub(crate) mod util;
 
 pub use cache::{CacheEntry, CachedDat};
-pub use dat::{DatFile, DatGame, DatRom};
+pub use dat::{DatFile, DatGame, DatRom, parse_logiqx_rom_lines};
 pub use error::DatError;
 pub use gdb::{GdbFile, GdbGame, GdbTags};
 pub use gdb_cache::GdbCacheEntry;

@@ -1,0 +1,963 @@
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+use crate::app::RetroJunkApp;
+use crate::state::{
+    AppMessage, BackgroundOperation, DumpImportDialogState, OperationKind, PhysicalCopyEditor,
+    ProgressDisplay, next_operation_id,
+};
+
+enum ImportModalAction {
+    None,
+    Close,
+    Import(retro_junk_archive_import::DumpImportPlan, bool),
+}
+
+pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    ui.heading("Collection");
+    ui.add_space(4.0);
+    let Some(profile) = app.settings.library.active_profile().cloned() else {
+        ui.label("Choose a playable library root to create a collection profile.");
+        ui.weak("The profile pairs archive, playable, and scratch roots without storing device-specific paths in the portable archive.");
+        return;
+    };
+    let archive_initialized = profile
+        .archive_root
+        .join("retro-junk-archive.toml")
+        .is_file();
+    ui.horizontal(|ui| {
+        ui.label(&profile.display_name);
+        ui.weak(format!("archive: {}", profile.archive_root.display()));
+        let busy = app
+            .operations
+            .iter()
+            .any(|operation| operation.scope == "archive");
+        if ui
+            .add_enabled(!busy, egui::Button::new("Refresh index"))
+            .clicked()
+        {
+            start_archive_operation(app, &profile, false);
+        }
+        if ui
+            .add_enabled(!busy, egui::Button::new("Verify stored bytes"))
+            .clicked()
+        {
+            start_archive_operation(app, &profile, true);
+        }
+        if ui
+            .add_enabled(
+                !busy && archive_initialized,
+                egui::Button::new("Import dumps…"),
+            )
+            .clicked()
+            && let Some(source) = rfd::FileDialog::new().pick_folder()
+        {
+            start_dump_import_planning(app, &profile, source, false);
+        }
+        if ui
+            .add_enabled(
+                !busy && archive_initialized,
+                egui::Button::new("Import existing playable library…"),
+            )
+            .on_hover_text("Copy archival-equivalent ROMs into the archive while retaining and adopting the existing playable files")
+            .clicked()
+            && let Some(source) = rfd::FileDialog::new()
+                .set_directory(&profile.playable_root)
+                .pick_folder()
+        {
+            start_dump_import_planning(app, &profile, source, true);
+        }
+    });
+    if !archive_initialized {
+        ui.add_space(8.0);
+        ui.colored_label(
+            egui::Color32::YELLOW,
+            "Archive root is not initialized. Initialize it or change the profile paths in Settings.",
+        );
+        return;
+    }
+    let summaries = app.catalog_db.as_ref().map_or_else(
+        || Err("Catalog database is unavailable".to_owned()),
+        |connection| {
+            retro_junk_db::list_archive_release_summaries(
+                connection,
+                &profile.profile_id.to_string(),
+            )
+            .map_err(|error| error.to_string())
+        },
+    );
+    let summaries = match summaries {
+        Ok(summaries) => summaries,
+        Err(error) => {
+            ui.colored_label(egui::Color32::RED, error);
+            return;
+        }
+    };
+    if summaries.is_empty() {
+        ui.add_space(8.0);
+        ui.label("No archived releases are indexed yet.");
+        return;
+    }
+    ui.add_space(8.0);
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::Grid::new("archive_collection_grid")
+            .striped(true)
+            .min_col_width(72.0)
+            .show(ui, |ui| {
+                ui.strong("Platform");
+                ui.strong("Release");
+                ui.strong("Physical");
+                ui.strong("Masters");
+                ui.strong("Playable");
+                ui.strong("Desired");
+                ui.strong("Evidence");
+                ui.end_row();
+                for release in summaries {
+                    ui.label(release.platform_id);
+                    let suffix = match (release.region.is_empty(), release.revision.is_empty()) {
+                        (true, true) => String::new(),
+                        (false, true) => format!(" ({})", release.region),
+                        (true, false) => format!(" ({})", release.revision),
+                        (false, false) => format!(" ({}, {})", release.region, release.revision),
+                    };
+                    if ui
+                        .button(format!("{}{}", release.title, suffix))
+                        .on_hover_text("Edit the physical copy and playable policy")
+                        .clicked()
+                    {
+                        match load_editor(&profile.archive_root, &release.archive_release_id) {
+                            Ok(editor) => app.ui_state.collection_editor = Some(editor),
+                            Err(error) => app.push_error("Collection details", error),
+                        }
+                    }
+                    ui.label(format!(
+                        "{} copy / {} carrier",
+                        release.physical_copy_count, release.carrier_count
+                    ));
+                    ui.label(format!(
+                        "{}/{} present",
+                        release.preservation_present_count, release.preservation_count
+                    ));
+                    ui.label(format!(
+                        "{}/{} present",
+                        release.playable_present_count, release.playable_count
+                    ));
+                    ui.label(
+                        if release.desired_playable_count > release.satisfied_playable_count {
+                            "pending"
+                        } else if release.desired_playable_count > 0 {
+                            "satisfied"
+                        } else {
+                            "—"
+                        },
+                    );
+                    ui.label(format!(
+                        "I {} · Repro {} · Catalog {} · RT {}",
+                        release.integrity_verified_count,
+                        release.reproduction_verified_count,
+                        release.catalog_verified_count,
+                        release.round_trip_verified_count
+                    ));
+                    ui.end_row();
+                }
+            });
+        show_editor(ui, app, &profile);
+    });
+}
+
+fn load_editor(root: &std::path::Path, release_id: &str) -> Result<PhysicalCopyEditor, String> {
+    let snapshot = retro_junk_archive::scan_archive(root).map_err(|error| error.to_string())?;
+    let release = snapshot
+        .releases
+        .iter()
+        .find(|release| release.manifest.archive_release_id.to_string() == release_id)
+        .ok_or_else(|| "release is no longer present in the archive".to_owned())?;
+    let physical_copy = release
+        .physical_copies
+        .first()
+        .ok_or_else(|| "release has no physical copy".to_owned())?;
+    let carrier = physical_copy
+        .carriers
+        .first()
+        .ok_or_else(|| "physical copy has no carrier".to_owned())?;
+    let policy = carrier.manifest.playable_policy.as_ref();
+    Ok(PhysicalCopyEditor {
+        physical_copy_id: physical_copy.manifest.physical_copy_id.to_string(),
+        physical_copy_manifest_path: physical_copy.directory.join("physical-copy.toml"),
+        carrier_manifest_path: carrier.directory.join("carrier.toml"),
+        label: physical_copy.manifest.label.clone(),
+        condition: physical_copy.manifest.condition.clone(),
+        notes: physical_copy.manifest.notes.clone(),
+        date_acquired: physical_copy.manifest.date_acquired.clone(),
+        provenance: physical_copy.manifest.provenance.clone(),
+        desired_format: policy.map_or_else(String::new, |policy| format_key(&policy.format)),
+        retain_intermediate: policy.is_some_and(|policy| policy.retain_canonical_intermediate),
+        allow_unverified: policy.is_some_and(|policy| policy.allow_unverified),
+        ingest_format: "rom".to_owned(),
+    })
+}
+
+fn show_editor(
+    ui: &mut egui::Ui,
+    app: &mut RetroJunkApp,
+    profile: &retro_junk_archive::CollectionProfile,
+) {
+    let Some(editor) = app.ui_state.collection_editor.as_mut() else {
+        return;
+    };
+    ui.separator();
+    ui.heading("Physical copy and playable policy");
+    egui::Grid::new("physical_copy_editor").show(ui, |ui| {
+        ui.label("Label");
+        ui.text_edit_singleline(&mut editor.label);
+        ui.end_row();
+        ui.label("Condition");
+        ui.text_edit_singleline(&mut editor.condition);
+        ui.end_row();
+        ui.label("Acquired");
+        ui.text_edit_singleline(&mut editor.date_acquired);
+        ui.end_row();
+        ui.label("Provenance");
+        ui.text_edit_multiline(&mut editor.provenance);
+        ui.end_row();
+        ui.label("Notes");
+        ui.text_edit_multiline(&mut editor.notes);
+        ui.end_row();
+        ui.label("Desired playable format");
+        egui::ComboBox::from_id_salt("desired_playable_format")
+            .selected_text(if editor.desired_format.is_empty() {
+                "inherit / none"
+            } else {
+                &editor.desired_format
+            })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut editor.desired_format, String::new(), "inherit / none");
+                for format in ["rom", "chd", "rvz", "iso", "cue-bin"] {
+                    ui.selectable_value(&mut editor.desired_format, format.to_owned(), format);
+                }
+            });
+        ui.end_row();
+        ui.label("");
+        ui.checkbox(
+            &mut editor.retain_intermediate,
+            "Retain canonical intermediate",
+        );
+        ui.end_row();
+        ui.label("New dump format");
+        egui::ComboBox::from_id_salt("archive_ingest_format")
+            .selected_text(&editor.ingest_format)
+            .show_ui(ui, |ui| {
+                for format in ["rom", "redumper-raw", "cue-bin", "iso"] {
+                    ui.selectable_value(&mut editor.ingest_format, format.to_owned(), format);
+                }
+            });
+        ui.end_row();
+        ui.label("");
+        ui.checkbox(
+            &mut editor.allow_unverified,
+            "Allow build without catalog evidence",
+        );
+        ui.end_row();
+    });
+    let save = ui.button("Save physical copy and policy").clicked();
+    let mut add_file = None;
+    let mut ingest_source = None;
+    ui.horizontal(|ui| {
+        if ui.button("Add physical-copy photo…").clicked() {
+            add_file = Some((
+                retro_junk_archive::PhysicalCopyFileCategory::Photo,
+                "physical-copy-photo",
+            ));
+        }
+        if ui.button("Add provenance document…").clicked() {
+            add_file = Some((
+                retro_junk_archive::PhysicalCopyFileCategory::Provenance,
+                "provenance-document",
+            ));
+        }
+    });
+    ui.horizontal(|ui| {
+        if ui.button("Ingest dump file…").clicked() {
+            ingest_source = rfd::FileDialog::new().pick_file();
+        }
+        if ui.button("Ingest dump directory…").clicked() {
+            ingest_source = rfd::FileDialog::new().pick_folder();
+        }
+    });
+    let editor_snapshot = editor.clone();
+    if save {
+        match save_editor(&editor_snapshot, &profile.archive_root) {
+            Ok(()) => {
+                if let Err(error) = reindex(app, profile) {
+                    app.push_error("Archive index", error);
+                }
+            }
+            Err(error) => app.push_error("Collection details", error),
+        }
+    }
+    if let Some((category, asset_type)) = add_file
+        && let Some(source_file) = rfd::FileDialog::new().pick_file()
+    {
+        let result = (|| -> Result<(), String> {
+            let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            let physical_copy_id = editor_snapshot
+                .physical_copy_id
+                .parse::<retro_junk_archive::PhysicalCopyId>()
+                .map_err(|error| error.to_string())?;
+            retro_junk_archive::add_physical_copy_file(
+                &profile.archive_root,
+                retro_junk_archive::NewPhysicalCopyFile {
+                    physical_copy_id,
+                    source_file: &source_file,
+                    category,
+                    asset_type,
+                    source: "user",
+                    caption: "",
+                },
+                &AtomicBool::new(false),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                if let Err(error) = reindex(app, profile) {
+                    app.push_error("Archive index", error);
+                }
+            }
+            Err(error) => app.push_error("Physical-copy file", error),
+        }
+    }
+    if let Some(source) = ingest_source {
+        match parse_format(&editor_snapshot.ingest_format) {
+            Ok(format) => start_archive_ingest(app, profile, &editor_snapshot, source, format),
+            Err(error) => app.push_error("Archive ingest", error),
+        }
+    }
+}
+
+fn save_editor(editor: &PhysicalCopyEditor, archive_root: &std::path::Path) -> Result<(), String> {
+    let _archive_lock = retro_junk_archive::ArchiveLock::acquire(archive_root)
+        .map_err(|error| error.to_string())?;
+    let mut item: retro_junk_archive::PhysicalCopyManifest =
+        retro_junk_archive::read_toml(&editor.physical_copy_manifest_path)
+            .map_err(|error| error.to_string())?;
+    item.label.clone_from(&editor.label);
+    item.condition.clone_from(&editor.condition);
+    item.notes.clone_from(&editor.notes);
+    item.date_acquired.clone_from(&editor.date_acquired);
+    item.provenance.clone_from(&editor.provenance);
+    retro_junk_archive::write_toml_atomic(&editor.physical_copy_manifest_path, &item)
+        .map_err(|error| error.to_string())?;
+    let mut medium: retro_junk_archive::CarrierManifest =
+        retro_junk_archive::read_toml(&editor.carrier_manifest_path)
+            .map_err(|error| error.to_string())?;
+    medium.playable_policy = if editor.desired_format.is_empty() {
+        None
+    } else {
+        Some(retro_junk_archive::DesiredPlayablePolicy {
+            format: parse_format(&editor.desired_format)?,
+            retain_canonical_intermediate: editor.retain_intermediate,
+            allow_unverified: editor.allow_unverified,
+            options: std::collections::BTreeMap::new(),
+        })
+    };
+    retro_junk_archive::write_toml_atomic(&editor.carrier_manifest_path, &medium)
+        .map_err(|error| error.to_string())
+}
+
+fn parse_format(value: &str) -> Result<retro_junk_archive::RepresentationFormat, String> {
+    match value {
+        "rom" => Ok(retro_junk_archive::RepresentationFormat::Rom),
+        "chd" => Ok(retro_junk_archive::RepresentationFormat::Chd),
+        "rvz" => Ok(retro_junk_archive::RepresentationFormat::Rvz),
+        "iso" => Ok(retro_junk_archive::RepresentationFormat::Iso),
+        "cue-bin" => Ok(retro_junk_archive::RepresentationFormat::CueBin),
+        _ => Err(format!("unsupported playable format: {value}")),
+    }
+}
+
+fn format_key(format: &retro_junk_archive::RepresentationFormat) -> String {
+    match format {
+        retro_junk_archive::RepresentationFormat::Rom => "rom",
+        retro_junk_archive::RepresentationFormat::Chd => "chd",
+        retro_junk_archive::RepresentationFormat::Rvz => "rvz",
+        retro_junk_archive::RepresentationFormat::Iso => "iso",
+        retro_junk_archive::RepresentationFormat::CueBin => "cue-bin",
+        retro_junk_archive::RepresentationFormat::RedumperRaw => "redumper-raw",
+        retro_junk_archive::RepresentationFormat::Other(value) => value,
+    }
+    .to_owned()
+}
+
+fn reindex(
+    app: &mut RetroJunkApp,
+    profile: &retro_junk_archive::CollectionProfile,
+) -> Result<(), String> {
+    let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+        .map_err(|error| error.to_string())?;
+    let connection = app
+        .catalog_db
+        .as_mut()
+        .ok_or_else(|| "catalog database is unavailable".to_owned())?;
+    retro_junk_db::reconcile_archive_snapshot(
+        connection,
+        &snapshot,
+        &profile.playable_root,
+        &profile.workspace_root,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn start_dump_import_planning(
+    app: &mut RetroJunkApp,
+    profile: &retro_junk_archive::CollectionProfile,
+    source: std::path::PathBuf,
+    promote_playable: bool,
+) {
+    let Some(db_path) = app.db_path.clone() else {
+        app.push_error("Import dumps", "Catalog database is unavailable".to_owned());
+        return;
+    };
+    let op_id = next_operation_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    app.operations.push(BackgroundOperation::new(
+        op_id,
+        format!("Inspecting dumps in {}", source.display()),
+        Arc::clone(&cancel),
+        OperationKind::ArchiveImport,
+        "archive".to_owned(),
+        ProgressDisplay::Bytes,
+    ));
+    app.ui_state.dump_import_dialog = Some(DumpImportDialogState::Planning {
+        op_id,
+        source: source.clone(),
+    });
+    let sender = app.message_tx.clone();
+    let progress_sender = sender.clone();
+    let context = Arc::clone(&app.context);
+    let playable_root = promote_playable.then(|| source.clone());
+    let request = retro_junk_archive_import::DumpImportRequest {
+        source,
+        archive_root: profile.archive_root.clone(),
+        platform_hint: None,
+        owner_id: "default".to_owned(),
+        new_physical_copy: false,
+        redumper_path: None,
+        workspace_root: Some(profile.workspace_root.clone()),
+        playable_root,
+    };
+    let handle = std::thread::spawn(move || {
+        let result = (|| {
+            let catalog =
+                retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
+            retro_junk_archive_import::plan_import(
+                request,
+                context.as_ref(),
+                &catalog,
+                &cancel,
+                |current, total| {
+                    let _ = progress_sender.send(AppMessage::OperationProgress {
+                        op_id,
+                        current,
+                        total,
+                    });
+                },
+            )
+            .map_err(|error| error.to_string())
+        })();
+        let _ = sender.send(AppMessage::ArchiveImportPlanReady { op_id, result });
+    });
+    app.op_threads.insert(op_id, handle);
+}
+
+fn start_dump_import(
+    app: &mut RetroJunkApp,
+    profile: &retro_junk_archive::CollectionProfile,
+    plan: retro_junk_archive_import::DumpImportPlan,
+    consume: bool,
+) {
+    let op_id = next_operation_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let mut operation = BackgroundOperation::new(
+        op_id,
+        "Importing preservation dumps".to_owned(),
+        Arc::clone(&cancel),
+        OperationKind::ArchiveImport,
+        "archive".to_owned(),
+        ProgressDisplay::Bytes,
+    );
+    operation.progress_total = plan.total_source_bytes;
+    app.operations.push(operation);
+    app.ui_state.dump_import_dialog = Some(DumpImportDialogState::Importing { op_id });
+    let sender = app.message_tx.clone();
+    let progress_sender = sender.clone();
+    let db_path = app.db_path.clone();
+    let profile = profile.clone();
+    let handle = std::thread::spawn(move || {
+        let result =
+            retro_junk_archive_import::execute_import(plan, consume, &cancel, |progress| {
+                let _ = progress_sender.send(AppMessage::OperationProgress {
+                    op_id,
+                    current: progress.copied_bytes,
+                    total: progress.total_bytes,
+                });
+            })
+            .map_err(|error| error.to_string())
+            .and_then(|result| {
+                if let Some(db_path) = db_path {
+                    let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                        .map_err(|error| error.to_string())?;
+                    let mut connection = retro_junk_db::open_database(&db_path)
+                        .map_err(|error| error.to_string())?;
+                    retro_junk_db::reconcile_archive_snapshot(
+                        &mut connection,
+                        &snapshot,
+                        &profile.playable_root,
+                        &profile.workspace_root,
+                    )
+                    .map_err(|error| error.to_string())?;
+                }
+                Ok(result)
+            });
+        let _ = sender.send(AppMessage::ArchiveImportComplete { op_id, result });
+    });
+    app.op_threads.insert(op_id, handle);
+}
+
+pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
+    let Some(mut dialog) = app.ui_state.dump_import_dialog.take() else {
+        return;
+    };
+    let mut action = ImportModalAction::None;
+    egui::Modal::new(egui::Id::new("archive_dump_import_modal")).show(ctx, |ui| {
+        ui.set_min_width(640.0);
+        match &mut dialog {
+            DumpImportDialogState::Planning { op_id, source } => {
+                ui.heading("Inspecting dump packages");
+                ui.label(source.display().to_string());
+                show_import_progress(ui, app, *op_id);
+                if ui.button("Cancel").clicked() {
+                    cancel_operation(app, *op_id);
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            DumpImportDialogState::Review {
+                plan,
+                consume,
+                new_physical_copy,
+            } => {
+                let promoting_playable = plan.request.playable_root.is_some();
+                ui.heading(if promoting_playable {
+                    "Review playable-library promotion"
+                } else {
+                    "Review dump import"
+                });
+                if promoting_playable {
+                    ui.weak("Matching files will be copied into the archive; existing playable files remain in place and are adopted as byte-identical representations.");
+                }
+                ui.label(format!(
+                    "{} package(s), {}",
+                    plan.candidates.len(),
+                    format_bytes(plan.total_source_bytes)
+                ));
+                ui.checkbox(
+                    new_physical_copy,
+                    "Create a new physical copy instead of reusing an archived copy",
+                );
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                    for (index, candidate) in plan.candidates.iter_mut().enumerate() {
+                        ui.group(|ui| {
+                            ui.strong(candidate.source.display().to_string());
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(format!("{:?}", candidate.format));
+                                ui.separator();
+                                ui.label(format!("{:?}", candidate.identification));
+                                ui.separator();
+                                if *new_physical_copy
+                                    && matches!(candidate.disposition, retro_junk_archive_import::ImportDisposition::NeedsPhysicalCopyChoice { .. })
+                                {
+                                    ui.label("ready for a new physical copy");
+                                } else {
+                                    ui.label(import_disposition_label(&candidate.disposition));
+                                }
+                            });
+                            match candidate.disposition.clone() {
+                                retro_junk_archive_import::ImportDisposition::NeedsCatalogChoice { candidates } => {
+                                    let mut selection = None;
+                                    egui::ComboBox::from_id_salt(("catalog-import-choice", index))
+                                        .selected_text("Choose catalog release…")
+                                        .show_ui(ui, |ui| {
+                                            for catalog_candidate in candidates {
+                                                let label = format!("{} · {} · {}", catalog_candidate.title, catalog_candidate.platform_id, catalog_candidate.serial);
+                                                if ui.selectable_label(false, label).clicked() {
+                                                    selection = Some(catalog_candidate);
+                                                }
+                                            }
+                                        });
+                                    if let Some(selected) = selection {
+                                        candidate.selected_match = Some(selected);
+                                        candidate.identification = retro_junk_archive_import::IdentificationResolution::Identified {
+                                            method: retro_junk_archive_import::IdentificationMethod::UserSelection,
+                                        };
+                                        candidate.disposition = retro_junk_archive_import::ImportDisposition::Ready;
+                                    }
+                                }
+                                retro_junk_archive_import::ImportDisposition::NeedsPhysicalCopyChoice { copies }
+                                    if !*new_physical_copy => {
+                                    let mut selection = None;
+                                    egui::ComboBox::from_id_salt(("physical-copy-import-choice", index))
+                                        .selected_text("Choose physical copy…")
+                                        .show_ui(ui, |ui| {
+                                            for copy_id in copies {
+                                                let label = if copy_id.label.is_empty() {
+                                                    format!("copy-{:02}", copy_id.copy_number)
+                                                } else {
+                                                    format!("copy-{:02} · {}", copy_id.copy_number, copy_id.label)
+                                                };
+                                                if ui.selectable_label(false, label).clicked() {
+                                                    selection = Some(copy_id.physical_copy_id);
+                                                }
+                                            }
+                                    });
+                                    if let Some(copy_id) = selection {
+                                        candidate.physical_copy_id = Some(copy_id);
+                                        candidate.disposition = retro_junk_archive_import::ImportDisposition::Ready;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        });
+                    }
+                });
+                ui.add_space(6.0);
+                if !promoting_playable {
+                    ui.checkbox(consume, "Remove source packages after byte-for-byte verification");
+                    if *consume {
+                        ui.colored_label(egui::Color32::YELLOW, "Source removal occurs only after the archived copy is rehashed successfully.");
+                    }
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Import ready packages").clicked() {
+                        let mut selected_plan = plan.clone();
+                        if *new_physical_copy {
+                            selected_plan.request.new_physical_copy = true;
+                            for candidate in &mut selected_plan.candidates {
+                                candidate.physical_copy_id = None;
+                                if matches!(
+                                    candidate.disposition,
+                                    retro_junk_archive_import::ImportDisposition::NeedsPhysicalCopyChoice { .. }
+                                ) {
+                                    candidate.disposition = retro_junk_archive_import::ImportDisposition::Ready;
+                                }
+                            }
+                        }
+                        action = ImportModalAction::Import(
+                            selected_plan,
+                            if promoting_playable { false } else { *consume },
+                        );
+                    }
+                    if ui.button("Cancel").clicked() {
+                        action = ImportModalAction::Close;
+                    }
+                });
+            }
+            DumpImportDialogState::Importing { op_id } => {
+                ui.heading("Importing preservation dumps");
+                show_import_progress(ui, app, *op_id);
+                if ui.button("Cancel").clicked() {
+                    cancel_operation(app, *op_id);
+                }
+                ctx.request_repaint_after(std::time::Duration::from_millis(50));
+            }
+            DumpImportDialogState::Complete { result } => {
+                ui.heading("Dump import complete");
+                let results_height = (ctx.content_rect().height() - 160.0).clamp(120.0, 420.0);
+                egui::ScrollArea::vertical()
+                    .max_height(results_height)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for candidate in &result.results {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.strong(format!("{:?}", candidate.outcome));
+                                ui.label(candidate.source.display().to_string());
+                                ui.weak(&candidate.detail);
+                                if candidate.source_removed {
+                                    ui.weak("source removed");
+                                }
+                            });
+                        }
+                    });
+                ui.separator();
+                if ui.button("Close").clicked() {
+                    action = ImportModalAction::Close;
+                }
+            }
+        }
+    });
+    match action {
+        ImportModalAction::None => app.ui_state.dump_import_dialog = Some(dialog),
+        ImportModalAction::Close => {}
+        ImportModalAction::Import(plan, consume) => {
+            let Some(profile) = app.settings.library.active_profile().cloned() else {
+                app.push_error(
+                    "Import dumps",
+                    "Collection profile is unavailable".to_owned(),
+                );
+                return;
+            };
+            start_dump_import(app, &profile, plan, consume);
+        }
+    }
+}
+
+fn show_import_progress(ui: &mut egui::Ui, app: &RetroJunkApp, op_id: u64) {
+    ui.add(egui::Spinner::new());
+    if let Some(operation) = app
+        .operations
+        .iter()
+        .find(|operation| operation.id == op_id)
+    {
+        ui.add(egui::ProgressBar::new(operation.progress_fraction()).show_percentage());
+        if operation.progress_total > 0 {
+            ui.weak(format!(
+                "{} / {}",
+                format_bytes(operation.progress_current),
+                format_bytes(operation.progress_total)
+            ));
+        }
+    }
+}
+
+fn cancel_operation(app: &RetroJunkApp, op_id: u64) {
+    if let Some(operation) = app
+        .operations
+        .iter()
+        .find(|operation| operation.id == op_id)
+    {
+        operation
+            .cancel_token
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+fn import_disposition_label(disposition: &retro_junk_archive_import::ImportDisposition) -> String {
+    use retro_junk_archive_import::ImportDisposition;
+    match disposition {
+        ImportDisposition::Ready => "ready to import".to_owned(),
+        ImportDisposition::AlreadyArchived { .. } => "already archived".to_owned(),
+        ImportDisposition::NeedsCatalogChoice { .. } => "catalog choice required".to_owned(),
+        ImportDisposition::NeedsPhysicalCopyChoice { .. } => {
+            "physical-copy choice required".to_owned()
+        }
+        ImportDisposition::Unresolved { reason } | ImportDisposition::Invalid { reason } => {
+            reason.clone()
+        }
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes >= 1_073_741_824 {
+        format!("{:.1} GiB", bytes as f64 / 1_073_741_824.0)
+    } else if bytes >= 1_048_576 {
+        format!("{:.1} MiB", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+fn start_archive_operation(
+    app: &mut RetroJunkApp,
+    profile: &retro_junk_archive::CollectionProfile,
+    verify: bool,
+) {
+    let op_id = next_operation_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    app.operations.push(BackgroundOperation::new(
+        op_id,
+        if verify {
+            "Verifying archive"
+        } else {
+            "Refreshing archive index"
+        }
+        .to_owned(),
+        Arc::clone(&cancel),
+        OperationKind::Hash,
+        "archive".to_owned(),
+        ProgressDisplay::Count,
+    ));
+    let sender = app.message_tx.clone();
+    let profile = profile.clone();
+    let db_path = app.db_path.clone();
+    let handle = std::thread::spawn(move || {
+        let result = (|| -> Result<String, String> {
+            let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            let dumps = snapshot
+                .releases
+                .iter()
+                .flat_map(|release| &release.physical_copies)
+                .flat_map(|item| &item.carriers)
+                .flat_map(|medium| &medium.dumps)
+                .collect::<Vec<_>>();
+            if verify {
+                let _ = sender.send(AppMessage::OperationProgress {
+                    op_id,
+                    current: 0,
+                    total: dumps.len() as u64,
+                });
+                for (index, dump) in dumps.iter().enumerate() {
+                    let report = retro_junk_archive::verify_dump_integrity(
+                        &dump.directory,
+                        &dump.manifest,
+                        &cancel,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let verification_id = retro_junk_archive::VerificationId::new();
+                    let evidence = retro_junk_archive::VerificationEvidence {
+                        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+                        verification_id,
+                        representation_id: dump.manifest.representation_id,
+                        performed_at: chrono::Utc::now().to_rfc3339(),
+                        input_manifest_sha256: dump.manifest_sha256.clone(),
+                        kind: retro_junk_archive::VerificationKind::Integrity,
+                        outcome: if report.is_verified() {
+                            retro_junk_archive::VerificationOutcome::Verified
+                        } else {
+                            retro_junk_archive::VerificationOutcome::Failed
+                        },
+                        tool: None,
+                        catalog: None,
+                        tracks: Vec::new(),
+                        detail: report
+                            .failures
+                            .iter()
+                            .map(|failure| format!("{}: {}", failure.path, failure.reason))
+                            .collect::<Vec<_>>()
+                            .join("; "),
+                    };
+                    let evidence_directory = dump.directory.join("evidence");
+                    std::fs::create_dir_all(&evidence_directory)
+                        .map_err(|error| error.to_string())?;
+                    retro_junk_archive::write_json_new(
+                        &evidence_directory.join(format!("verification-{verification_id}.json")),
+                        &evidence,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let _ = sender.send(AppMessage::OperationProgress {
+                        op_id,
+                        current: (index + 1) as u64,
+                        total: dumps.len() as u64,
+                    });
+                }
+            }
+            let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            if let Some(db_path) = db_path {
+                let mut connection =
+                    retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
+                retro_junk_db::reconcile_archive_snapshot(
+                    &mut connection,
+                    &snapshot,
+                    &profile.playable_root,
+                    &profile.workspace_root,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            Ok(if verify {
+                format!("Verified {} preservation dump(s)", dumps.len())
+            } else {
+                "Refreshed archive index".to_owned()
+            })
+        })();
+        let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
+    });
+    app.op_threads.insert(op_id, handle);
+}
+
+fn start_archive_ingest(
+    app: &mut RetroJunkApp,
+    profile: &retro_junk_archive::CollectionProfile,
+    editor: &PhysicalCopyEditor,
+    source: std::path::PathBuf,
+    format: retro_junk_archive::RepresentationFormat,
+) {
+    let op_id = next_operation_id();
+    let cancel = Arc::new(AtomicBool::new(false));
+    app.operations.push(BackgroundOperation::new(
+        op_id,
+        format!("Ingesting {}", source.display()),
+        Arc::clone(&cancel),
+        OperationKind::Other,
+        "archive".to_owned(),
+        ProgressDisplay::Bytes,
+    ));
+    let sender = app.message_tx.clone();
+    let profile = profile.clone();
+    let carrier_manifest_path = editor.carrier_manifest_path.clone();
+    let db_path = app.db_path.clone();
+    let handle = std::thread::spawn(move || {
+        let result = (|| -> Result<String, String> {
+            let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            let medium: retro_junk_archive::CarrierManifest =
+                retro_junk_archive::read_toml(&carrier_manifest_path)
+                    .map_err(|error| error.to_string())?;
+            let manifest = retro_junk_archive::DumpManifest::new(medium.carrier_id, format);
+            let media_directory = carrier_manifest_path
+                .parent()
+                .ok_or_else(|| "media manifest has no parent directory".to_owned())?;
+            let destination = retro_junk_archive::ArchiveLayout::dump_dir(
+                media_directory,
+                &manifest.captured_at,
+                manifest.dump_id,
+            );
+            let plan = retro_junk_archive::plan_ingest(&source, &destination)
+                .map_err(|error| error.to_string())?;
+            let total = plan.total_bytes;
+            let _ = sender.send(AppMessage::OperationProgress {
+                op_id,
+                current: 0,
+                total,
+            });
+            let dump = retro_junk_archive::execute_ingest(
+                retro_junk_archive::IngestRequest { plan, manifest },
+                &cancel,
+                |progress| {
+                    let _ = sender.send(AppMessage::OperationProgress {
+                        op_id,
+                        current: progress.copied_bytes,
+                        total: progress.total_bytes,
+                    });
+                },
+            )
+            .map_err(|error| error.to_string())?;
+            let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            if let Some(db_path) = db_path {
+                let mut connection =
+                    retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
+                retro_junk_db::reconcile_archive_snapshot(
+                    &mut connection,
+                    &snapshot,
+                    &profile.playable_root,
+                    &profile.workspace_root,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            Ok(format!(
+                "Archived dump {} from {}; the source was retained",
+                dump.dump_id,
+                source.display()
+            ))
+        })();
+        let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
+    });
+    app.op_threads.insert(op_id, handle);
+}
