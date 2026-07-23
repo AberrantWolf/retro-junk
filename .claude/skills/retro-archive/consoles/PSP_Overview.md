@@ -31,6 +31,7 @@
 ### Recommended Formats
 - **.iso**: Best compatibility with PPSSPP
 - **.cso**: Space-efficient compressed format
+- **.chd**: Supported by PPSSPP 1.17 and newer when created in DVD mode
 - **.pbp**: Required for PSN titles
 
 ### Considerations
@@ -46,3 +47,6 @@
 - **Metadata**: Use scene databases for verification
 - **Compression**: CSO offers good space savings
 - **Emulation**: Well-supported through PPSSPP
+
+## Format Reference
+See [CHD.md](../formats/CHD.md) for DVD-mode CHD conversion and emulator support.

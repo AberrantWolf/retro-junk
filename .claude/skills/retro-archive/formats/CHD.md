@@ -175,6 +175,19 @@ chdman verify -i game.chd
 
 Packages: `mame-tools` (Arch/Debian/Ubuntu/Fedora), `rom-tools` (Homebrew); ships with MAME on Windows.
 
+## Mainstream emulator support
+
+- DuckStation accepts PlayStation BIN/CUE and MAME CHD images directly, including CHDs with embedded subchannel information.
+- PCSX2 2.0 added CHD support for both DVD-family ISO and CD-family BIN/CUE sources.
+- PPSSPP supports DVD-mode CHDs from version 1.17. PSP CHDs must be created with `chdman createdvd`; `createcd` images have severe performance problems.
+- Genesis Plus GX accepts Sega CD BIN/CUE and CHD images, and Flycast accepts Dreamcast CHD images.
+
+Sources: [DuckStation README](https://github.com/stenzek/duckstation),
+[PCSX2 2.0 announcement](https://pcsx2.net/blog/2024/pcsx2-2-release/),
+[PPSSPP dumping guide](https://www.ppsspp.org/docs/getting-started/dumping-games/),
+[Genesis Plus GX documentation](https://docs.libretro.com/library/genesis_plus_gx/), and
+[Flycast documentation](https://docs.libretro.com/library/flycast/).
+
 ### Round-trip behavior (verified empirically against chdman 0.288, 2026-07)
 
 All of the following were confirmed byte-identical after `createcd`/`createdvd` →

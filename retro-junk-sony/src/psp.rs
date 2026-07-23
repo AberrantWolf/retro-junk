@@ -50,7 +50,7 @@ impl RomAnalyzer for PspAnalyzer {
     }
 
     fn chd_extensions(&self) -> &'static [(&'static str, ChdExtensionRole)] {
-        // UMDs are DVD-family media (PPSSPP supports CHD since 1.12).
+        // UMDs are DVD-family media (PPSSPP supports CHD since 1.17).
         // cso/dax are already-compressed containers chdman cannot read.
         &[
             ("iso", ChdExtensionRole::Source(ChdMedia::Dvd)),

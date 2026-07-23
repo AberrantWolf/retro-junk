@@ -293,6 +293,10 @@ fn show_editor(
     let Some(editor) = app.ui_state.collection_editor.as_mut() else {
         return;
     };
+    let platform = editor.platform_id.parse::<retro_junk_core::Platform>().ok();
+    let supported_formats = platform
+        .map(super::playable_formats::supported)
+        .unwrap_or_default();
     ui.separator();
     ui.heading(&editor.title);
     egui::Grid::new("archive_game_identity")
@@ -344,18 +348,36 @@ fn show_editor(
         ui.text_edit_multiline(&mut editor.notes);
         ui.end_row();
         ui.label("Desired playable format");
-        egui::ComboBox::from_id_salt("desired_playable_format")
-            .selected_text(if editor.desired_format.is_empty() {
-                "inherit / none"
+        let selected_format = parse_format(&editor.desired_format).ok();
+        let selected_label = if editor.desired_format.is_empty() {
+            "inherit / none".to_owned()
+        } else if let Some(format) = selected_format.as_ref() {
+            let label = super::playable_formats::label(Some(format));
+            if supported_formats.contains(format) {
+                label.to_owned()
             } else {
-                &editor.desired_format
-            })
+                format!("{label} (unsupported)")
+            }
+        } else {
+            format!("{} (unsupported)", editor.desired_format)
+        };
+        egui::ComboBox::from_id_salt("desired_playable_format")
+            .selected_text(selected_label)
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut editor.desired_format, String::new(), "inherit / none");
-                for format in ["rom", "chd", "rvz", "iso", "cue-bin"] {
-                    ui.selectable_value(&mut editor.desired_format, format.to_owned(), format);
+                if supported_formats.is_empty() {
+                    ui.weak("No modeled emulator-ready format");
                 }
-            });
+                for format in &supported_formats {
+                    ui.selectable_value(
+                        &mut editor.desired_format,
+                        format_slug(format).to_owned(),
+                        super::playable_formats::label(Some(format)),
+                    );
+                }
+            })
+            .response
+            .on_hover_text("Formats accepted directly by mainstream emulators for this platform");
         ui.end_row();
         ui.label("");
         ui.checkbox(
@@ -495,6 +517,18 @@ fn parse_format(value: &str) -> Result<retro_junk_archive::RepresentationFormat,
         "iso" => Ok(retro_junk_archive::RepresentationFormat::Iso),
         "cue-bin" => Ok(retro_junk_archive::RepresentationFormat::CueBin),
         _ => Err(format!("unsupported playable format: {value}")),
+    }
+}
+
+fn format_slug(format: &retro_junk_archive::RepresentationFormat) -> &str {
+    match format {
+        retro_junk_archive::RepresentationFormat::Rom => "rom",
+        retro_junk_archive::RepresentationFormat::Chd => "chd",
+        retro_junk_archive::RepresentationFormat::Rvz => "rvz",
+        retro_junk_archive::RepresentationFormat::Iso => "iso",
+        retro_junk_archive::RepresentationFormat::CueBin => "cue-bin",
+        retro_junk_archive::RepresentationFormat::RedumperRaw => "redumper-raw",
+        retro_junk_archive::RepresentationFormat::Other(value) => value,
     }
 }
 

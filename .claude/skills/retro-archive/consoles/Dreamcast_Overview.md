@@ -47,3 +47,6 @@
 - **Metadata**: Use Redump database for GDI verification
 - **Compression**: CHD recommended for long-term storage
 - **Emulation**: Well-supported by modern emulators (Flycast, Redream)
+
+## Format Reference
+See [CHD.md](../formats/CHD.md) for the compressed playable representation and emulator support.

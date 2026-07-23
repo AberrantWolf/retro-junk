@@ -16,9 +16,9 @@
 
 ## Archival Storage
 ### Recommended Formats
-- **.vpk**: Vita Package format (homebrew/dumps)
-- **.mai**: MaiDumpTool format
-- **NoNpDrm dumps**: Decrypted game files
+- **NoNpDrm dumps**: Preferred encrypted game files with fake licenses
+- **FAGDec dumps**: Decrypted game files
+- **.pkg**: Supported package representation for applicable digital content
 
 ### Best Practices
 - Archive digital library before store closure
@@ -30,8 +30,8 @@
 ## Emulation Storage
 ### Current Status
 - **Vita3K**: Early-stage emulator in development
-- **Limited Compatibility**: Few games fully playable
-- **File Formats**: Standards still evolving
+- **Install inputs**: `.pkg`, or supported dumps packaged as `.zip`, `.vpk`, or `.vci`
+- **Unsupported legacy format**: Vitamin dumps are not supported; MaiDump is unstable
 - **Performance**: Requires powerful hardware
 
 ### Considerations
@@ -47,3 +47,8 @@
 - **Legal Issues**: Homebrew scene active but legally complex
 - **Future Planning**: Emulation development ongoing
 - **Priority**: Document and preserve digital-only titles
+
+## References
+
+- [Vita3K quickstart and dumping guidance](https://vita3k.org/quickstart)
+- [Vita3K FAQ](https://vita3k.org/faq.html)

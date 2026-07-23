@@ -42,6 +42,7 @@
 
 ## ROM Format Reference
 See [GameCube.md](../formats/GameCube.md) for detailed header format, checksum algorithms, and detection method.
+See [RVZ.md](../formats/RVZ.md) for Dolphin's lossless compressed playable format.
 
 ## Digital Storage Considerations
 - **Space Requirements**: High - requires substantial storage

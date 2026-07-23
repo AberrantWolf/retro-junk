@@ -47,7 +47,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     // Game table (center, fills remaining space). Stable id so toggling the
     // conditional detail panel above doesn't re-id the toolbar/table widgets.
     let policy_context = app.selected_console_index().and_then(|index| {
-        let platform_id = app.browser.consoles[index].folder_name.clone();
+        let console = &app.browser.consoles[index];
+        let platform_id = console.folder_name.clone();
+        let platform = console.platform;
         let profile = app.settings.library.active_profile()?;
         if app.root_path.as_ref() != Some(&profile.playable_root) {
             return None;
@@ -57,7 +59,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             .iter()
             .find(|default| default.platform_id.eq_ignore_ascii_case(&platform_id))
             .map(|default| default.policy.format.clone());
-        Some((platform_id, current))
+        Some((platform_id, platform, current))
     });
     let mut policy_change = None;
     let mut playable_build = None;
@@ -76,25 +78,39 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 app.request_console_page(console_id, ctx);
             }
 
-            if let Some((platform_id, current)) = policy_context.as_ref() {
+            if let Some((platform_id, platform, current)) = policy_context.as_ref() {
                 ui.separator();
                 ui.label("Preferred playable:");
                 let mut selected = current.clone();
+                let supported = super::playable_formats::supported(*platform);
+                let selected_label = selected.as_ref().map_or_else(
+                    || "No preference".to_owned(),
+                    |format| {
+                        let label = super::playable_formats::label(Some(format));
+                        if supported.contains(format) {
+                            label.to_owned()
+                        } else {
+                            format!("{label} (unsupported)")
+                        }
+                    },
+                );
                 egui::ComboBox::from_id_salt(("preferred_playable", platform_id))
-                    .selected_text(playable_format_label(selected.as_ref()))
+                    .selected_text(selected_label)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut selected, None, "No preference");
-                        for format in [
-                            retro_junk_archive::RepresentationFormat::Rom,
-                            retro_junk_archive::RepresentationFormat::Chd,
-                            retro_junk_archive::RepresentationFormat::Rvz,
-                            retro_junk_archive::RepresentationFormat::Iso,
-                            retro_junk_archive::RepresentationFormat::CueBin,
-                        ] {
-                            let label = playable_format_label(Some(&format));
+                        if supported.is_empty() {
+                            ui.weak("No modeled emulator-ready format");
+                        }
+                        for format in supported {
+                            let label = super::playable_formats::label(Some(&format));
                             ui.selectable_value(&mut selected, Some(format), label);
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text(format!(
+                        "Formats accepted by mainstream {} emulators",
+                        platform.display_name()
+                    ));
                 if &selected != current {
                     policy_change = Some((platform_id.clone(), selected));
                 }
@@ -270,20 +286,6 @@ fn parse_playable_format(value: &str) -> Option<retro_junk_archive::Representati
         "iso" => Some(retro_junk_archive::RepresentationFormat::Iso),
         "cue_bin" | "cue-bin" => Some(retro_junk_archive::RepresentationFormat::CueBin),
         _ => None,
-    }
-}
-
-fn playable_format_label(
-    format: Option<&retro_junk_archive::RepresentationFormat>,
-) -> &'static str {
-    match format {
-        None => "No preference",
-        Some(retro_junk_archive::RepresentationFormat::Rom) => "ROM (native)",
-        Some(retro_junk_archive::RepresentationFormat::Chd) => "CHD",
-        Some(retro_junk_archive::RepresentationFormat::Rvz) => "RVZ",
-        Some(retro_junk_archive::RepresentationFormat::Iso) => "ISO",
-        Some(retro_junk_archive::RepresentationFormat::CueBin) => "BIN/CUE",
-        Some(_) => "Other",
     }
 }
 

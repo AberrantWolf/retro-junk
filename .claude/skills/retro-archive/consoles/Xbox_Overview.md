@@ -16,8 +16,8 @@
 
 ## Archival Storage
 ### Recommended Formats
-- **.iso**: Standard disc image format
-- **.xiso**: Xbox-specific ISO format
+- **Redump-style full-disc image**: Preservation master containing both disc partitions
+- **.xiso**: Xbox filesystem image suitable for emulation; see [XISO](../formats/XISO.md)
 - **Extracted folders**: For modded Xbox file structure
 
 ### Best Practices
@@ -29,12 +29,13 @@
 
 ## Emulation Storage
 ### Recommended Formats
-- **.iso**: Compatible with Xemu emulator
-- **Extracted files**: For file-based emulation
+- **.xiso.iso**: Required by xemu; this is an XISO despite its `.iso` extension
 - **HDD images**: Complete system preservation
 
 ### Considerations
 - Xemu emulator in active development
+- Redump-style full-disc ISOs are not directly supported and must be converted to XISO
+- CHD is not supported by xemu
 - Requires Xbox BIOS files for emulation
 - Save data stored on virtual hard drive
 - Xbox Live features not emulated
@@ -47,3 +48,8 @@
 - **Metadata**: Use Redump database for verification
 - **Legal Issues**: BIOS files required but copyrighted
 - **Emulation**: Improving but still developing
+
+## References
+
+- [xemu disc image documentation](https://xemu.app/docs/disc-images/)
+- [xemu format FAQ](https://xemu.app/docs/faq/)

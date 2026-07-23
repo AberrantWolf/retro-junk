@@ -42,6 +42,7 @@
 
 ## ROM Format Reference
 See [PS2.md](../formats/PS2.md) for detailed header format, checksum algorithms, and detection method.
+See [CHD.md](../formats/CHD.md) for the compressed playable representation and emulator support.
 
 ## Digital Storage Considerations
 - **Space Requirements**: Very high - multi-TB storage needed

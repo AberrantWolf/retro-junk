@@ -42,6 +42,7 @@
 
 ## ROM Format Reference
 See [Wii.md](../formats/Wii.md) for detailed header format, detection method, and hashing conventions.
+See [RVZ.md](../formats/RVZ.md) for Dolphin's lossless compressed playable format.
 
 ## Digital Storage Considerations
 - **Space Requirements**: Very high - requires multiple TB storage

@@ -42,6 +42,7 @@
 
 ## ROM Format Reference
 See [Megadrive_Genesis.md](../formats/Megadrive_Genesis.md) for detailed header format, checksum algorithms, and detection method.
+See [CHD.md](../formats/CHD.md) for Sega CD compressed playable images and emulator support.
 
 ## Digital Storage Considerations
 - **Space Requirements**: Low - manageable collection size
