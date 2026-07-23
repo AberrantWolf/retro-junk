@@ -1169,6 +1169,7 @@ pub fn list_console_summaries(
     .collect()
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn query_entry_list(
     conn: &Connection,
     q: &LibraryEntryListQuery,

@@ -259,6 +259,97 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         page.rows[0].archive_release_id.as_deref(),
         Some(summary.archive_release_id.as_str())
     );
+    let chd_policy = retro_junk_archive::DesiredPlayablePolicy {
+        format: retro_junk_archive::RepresentationFormat::Chd,
+        retain_canonical_intermediate: false,
+        allow_unverified: false,
+        options: std::collections::BTreeMap::new(),
+    };
+    retro_junk_db::update_projected_platform_policy(
+        &mut conn,
+        &root_manifest.profile_id.to_string(),
+        "nes",
+        Some(&chd_policy),
+        "updated-root-digest",
+    )
+    .unwrap();
+    let projected: String = conn
+        .query_row(
+            "SELECT format FROM playable_policies WHERE scope_type='carrier'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(projected, "chd");
+    let digest: String = conn
+        .query_row("SELECT manifest_sha256 FROM archive_profiles", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(digest, "updated-root-digest");
+
+    retro_junk_db::update_projected_platform_policy(
+        &mut conn,
+        &root_manifest.profile_id.to_string(),
+        "nes",
+        None,
+        "cleared-root-digest",
+    )
+    .unwrap();
+    let inherited_count: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM playable_policies WHERE scope_type='carrier'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(inherited_count, 0);
+
+    let mut override_snapshot = snapshot.clone();
+    override_snapshot.releases[0].physical_copies[0].carriers[0]
+        .manifest
+        .playable_policy = Some(retro_junk_archive::DesiredPlayablePolicy {
+        format: retro_junk_archive::RepresentationFormat::Rvz,
+        retain_canonical_intermediate: false,
+        allow_unverified: true,
+        options: std::collections::BTreeMap::new(),
+    });
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &override_snapshot,
+        &temp.path().join("playable"),
+        &temp.path().join("work"),
+    )
+    .unwrap();
+    let carrier_id = override_snapshot.releases[0].physical_copies[0].carriers[0]
+        .manifest
+        .carrier_id
+        .to_string();
+    let override_markers: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM playable_policies WHERE scope_type='carrier_override' AND scope_id=?1",
+            [&carrier_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(override_markers, 1);
+    retro_junk_db::update_projected_platform_policy(
+        &mut conn,
+        &root_manifest.profile_id.to_string(),
+        "nes",
+        Some(&chd_policy),
+        "override-preserved",
+    )
+    .unwrap();
+    let overridden: String = conn
+        .query_row(
+            "SELECT format FROM playable_policies WHERE scope_type='carrier' AND scope_id=?1",
+            [&carrier_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(overridden, "rvz");
+
     conn.execute("DELETE FROM archive_profiles", []).unwrap();
     retro_junk_db::reconcile_archive_snapshot(
         &mut conn,

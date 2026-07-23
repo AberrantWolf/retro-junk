@@ -338,15 +338,24 @@ fn set_preferred_playable_format(
                 policy,
             )
             .map_err(|error| error.to_string())?;
-            let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
-                .map_err(|error| error.to_string())?;
+            let projected_policy = manifest
+                .platform_defaults
+                .iter()
+                .find(|default| default.platform_id.eq_ignore_ascii_case(&platform_id))
+                .map(|default| &default.policy);
+            let (_, manifest_sha256) = retro_junk_archive::sha256_file(
+                &profile.archive_root.join("retro-junk-archive.toml"),
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .map_err(|error| error.to_string())?;
             let mut connection =
                 retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
-            retro_junk_db::reconcile_archive_snapshot(
+            retro_junk_db::update_projected_platform_policy(
                 &mut connection,
-                &snapshot,
-                &profile.playable_root,
-                &profile.workspace_root,
+                &profile.profile_id.to_string(),
+                &platform_id,
+                projected_policy,
+                &manifest_sha256,
             )
             .map_err(|error| error.to_string())?;
             Ok(manifest)

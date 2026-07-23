@@ -325,7 +325,7 @@ pub fn reconcile_archive_snapshot(
     // policies owned by this projection before cascading its archive rows, or
     // a rebuild would leave stale rows and collide on reinsertion.
     tx.execute(
-        "DELETE FROM playable_policies WHERE scope_type='carrier' AND (
+        "DELETE FROM playable_policies WHERE scope_type IN ('carrier','carrier_override') AND (
              scope_id IN (
                  SELECT c.id FROM carriers c
                  JOIN physical_copies pc ON pc.id=c.physical_copy_id
@@ -470,19 +470,20 @@ pub fn reconcile_archive_snapshot(
                         .find(|default| default.platform_id == release.manifest.platform_id)
                         .map(|default| &default.policy)
                 });
+                if let Some(policy) = carrier.manifest.playable_policy.as_ref() {
+                    insert_projected_policy(
+                        &tx,
+                        "carrier_override",
+                        &carrier.manifest.carrier_id.to_string(),
+                        policy,
+                    )?;
+                }
                 if let Some(policy) = effective_policy {
-                    tx.execute(
-                        "INSERT INTO playable_policies(scope_type,scope_id,format,retain_intermediate,allow_unverified,options_json)
-                        VALUES('carrier',?1,?2,?3,?4,?5)",
-                        params![
-                            carrier.manifest.carrier_id.to_string(),
-                            format_key(&policy.format),
-                            policy.retain_canonical_intermediate,
-                            policy.allow_unverified,
-                            serde_json::to_string(&policy.options).map_err(|error| {
-                                OperationError::InvalidData(error.to_string())
-                            })?,
-                        ],
+                    insert_projected_policy(
+                        &tx,
+                        "carrier",
+                        &carrier.manifest.carrier_id.to_string(),
+                        policy,
                     )?;
                 }
                 for dump in &carrier.dumps {
@@ -695,6 +696,83 @@ pub fn reconcile_archive_snapshot(
     )?;
     tx.commit()?;
     Ok(())
+}
+
+fn insert_projected_policy(
+    tx: &Transaction<'_>,
+    scope_type: &str,
+    scope_id: &str,
+    policy: &retro_junk_archive::DesiredPlayablePolicy,
+) -> Result<(), OperationError> {
+    tx.execute(
+        "INSERT INTO playable_policies(scope_type,scope_id,format,retain_intermediate,allow_unverified,options_json)
+         VALUES(?1,?2,?3,?4,?5,?6)",
+        params![
+            scope_type,
+            scope_id,
+            format_key(&policy.format),
+            policy.retain_canonical_intermediate,
+            policy.allow_unverified,
+            serde_json::to_string(&policy.options)
+                .map_err(|error| OperationError::InvalidData(error.to_string()))?,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Increment the rebuildable policy projection after the authoritative root
+/// manifest changes. Explicit carrier overrides are left untouched; only
+/// carriers inheriting this platform default are updated.
+pub fn update_projected_platform_policy(
+    conn: &mut Connection,
+    profile_id: &str,
+    platform_id: &str,
+    policy: Option<&retro_junk_archive::DesiredPlayablePolicy>,
+    root_manifest_sha256: &str,
+) -> Result<usize, OperationError> {
+    let tx = conn.transaction()?;
+    let carrier_filter = "SELECT c.id FROM carriers c
+         JOIN physical_copies pc ON pc.id=c.physical_copy_id
+         JOIN archive_releases ar ON ar.id=pc.archive_release_id
+         WHERE ar.profile_id=?1 AND lower(ar.platform_id)=lower(?2)
+           AND NOT EXISTS(SELECT 1 FROM playable_policies marker
+                          WHERE marker.scope_type='carrier_override' AND marker.scope_id=c.id)";
+    let removed = tx.execute(
+        &format!(
+            "DELETE FROM playable_policies WHERE scope_type='carrier' AND scope_id IN ({carrier_filter})"
+        ),
+        params![profile_id, platform_id],
+    )?;
+    let inserted = if let Some(policy) = policy {
+        tx.execute(
+            &format!(
+                "INSERT INTO playable_policies(scope_type,scope_id,format,retain_intermediate,allow_unverified,options_json)
+                 SELECT 'carrier',inherited.id,?3,?4,?5,?6 FROM ({carrier_filter}) inherited"
+            ),
+            params![
+                profile_id,
+                platform_id,
+                format_key(&policy.format),
+                policy.retain_canonical_intermediate,
+                policy.allow_unverified,
+                serde_json::to_string(&policy.options)
+                    .map_err(|error| OperationError::InvalidData(error.to_string()))?,
+            ],
+        )?
+    } else {
+        0
+    };
+    let profiles = tx.execute(
+        "UPDATE archive_profiles SET manifest_sha256=?2,indexed_at=datetime('now') WHERE id=?1",
+        params![profile_id, root_manifest_sha256],
+    )?;
+    if profiles != 1 {
+        return Err(OperationError::InvalidData(format!(
+            "archive profile {profile_id} is not projected"
+        )));
+    }
+    tx.commit()?;
+    Ok(removed.max(inserted))
 }
 
 fn verification_kind_key(kind: retro_junk_archive::VerificationKind) -> &'static str {
