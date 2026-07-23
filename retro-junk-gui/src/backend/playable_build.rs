@@ -12,6 +12,8 @@ pub fn start(
     title: String,
     allow_unverified: bool,
     retain_intermediate: bool,
+    playable_platform_id: String,
+    expected_disc_count: u32,
     ctx: &egui::Context,
 ) {
     let Some(profile) = app.settings.library.active_profile().cloned() else {
@@ -49,6 +51,8 @@ pub fn start(
         chdman_path: chdman,
         allow_unverified,
         retain_intermediate,
+        playable_platform_id,
+        expected_disc_count,
     };
     let handle = std::thread::spawn(move || {
         let progress_sender = sender.clone();

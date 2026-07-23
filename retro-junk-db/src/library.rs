@@ -551,6 +551,7 @@ pub struct ArchivedPlayableGap {
     pub retain_intermediate: bool,
     pub catalog_verified: bool,
     pub buildable: bool,
+    pub expected_disc_count: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -1381,7 +1382,17 @@ fn query_availability(
                 (SELECT COUNT(*) FROM representation_files rf
                  JOIN dump_events de ON de.representation_id=rf.representation_id
                  WHERE de.id=(SELECT newest.id FROM dump_events newest WHERE newest.carrier_id=c.id
-                              ORDER BY newest.captured_at DESC,newest.id DESC LIMIT 1))
+                              ORDER BY newest.captured_at DESC,newest.id DESC LIMIT 1)),
+                CASE
+                  WHEN EXISTS(SELECT 1 FROM media expected
+                              WHERE expected.release_id=ar.catalog_release_id
+                                AND expected.disc_number>0)
+                  THEN (SELECT COUNT(DISTINCT expected.disc_number) FROM media expected
+                        WHERE expected.release_id=ar.catalog_release_id
+                          AND expected.disc_number>0)
+                  ELSE (SELECT EXISTS(SELECT 1 FROM media expected
+                                     WHERE expected.release_id=ar.catalog_release_id))
+                END
          FROM archive_releases ar
          JOIN archive_profiles ap ON ap.id=ar.profile_id
          JOIN physical_copies pc ON pc.archive_release_id=ar.id
@@ -1432,6 +1443,7 @@ fn query_availability(
                 retain_intermediate: row.get(9)?,
                 catalog_verified: row.get(10)?,
                 buildable,
+                expected_disc_count: u32::try_from(row.get::<_, i64>(12)?).unwrap_or(0),
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

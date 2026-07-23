@@ -193,6 +193,9 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     assert_eq!(summary.preservation_count, 1);
     assert_eq!(summary.preservation_present_count, 1);
     assert_eq!(summary.integrity_verified_count, 0);
+    assert_eq!(summary.expected_disc_count, 1);
+    assert_eq!(summary.verified_disc_count, 0);
+    assert!(!summary.archive_complete);
     let details =
         retro_junk_db::load_archive_collection_details(&conn, &summary.archive_release_id)
             .unwrap()
@@ -255,6 +258,7 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         gaps.archived_playable_gaps[0].preferred_format.as_deref(),
         Some("rom")
     );
+    assert_eq!(gaps.archived_playable_gaps[0].expected_disc_count, 1);
     assert_eq!(
         page.rows[0].archive_release_id.as_deref(),
         Some(summary.archive_release_id.as_str())
@@ -349,6 +353,30 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         )
         .unwrap();
     assert_eq!(overridden, "rvz");
+
+    conn.execute(
+        "DELETE FROM playable_policies WHERE scope_type='carrier_override'",
+        [],
+    )
+    .unwrap();
+    conn.execute("UPDATE archive_releases SET platform_id='ps1'", [])
+        .unwrap();
+    retro_junk_db::update_projected_platform_policy(
+        &mut conn,
+        &root_manifest.profile_id.to_string(),
+        "psx",
+        Some(&chd_policy),
+        "alias-policy",
+    )
+    .unwrap();
+    let alias_projected: String = conn
+        .query_row(
+            "SELECT format FROM playable_policies WHERE scope_type='carrier'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(alias_projected, "chd");
 
     conn.execute("DELETE FROM archive_profiles", []).unwrap();
     retro_junk_db::reconcile_archive_snapshot(

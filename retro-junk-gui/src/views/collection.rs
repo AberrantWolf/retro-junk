@@ -148,7 +148,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 .max_scroll_height(body_height)
                 .header(24.0, |mut header| {
                     for label in [
-                        "Platform", "Release", "Physical", "Masters", "Playable", "Desired",
+                        "Platform", "Release", "Physical", "Archive", "Playable", "Desired",
                         "Evidence",
                     ] {
                         header.col(|ui| {
@@ -179,14 +179,20 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                             .1;
                         response |= row
                             .col(|ui| {
-                                paint_cell_text(
-                                    ui,
-                                    &format!(
-                                        "{}/{} present",
-                                        release.preservation_present_count,
-                                        release.preservation_count
-                                    ),
-                                );
+                                let text = if release.archive_complete {
+                                    format!(
+                                        "Complete ({}/{})",
+                                        release.verified_disc_count, release.expected_disc_count
+                                    )
+                                } else if release.expected_disc_count > 0 {
+                                    format!(
+                                        "Incomplete ({}/{})",
+                                        release.verified_disc_count, release.expected_disc_count
+                                    )
+                                } else {
+                                    "Unknown (not catalog-bound)".to_owned()
+                                };
+                                paint_cell_text(ui, &text);
                             })
                             .1;
                         response |= row

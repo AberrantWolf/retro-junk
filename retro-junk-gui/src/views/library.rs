@@ -2,6 +2,19 @@ use crate::app::RetroJunkApp;
 use crate::backend;
 use crate::widgets;
 
+fn same_platform(left: &str, right: &str) -> bool {
+    if left.eq_ignore_ascii_case(right) {
+        return true;
+    }
+    match (
+        left.parse::<retro_junk_core::Platform>(),
+        right.parse::<retro_junk_core::Platform>(),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 /// Render the three-pane library view.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     if app.root_path.is_none() {
@@ -58,6 +71,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             .platform_defaults
             .iter()
             .find(|default| default.platform_id.eq_ignore_ascii_case(&platform_id))
+            .or_else(|| {
+                profile
+                    .platform_defaults
+                    .iter()
+                    .find(|default| same_platform(&default.platform_id, &platform_id))
+            })
             .map(|default| default.policy.format.clone());
         Some((platform_id, platform, current))
     });
@@ -239,6 +258,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                                             gap.title.clone(),
                                             gap.allow_unverified,
                                             gap.retain_intermediate,
+                                            policy_context
+                                                .as_ref()
+                                                .map(|(folder, _, _)| folder.clone())
+                                                .unwrap_or_default(),
+                                            gap.expected_disc_count,
                                         ));
                                     }
                                 });
@@ -261,7 +285,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     if let Some((platform_id, format)) = policy_change {
         set_preferred_playable_format(app, platform_id, format, ctx);
     }
-    if let Some((dump_id, format, title, allow_unverified, retain_intermediate)) = playable_build {
+    if let Some((
+        dump_id,
+        format,
+        title,
+        allow_unverified,
+        retain_intermediate,
+        playable_platform_id,
+        expected_disc_count,
+    )) = playable_build
+    {
         crate::backend::playable_build::start(
             app,
             dump_id,
@@ -269,6 +302,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             title,
             allow_unverified,
             retain_intermediate,
+            playable_platform_id,
+            expected_disc_count,
             ctx,
         );
     }
@@ -324,6 +359,12 @@ fn set_preferred_playable_format(
                     .platform_defaults
                     .iter()
                     .find(|default| default.platform_id.eq_ignore_ascii_case(&platform_id))
+                    .or_else(|| {
+                        profile
+                            .platform_defaults
+                            .iter()
+                            .find(|default| same_platform(&default.platform_id, &platform_id))
+                    })
                     .map(|default| default.policy.clone())
                     .unwrap_or(retro_junk_archive::DesiredPlayablePolicy {
                         format: format.clone(),
@@ -344,6 +385,12 @@ fn set_preferred_playable_format(
                 .platform_defaults
                 .iter()
                 .find(|default| default.platform_id.eq_ignore_ascii_case(&platform_id))
+                .or_else(|| {
+                    manifest
+                        .platform_defaults
+                        .iter()
+                        .find(|default| same_platform(&default.platform_id, &platform_id))
+                })
                 .map(|default| &default.policy);
             let (_, manifest_sha256) = retro_junk_archive::sha256_file(
                 &profile.archive_root.join("retro-junk-archive.toml"),

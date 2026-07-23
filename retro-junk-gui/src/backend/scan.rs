@@ -35,6 +35,7 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
             let result = context.scan_console_folders(&root, None);
             match result {
                 Ok(mut scan) => {
+                    suppress_empty_platform_aliases(&mut scan.matches);
                     if let Some(archive_root) = archive_root {
                         add_archive_only_console_folders(
                             &context,
@@ -68,6 +69,34 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
     );
 }
 
+/// If two recognized folders are aliases for the same console, hide only an
+/// empty alias when another alias actually contains the playable library.
+/// Two populated aliases remain visible because silently merging their
+/// contents would conceal real user data.
+fn suppress_empty_platform_aliases(matches: &mut Vec<retro_junk_lib::ConsoleFolder>) {
+    let mut counts = std::collections::HashMap::new();
+    for folder in matches.iter() {
+        *counts.entry(folder.platform).or_insert(0_usize) += 1;
+    }
+    let populated_paths = matches
+        .iter()
+        .filter(|folder| {
+            std::fs::read_dir(&folder.path).is_ok_and(|mut entries| entries.next().is_some())
+        })
+        .map(|folder| folder.path.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let populated_platforms = matches
+        .iter()
+        .filter(|folder| populated_paths.contains(&folder.path))
+        .map(|folder| folder.platform)
+        .collect::<std::collections::HashSet<_>>();
+    matches.retain(|folder| {
+        populated_paths.contains(&folder.path)
+            || !populated_platforms.contains(&folder.platform)
+            || counts.get(&folder.platform).copied().unwrap_or(0) <= 1
+    });
+}
+
 /// Add empty playable projection folders for archive platforms that otherwise
 /// would have no selectable console in the Library view. The folders contain
 /// no authoritative data; they are merely stable destinations for future
@@ -93,12 +122,6 @@ fn add_archive_only_console_folders(
     platform_ids.sort();
     platform_ids.dedup();
     for platform_id in platform_ids {
-        if matches
-            .iter()
-            .any(|folder| folder.folder_name.eq_ignore_ascii_case(&platform_id))
-        {
-            continue;
-        }
         let analyzer_name = match platform_id.as_str() {
             "super-famicom" => "snes",
             other => other,
@@ -109,6 +132,12 @@ fn add_archive_only_console_folders(
             );
             continue;
         };
+        if matches
+            .iter()
+            .any(|folder| folder.platform == registered.metadata.platform)
+        {
+            continue;
+        }
         let path = playable_root.join(&platform_id);
         if let Err(error) = std::fs::create_dir_all(&path) {
             log::warn!(
@@ -704,4 +733,34 @@ fn check_cue_compat_for_entry(entry: &scanner::GameEntry) -> Vec<CueCompatIssue>
         }
     }
     issues
+}
+
+#[cfg(test)]
+mod tests {
+    use super::suppress_empty_platform_aliases;
+
+    #[test]
+    fn empty_alias_is_hidden_beside_populated_console_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let ps1 = temp.path().join("ps1");
+        let psx = temp.path().join("psx");
+        std::fs::create_dir_all(&ps1).unwrap();
+        std::fs::create_dir_all(&psx).unwrap();
+        std::fs::write(psx.join("game.chd"), b"game").unwrap();
+        let mut folders = vec![
+            retro_junk_lib::ConsoleFolder {
+                path: ps1,
+                folder_name: "ps1".to_owned(),
+                platform: retro_junk_core::Platform::Ps1,
+            },
+            retro_junk_lib::ConsoleFolder {
+                path: psx.clone(),
+                folder_name: "psx".to_owned(),
+                platform: retro_junk_core::Platform::Ps1,
+            },
+        ];
+        suppress_empty_platform_aliases(&mut folders);
+        assert_eq!(folders.len(), 1);
+        assert_eq!(folders[0].path, psx);
+    }
 }

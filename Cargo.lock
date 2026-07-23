@@ -4454,6 +4454,7 @@ version = "0.4.0"
 dependencies = [
  "retro-junk-archive",
  "retro-junk-catalog",
+ "retro-junk-core",
  "rusqlite",
  "serde_json",
  "sha2",
@@ -4571,6 +4572,7 @@ dependencies = [
  "dirs",
  "log",
  "md5",
+ "pathdiff",
  "retro-junk-archive",
  "retro-junk-core",
  "retro-junk-dat",

@@ -31,6 +31,26 @@ pub struct ArchiveReleaseSummary {
     pub reproduction_verified_count: u64,
     pub catalog_verified_count: u64,
     pub round_trip_verified_count: u64,
+    /// Logical catalog discs expected for this release. Zero means the
+    /// release is not sufficiently catalog-bound to claim completeness.
+    pub expected_disc_count: u64,
+    /// Expected discs which have a present preservation master and current,
+    /// complete catalog verification in the best matching physical copy.
+    pub verified_disc_count: u64,
+    pub archive_complete: bool,
+}
+
+fn same_platform(left: &str, right: &str) -> bool {
+    if left.eq_ignore_ascii_case(right) {
+        return true;
+    }
+    match (
+        left.parse::<retro_junk_core::Platform>(),
+        right.parse::<retro_junk_core::Platform>(),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -467,7 +487,16 @@ pub fn reconcile_archive_snapshot(
                         .manifest
                         .platform_defaults
                         .iter()
-                        .find(|default| default.platform_id == release.manifest.platform_id)
+                        .find(|default| {
+                            default
+                                .platform_id
+                                .eq_ignore_ascii_case(&release.manifest.platform_id)
+                        })
+                        .or_else(|| {
+                            snapshot.manifest.platform_defaults.iter().find(|default| {
+                                same_platform(&default.platform_id, &release.manifest.platform_id)
+                            })
+                        })
                         .map(|default| &default.policy)
                 });
                 if let Some(policy) = carrier.manifest.playable_policy.as_ref() {
@@ -731,37 +760,51 @@ pub fn update_projected_platform_policy(
     root_manifest_sha256: &str,
 ) -> Result<usize, OperationError> {
     let tx = conn.transaction()?;
-    let carrier_filter = "SELECT c.id FROM carriers c
-         JOIN physical_copies pc ON pc.id=c.physical_copy_id
-         JOIN archive_releases ar ON ar.id=pc.archive_release_id
-         WHERE ar.profile_id=?1 AND lower(ar.platform_id)=lower(?2)
-           AND NOT EXISTS(SELECT 1 FROM playable_policies marker
-                          WHERE marker.scope_type='carrier_override' AND marker.scope_id=c.id)";
-    let removed = tx.execute(
-        &format!(
-            "DELETE FROM playable_policies WHERE scope_type='carrier' AND scope_id IN ({carrier_filter})"
-        ),
-        params![profile_id, platform_id],
-    )?;
-    let inserted = if let Some(policy) = policy {
-        tx.execute(
-            &format!(
-                "INSERT INTO playable_policies(scope_type,scope_id,format,retain_intermediate,allow_unverified,options_json)
-                 SELECT 'carrier',inherited.id,?3,?4,?5,?6 FROM ({carrier_filter}) inherited"
-            ),
-            params![
-                profile_id,
-                platform_id,
-                format_key(&policy.format),
-                policy.retain_canonical_intermediate,
-                policy.allow_unverified,
-                serde_json::to_string(&policy.options)
-                    .map_err(|error| OperationError::InvalidData(error.to_string()))?,
-            ],
-        )?
-    } else {
-        0
+    let carrier_ids = {
+        let mut statement = tx.prepare(
+            "SELECT c.id,ar.platform_id FROM carriers c
+             JOIN physical_copies pc ON pc.id=c.physical_copy_id
+             JOIN archive_releases ar ON ar.id=pc.archive_release_id
+             WHERE ar.profile_id=?1
+               AND NOT EXISTS(SELECT 1 FROM playable_policies marker
+                              WHERE marker.scope_type='carrier_override' AND marker.scope_id=c.id)",
+        )?;
+        statement
+            .query_map([profile_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter_map(|(carrier_id, release_platform)| {
+                same_platform(&release_platform, platform_id).then_some(carrier_id)
+            })
+            .collect::<Vec<_>>()
     };
+    let mut removed = 0;
+    let mut inserted = 0;
+    let options_json = policy
+        .map(|policy| serde_json::to_string(&policy.options))
+        .transpose()
+        .map_err(|error| OperationError::InvalidData(error.to_string()))?;
+    for carrier_id in &carrier_ids {
+        removed += tx.execute(
+            "DELETE FROM playable_policies WHERE scope_type='carrier' AND scope_id=?1",
+            [carrier_id],
+        )?;
+        if let Some(policy) = policy {
+            inserted += tx.execute(
+                "INSERT INTO playable_policies(scope_type,scope_id,format,retain_intermediate,allow_unverified,options_json)
+                 VALUES('carrier',?1,?2,?3,?4,?5)",
+                params![
+                    carrier_id,
+                    format_key(&policy.format),
+                    policy.retain_canonical_intermediate,
+                    policy.allow_unverified,
+                    options_json.as_deref().unwrap_or("{}"),
+                ],
+            )?;
+        }
+    }
     let profiles = tx.execute(
         "UPDATE archive_profiles SET manifest_sha256=?2,indexed_at=datetime('now') WHERE id=?1",
         params![profile_id, root_manifest_sha256],
@@ -842,9 +885,72 @@ pub fn list_archive_release_summaries(
             reproduction_verified_count: row.get(16)?,
             catalog_verified_count: row.get(17)?,
             round_trip_verified_count: row.get(18)?,
+            expected_disc_count: 0,
+            verified_disc_count: 0,
+            archive_complete: false,
         })
     })?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    let mut summaries = rows.collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    let mut completeness_statement = conn.prepare(
+        "WITH expected_media AS (
+             SELECT release_id,
+                    CASE WHEN MAX(disc_number)>0
+                         THEN COUNT(DISTINCT CASE WHEN disc_number>0 THEN disc_number END)
+                         ELSE 1 END AS expected_count,
+                    MAX(disc_number)>0 AS numbered
+             FROM media GROUP BY release_id
+         ),
+         release_expected AS (
+             SELECT ar.id,em.release_id,em.expected_count,em.numbered
+             FROM archive_releases ar
+             JOIN expected_media em ON em.release_id=ar.catalog_release_id
+             WHERE ar.profile_id=?1
+         ),
+         per_copy AS (
+             SELECT re.id AS archive_release_id,pc.id AS physical_copy_id,
+                    COUNT(DISTINCT CASE WHEN ve.id IS NOT NULL THEN
+                         CASE WHEN re.numbered
+                              THEN CASE WHEN m.disc_number>0 THEN m.disc_number END
+                              ELSE 0 END
+                    END) AS verified_count
+             FROM release_expected re
+             JOIN physical_copies pc ON pc.archive_release_id=re.id
+             LEFT JOIN carriers c ON c.physical_copy_id=pc.id
+             LEFT JOIN media m ON m.id=c.catalog_media_id AND m.release_id=re.release_id
+             LEFT JOIN representations rep ON rep.carrier_id=c.id
+                AND rep.role='preservation_master' AND rep.presence_state='present'
+             LEFT JOIN verification_events ve ON ve.representation_id=rep.id
+                AND ve.kind='catalog' AND ve.outcome='verified'
+                AND ve.input_manifest_sha256=rep.input_manifest_sha256
+                AND (ve.complete_track_set=1 OR NOT EXISTS(
+                     SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id))
+             GROUP BY re.id,pc.id
+         )
+         SELECT re.id,re.expected_count,COALESCE(MAX(pc.verified_count),0)
+         FROM release_expected re
+         LEFT JOIN per_copy pc ON pc.archive_release_id=re.id
+         GROUP BY re.id,re.expected_count",
+    )?;
+    let completeness = completeness_statement
+        .query_map([profile_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                (row.get::<_, u64>(1)?, row.get::<_, u64>(2)?),
+            ))
+        })?
+        .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
+    for summary in &mut summaries {
+        if let Some((expected, verified)) = completeness
+            .get(&summary.archive_release_id)
+            .map(|(expected, verified)| (*expected, *verified))
+        {
+            summary.expected_disc_count = expected;
+            summary.verified_disc_count = verified;
+            summary.archive_complete = expected > 0 && verified == expected;
+        }
+    }
+    Ok(summaries)
 }
 
 pub fn load_archive_collection_details(
