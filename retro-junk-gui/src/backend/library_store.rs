@@ -81,6 +81,7 @@ pub enum LibraryStoreRequest {
         entry: ScannedLibraryEntry,
     },
     MarkConsoleStale(LibraryConsoleId),
+    DeleteConsoleIfEmpty(LibraryConsoleId),
     DeleteRoot(LibraryRootId),
     DeleteRootPath(String),
     ClearCache,
@@ -127,15 +128,23 @@ impl LibraryStore {
         let (write_tx, write_rx) = mpsc::sync_channel(256);
         let (read_tx, read_rx) = mpsc::sync_channel(256);
         let (reply_tx, reply_rx) = mpsc::channel();
+        let (writer_ready_tx, writer_ready_rx) = mpsc::channel();
         let write_path = path.clone();
         let write_replies = reply_tx.clone();
         let writer = thread::Builder::new()
             .name("library-store-writer".into())
-            .spawn(move || worker_main(write_path, write_rx, write_replies))
+            .spawn(move || {
+                worker_main(write_path, write_rx, write_replies, Some(writer_ready_tx));
+            })
             .map_err(|e| e.to_string())?;
         let reader = thread::Builder::new()
             .name("library-store-reader".into())
-            .spawn(move || worker_main(path, read_rx, reply_tx))
+            .spawn(move || {
+                // A fresh database must finish schema initialization before a
+                // second connection attempts the same migration.
+                let _ = writer_ready_rx.recv();
+                worker_main(path, read_rx, reply_tx, None);
+            })
             .map_err(|e| e.to_string())?;
         Ok(Self {
             write_tx,
@@ -210,8 +219,13 @@ fn worker_main(
     path: PathBuf,
     requests: mpsc::Receiver<StoreEnvelope<LibraryStoreRequest>>,
     replies: mpsc::Sender<LibraryStoreReply>,
+    ready: Option<mpsc::Sender<()>>,
 ) {
-    let mut conn = match retro_junk_db::open_database(&path) {
+    let connection = retro_junk_db::open_database(&path);
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
+    let mut conn = match connection {
         Ok(conn) => conn,
         Err(error) => {
             log::error!("library store failed to open: {error}");
@@ -369,6 +383,10 @@ fn execute(
         }
         R::MarkConsoleStale(id) => {
             LibraryStoreValue::ChangeSet(retro_junk_db::mark_console_stale(conn, id)?)
+        }
+        R::DeleteConsoleIfEmpty(id) => {
+            retro_junk_db::delete_library_console_if_empty(conn, id)?;
+            LibraryStoreValue::ChangeSet(LibraryChangeSet::default())
         }
         R::DeleteRoot(id) => {
             LibraryStoreValue::ChangeSet(retro_junk_db::delete_library_root(conn, id)?)

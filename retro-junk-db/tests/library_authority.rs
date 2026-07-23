@@ -53,7 +53,7 @@ fn setup(entries: &[LibraryEntryRow]) -> (Connection, LibraryRootId, LibraryCons
             row: row.clone(),
         })
         .collect();
-    let token = begin_console_scan(&mut conn, console).unwrap();
+    let token = begin_console_scan(&conn, console).unwrap();
     reconcile_console_scan(&mut conn, token, "folder-1", &scanned).unwrap();
     for detail in load_entry_details_for_console(&conn, console).unwrap() {
         let source = entries

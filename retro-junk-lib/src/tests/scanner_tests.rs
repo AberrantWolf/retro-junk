@@ -36,3 +36,19 @@ fn standalone_chd_is_its_own_entry() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].display_name(), "Solo.chd");
 }
+
+#[test]
+fn playlist_claims_top_level_discs_as_one_logical_game() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Disc 1.chd"), "").unwrap();
+    fs::write(dir.path().join("Disc 2.chd"), "").unwrap();
+    let set = dir.path().join("Game.m3u");
+    fs::create_dir(&set).unwrap();
+    fs::write(set.join("Game.m3u"), "../Disc 1.chd\n../Disc 2.chd\n").unwrap();
+
+    let entries = scan_game_entries(dir.path(), &extension_set(&["chd"])).unwrap();
+
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].display_name(), "Game.m3u");
+    assert_eq!(entries[0].all_files().len(), 2);
+}

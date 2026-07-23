@@ -130,7 +130,9 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     let path = app.settings.library.recent_roots[idx].path.clone();
                     app.delete_library_cache(&path, ui.ctx());
                     app.settings.library.recent_roots.remove(idx);
-                    let _ = crate::settings::save_settings(&app.settings);
+                    if let Err(error) = crate::settings::save_settings(&app.settings) {
+                        app.push_error("Save settings", error.to_string());
+                    }
                 }
             }
         }
@@ -216,25 +218,15 @@ fn apply_profile_action(app: &mut RetroJunkApp, action: ProfileAction) {
         app.push_error("Save settings", error.to_string());
     }
     if let Some(profile) = app.settings.library.active_profile().cloned()
-        && let Some(connection) = app.catalog_db.as_mut()
+        && app.catalog_db.is_some()
         && profile
             .archive_root
             .join("retro-junk-archive.toml")
             .is_file()
     {
-        match retro_junk_archive::scan_archive(&profile.archive_root) {
-            Ok(snapshot) => {
-                if let Err(error) = retro_junk_db::reconcile_archive_snapshot(
-                    connection,
-                    &snapshot,
-                    &profile.playable_root,
-                    &profile.workspace_root,
-                ) {
-                    app.push_error("Archive index", error.to_string());
-                }
-            }
-            Err(error) => app.push_error("Archive index", error.to_string()),
-        }
+        let _ = app
+            .message_tx
+            .send(crate::state::AppMessage::StartArchiveRefresh { profile });
     }
 }
 
@@ -274,8 +266,8 @@ fn show_output_directories_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.weak("Relative to ROM root. Leave empty for \"{root}-media\" sibling convention.");
     });
 
-    if changed {
-        let _ = crate::settings::save_settings(&app.settings);
+    if changed && let Err(error) = crate::settings::save_settings(&app.settings) {
+        app.push_error("Save settings", error.to_string());
     }
 }
 
@@ -381,8 +373,8 @@ fn show_external_tools_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         });
     }
 
-    if changed {
-        let _ = crate::settings::save_settings(&app.settings);
+    if changed && let Err(error) = crate::settings::save_settings(&app.settings) {
+        app.push_error("Save settings", error.to_string());
     }
 }
 

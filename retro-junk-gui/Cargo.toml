@@ -35,6 +35,7 @@ rfd = "0.15"
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+pathdiff.workspace = true
 toml.workspace = true
 dirs.workspace = true
 sha2.workspace = true

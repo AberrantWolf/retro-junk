@@ -198,72 +198,115 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             ui.horizontal_wrapped(|ui| {
                 ui.strong("Availability:");
                 availability_chip(ui, counts.archived_and_playable, "Archived + playable");
+                availability_chip(
+                    ui,
+                    counts.incomplete_archive_and_playable,
+                    "Incomplete archive + playable",
+                );
                 availability_chip(ui, counts.archived_not_playable, "Archived, needs playable");
                 availability_chip(ui, counts.playable_only, "Playable only");
                 availability_chip(ui, counts.preferred_format_mismatch, "Wrong format");
             });
             if !page.archived_playable_gaps.is_empty() {
                 egui::CollapsingHeader::new(format!(
-                    "Make archived games playable ({})",
+                    "Archive actions ({})",
                     page.archived_playable_gaps.len()
                 ))
                 .default_open(true)
                 .show(ui, |ui| {
-                    ui.weak("These preservation masters have no present playable copy in the preferred format.");
+                    ui.weak("Verify incomplete archives and create missing preferred playable copies.");
                     egui::ScrollArea::vertical()
                         .id_salt("archived_playable_gaps")
                         .max_height(180.0)
                         .show(ui, |ui| {
                             for gap in &page.archived_playable_gaps {
                                 ui.horizontal(|ui| {
-                                    let mut label = gap.title.clone();
-                                    if gap.sequence_number > 0 {
-                                        label.push_str(&format!(" — Disc {}", gap.sequence_number));
-                                    }
+                                    let carriers_need_verification = gap
+                                        .carriers
+                                        .iter()
+                                        .filter(|carrier| carrier.catalog_verified)
+                                        .count()
+                                        < gap.carriers.len();
+                                    let verified = gap.verified_disc_count;
+                                    let archived = gap.archived_disc_count;
+                                    let expected = gap.expected_disc_count;
+                                    let label = if expected > 1 {
+                                        format!("{} — {archived}/{expected} discs archived", gap.title)
+                                    } else {
+                                        gap.title.clone()
+                                    };
                                     ui.label(label).on_hover_text(format!(
-                                        "Archived as {}; catalog verification: {}",
-                                        gap.source_format.as_deref().unwrap_or("unknown"),
-                                        if gap.catalog_verified { "verified" } else { "not verified" },
+                                        "{verified}/{expected} catalog-verified; target format: {}",
+                                        gap.preferred_format.as_deref().unwrap_or("not selected"),
                                     ));
                                     ui.add_space(8.0);
-                                    let ready = gap.dump_id.is_some()
-                                        && gap.preferred_format.is_some()
-                                        && gap.buildable;
-                                    let button = ui.add_enabled(ready, egui::Button::new("Make playable"));
-                                    let button = if gap.preferred_format.is_none() {
-                                        button.on_disabled_hover_text("Choose a preferred playable format for this console first")
-                                    } else if gap.dump_id.is_none() {
-                                        button.on_disabled_hover_text("This carrier has no preservation dump")
-                                    } else if !gap.buildable {
-                                        button.on_disabled_hover_text(format!(
-                                            "No in-app builder is available from {} to {} yet",
-                                            gap.source_format.as_deref().unwrap_or("this source"),
-                                            gap.preferred_format.as_deref().unwrap_or("the preferred format"),
-                                        ))
-                                    } else {
-                                        button.on_hover_text(format!(
-                                            "Build {} from the authoritative dump",
-                                            gap.preferred_format.as_deref().unwrap_or_default().to_ascii_uppercase()
-                                        ))
-                                    };
-                                    if button.clicked()
-                                        && let (Some(dump_id), Some(format)) = (
-                                            gap.dump_id.clone(),
-                                            gap.preferred_format.as_deref().and_then(parse_playable_format),
-                                        )
+                                    let ready = gap.buildable
+                                        && (!gap.needs_playable
+                                            || gap.preferred_format.is_some());
+                                    let action = if gap.needs_playlist
+                                        && !gap.needs_playable
+                                        && carriers_need_verification
                                     {
-                                        playable_build = Some((
-                                            dump_id,
-                                            format,
-                                            gap.title.clone(),
-                                            gap.allow_unverified,
-                                            gap.retain_intermediate,
-                                            policy_context
-                                                .as_ref()
-                                                .map(|(folder, _, _)| folder.clone())
-                                                .unwrap_or_default(),
-                                            gap.expected_disc_count,
-                                        ));
+                                        "Verify & create playlist"
+                                    } else if gap.needs_playlist && !gap.needs_playable {
+                                        "Create multi-disc playlist"
+                                    } else if !gap.needs_playable {
+                                        "Verify archive"
+                                    } else if carriers_need_verification
+                                        && !gap.allow_unverified
+                                    {
+                                        "Verify & make playable"
+                                    } else if carriers_need_verification {
+                                        "Make playable (unverified)"
+                                    } else {
+                                        "Make playable"
+                                    };
+                                    let button =
+                                        ui.add_enabled(ready, egui::Button::new(action));
+                                    let button =
+                                        if gap.needs_playable && gap.preferred_format.is_none() {
+                                        button.on_disabled_hover_text("Choose a preferred playable format for this console first")
+                                    } else if gap.archived_disc_count < gap.expected_disc_count {
+                                        button.on_disabled_hover_text(format!(
+                                            "Archive is incomplete: {}/{} expected discs are present",
+                                            gap.archived_disc_count, gap.expected_disc_count
+                                        ))
+                                    } else if !gap.buildable {
+                                        button.on_disabled_hover_text(
+                                            "One or more archived discs has no supported in-app conversion path",
+                                        )
+                                    } else {
+                                        button.on_hover_text(if gap.needs_playable {
+                                            format!(
+                                                "Verify any unverified preservation masters, then build the complete release as {}",
+                                                gap.preferred_format.as_deref().unwrap_or_default().to_ascii_uppercase()
+                                            )
+                                        } else if gap.needs_playlist {
+                                            "Create one M3U for the complete release from its existing playable discs".to_owned()
+                                        } else {
+                                            "Regenerate and hash every unverified preservation master against the catalog".to_owned()
+                                        })
+                                    };
+                                    if button.clicked() {
+                                        let format = gap
+                                            .preferred_format
+                                            .as_deref()
+                                            .and_then(parse_playable_format)
+                                            .or_else(|| {
+                                                (!gap.needs_playable).then_some(
+                                                    retro_junk_archive::RepresentationFormat::Rom,
+                                                )
+                                            });
+                                        if let Some(format) = format {
+                                            playable_build = Some((
+                                                gap.clone(),
+                                                format,
+                                                policy_context
+                                                    .as_ref()
+                                                    .map(|(folder, _, _)| folder.clone())
+                                                    .unwrap_or_default(),
+                                            ));
+                                        }
                                     }
                                 });
                             }
@@ -285,27 +328,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     if let Some((platform_id, format)) = policy_change {
         set_preferred_playable_format(app, platform_id, format, ctx);
     }
-    if let Some((
-        dump_id,
-        format,
-        title,
-        allow_unverified,
-        retain_intermediate,
-        playable_platform_id,
-        expected_disc_count,
-    )) = playable_build
-    {
-        crate::backend::playable_build::start(
-            app,
-            dump_id,
-            format,
-            title,
-            allow_unverified,
-            retain_intermediate,
-            playable_platform_id,
-            expected_disc_count,
-            ctx,
-        );
+    if let Some((release, format, playable_platform_id)) = playable_build {
+        crate::backend::playable_build::start(app, release, format, playable_platform_id, ctx);
     }
 }
 

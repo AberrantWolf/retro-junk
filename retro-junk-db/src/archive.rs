@@ -696,7 +696,8 @@ pub fn reconcile_archive_snapshot(
     // cartridge library hashes omit format headers (for example iNES), just as
     // the catalog does; comparing archive-file sizes here would miss them.
     tx.execute(
-        "DELETE FROM library_entry_media_bindings WHERE match_method='archive_projection'",
+        "DELETE FROM library_entry_media_bindings
+         WHERE match_method IN ('archive_projection','archive_release_projection')",
         [],
     )?;
     tx.execute(
@@ -721,6 +722,62 @@ pub fn reconcile_archive_snapshot(
            AND ((le.sha1<>'' AND m.sha1<>'' AND le.sha1=m.sha1)
                 OR (le.md5<>'' AND m.md5<>'' AND le.md5=m.md5)
                 OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))",
+        [],
+    )?;
+    // Disc containers and M3U sets often cannot expose Redump's raw per-track
+    // hashes cheaply (or at all), but analysis can still identify their exact
+    // DAT game names from serials. Bind the logical library entry to every
+    // archived carrier in that catalog release. This makes a multi-disc set
+    // one archived/playable game without pretending that one matched disc is
+    // evidence that the other archive carriers are verified.
+    tx.execute(
+        "WITH entry_releases(library_entry_id,release_id) AS (
+             SELECT DISTINCT le.id,m.release_id
+             FROM library_entries le
+             JOIN library_consoles lc ON lc.id=le.console_id
+             JOIN media m ON m.dat_name=le.dat_game_name
+             JOIN releases r ON r.id=m.release_id
+             WHERE le.dat_game_name<>''
+               AND (lower(lc.folder_name)=lower(r.platform_id)
+                    OR lower(lc.platform)=lower(r.platform_id))
+               AND (SELECT COUNT(DISTINCT unique_media.release_id)
+                    FROM media unique_media
+                    JOIN releases unique_release ON unique_release.id=unique_media.release_id
+                    WHERE unique_media.dat_name=le.dat_game_name
+                      AND (lower(lc.folder_name)=lower(unique_release.platform_id)
+                           OR lower(lc.platform)=lower(unique_release.platform_id)))=1
+             UNION
+             SELECT DISTINCT le.id,m.release_id
+             FROM library_entries le
+             JOIN library_consoles lc ON lc.id=le.console_id
+             JOIN json_each(le.disc_identifications_json) disc
+             JOIN media m ON m.dat_name=json_extract(disc.value,'$.dat_match.game_name')
+             JOIN releases r ON r.id=m.release_id
+             WHERE json_valid(le.disc_identifications_json)
+               AND json_extract(disc.value,'$.dat_match.game_name') IS NOT NULL
+               AND (lower(lc.folder_name)=lower(r.platform_id)
+                    OR lower(lc.platform)=lower(r.platform_id))
+               AND (SELECT COUNT(DISTINCT unique_media.release_id)
+                    FROM media unique_media
+                    JOIN releases unique_release ON unique_release.id=unique_media.release_id
+                    WHERE unique_media.dat_name=
+                          json_extract(disc.value,'$.dat_match.game_name')
+                      AND (lower(lc.folder_name)=lower(unique_release.platform_id)
+                           OR lower(lc.platform)=lower(unique_release.platform_id)))=1
+         )
+         INSERT OR REPLACE INTO library_entry_media_bindings(
+             library_entry_id,catalog_media_id,representation_id,match_method)
+         SELECT DISTINCT er.library_entry_id,c.catalog_media_id,NULL,'archive_release_projection'
+         FROM entry_releases er
+         JOIN media m ON m.release_id=er.release_id
+         JOIN carriers c ON c.catalog_media_id=m.id
+         JOIN physical_copies pc ON pc.id=c.physical_copy_id
+         JOIN archive_releases ar ON ar.id=pc.archive_release_id
+         JOIN archive_profiles ap ON ap.id=ar.profile_id
+         JOIN library_entries le ON le.id=er.library_entry_id
+         JOIN library_consoles lc ON lc.id=le.console_id
+         JOIN library_roots lr ON lr.id=lc.root_id
+         WHERE ap.playable_root=lr.root_path",
         [],
     )?;
     tx.commit()?;
@@ -836,6 +893,7 @@ fn verification_outcome_key(outcome: retro_junk_archive::VerificationOutcome) ->
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn list_archive_release_summaries(
     conn: &Connection,
     profile_id: &str,
@@ -892,7 +950,26 @@ pub fn list_archive_release_summaries(
     })?;
     let mut summaries = rows.collect::<Result<Vec<_>, _>>()?;
     drop(statement);
-    let mut completeness_statement = conn.prepare(
+    let completeness = archive_release_completeness(conn, profile_id, "")?;
+    for summary in &mut summaries {
+        if let Some((expected, verified)) = completeness
+            .get(&summary.archive_release_id)
+            .map(|(expected, verified)| (*expected, *verified))
+        {
+            summary.expected_disc_count = expected;
+            summary.verified_disc_count = verified;
+            summary.archive_complete = expected > 0 && verified == expected;
+        }
+    }
+    Ok(summaries)
+}
+
+pub(crate) fn archive_release_completeness(
+    conn: &Connection,
+    profile_id: &str,
+    playable_root: &str,
+) -> Result<std::collections::HashMap<String, (u64, u64)>, OperationError> {
+    let mut statement = conn.prepare(
         "WITH expected_media AS (
              SELECT release_id,
                     CASE WHEN MAX(disc_number)>0
@@ -904,8 +981,10 @@ pub fn list_archive_release_summaries(
          release_expected AS (
              SELECT ar.id,em.release_id,em.expected_count,em.numbered
              FROM archive_releases ar
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
              JOIN expected_media em ON em.release_id=ar.catalog_release_id
-             WHERE ar.profile_id=?1
+             WHERE (?1='' OR ar.profile_id=?1)
+               AND (?2='' OR ap.playable_root=?2)
          ),
          per_copy AS (
              SELECT re.id AS archive_release_id,pc.id AS physical_copy_id,
@@ -932,25 +1011,15 @@ pub fn list_archive_release_summaries(
          LEFT JOIN per_copy pc ON pc.archive_release_id=re.id
          GROUP BY re.id,re.expected_count",
     )?;
-    let completeness = completeness_statement
-        .query_map([profile_id], |row| {
+    statement
+        .query_map(params![profile_id, playable_root], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 (row.get::<_, u64>(1)?, row.get::<_, u64>(2)?),
             ))
         })?
-        .collect::<Result<std::collections::HashMap<_, _>, _>>()?;
-    for summary in &mut summaries {
-        if let Some((expected, verified)) = completeness
-            .get(&summary.archive_release_id)
-            .map(|(expected, verified)| (*expected, *verified))
-        {
-            summary.expected_disc_count = expected;
-            summary.verified_disc_count = verified;
-            summary.archive_complete = expected > 0 && verified == expected;
-        }
-    }
-    Ok(summaries)
+        .collect::<Result<_, _>>()
+        .map_err(Into::into)
 }
 
 pub fn load_archive_collection_details(

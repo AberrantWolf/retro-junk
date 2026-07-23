@@ -45,6 +45,7 @@ pub struct RedumperAudit {
 pub struct RedumperWorkspace {
     pub entrypoint: PathBuf,
     pub audit: RedumperAudit,
+    _package: retro_junk_io::PreparedPackage,
     _guard: WorkspaceGuard,
 }
 
@@ -179,7 +180,19 @@ impl Redumper {
         workspace_root: &Path,
         cancel: &AtomicBool,
     ) -> Result<RedumperAudit, RedumperError> {
-        Ok(self.prepare(raw_directory, workspace_root, cancel)?.audit)
+        self.audit_with_progress(raw_directory, workspace_root, cancel, |_, _| {})
+    }
+
+    pub fn audit_with_progress(
+        &self,
+        raw_directory: &Path,
+        workspace_root: &Path,
+        cancel: &AtomicBool,
+        progress: impl FnMut(u64, u64),
+    ) -> Result<RedumperAudit, RedumperError> {
+        Ok(self
+            .prepare_with_progress(raw_directory, workspace_root, cancel, progress)?
+            .audit)
     }
 
     pub fn prepare(
@@ -188,18 +201,32 @@ impl Redumper {
         workspace_root: &Path,
         cancel: &AtomicBool,
     ) -> Result<RedumperWorkspace, RedumperError> {
+        self.prepare_with_progress(raw_directory, workspace_root, cancel, |_, _| {})
+    }
+
+    pub fn prepare_with_progress(
+        &self,
+        raw_directory: &Path,
+        workspace_root: &Path,
+        cancel: &AtomicBool,
+        mut progress: impl FnMut(u64, u64),
+    ) -> Result<RedumperWorkspace, RedumperError> {
         let image_name = find_image_name(raw_directory)?;
-        std::fs::create_dir_all(workspace_root).map_err(|source| RedumperError::Io {
-            path: workspace_root.display().to_string(),
-            source,
-        })?;
-        let workspace = workspace_root.join(format!("redumper-audit-{}", uuid::Uuid::now_v7()));
-        std::fs::create_dir(&workspace).map_err(|source| RedumperError::Io {
-            path: workspace.display().to_string(),
-            source,
-        })?;
-        let guard = WorkspaceGuard(workspace.clone());
-        copy_tree(raw_directory, &workspace, cancel)?;
+        let plan = retro_junk_io::plan_package(raw_directory)
+            .map_err(|error| RedumperError::InvalidOutput(error.to_string()))?;
+        let total = plan.total_bytes;
+        let mut completed = 0_u64;
+        let operation_workspace =
+            workspace_root.join(format!("redumper-audit-{}", uuid::Uuid::now_v7()));
+        let guard = WorkspaceGuard(operation_workspace.clone());
+        progress(0, total);
+        let package =
+            retro_junk_io::stage_planned_package(&plan, &operation_workspace, cancel, |bytes| {
+                completed = completed.saturating_add(bytes);
+                progress(completed, total);
+            })
+            .map_err(|error| RedumperError::InvalidOutput(error.to_string()))?;
+        let workspace = package.local_source.clone();
 
         let split = run_phase(&self.path, "split", &workspace, &image_name, true, cancel)?;
         let hash = run_phase(&self.path, "hash", &workspace, &image_name, false, cancel)?;
@@ -260,6 +287,7 @@ impl Redumper {
         Ok(RedumperWorkspace {
             entrypoint,
             audit,
+            _package: package,
             _guard: guard,
         })
     }
@@ -269,7 +297,9 @@ struct WorkspaceGuard(PathBuf);
 
 impl Drop for WorkspaceGuard {
     fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_dir_all(&self.0) {
+        if let Err(error) = std::fs::remove_dir_all(&self.0)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
             log::warn!(
                 "could not remove Redumper audit workspace {}: {error}",
                 self.0.display()
@@ -315,50 +345,6 @@ fn sorted_files(directory: &Path) -> Result<Vec<PathBuf>, RedumperError> {
         .map(|entry| entry.path())
         .filter(|path| path.is_file())
         .collect())
-}
-
-fn copy_tree(source: &Path, destination: &Path, cancel: &AtomicBool) -> Result<(), RedumperError> {
-    let mut entries = std::fs::read_dir(source)
-        .map_err(|error| RedumperError::Io {
-            path: source.display().to_string(),
-            source: error,
-        })?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| RedumperError::Io {
-            path: source.display().to_string(),
-            source: error,
-        })?;
-    entries.sort_by_key(std::fs::DirEntry::path);
-    for entry in entries {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(RedumperError::Cancelled);
-        }
-        let source_path = entry.path();
-        let metadata =
-            std::fs::symlink_metadata(&source_path).map_err(|error| RedumperError::Io {
-                path: source_path.display().to_string(),
-                source: error,
-            })?;
-        if metadata.file_type().is_symlink() {
-            return Err(RedumperError::SymbolicLink(
-                source_path.display().to_string(),
-            ));
-        }
-        let destination_path = destination.join(entry.file_name());
-        if metadata.is_dir() {
-            std::fs::create_dir(&destination_path).map_err(|error| RedumperError::Io {
-                path: destination_path.display().to_string(),
-                source: error,
-            })?;
-            copy_tree(&source_path, &destination_path, cancel)?;
-        } else if metadata.is_file() {
-            std::fs::copy(&source_path, &destination_path).map_err(|error| RedumperError::Io {
-                path: destination_path.display().to_string(),
-                source: error,
-            })?;
-        }
-    }
-    Ok(())
 }
 
 fn run_phase(

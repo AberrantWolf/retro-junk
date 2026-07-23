@@ -1740,10 +1740,12 @@ fn deduplicate_matches(matches: &mut Vec<CatalogCandidate>) {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn serial_folders_are_identified_and_grouped_into_one_physical_copy() {
         let temp = tempfile::tempdir().unwrap();
         let inbox = temp.path().join("inbox");

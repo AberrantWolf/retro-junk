@@ -156,6 +156,7 @@ fn panel_toggles_do_not_reassign_widget_ids() {
             revision: 0,
             source_revision: 0,
             archived: false,
+            archive_complete: false,
             playable_format: "bin".into(),
             preferred_format: None,
             archive_release_id: None,

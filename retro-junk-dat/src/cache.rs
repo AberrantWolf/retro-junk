@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::dat::{self, DatFile};
 use crate::error::DatError;
+use crate::util::chrono_now;
 use retro_junk_core::DatSource;
 
 /// Cache format version. Bump this when changing DAT sources or format to
@@ -410,6 +411,17 @@ fn is_dat_cache_path(path: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("dat"))
 }
 
+/// Get the total size of cached DAT files.
+pub fn total_cache_size() -> Result<u64, DatError> {
+    let meta = load_meta()?;
+    Ok(meta
+        .dats
+        .values()
+        .flat_map(|list| list.iter())
+        .map(|c| c.file_size)
+        .sum())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -423,16 +435,3 @@ mod tests {
         assert!(!super::is_dat_cache_path(Path::new("catalog.db-shm")));
     }
 }
-
-/// Get the total size of cached DAT files.
-pub fn total_cache_size() -> Result<u64, DatError> {
-    let meta = load_meta()?;
-    Ok(meta
-        .dats
-        .values()
-        .flat_map(|list| list.iter())
-        .map(|c| c.file_size)
-        .sum())
-}
-
-use crate::util::chrono_now;

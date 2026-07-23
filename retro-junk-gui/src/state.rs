@@ -846,7 +846,7 @@ pub enum AppMessage {
     },
     PlayableBuildComplete {
         op_id: u64,
-        result: Result<std::path::PathBuf, String>,
+        result: Result<Option<std::path::PathBuf>, String>,
     },
     ArchiveImportPlanReady {
         op_id: u64,
@@ -1655,12 +1655,17 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 let _ = handle.join();
             }
             match result {
-                Ok(output) => {
+                Ok(Some(output)) => {
                     log::info!("Built playable copy {}", output.display());
                     refresh_library_availability(app, ctx);
+                    app.ui_state.refresh_archive_after_folder_scan = true;
                     let _ = app.message_tx.send(AppMessage::StartFolderScan);
                 }
-                Err(error) => app.push_error("Build playable copy", error),
+                Ok(None) => {
+                    log::info!("Catalog-verified archived release");
+                    refresh_library_availability(app, ctx);
+                }
+                Err(error) => app.push_error("Archive action", error),
             }
         }
         AppMessage::ArchiveImportPlanReady { op_id, result } => {
@@ -1758,6 +1763,66 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         AppMessage::FolderScanComplete => {
             app.operations
                 .retain(|op| op.description != "Scanning folders...");
+
+            let populated_aliases = app
+                .browser
+                .consoles
+                .iter()
+                .filter(|console| {
+                    app.browser.entry_count(console) > 0
+                        || std::fs::read_dir(&console.folder_path)
+                            .is_ok_and(|mut entries| entries.next().is_some())
+                })
+                .map(|console| {
+                    crate::backend::scan::projection_alias_key(
+                        console.platform,
+                        &console.folder_name,
+                    )
+                })
+                .collect::<std::collections::HashSet<_>>();
+            let stale_aliases = app
+                .browser
+                .consoles
+                .iter()
+                .filter(|console| {
+                    app.browser.entry_count(console) == 0
+                        && populated_aliases.contains(&crate::backend::scan::projection_alias_key(
+                            console.platform,
+                            &console.folder_name,
+                        ))
+                        && std::fs::read_dir(&console.folder_path)
+                            .is_ok_and(|mut entries| entries.next().is_none())
+                })
+                .filter_map(|console| console.id)
+                .collect::<Vec<_>>();
+            if !stale_aliases.is_empty() {
+                app.browser
+                    .consoles
+                    .retain(|console| !console.id.is_some_and(|id| stale_aliases.contains(&id)));
+                for id in stale_aliases {
+                    app.browser.entry_counts.remove(&id);
+                    app.browser.console_statuses.remove(&id);
+                    app.browser.stale_consoles.remove(&id);
+                    app.submit_store(
+                        crate::backend::library_store::LibraryStoreRequest::DeleteConsoleIfEmpty(
+                            id,
+                        ),
+                        ctx,
+                    );
+                    if app.ui_state.selected_console == Some(id) {
+                        app.ui_state.selected_console = None;
+                        app.browser.active_page = None;
+                    }
+                }
+            }
+            if app.ui_state.refresh_archive_after_folder_scan {
+                app.ui_state.refresh_archive_after_folder_scan = false;
+                if let Some(profile) = app.settings.library.active_profile().cloned() {
+                    let _ = app
+                        .message_tx
+                        .send(AppMessage::StartArchiveRefresh { profile });
+                }
+            }
 
             log::info!(
                 "Folder scan complete: {} consoles discovered",

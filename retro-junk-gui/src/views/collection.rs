@@ -436,9 +436,7 @@ fn show_editor(
     if save {
         match save_editor(&editor_snapshot, &profile.archive_root) {
             Ok(()) => {
-                if let Err(error) = reindex(app, profile) {
-                    app.push_error("Archive index", error);
-                }
+                crate::backend::archive::start_archive_operation(app, profile, false);
             }
             Err(error) => app.push_error("Collection details", error),
         }
@@ -470,9 +468,7 @@ fn show_editor(
         })();
         match result {
             Ok(()) => {
-                if let Err(error) = reindex(app, profile) {
-                    app.push_error("Archive index", error);
-                }
+                crate::backend::archive::start_archive_operation(app, profile, false);
             }
             Err(error) => app.push_error("Physical-copy file", error),
         }
@@ -536,25 +532,6 @@ fn format_slug(format: &retro_junk_archive::RepresentationFormat) -> &str {
         retro_junk_archive::RepresentationFormat::RedumperRaw => "redumper-raw",
         retro_junk_archive::RepresentationFormat::Other(value) => value,
     }
-}
-
-fn reindex(
-    app: &mut RetroJunkApp,
-    profile: &retro_junk_archive::CollectionProfile,
-) -> Result<(), String> {
-    let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
-        .map_err(|error| error.to_string())?;
-    let connection = app
-        .catalog_db
-        .as_mut()
-        .ok_or_else(|| "catalog database is unavailable".to_owned())?;
-    retro_junk_db::reconcile_archive_snapshot(
-        connection,
-        &snapshot,
-        &profile.playable_root,
-        &profile.workspace_root,
-    )
-    .map_err(|error| error.to_string())
 }
 
 fn start_dump_import_planning(
@@ -812,7 +789,8 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                                         .selected_text("Choose catalog release…")
                                         .show_ui(ui, |ui| {
                                             for catalog_candidate in candidates {
-                                                let label = format!("{} · {} · {}", catalog_candidate.title, catalog_candidate.platform_id, catalog_candidate.serial);
+                                                let label =
+                                                    catalog_candidate_label(&catalog_candidate);
                                                 if ui.selectable_label(false, label).clicked() {
                                                     selection = Some(catalog_candidate);
                                                 }
@@ -995,6 +973,26 @@ fn import_disposition_label(disposition: &retro_junk_archive_import::ImportDispo
             reason.clone()
         }
     }
+}
+
+fn catalog_candidate_label(candidate: &retro_junk_archive_import::CatalogCandidate) -> String {
+    let mut qualifiers = [
+        candidate.platform_id.as_str(),
+        candidate.region.as_str(),
+        candidate.revision.as_str(),
+        candidate.variant.as_str(),
+        candidate.serial.as_str(),
+    ]
+    .into_iter()
+    .filter(|value| !value.is_empty())
+    .map(str::to_owned)
+    .collect::<Vec<_>>();
+    if candidate.sequence_number > 0 {
+        qualifiers.push(format!("disc {}", candidate.sequence_number));
+    }
+    qualifiers.push(candidate.source.clone());
+    qualifiers.push(format!("release {}", candidate.release_id));
+    format!("{} · {}", candidate.title, qualifiers.join(" · "))
 }
 
 fn format_bytes(bytes: u64) -> String {

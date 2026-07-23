@@ -163,7 +163,7 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     .unwrap();
     conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('release-game','work-game','nes','usa','Game')", []).unwrap();
     conn.execute(
-        "INSERT INTO media(id,release_id,dat_source,file_size,crc32,sha1,md5) VALUES('media-game','release-game','no-intro',?1,?2,?3,?4)",
+        "INSERT INTO media(id,release_id,dat_source,dat_name,file_size,crc32,sha1,md5) VALUES('media-game','release-game','no-intro','Game',?1,?2,?3,?4)",
         rusqlite::params![digests.size, digests.crc32, digests.sha1, digests.md5],
     )
     .unwrap();
@@ -232,11 +232,14 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     )
     .unwrap();
     assert!(page.rows[0].archived);
+    assert!(!page.rows[0].archive_complete);
     assert_eq!(page.rows[0].playable_format, "nes");
     assert_eq!(page.rows[0].preferred_format.as_deref(), Some("rom"));
-    assert_eq!(page.availability_counts.archived_and_playable, 1);
+    assert_eq!(page.availability_counts.archived_and_playable, 0);
+    assert_eq!(page.availability_counts.incomplete_archive_and_playable, 1);
     assert_eq!(page.availability_counts.archived_not_playable, 0);
-    assert!(page.archived_playable_gaps.is_empty());
+    assert_eq!(page.archived_playable_gaps.len(), 1);
+    assert!(!page.archived_playable_gaps[0].needs_playable);
     conn.execute("DELETE FROM library_entry_media_bindings", [])
         .unwrap();
     let gaps = retro_junk_db::query_entry_list(
@@ -355,6 +358,52 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     assert_eq!(overridden, "rvz");
 
     conn.execute(
+        "INSERT INTO library_entries(
+             id,console_id,entry_key,display_name,game_entry_json,status,dat_game_name)
+         VALUES(2,1,'set:game.m3u','game.m3u',
+                '{\"MultiDisc\":{\"name\":\"game.m3u\",\"files\":[\"game.m3u/disc.chd\"]}}',
+                'matched','Game')",
+        [],
+    )
+    .unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &temp.path().join("playable"),
+        &temp.path().join("work"),
+    )
+    .unwrap();
+    let release_binding: String = conn
+        .query_row(
+            "SELECT match_method FROM library_entry_media_bindings WHERE library_entry_id=2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(release_binding, "archive_release_projection");
+    conn.execute(
+        "UPDATE library_entries SET dat_game_name='Different Game' WHERE id=2",
+        [],
+    )
+    .unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &temp.path().join("playable"),
+        &temp.path().join("work"),
+    )
+    .unwrap();
+    let stale_release_bindings: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM library_entry_media_bindings
+             WHERE library_entry_id=2 AND match_method='archive_release_projection'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stale_release_bindings, 0);
+
+    conn.execute(
         "DELETE FROM playable_policies WHERE scope_type='carrier_override'",
         [],
     )
@@ -390,4 +439,38 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         .query_row("SELECT COUNT(*) FROM dump_events", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 1);
+}
+
+#[test]
+fn multidisc_playable_format_comes_from_disc_images_not_playlist_name() {
+    let conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,'/playable')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Ps1','psx','/playable/psx','fp','ready')", []).unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(
+             id,console_id,entry_key,display_name,game_entry_json,status)
+         VALUES(1,1,'set:game.m3u','game.m3u',
+                '{\"MultiDisc\":{\"name\":\"game.m3u\",\"files\":[\"game.m3u/disc-1.chd\",\"game.m3u/disc-2.chd\"]}}',
+                'matched')",
+        [],
+    )
+    .unwrap();
+    let page = retro_junk_db::query_entry_list(
+        &conn,
+        &retro_junk_db::LibraryEntryListQuery {
+            console_id: retro_junk_db::LibraryConsoleId(1),
+            search: String::new(),
+            filter: retro_junk_db::LibraryEntryFilter::All,
+            sort: retro_junk_db::LibraryEntrySortField::DisplayName,
+            direction: retro_junk_db::SortDirection::Ascending,
+            offset: 0,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(page.rows[0].playable_format, "chd");
 }

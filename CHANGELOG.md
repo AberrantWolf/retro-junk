@@ -4,6 +4,14 @@
 
 ## 0.4.0
 
+- Made Library archive state release-aware: catalog-analysis bindings now
+  connect CHD/M3U entries to preservation carriers, incomplete archives remain
+  visibly incomplete, and one action verifies and builds every missing disc
+  before projecting a multi-disc M3U. Existing loose playable discs can be
+  consolidated by a release playlist without recompression or duplicate rows.
+- Reused byte-progress-reporting local Redumper staging between catalog
+  verification and CHD creation, avoiding a second archive read over the
+  network.
 - Added a portable preservation archive with release, physical-copy, carrier, dump, representation, verification, and derivation identities.
 - Added catalog-driven `archive import` and a blocking GUI import dialog that discover serial-named dump folders, hash and identify packages, resolve physical copies, retain sources by default, and optionally remove sources only after verification.
 - Added `archive import-playable` and matching GUI workflow to promote existing loose-ROM libraries into preservation masters while adopting the original files as byte-identical playable representations. Cartridge matching applies platform-aware header removal and byte-order normalization without changing archived source bytes.

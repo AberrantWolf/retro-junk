@@ -503,12 +503,6 @@ fn run_build_queue(
 ) -> Result<(), CliError> {
     let snapshot =
         scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
-    let defaults = snapshot
-        .manifest
-        .platform_defaults
-        .iter()
-        .map(|default| (default.platform_id.as_str(), &default.policy))
-        .collect::<std::collections::BTreeMap<_, _>>();
     let mut pending = Vec::new();
     let mut planning_failures = Vec::new();
     let mut desired = 0_usize;
@@ -519,12 +513,16 @@ fn run_build_queue(
             .iter()
             .flat_map(|item| &item.carriers)
         {
-            let Some(policy) = medium
-                .manifest
-                .playable_policy
-                .as_ref()
-                .or_else(|| defaults.get(release.manifest.platform_id.as_str()).copied())
-            else {
+            let Some(policy) = medium.manifest.playable_policy.as_ref().or_else(|| {
+                snapshot
+                    .manifest
+                    .platform_defaults
+                    .iter()
+                    .find(|default| {
+                        same_platform_id(&default.platform_id, &release.manifest.platform_id)
+                    })
+                    .map(|default| &default.policy)
+            }) else {
                 continue;
             };
             desired += 1;
@@ -1758,18 +1756,23 @@ fn release_output_name(release: &retro_junk_archive::IndexedRelease) -> String {
     name
 }
 
+fn same_platform_id(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+        || matches!(
+            (
+                left.parse::<retro_junk_core::Platform>(),
+                right.parse::<retro_junk_core::Platform>()
+            ),
+            (Ok(left), Ok(right)) if left == right
+        )
+}
+
 fn project_playlists(
     archive_root: &std::path::Path,
     playable_root: &std::path::Path,
 ) -> Result<usize, CliError> {
     let snapshot =
         scan_archive(archive_root).map_err(|error| CliError::other(error.to_string()))?;
-    let defaults = snapshot
-        .manifest
-        .platform_defaults
-        .iter()
-        .map(|default| (default.platform_id.as_str(), &default.policy))
-        .collect::<std::collections::BTreeMap<_, _>>();
     let mut written = 0_usize;
     for release in &snapshot.releases {
         let mut discs = Vec::new();
@@ -1781,12 +1784,16 @@ fn project_playlists(
             if medium.manifest.sequence_number == 0 {
                 continue;
             }
-            let Some(policy) = medium
-                .manifest
-                .playable_policy
-                .as_ref()
-                .or_else(|| defaults.get(release.manifest.platform_id.as_str()).copied())
-            else {
+            let Some(policy) = medium.manifest.playable_policy.as_ref().or_else(|| {
+                snapshot
+                    .manifest
+                    .platform_defaults
+                    .iter()
+                    .find(|default| {
+                        same_platform_id(&default.platform_id, &release.manifest.platform_id)
+                    })
+                    .map(|default| &default.policy)
+            }) else {
                 continue;
             };
             let build = medium

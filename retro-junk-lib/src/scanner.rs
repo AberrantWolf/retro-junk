@@ -150,6 +150,26 @@ pub fn scan_game_entries<S: BuildHasher>(
             GameEntry::MultiDisc { .. } => true,
         });
     }
+    // A playlist may intentionally reference existing top-level images via
+    // `../disc.chd`. Those files belong to the logical multi-disc entry and
+    // must not also appear as four independent games.
+    let playlist_files = game_entries
+        .iter()
+        .filter_map(|entry| match entry {
+            GameEntry::MultiDisc { files, .. } => Some(files),
+            GameEntry::SingleFile(_) => None,
+        })
+        .flatten()
+        .cloned()
+        .collect::<HashSet<_>>();
+    if !playlist_files.is_empty() {
+        game_entries.retain(|entry| match entry {
+            GameEntry::SingleFile(path) => {
+                std::fs::canonicalize(path).map_or(true, |path| !playlist_files.contains(&path))
+            }
+            GameEntry::MultiDisc { .. } => true,
+        });
+    }
 
     game_entries.sort_by(|a, b| a.sort_key().cmp(b.sort_key()));
 
@@ -185,12 +205,22 @@ pub fn collect_m3u_disc_files<S: BuildHasher>(
     if let Some(playlist) = find_m3u_playlist(dir)
         && let Ok(contents) = std::fs::read_to_string(&playlist)
     {
+        let console_root = dir
+            .parent()
+            .and_then(|parent| std::fs::canonicalize(parent).ok());
         let files: Vec<PathBuf> = contents
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
             .map(|line| dir.join(line))
-            .filter(|p| p.is_file())
+            .filter_map(|path| std::fs::canonicalize(path).ok())
+            .filter(|path| {
+                path.is_file()
+                    && console_root
+                        .as_ref()
+                        .is_some_and(|root| path.starts_with(root))
+                    && has_matching_extension(path, extensions)
+            })
             .collect();
         if !files.is_empty() {
             return files;

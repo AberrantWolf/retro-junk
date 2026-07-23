@@ -7,25 +7,18 @@ use crate::state::{AppMessage, BackgroundOperation, OperationKind, ProgressDispl
 
 pub fn start(
     app: &mut RetroJunkApp,
-    dump_id: String,
+    release: retro_junk_db::ArchivedPlayableGap,
     format: retro_junk_archive::RepresentationFormat,
-    title: String,
-    allow_unverified: bool,
-    retain_intermediate: bool,
     playable_platform_id: String,
-    expected_disc_count: u32,
     ctx: &egui::Context,
 ) {
     let Some(profile) = app.settings.library.active_profile().cloned() else {
-        app.push_error(
-            "Build playable copy",
-            "No active collection profile".to_owned(),
-        );
+        app.push_error("Archive action", "No active collection profile".to_owned());
         return;
     };
     let Some(db_path) = app.db_path.clone() else {
         app.push_error(
-            "Build playable copy",
+            "Archive action",
             "Catalog database is unavailable".to_owned(),
         );
         return;
@@ -34,68 +27,298 @@ pub fn start(
     let cancel = Arc::new(AtomicBool::new(false));
     app.operations.push(BackgroundOperation::new(
         op_id,
-        format!("Making {title} playable"),
+        if release.needs_playable {
+            format!("Making {} playable", release.title)
+        } else {
+            format!("Verifying archive for {}", release.title)
+        },
         Arc::clone(&cancel),
         OperationKind::Other,
-        title,
+        release.title.clone(),
         ProgressDisplay::Count,
     ));
     let sender = app.message_tx.clone();
     let chdman = PathBuf::from(app.settings.general.chdman_path.trim());
-    let request = retro_junk_lib::playable_build::PlayableBuildRequest {
-        archive_root: profile.archive_root.clone(),
-        playable_root: profile.playable_root.clone(),
-        workspace_root: profile.workspace_root.clone(),
-        dump_id,
-        format,
-        chdman_path: chdman,
-        allow_unverified,
-        retain_intermediate,
-        playable_platform_id,
-        expected_disc_count,
-    };
     let handle = std::thread::spawn(move || {
-        let progress_sender = sender.clone();
-        let result = retro_junk_lib::playable_build::build_playable(
-            &request,
-            &|description, current, total| {
-                let display = if total == 0 {
-                    ProgressDisplay::Count
+        let result = (|| {
+            let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            let connection =
+                retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
+            // Verify every prerequisite first. A bad or mismatched disc stops
+            // the release before any new playable derivatives are published.
+            for carrier in &release.carriers {
+                if carrier.catalog_verified || (release.allow_unverified && release.needs_playable)
+                {
+                    continue;
+                }
+                let media_id = carrier
+                    .catalog_media_id
+                    .as_deref()
+                    .ok_or_else(|| format!("{} has no catalog disc binding", release.title))?;
+                let media = retro_junk_db::get_media_by_id(&connection, media_id)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("Catalog medium {media_id} was not found"))?;
+                let mut tracks = retro_junk_db::find_media_tracks(&connection, media_id)
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .map(|track| retro_junk_archive::TrackDigest {
+                        number: u32::try_from(track.track_number).unwrap_or(0),
+                        size: u64::try_from(track.file_size).unwrap_or(0),
+                        crc32: track.crc32,
+                        md5: track.md5,
+                        sha1: track.sha1,
+                    })
+                    .collect::<Vec<_>>();
+                if tracks.is_empty() && media.file_size > 0 {
+                    tracks.push(retro_junk_archive::TrackDigest {
+                        number: 1,
+                        size: u64::try_from(media.file_size).unwrap_or(0),
+                        crc32: media.crc32.clone(),
+                        md5: media.md5.clone(),
+                        sha1: media.sha1.clone(),
+                    });
+                }
+                let dump_id = carrier
+                    .dump_id
+                    .clone()
+                    .ok_or_else(|| format!("{} has no preservation dump", release.title))?;
+                let disc_label = if carrier.sequence_number > 0 {
+                    format!("Disc {}", carrier.sequence_number)
                 } else {
-                    ProgressDisplay::Bytes
+                    "Disc".to_owned()
                 };
-                let _ = progress_sender.send(AppMessage::OperationPhase {
-                    op_id,
-                    description: description.to_owned(),
-                    display,
-                    current,
-                    total,
-                });
-            },
-            &cancel,
-        )
-        .and_then(|outcome| {
-            let snapshot =
-                retro_junk_archive::scan_archive(&request.archive_root).map_err(|error| {
-                    retro_junk_lib::playable_build::PlayableBuildError::Message(error.to_string())
-                })?;
-            let mut connection = retro_junk_db::open_database(&db_path).map_err(|error| {
-                retro_junk_lib::playable_build::PlayableBuildError::Message(error.to_string())
-            })?;
+                retro_junk_lib::playable_build::verify_dump_against_catalog(
+                    &retro_junk_lib::playable_build::CatalogVerificationRequest {
+                        archive_root: profile.archive_root.clone(),
+                        workspace_root: profile.workspace_root.clone(),
+                        dump_id,
+                        redumper_path: PathBuf::new(),
+                        expected_tracks: tracks,
+                        catalog: retro_junk_archive::CatalogEvidence {
+                            source: media.dat_source,
+                            system: playable_platform_id.clone(),
+                            version: String::new(),
+                            game: media.dat_name,
+                            complete_track_set: true,
+                        },
+                    },
+                    &|description, current, total| {
+                        send_progress(
+                            &sender,
+                            op_id,
+                            &format!("{disc_label}: {description}"),
+                            current,
+                            total,
+                        );
+                    },
+                    &cancel,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            let existing_playlist_files = if release.needs_playlist && !release.needs_playable {
+                Some(load_existing_disc_paths(
+                    &connection,
+                    &release.archive_release_id,
+                    &profile.playable_root,
+                    release.expected_disc_count,
+                )?)
+            } else {
+                None
+            };
+            drop(connection);
+
+            let mut outputs = Vec::new();
+            for carrier in &release.carriers {
+                if !carrier.needs_playable {
+                    continue;
+                }
+                let dump_id = carrier
+                    .dump_id
+                    .clone()
+                    .ok_or_else(|| format!("{} has no preservation dump", release.title))?;
+                let disc_label = if carrier.sequence_number > 0 {
+                    format!("Disc {}", carrier.sequence_number)
+                } else {
+                    "Game".to_owned()
+                };
+                let request = retro_junk_lib::playable_build::PlayableBuildRequest {
+                    archive_root: profile.archive_root.clone(),
+                    playable_root: profile.playable_root.clone(),
+                    workspace_root: profile.workspace_root.clone(),
+                    dump_id,
+                    format: format.clone(),
+                    chdman_path: chdman.clone(),
+                    allow_unverified: release.allow_unverified,
+                    retain_intermediate: release.retain_intermediate,
+                    playable_platform_id: playable_platform_id.clone(),
+                    expected_disc_count: release.expected_disc_count,
+                };
+                let outcome = retro_junk_lib::playable_build::build_playable(
+                    &request,
+                    &|description, current, total| {
+                        send_progress(
+                            &sender,
+                            op_id,
+                            &format!("{disc_label}: {description}"),
+                            current,
+                            total,
+                        );
+                    },
+                    &cancel,
+                )
+                .map_err(|error| error.to_string())?;
+                outputs.push(outcome.output);
+            }
+            if let Some(files) = existing_playlist_files {
+                outputs.push(write_existing_playlist(
+                    &profile.playable_root,
+                    &playable_platform_id,
+                    &release.title,
+                    &release.region,
+                    &files,
+                )?);
+            }
+            let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            let mut connection =
+                retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
             retro_junk_db::reconcile_archive_snapshot(
                 &mut connection,
                 &snapshot,
-                &request.playable_root,
-                &request.workspace_root,
+                &profile.playable_root,
+                &profile.workspace_root,
             )
-            .map_err(|error| {
-                retro_junk_lib::playable_build::PlayableBuildError::Message(error.to_string())
-            })?;
-            Ok(outcome.output)
-        })
-        .map_err(|error| error.to_string());
+            .map_err(|error| error.to_string())?;
+            Ok(outputs.pop())
+        })();
         let _ = sender.send(AppMessage::PlayableBuildComplete { op_id, result });
     });
     app.op_threads.insert(op_id, handle);
     ctx.request_repaint_after(std::time::Duration::from_millis(20));
+}
+
+fn load_existing_disc_paths(
+    connection: &retro_junk_db::Connection,
+    archive_release_id: &str,
+    playable_root: &std::path::Path,
+    expected_disc_count: u32,
+) -> Result<Vec<PathBuf>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT DISTINCT m.disc_number,e.game_entry_json,lc.folder_path
+             FROM archive_releases ar
+             JOIN media m ON m.release_id=ar.catalog_release_id AND m.disc_number>0
+             JOIN library_entries e ON e.dat_game_name=m.dat_name
+             JOIN library_consoles lc ON lc.id=e.console_id
+             JOIN library_roots lr ON lr.id=lc.root_id
+             WHERE ar.id=?1 AND lr.root_path=?2
+             ORDER BY m.disc_number",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(
+            (archive_release_id, playable_root.to_string_lossy().as_ref()),
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    let mut paths = Vec::new();
+    for (index, (disc_number, json, folder)) in rows.into_iter().enumerate() {
+        if disc_number != u32::try_from(index + 1).unwrap_or(u32::MAX) {
+            return Err("Existing playable discs are not a complete ordered set".to_owned());
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(&json).map_err(|error| error.to_string())?;
+        let path = value
+            .get("SingleFile")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| "An existing disc is not a single-file playable entry".to_owned())?;
+        let path = PathBuf::from(path);
+        paths.push(if path.is_absolute() {
+            path
+        } else {
+            PathBuf::from(folder).join(path)
+        });
+    }
+    if paths.len() != expected_disc_count as usize {
+        return Err(format!(
+            "Found {} of {expected_disc_count} existing playable discs",
+            paths.len()
+        ));
+    }
+    Ok(paths)
+}
+
+fn write_existing_playlist(
+    playable_root: &std::path::Path,
+    playable_platform_id: &str,
+    title: &str,
+    region: &str,
+    files: &[PathBuf],
+) -> Result<PathBuf, String> {
+    let display_name = if region.is_empty() {
+        title.to_owned()
+    } else {
+        format!("{title} ({region})")
+    };
+    let stem = retro_junk_archive::slugify(&display_name);
+    let directory = playable_root
+        .join(retro_junk_archive::slugify(playable_platform_id))
+        .join(format!("{stem}.m3u"));
+    std::fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let playlist = directory.join(format!("{stem}.m3u"));
+    if playlist.is_file() {
+        return Ok(playlist);
+    }
+    let contents = files
+        .iter()
+        .map(|file| {
+            pathdiff::diff_paths(file, &directory)
+                .unwrap_or_else(|| file.clone())
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    let temporary = directory.join(format!(
+        ".playlist-{}.tmp",
+        retro_junk_archive::BuildId::new()
+    ));
+    if let Err(error) =
+        std::fs::write(&temporary, contents).and_then(|()| std::fs::rename(&temporary, &playlist))
+    {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.to_string());
+    }
+    Ok(playlist)
+}
+
+fn send_progress(
+    sender: &crate::state::AppMessageSender,
+    op_id: u64,
+    description: &str,
+    current: u64,
+    total: u64,
+) {
+    let display = if total == 0 {
+        ProgressDisplay::Count
+    } else {
+        ProgressDisplay::Bytes
+    };
+    let _ = sender.send(AppMessage::OperationPhase {
+        op_id,
+        description: description.to_owned(),
+        display,
+        current,
+        total,
+    });
 }

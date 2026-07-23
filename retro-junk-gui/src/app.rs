@@ -125,6 +125,8 @@ pub struct UiState {
     pub collection_editor: Option<crate::state::PhysicalCopyEditor>,
     /// Blocking discovery/review/progress flow for archive dump imports.
     pub dump_import_dialog: Option<crate::state::DumpImportDialogState>,
+    /// Reconcile archive bindings after a playable build's folder rescan.
+    pub refresh_archive_after_folder_scan: bool,
 }
 
 impl Default for UiState {
@@ -158,6 +160,7 @@ impl Default for UiState {
             auto_scan_op_id: None,
             collection_editor: None,
             dump_import_dialog: None,
+            refresh_archive_after_folder_scan: false,
         }
     }
 }

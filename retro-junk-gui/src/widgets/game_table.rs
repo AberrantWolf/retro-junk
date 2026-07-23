@@ -677,6 +677,7 @@ struct RowData {
 enum AvailabilityState {
     PlayableOnly { format: String },
     ArchivedAndPlayable { format: String },
+    IncompleteArchiveAndPlayable { format: String },
     PreferredFormatMismatch { actual: String, preferred: String },
 }
 
@@ -685,6 +686,9 @@ impl AvailabilityState {
         let format = display_format(&projection.playable_format);
         if !projection.archived {
             return Self::PlayableOnly { format };
+        }
+        if !projection.archive_complete {
+            return Self::IncompleteArchiveAndPlayable { format };
         }
         if let Some(preferred) = projection.preferred_format.as_deref()
             && !formats_satisfy_policy(&projection.playable_format, preferred)
@@ -701,6 +705,7 @@ impl AvailabilityState {
         match self {
             Self::PlayableOnly { .. } => "Playable only",
             Self::ArchivedAndPlayable { .. } => "Archived + playable",
+            Self::IncompleteArchiveAndPlayable { .. } => "Archive incomplete + playable",
             Self::PreferredFormatMismatch { .. } => "Wrong playable format",
         }
     }
@@ -712,6 +717,11 @@ impl AvailabilityState {
             }
             Self::ArchivedAndPlayable { format } => {
                 format!("Archived and playable as {format}")
+            }
+            Self::IncompleteArchiveAndPlayable { format } => {
+                format!(
+                    "Playable as {format}; the archive does not yet have every expected disc catalog-verified"
+                )
             }
             Self::PreferredFormatMismatch { actual, preferred } => {
                 format!("Playable as {actual}; the archive policy prefers {preferred}")

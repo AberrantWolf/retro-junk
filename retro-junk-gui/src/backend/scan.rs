@@ -85,16 +85,40 @@ fn suppress_empty_platform_aliases(matches: &mut Vec<retro_junk_lib::ConsoleFold
         })
         .map(|folder| folder.path.clone())
         .collect::<std::collections::HashSet<_>>();
-    let populated_platforms = matches
+    let populated_aliases = matches
         .iter()
         .filter(|folder| populated_paths.contains(&folder.path))
-        .map(|folder| folder.platform)
+        .map(|folder| projection_alias_key(folder.platform, &folder.folder_name))
         .collect::<std::collections::HashSet<_>>();
     matches.retain(|folder| {
         populated_paths.contains(&folder.path)
-            || !populated_platforms.contains(&folder.platform)
+            || !populated_aliases
+                .contains(&projection_alias_key(folder.platform, &folder.folder_name))
             || counts.get(&folder.platform).copied().unwrap_or(0) <= 1
     });
+}
+
+/// Regional hardware/library identities intentionally remain distinct even
+/// when they share an analyzer. Other names are interchangeable folder aliases.
+pub(crate) fn projection_alias_key(
+    platform: retro_junk_core::Platform,
+    folder_name: &str,
+) -> String {
+    match folder_name.to_ascii_lowercase().as_str() {
+        "famicom" | "fc" => "famicom".to_owned(),
+        "sfc" | "super-famicom" | "super famicom" => "super-famicom".to_owned(),
+        "megadrive" | "mega drive" | "megadrivejp" | "md" => "megadrive".to_owned(),
+        "genesis" | "gen" => "genesis".to_owned(),
+        "megacd" | "mega cd" => "megacd".to_owned(),
+        "segacd" | "sega cd" => "segacd".to_owned(),
+        "mark iii" | "mark-iii" => "mark-iii".to_owned(),
+        "pce" | "pc engine" | "pc-engine" | "pcengine" => "pc-engine".to_owned(),
+        "tg16" | "tg-16" | "turbografx" | "turbografx-16" | "turbo grafx 16" => {
+            "turbografx-16".to_owned()
+        }
+        "saturnjp" => "saturnjp".to_owned(),
+        _ => platform.short_name().to_owned(),
+    }
 }
 
 /// Add empty playable projection folders for archive platforms that otherwise
@@ -132,10 +156,10 @@ fn add_archive_only_console_folders(
             );
             continue;
         };
-        if matches
-            .iter()
-            .any(|folder| folder.platform == registered.metadata.platform)
-        {
+        let archive_alias = projection_alias_key(registered.metadata.platform, &platform_id);
+        if matches.iter().any(|folder| {
+            projection_alias_key(folder.platform, &folder.folder_name) == archive_alias
+        }) {
             continue;
         }
         let path = playable_root.join(&platform_id);
@@ -762,5 +786,30 @@ mod tests {
         suppress_empty_platform_aliases(&mut folders);
         assert_eq!(folders.len(), 1);
         assert_eq!(folders[0].path, psx);
+    }
+
+    #[test]
+    fn regional_hardware_names_remain_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let nes = temp.path().join("nes");
+        let famicom = temp.path().join("famicom");
+        std::fs::create_dir_all(&nes).unwrap();
+        std::fs::create_dir_all(&famicom).unwrap();
+        std::fs::write(nes.join("game.nes"), b"game").unwrap();
+        let mut folders = vec![
+            retro_junk_lib::ConsoleFolder {
+                path: nes,
+                folder_name: "nes".to_owned(),
+                platform: retro_junk_core::Platform::Nes,
+            },
+            retro_junk_lib::ConsoleFolder {
+                path: famicom.clone(),
+                folder_name: "famicom".to_owned(),
+                platform: retro_junk_core::Platform::Nes,
+            },
+        ];
+        suppress_empty_platform_aliases(&mut folders);
+        assert_eq!(folders.len(), 2);
+        assert!(folders.iter().any(|folder| folder.path == famicom));
     }
 }
