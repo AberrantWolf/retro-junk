@@ -1,4 +1,4 @@
-/// Block interaction while the catalog schema and legacy data are being prepared.
+/// Block interaction only while a required catalog migration is being prepared.
 pub fn show(ctx: &egui::Context, status: Option<&str>) {
     let Some(status) = status else {
         return;

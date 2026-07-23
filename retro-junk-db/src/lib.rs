@@ -65,4 +65,4 @@ pub use queries::{
     search_releases_paged, search_works, works_for_platform,
 };
 pub use rusqlite::Connection;
-pub use schema::{configure_connection, open_database, open_memory};
+pub use schema::{configure_connection, database_needs_migration, open_database, open_memory};

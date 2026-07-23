@@ -571,6 +571,20 @@ pub fn open_database(path: &std::path::Path) -> Result<Connection, SchemaError> 
     Ok(conn)
 }
 
+/// Return whether an existing database needs schema creation or migration.
+///
+/// This read-only probe lets GUI callers decide whether database preparation
+/// must block interaction without accidentally performing the migration as
+/// part of the probe. A missing database is considered new, not migrated.
+pub fn database_needs_migration(path: &std::path::Path) -> Result<bool, SchemaError> {
+    if !path.is_file() {
+        return Ok(false);
+    }
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let version = get_schema_version(&conn)?;
+    Ok(version != CURRENT_VERSION)
+}
+
 /// Open an in-memory database with the full schema. Useful for testing.
 pub fn open_memory() -> Result<Connection, SchemaError> {
     let conn = Connection::open_in_memory()?;

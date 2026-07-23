@@ -24,6 +24,19 @@ pub fn catalog_database_path() -> PathBuf {
         .join("catalog.db")
 }
 
+/// Whether first-run preparation will copy the legacy cache-hosted catalog to
+/// its durable application-data location.
+pub fn catalog_database_needs_location_migration() -> io::Result<bool> {
+    let target = catalog_database_path();
+    if target.exists() {
+        return Ok(false);
+    }
+    let legacy = retro_junk_dat::cache::cache_dir()
+        .map_err(io::Error::other)?
+        .join("catalog.db");
+    Ok(legacy.is_file())
+}
+
 /// Copy and validate the legacy cache-hosted database on first 0.4 startup.
 /// The legacy file is retained as the migration backup.
 pub fn ensure_catalog_database_location() -> io::Result<PathBuf> {

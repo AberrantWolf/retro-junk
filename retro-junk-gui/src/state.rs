@@ -828,8 +828,13 @@ impl AppMessageSender {
 pub enum AppMessage {
     StartupReady {
         database: Result<retro_junk_db::Connection, String>,
+    },
+    StartupRootReady {
         restored_root: Option<PathBuf>,
         fragile_mount_kind: Option<&'static str>,
+    },
+    StartArchiveRefresh {
+        profile: retro_junk_archive::CollectionProfile,
     },
     ArchiveOperationComplete {
         op_id: u64,
@@ -1023,6 +1028,8 @@ impl AppMessage {
         !matches!(
             self,
             Self::StartupReady { .. }
+                | Self::StartupRootReady { .. }
+                | Self::StartArchiveRefresh { .. }
                 | Self::ArchiveOperationComplete { .. }
                 | Self::PlayablePolicyUpdated { .. }
                 | Self::PlayableBuildComplete { .. }
@@ -1563,11 +1570,7 @@ pub(crate) fn apply_multi_disc_analysis_results(
 
 pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Context) {
     match msg {
-        AppMessage::StartupReady {
-            database,
-            restored_root,
-            fragile_mount_kind,
-        } => {
+        AppMessage::StartupReady { database } => {
             app.ui_state.startup_status = None;
             match database {
                 Ok(connection) => {
@@ -1581,6 +1584,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
                 Err(error) => app.push_error("Catalog database", error),
             }
+        }
+        AppMessage::StartupRootReady {
+            restored_root,
+            fragile_mount_kind,
+        } => {
             if let Some(root) = restored_root
                 && app.root_path.is_none()
                 && app.settings.library.current_root.as_ref() == Some(&root)
@@ -1593,6 +1601,20 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     app.open_browser_root(&root, ctx);
                     let _ = app.message_tx.send(AppMessage::StartFolderScan);
                 }
+            }
+        }
+        AppMessage::StartArchiveRefresh { profile } => {
+            let is_current = app
+                .settings
+                .library
+                .active_profile()
+                .is_some_and(|active| active.profile_id == profile.profile_id);
+            let archive_busy = app
+                .operations
+                .iter()
+                .any(|operation| operation.scope == "archive");
+            if is_current && !archive_busy && app.catalog_db.is_some() {
+                crate::backend::archive::start_archive_operation(app, &profile, false);
             }
         }
 

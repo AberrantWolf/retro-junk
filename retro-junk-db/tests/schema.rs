@@ -1,5 +1,5 @@
-use retro_junk_db::open_memory;
 use retro_junk_db::schema::{CURRENT_VERSION, create_schema, open_database};
+use retro_junk_db::{database_needs_migration, open_memory};
 
 #[test]
 fn create_schema_in_memory() {
@@ -19,6 +19,36 @@ fn schema_is_idempotent() {
     let conn = open_memory().unwrap();
     // Creating again should not error
     create_schema(&conn).unwrap();
+}
+
+#[test]
+fn migration_probe_is_read_only_and_distinguishes_current_legacy_and_missing_databases() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.db");
+    assert!(!database_needs_migration(&missing).unwrap());
+    assert!(!missing.exists(), "the probe must not create a database");
+
+    let current = dir.path().join("current.db");
+    drop(open_database(&current).unwrap());
+    assert!(!database_needs_migration(&current).unwrap());
+
+    let legacy = dir.path().join("legacy.db");
+    let connection = rusqlite::Connection::open(&legacy).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE schema_version(version INTEGER NOT NULL);
+             INSERT INTO schema_version(version) VALUES(18);",
+        )
+        .unwrap();
+    drop(connection);
+    assert!(database_needs_migration(&legacy).unwrap());
+    let version: i32 = rusqlite::Connection::open(&legacy)
+        .unwrap()
+        .query_row("SELECT max(version) FROM schema_version", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(version, 18, "the probe must not perform the migration");
 }
 
 #[test]

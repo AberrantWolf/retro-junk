@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod assets;
 pub mod catalog_ops;
 pub mod chd_compress;

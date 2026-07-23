@@ -247,57 +247,51 @@ impl RetroJunkApp {
 
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let settings = crate::settings::load_settings();
-
-        let db_path = retro_junk_lib::settings::ensure_catalog_database_location()
-            .map_err(|error| log::warn!("Could not prepare catalog database location: {error}"))
-            .ok();
+        let target_db_path = retro_junk_lib::settings::catalog_database_path();
+        let location_migration =
+            retro_junk_lib::settings::catalog_database_needs_location_migration().unwrap_or(true);
+        let schema_migration = target_db_path.is_file()
+            && retro_junk_db::database_needs_migration(&target_db_path).unwrap_or(true);
         let mut app = Self::with_parts(&cc.egui_ctx, settings, None, None);
-        app.db_path = db_path.clone();
-        app.ui_state.startup_status = Some("Opening and migrating the catalog…".to_owned());
+        app.db_path = Some(target_db_path);
+        if location_migration || schema_migration {
+            app.ui_state.startup_status = Some(if location_migration {
+                "Moving and validating the catalog database…".to_owned()
+            } else {
+                "Migrating the catalog database schema…".to_owned()
+            });
+        }
 
-        // Schema migration, legacy import, and saved-root probes can all be
-        // slow. Run them after constructing the app so the first frame is not
-        // held hostage by database size or a disconnected network mount.
+        // Database preparation, archive reconciliation, and saved-root probes
+        // are independent. Only a true location/schema migration is modal;
+        // routine network-backed verification begins after the current DB is
+        // available and remains a tracked background archive operation.
         let tx = app.message_tx.clone();
         let ctx = cc.egui_ctx.clone();
         let analysis_context = app.context.clone();
         let configured_root = app.settings.library.current_root.clone();
         let configured_profile = app.settings.library.active_profile().cloned();
         std::thread::spawn(move || {
-            let mut database = db_path
-                .as_ref()
-                .ok_or_else(|| "Could not determine the catalog database path".to_owned())
-                .and_then(|path| retro_junk_db::open_database(path).map_err(|e| e.to_string()));
-            if let (Some(profile), Ok(connection)) =
-                (configured_profile.as_ref(), database.as_mut())
+            let database = retro_junk_lib::settings::ensure_catalog_database_location()
+                .map_err(|error| error.to_string())
+                .and_then(|path| {
+                    retro_junk_db::open_database(&path).map_err(|error| error.to_string())
+                });
+            let database_ready = database.is_ok();
+            let _ = tx.send(crate::state::AppMessage::StartupReady { database });
+            ctx.request_repaint();
+
+            if database_ready
+                && let Some(profile) = configured_profile
                 && profile
                     .archive_root
                     .join("retro-junk-archive.toml")
                     .is_file()
             {
-                let rebuild = (|| -> Result<(), String> {
-                    let _archive_lock =
-                        retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
-                            .map_err(|error| error.to_string())?;
-                    retro_junk_archive::upgrade_legacy_regional_physical_platforms(
-                        &profile.archive_root,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
-                        .map_err(|error| error.to_string())?;
-                    retro_junk_db::reconcile_archive_snapshot(
-                        connection,
-                        &snapshot,
-                        &profile.playable_root,
-                        &profile.workspace_root,
-                    )
-                    .map_err(|error| error.to_string())
-                })();
-                match rebuild {
-                    Ok(()) => {}
-                    Err(error) => log::warn!("Could not rebuild archive projection: {error}"),
-                }
+                let _ = tx.send(crate::state::AppMessage::StartArchiveRefresh { profile });
+                ctx.request_repaint();
             }
+
             let mut restored_root = None;
             let mut fragile_mount_kind = None;
             if let Some(root) = configured_root {
@@ -305,17 +299,23 @@ impl RetroJunkApp {
                 if root.is_dir() {
                     fragile_mount_kind = crate::util::fragile_mount_kind(&root);
                     if fragile_mount_kind.is_none()
-                        && let Ok(conn) = database.as_mut()
+                        && database_ready
+                        && let Ok(mut connection) = retro_junk_db::open_database(
+                            &retro_junk_lib::settings::catalog_database_path(),
+                        )
                     {
-                        crate::cache::migrate_json_cache(conn, &root, analysis_context.as_ref());
+                        crate::cache::migrate_json_cache(
+                            &mut connection,
+                            &root,
+                            analysis_context.as_ref(),
+                        );
                     }
                     restored_root = Some(root);
                 } else {
                     log::warn!("current_root is not a directory, skipping auto-load");
                 }
             }
-            let _ = tx.send(crate::state::AppMessage::StartupReady {
-                database,
+            let _ = tx.send(crate::state::AppMessage::StartupRootReady {
                 restored_root,
                 fragile_mount_kind,
             });

@@ -156,6 +156,8 @@ The Library view combines playable filesystem entries with the archive projectio
 
 The preferred-format selectors are platform-aware rather than global lists. They offer native emulator files for cartridge-oriented systems; CHD and BIN/CUE for PS1, Sega CD, Saturn, and Dreamcast; CHD, ISO, and BIN/CUE for PS2; CHD and ISO for PSP; RVZ and ISO for GameCube/Wii; and ISO for Xbox 360. When no modeled representation honestly matches a mainstream emulator's input model—currently original Xbox, PS3, and Vita—only **No preference** is offered. A previously stored unsupported value remains visible and labeled unsupported until the user changes it. Original Xbox is deliberately excluded because xemu's XISO is not equivalent to a Redump-style ISO and needs its own representation and conversion pipeline.
 
+Startup blocks interaction only when the durable catalog must be moved, validated, created from an existing legacy database, or schema-migrated. With a current local database, the last committed archive projection is immediately usable while a tracked background refresh locks and scans the authoritative archive. SQLite WAL transactions keep readers on the prior complete projection until the replacement commits atomically; archive-scoped GUI mutations are disabled or rejected by the same archive lock while refresh is active. Saved network-root probing is also independent of database readiness.
+
 Passing `--archive-root` to the existing `scrape` command adopts downloaded ScreenScraper originals into the matched release. `archive project-frontend-files` recreates frontend layout files from those originals. Physical photographs and provenance remain attached to physical copies, not catalog releases.
 
 ## Device-local Inbox and selective storage

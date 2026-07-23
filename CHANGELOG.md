@@ -16,6 +16,7 @@
 - Added a rebuildable SQLite archive projection and release-centric Collection GUI view.
 - Added Library availability states for playable-only, archived-and-playable, archived-without-playable, and non-preferred playable formats; per-console playable defaults; and an in-app queue that creates byte-verified cartridge mirrors or round-trip-verified CHDs from preservation masters.
 - Made per-console playable-policy changes update only the root manifest and affected SQLite policy rows instead of rescanning and rebuilding the entire archive projection.
+- Limited the blocking startup modal to actual catalog location/schema migrations; routine archive reconciliation and saved network-root probing now continue in tracked background work, and ordinary index refresh no longer scans the archive twice.
 - Filtered console-default and per-copy preferred playable formats to the conservative set accepted by mainstream emulators, while retaining unsupported legacy selections until explicitly changed.
 - Moved the durable catalog database from the cache directory to the platform data directory with validated first-run migration.
 - Added policy-driven resumable CHD/RVZ/mirror builds, retained canonical intermediates, multi-disc playlist projection, and explicit integrity/reproduction/catalog/round-trip evidence.
