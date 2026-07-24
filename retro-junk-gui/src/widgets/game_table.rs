@@ -38,7 +38,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         ui.label("Loading library entries…");
         return;
     };
-    let visible_ids: Vec<_> = page.rows.iter().map(|row| row.id).collect();
+    let visible_ids: Vec<_> = page
+        .rows
+        .iter()
+        .filter(|row| row.archive_release_id.is_none())
+        .map(|row| row.id)
+        .collect();
 
     // Cmd+A / Ctrl+A: select all visible entries
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
@@ -84,13 +89,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     }
 
     // Status summary
-    let total = page.counts.total;
+    let total = page.logical_count;
     let matched = page.counts.matched;
     let likely = page.counts.likely;
     let ambiguous = page.counts.ambiguous;
     let unrecognized = page.counts.unrecognized;
     let tagged = page.counts.tagged;
-    let showing = page.rows.len();
+    let archive_release_count = page.archived_releases.len();
 
     // Rich rows are sparse (focus/selection only). Index them once so a large
     // selected page does not turn projection building into O(page × details).
@@ -101,43 +106,81 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         .collect();
 
     // Pre-extract row data to avoid borrowing issues
-    let row_data: Vec<RowData> = page
-        .rows
+    let mut row_data: Vec<RowData> = page
+        .archived_releases
         .iter()
-        .map(|projection| {
-            let entry = entry_lookup.get(&projection.id).copied();
+        .map(|release| {
+            let summary = &release.summary;
             RowData {
-                entry_id: projection.id,
-                status: projection_status(&projection.status, &projection.tag),
-                has_broken_refs: projection.has_broken_references,
-                has_hash_warnings: projection.has_hash_warnings,
-                has_cue_compat_issues: projection.has_cue_compat_issues,
-                asset_status: app
-                    .browser
-                    .asset_statuses
-                    .get(&projection.id)
-                    .copied()
-                    .unwrap_or(AssetStatus::Unknown),
-                name: projection.display_name.clone(),
-                file_path: entry.map(|entry| entry.game_entry.analysis_path().to_path_buf()),
-                serial: projection.serial.clone(),
-                internal_name: projection.internal_name.clone(),
-                regions: projected_regions(projection),
-                crc32: projection.crc32.clone(),
-                dat_match: projection.dat_game_name.clone(),
-                availability: AvailabilityState::from_projection(projection),
+                entry_id: None,
+                archive_release_id: Some(summary.archive_release_id.clone()),
+                status: if summary.archive_complete {
+                    EntryStatus::Matched
+                } else {
+                    EntryStatus::Unknown
+                },
+                has_broken_refs: false,
+                has_hash_warnings: false,
+                has_cue_compat_issues: false,
+                asset_status: AssetStatus::Unknown,
+                name: summary.title.clone(),
+                file_path: None,
+                serial: String::new(),
+                internal_name: String::new(),
+                regions: region_code(&summary.region),
+                crc32: String::new(),
+                dat_match: summary.catalog_release_id.clone().unwrap_or_default(),
+                availability: AvailabilityState::from_archive(release),
             }
         })
         .collect();
+    row_data.extend(
+        page.rows
+            .iter()
+            // A catalog-bound playable entry is one representation of the logical
+            // archive release row above, not a second game in the user's Library.
+            .filter(|projection| projection.archive_release_id.is_none())
+            .map(|projection| {
+                let entry = entry_lookup.get(&projection.id).copied();
+                RowData {
+                    entry_id: Some(projection.id),
+                    archive_release_id: None,
+                    status: projection_status(&projection.status, &projection.tag),
+                    has_broken_refs: projection.has_broken_references,
+                    has_hash_warnings: projection.has_hash_warnings,
+                    has_cue_compat_issues: projection.has_cue_compat_issues,
+                    asset_status: app
+                        .browser
+                        .asset_statuses
+                        .get(&projection.id)
+                        .copied()
+                        .unwrap_or(AssetStatus::Unknown),
+                    name: projection.display_name.clone(),
+                    file_path: entry.map(|entry| entry.game_entry.analysis_path().to_path_buf()),
+                    serial: projection.serial.clone(),
+                    internal_name: projection.internal_name.clone(),
+                    regions: projected_regions(projection),
+                    crc32: projection.crc32.clone(),
+                    dat_match: projection.dat_game_name.clone(),
+                    availability: AvailabilityState::from_projection(projection),
+                }
+            }),
+    );
+    row_data.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+            .then_with(|| left.regions.cmp(&right.regions))
+    });
 
     ui.horizontal(|ui| {
         let mut summary = format!(
-            "{total} entries | {matched} verified | {likely} likely | {ambiguous} ambiguous | {unrecognized} unrecognized"
+            "{total} games | {archive_release_count} archived releases | {matched} playable files verified | {likely} likely | {ambiguous} ambiguous | {unrecognized} unrecognized"
         );
         if tagged > 0 {
             let _ = write!(summary, " | {tagged} tagged");
         }
-        let _ = write!(summary, " | showing {showing}");
+        let _ = write!(summary, " | showing {} logical rows", row_data.len());
         ui.label(summary);
     });
 
@@ -223,8 +266,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     body.rows(text_height, row_data.len(), |mut row| {
                         let row_idx = row.index();
                         let data = &row_data[row_idx];
-                        let is_selected = app.ui_state.selected_entries.contains(&data.entry_id);
-                        let is_focused = app.ui_state.focused_entry == Some(data.entry_id);
+                        let is_selected = data
+                            .entry_id
+                            .is_some_and(|id| app.ui_state.selected_entries.contains(&id));
+                        let is_focused = data
+                            .entry_id
+                            .is_some_and(|id| app.ui_state.focused_entry == Some(id))
+                            || data.archive_release_id.as_ref()
+                                == app.ui_state.focused_archive_release.as_ref();
 
                         // Highlight the entire row
                         row.set_selected(is_selected || is_focused);
@@ -296,28 +345,38 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
                         // Right-click selection: if right-clicked row isn't selected, select just it
                         if row_resp.secondary_clicked() {
-                            if !app.ui_state.selected_entries.contains(&data.entry_id) {
-                                app.ui_state.selected_entries.clear();
-                                app.ui_state.selected_entries.insert(data.entry_id);
+                            if let Some(entry_id) = data.entry_id {
+                                if !app.ui_state.selected_entries.contains(&entry_id) {
+                                    app.ui_state.selected_entries.clear();
+                                    app.ui_state.selected_entries.insert(entry_id);
+                                }
+                                app.ui_state.focused_entry = Some(entry_id);
+                                app.ui_state.focused_archive_release = None;
+                                app.request_entry_detail(entry_id, ctx);
                             }
-                            app.ui_state.focused_entry = Some(data.entry_id);
-                            app.request_entry_detail(data.entry_id, ctx);
                         }
 
                         // Left-click
                         if row_resp.clicked() {
-                            let modifiers = ctx.input(|i| i.modifiers);
-                            let visible_ids: Vec<_> =
-                                row_data.iter().map(|row| row.entry_id).collect();
-                            handle_row_click(app, data.entry_id, modifiers, &visible_ids);
-                            app.request_entry_detail(data.entry_id, ctx);
+                            if let Some(entry_id) = data.entry_id {
+                                let modifiers = ctx.input(|i| i.modifiers);
+                                handle_row_click(app, entry_id, modifiers, &visible_ids);
+                                app.ui_state.focused_archive_release = None;
+                                app.request_entry_detail(entry_id, ctx);
+                            } else if let Some(release_id) = data.archive_release_id.as_ref() {
+                                app.ui_state.selected_entries.clear();
+                                app.ui_state.focused_entry = None;
+                                app.ui_state.focused_archive_release = Some(release_id.clone());
+                            }
                             app.ui_state.focused_panel = FocusedPanel::GameTable;
                         }
 
                         // Context menu on unioned response
-                        row_resp.context_menu(|ui| {
-                            show_row_context_menu(ui, app, ctx, console_idx, data);
-                        });
+                        if data.entry_id.is_some() {
+                            row_resp.context_menu(|ui| {
+                                show_row_context_menu(ui, app, ctx, console_idx, data);
+                            });
+                        }
                     });
                 });
         });
@@ -340,6 +399,9 @@ fn show_row_context_menu(
         ui.label("Loading the complete selection…");
         return;
     }
+    let Some(_entry_id) = data.entry_id else {
+        return;
+    };
     let Some(file_path) = data.file_path.as_ref() else {
         ui.label("Loading entry details…");
         return;
@@ -638,26 +700,31 @@ fn projected_regions(projection: &retro_junk_db::LibraryEntryListItem) -> String
         .join(", ")
 }
 
-fn region_code(region: &str) -> &str {
-    match region {
-        "Japan" => "JPN",
-        "Usa" | "USA" => "USA",
-        "Europe" => "EUR",
-        "Australia" => "AUS",
-        "Korea" => "KOR",
-        "China" => "CHN",
-        "Taiwan" => "TWN",
-        "Asia" => "ASI",
-        "Brazil" => "BRA",
-        "LatinAmerica" | "Latin America" => "LAT",
-        "World" => "WLD",
-        "Unknown" => "UNK",
-        other => other,
+fn region_code(region: &str) -> String {
+    match region
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_")
+        .as_str()
+    {
+        "japan" => "JPN".to_owned(),
+        "usa" | "united_states" => "USA".to_owned(),
+        "europe" => "EUR".to_owned(),
+        "australia" => "AUS".to_owned(),
+        "korea" => "KOR".to_owned(),
+        "china" => "CHN".to_owned(),
+        "taiwan" => "TWN".to_owned(),
+        "asia" => "ASI".to_owned(),
+        "brazil" => "BRA".to_owned(),
+        "latinamerica" | "latin_america" => "LAT".to_owned(),
+        "world" => "WLD".to_owned(),
+        "unknown" => "UNK".to_owned(),
+        _ => region.to_owned(),
     }
 }
 
 struct RowData {
-    entry_id: retro_junk_db::LibraryEntryId,
+    entry_id: Option<retro_junk_db::LibraryEntryId>,
+    archive_release_id: Option<String>,
     status: EntryStatus,
     has_broken_refs: bool,
     has_hash_warnings: bool,
@@ -675,6 +742,8 @@ struct RowData {
 
 #[derive(Clone)]
 enum AvailabilityState {
+    ArchivedOnly,
+    IncompleteArchive,
     PlayableOnly { format: String },
     ArchivedAndPlayable { format: String },
     IncompleteArchiveAndPlayable { format: String },
@@ -682,6 +751,37 @@ enum AvailabilityState {
 }
 
 impl AvailabilityState {
+    fn from_archive(release: &retro_junk_db::ArchivedLibraryListItem) -> Self {
+        let summary = &release.summary;
+        let playable = summary.playable_present_count > 0 || release.has_playable_library_entry;
+        if summary.archive_complete {
+            if release
+                .action
+                .as_ref()
+                .is_some_and(|action| action.needs_playable)
+                && playable
+            {
+                return Self::PreferredFormatMismatch {
+                    actual: "another format".to_owned(),
+                    preferred: "the configured format".to_owned(),
+                };
+            }
+            if playable {
+                Self::ArchivedAndPlayable {
+                    format: "indexed representation".to_owned(),
+                }
+            } else {
+                Self::ArchivedOnly
+            }
+        } else if playable {
+            Self::IncompleteArchiveAndPlayable {
+                format: "indexed representation".to_owned(),
+            }
+        } else {
+            Self::IncompleteArchive
+        }
+    }
+
     fn from_projection(projection: &retro_junk_db::LibraryEntryListItem) -> Self {
         let format = display_format(&projection.playable_format);
         if !projection.archived {
@@ -703,6 +803,8 @@ impl AvailabilityState {
 
     fn label(&self) -> &str {
         match self {
+            Self::ArchivedOnly => "Archived only",
+            Self::IncompleteArchive => "Archive incomplete",
             Self::PlayableOnly { .. } => "Playable only",
             Self::ArchivedAndPlayable { .. } => "Archived + playable",
             Self::IncompleteArchiveAndPlayable { .. } => "Archive incomplete + playable",
@@ -712,6 +814,13 @@ impl AvailabilityState {
 
     fn tooltip(&self) -> String {
         match self {
+            Self::ArchivedOnly => {
+                "The complete, verified release is archived but no playable copy is present"
+                    .to_owned()
+            }
+            Self::IncompleteArchive => {
+                "The archive does not yet contain every expected, catalog-verified disc".to_owned()
+            }
             Self::PlayableOnly { format } => {
                 format!("Playable as {format}, but no matching archival carrier is indexed")
             }

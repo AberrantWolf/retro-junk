@@ -239,6 +239,13 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     assert_eq!(page.availability_counts.incomplete_archive_and_playable, 1);
     assert_eq!(page.availability_counts.archived_not_playable, 0);
     assert_eq!(page.archived_playable_gaps.len(), 1);
+    assert_eq!(page.archived_releases.len(), 1);
+    assert_eq!(
+        page.archived_releases[0].summary.archive_release_id,
+        summary.archive_release_id
+    );
+    assert!(page.archived_releases[0].action.is_some());
+    assert_eq!(page.logical_count, 1);
     assert!(!page.archived_playable_gaps[0].needs_playable);
     conn.execute("DELETE FROM library_entry_media_bindings", [])
         .unwrap();
@@ -256,6 +263,10 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     )
     .unwrap();
     assert_eq!(gaps.availability_counts.archived_not_playable, 1);
+    // The unbound playable file and archival release are now honestly two
+    // logical rows instead of being silently conflated.
+    assert_eq!(gaps.logical_count, 2);
+    assert_eq!(gaps.archived_releases.len(), 1);
     assert_eq!(gaps.archived_playable_gaps[0].title, "Game");
     assert_eq!(
         gaps.archived_playable_gaps[0].preferred_format.as_deref(),

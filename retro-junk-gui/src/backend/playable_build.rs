@@ -25,16 +25,21 @@ pub fn start(
     };
     let op_id = crate::state::next_operation_id();
     let cancel = Arc::new(AtomicBool::new(false));
+    let release_label = if release.region.trim().is_empty() {
+        release.title.clone()
+    } else {
+        format!("{} ({})", release.title, release.region)
+    };
     app.operations.push(BackgroundOperation::new(
         op_id,
         if release.needs_playable {
-            format!("Making {} playable", release.title)
+            format!("Making {release_label} playable")
         } else {
-            format!("Verifying archive for {}", release.title)
+            format!("Verifying archive for {release_label}")
         },
         Arc::clone(&cancel),
         OperationKind::Other,
-        release.title.clone(),
+        release_label,
         ProgressDisplay::Count,
     ));
     let sender = app.message_tx.clone();
@@ -126,6 +131,36 @@ pub fn start(
             } else {
                 None
             };
+            let mut canonical_names = std::collections::HashMap::new();
+            let mut catalog_game_names = Vec::new();
+            for carrier in &release.carriers {
+                let Some(media_id) = carrier.catalog_media_id.as_deref() else {
+                    continue;
+                };
+                let Some(media) = retro_junk_db::get_media_by_id(&connection, media_id)
+                    .map_err(|error| error.to_string())?
+                else {
+                    continue;
+                };
+                catalog_game_names.push(media.dat_name.clone());
+                let canonical_source = if media.rom_name.trim().is_empty() {
+                    media.dat_name.as_str()
+                } else {
+                    media.rom_name.as_str()
+                };
+                let stem = std::path::Path::new(canonical_source)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or(canonical_source)
+                    .to_owned();
+                canonical_names.insert(carrier.carrier_id.clone(), stem);
+            }
+            let game_name_refs = catalog_game_names
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let canonical_release_name =
+                retro_junk_core::disc::derive_base_game_name(&game_name_refs);
             drop(connection);
 
             let mut outputs = Vec::new();
@@ -153,6 +188,11 @@ pub fn start(
                     retain_intermediate: release.retain_intermediate,
                     playable_platform_id: playable_platform_id.clone(),
                     expected_disc_count: release.expected_disc_count,
+                    canonical_output_stem: canonical_names
+                        .get(&carrier.carrier_id)
+                        .cloned()
+                        .unwrap_or_default(),
+                    canonical_release_name: canonical_release_name.clone(),
                 };
                 let outcome = retro_junk_lib::playable_build::build_playable(
                     &request,
@@ -176,6 +216,7 @@ pub fn start(
                     &playable_platform_id,
                     &release.title,
                     &release.region,
+                    &canonical_release_name,
                     &files,
                 )?);
             }
@@ -262,6 +303,7 @@ fn write_existing_playlist(
     playable_platform_id: &str,
     title: &str,
     region: &str,
+    canonical_release_name: &str,
     files: &[PathBuf],
 ) -> Result<PathBuf, String> {
     let display_name = if region.is_empty() {
@@ -269,7 +311,11 @@ fn write_existing_playlist(
     } else {
         format!("{title} ({region})")
     };
-    let stem = retro_junk_archive::slugify(&display_name);
+    let stem = if canonical_release_name.trim().is_empty() {
+        display_name
+    } else {
+        canonical_release_name.to_owned()
+    };
     let directory = playable_root
         .join(retro_junk_archive::slugify(playable_platform_id))
         .join(format!("{stem}.m3u"));

@@ -167,9 +167,11 @@ fn panel_toggles_do_not_reassign_widget_ids() {
         console_id,
         console_revision: 0,
         total_count: 300,
+        logical_count: 300,
         counts: Default::default(),
         availability_counts: Default::default(),
         archived_playable_gaps: Vec::new(),
+        archived_releases: Vec::new(),
         offset: 0,
         rows,
     });

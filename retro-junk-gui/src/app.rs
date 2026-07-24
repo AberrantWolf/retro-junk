@@ -105,6 +105,9 @@ pub struct UiState {
     pub focused_panel: FocusedPanel,
     /// One-shot request to scroll the game table to a filtered row index.
     pub scroll_to_row: Option<usize>,
+    /// Logical archive release focused in the unified Library table. This is
+    /// mutually exclusive with `focused_entry`.
+    pub focused_archive_release: Option<String>,
     /// State for the homebrew/modded tagging dialog.
     pub tag_dialog: crate::state::TagDialog,
     /// Pending root switch awaiting fragile-mount confirmation.
@@ -123,10 +126,17 @@ pub struct UiState {
     pub auto_scan_op_id: Option<u64>,
     /// Selected physical item and playable-policy editor in Collection.
     pub collection_editor: Option<crate::state::PhysicalCopyEditor>,
+    /// In-memory Collection projection; populated off the render thread.
+    pub collection_summaries: Arc<Vec<retro_junk_db::ArchiveReleaseSummary>>,
+    pub collection_profile_id: Option<String>,
+    pub collection_summaries_loading: bool,
+    pub collection_editor_loading: Option<String>,
+    pub collection_selected_release: Option<String>,
     /// Blocking discovery/review/progress flow for archive dump imports.
     pub dump_import_dialog: Option<crate::state::DumpImportDialogState>,
-    /// Reconcile archive bindings after a playable build's folder rescan.
-    pub refresh_archive_after_folder_scan: bool,
+    /// Reconcile archive bindings after this playable console finishes its
+    /// forced post-build content scan.
+    pub refresh_archive_after_console_scan: Option<String>,
 }
 
 impl Default for UiState {
@@ -150,6 +160,7 @@ impl Default for UiState {
             tools_state: ToolsState::default(),
             focused_panel: FocusedPanel::default(),
             scroll_to_row: None,
+            focused_archive_release: None,
             tag_dialog: crate::state::TagDialog::None,
             fragile_mount_prompt: None,
             log_viewer: crate::widgets::log_viewer::LogViewerState::default(),
@@ -159,8 +170,13 @@ impl Default for UiState {
             auto_scan_in_flight: None,
             auto_scan_op_id: None,
             collection_editor: None,
+            collection_summaries: Arc::new(Vec::new()),
+            collection_profile_id: None,
+            collection_summaries_loading: false,
+            collection_editor_loading: None,
+            collection_selected_release: None,
             dump_import_dialog: None,
-            refresh_archive_after_folder_scan: false,
+            refresh_archive_after_console_scan: None,
         }
     }
 }
@@ -545,6 +561,16 @@ impl RetroJunkApp {
                     }
                     self.refresh_console_summaries(ctx);
                     crate::state::finish_auto_scan(self, &folder_name, true, ctx);
+                    if self.ui_state.refresh_archive_after_console_scan.as_deref()
+                        == Some(folder_name.as_str())
+                    {
+                        self.ui_state.refresh_archive_after_console_scan = None;
+                        if let Some(profile) = self.settings.library.active_profile().cloned() {
+                            let _ = self
+                                .message_tx
+                                .send(crate::state::AppMessage::StartArchiveRefresh { profile });
+                        }
+                    }
                 }
                 Ok(crate::backend::library_store::LibraryStoreValue::ConsoleSummaries(
                     summaries,
@@ -558,7 +584,7 @@ impl RetroJunkApp {
                     self.pending_page_request = None;
                     self.browser
                         .entry_counts
-                        .insert(page.console_id, page.total_count);
+                        .insert(page.console_id, page.logical_count);
                     let ids: Vec<_> = page.rows.iter().map(|row| row.id).collect();
                     let asset_rows: Vec<_> = page
                         .rows
@@ -796,7 +822,7 @@ impl RetroJunkApp {
         }
     }
 
-    fn refresh_console_summaries(&mut self, ctx: &egui::Context) {
+    pub(crate) fn refresh_console_summaries(&mut self, ctx: &egui::Context) {
         if let Some(root_id) = self.browser.root_id {
             self.submit_store(
                 crate::backend::library_store::LibraryStoreRequest::ConsoleSummaries(root_id),

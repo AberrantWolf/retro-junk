@@ -78,30 +78,27 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         );
         return;
     }
-    let summaries = app.catalog_db.as_ref().map_or_else(
-        || Err("Catalog database is unavailable".to_owned()),
-        |connection| {
-            retro_junk_db::list_archive_release_summaries(
-                connection,
-                &profile.profile_id.to_string(),
-            )
-            .map_err(|error| error.to_string())
-        },
-    );
-    let summaries = match summaries {
-        Ok(summaries) => summaries,
-        Err(error) => {
-            ui.colored_label(egui::Color32::RED, error);
-            return;
-        }
-    };
+    let profile_id = profile.profile_id.to_string();
+    if app.ui_state.collection_profile_id.as_deref() != Some(profile_id.as_str())
+        && !app.ui_state.collection_summaries_loading
+    {
+        start_collection_summary_load(app, profile_id.clone(), ui.ctx());
+    }
+    if app.ui_state.collection_summaries_loading
+        && app.ui_state.collection_profile_id.as_deref() != Some(profile_id.as_str())
+    {
+        ui.spinner();
+        ui.label("Loading collection index…");
+        return;
+    }
+    let summaries = std::sync::Arc::clone(&app.ui_state.collection_summaries);
     if summaries.is_empty() {
         ui.add_space(8.0);
         ui.label("No archived releases are indexed yet.");
         return;
     }
     ui.add_space(8.0);
-    if app.ui_state.collection_editor.is_some() {
+    if app.ui_state.collection_selected_release.is_some() {
         let available_height = ui.available_height();
         let detail_min = (available_height * 0.25).clamp(60.0, 140.0);
         let detail_max = (available_height - 80.0).max(detail_min);
@@ -115,14 +112,17 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 egui::ScrollArea::vertical()
                     .id_salt("collection_detail_scroll")
                     .auto_shrink([false, false])
-                    .show(ui, |ui| show_editor(ui, app, &profile));
+                    .show(ui, |ui| {
+                        if app.ui_state.collection_editor_loading.is_some() {
+                            ui.spinner();
+                            ui.label("Loading release details…");
+                        } else {
+                            show_editor(ui, app, &profile);
+                        }
+                    });
             });
     }
-    let selected_release_id = app
-        .ui_state
-        .collection_editor
-        .as_ref()
-        .map(|editor| editor.archive_release_id.as_str());
+    let selected_release_id = app.ui_state.collection_selected_release.as_deref();
     let body_height = (ui.available_height() - 24.0).max(0.0);
     let row_height = egui::TextStyle::Body
         .resolve(ui.style())
@@ -244,15 +244,74 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 });
         });
     if let Some(release_id) = clicked_release {
-        let loaded = app.catalog_db.as_ref().map_or_else(
+        start_collection_editor_load(app, profile.archive_root.clone(), release_id, ui.ctx());
+    }
+}
+
+fn start_collection_summary_load(app: &mut RetroJunkApp, profile_id: String, ctx: &egui::Context) {
+    let Some(db_path) = app.db_path.clone() else {
+        let result = app.catalog_db.as_ref().map_or_else(
             || Err("Catalog database is unavailable".to_owned()),
-            |connection| load_editor(connection, &profile.archive_root, &release_id),
+            |connection| {
+                retro_junk_db::list_archive_release_summaries(connection, &profile_id)
+                    .map_err(|error| error.to_string())
+            },
         );
-        match loaded {
-            Ok(editor) => app.ui_state.collection_editor = Some(editor),
+        match result {
+            Ok(summaries) => {
+                app.ui_state.collection_profile_id = Some(profile_id);
+                app.ui_state.collection_summaries = std::sync::Arc::new(summaries);
+            }
+            Err(error) => app.push_error("Collection", error),
+        }
+        return;
+    };
+    app.ui_state.collection_summaries_loading = true;
+    let sender = app.message_tx.clone();
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let result = retro_junk_db::open_database(&db_path)
+            .map_err(|error| error.to_string())
+            .and_then(|connection| {
+                retro_junk_db::list_archive_release_summaries(&connection, &profile_id)
+                    .map_err(|error| error.to_string())
+            });
+        let _ = sender.send(AppMessage::CollectionSummariesReady { profile_id, result });
+        ctx.request_repaint();
+    });
+}
+
+fn start_collection_editor_load(
+    app: &mut RetroJunkApp,
+    archive_root: std::path::PathBuf,
+    release_id: String,
+    ctx: &egui::Context,
+) {
+    let Some(db_path) = app.db_path.clone() else {
+        let result = app.catalog_db.as_ref().map_or_else(
+            || Err("Catalog database is unavailable".to_owned()),
+            |connection| load_editor(connection, &archive_root, &release_id),
+        );
+        match result {
+            Ok(editor) => {
+                app.ui_state.collection_selected_release = Some(release_id);
+                app.ui_state.collection_editor = Some(editor);
+            }
             Err(error) => app.push_error("Collection details", error),
         }
-    }
+        return;
+    };
+    app.ui_state.collection_editor_loading = Some(release_id.clone());
+    app.ui_state.collection_selected_release = Some(release_id.clone());
+    let sender = app.message_tx.clone();
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let result = retro_junk_db::open_database(&db_path)
+            .map_err(|error| error.to_string())
+            .and_then(|connection| load_editor(&connection, &archive_root, &release_id));
+        let _ = sender.send(AppMessage::CollectionEditorReady { release_id, result });
+        ctx.request_repaint();
+    });
 }
 
 fn load_editor(

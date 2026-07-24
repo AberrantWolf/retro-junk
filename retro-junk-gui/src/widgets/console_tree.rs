@@ -56,6 +56,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 app.ui_state.selected_console = new_console_id;
                 app.ui_state.scroll_to_console = Some(new_console_idx);
                 app.ui_state.focused_entry = None;
+                app.ui_state.focused_archive_release = None;
                 app.ui_state.selected_entries.clear();
                 app.ui_state.filter_text.clear();
                 app.ui_state.page_offset = 0;
@@ -129,6 +130,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         };
                         app.ui_state.selected_console = Some(console_id);
                         app.ui_state.focused_entry = None;
+                        app.ui_state.focused_archive_release = None;
                         app.ui_state.selected_entries.clear();
                         app.ui_state.filter_text.clear();
                         app.ui_state.page_offset = 0;

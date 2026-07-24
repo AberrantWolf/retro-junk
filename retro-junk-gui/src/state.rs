@@ -840,6 +840,14 @@ pub enum AppMessage {
         op_id: u64,
         result: Result<String, String>,
     },
+    CollectionSummariesReady {
+        profile_id: String,
+        result: Result<Vec<retro_junk_db::ArchiveReleaseSummary>, String>,
+    },
+    CollectionEditorReady {
+        release_id: String,
+        result: Result<PhysicalCopyEditor, String>,
+    },
     PlayablePolicyUpdated {
         op_id: u64,
         result: Result<retro_junk_archive::ArchiveRootManifest, String>,
@@ -1626,9 +1634,45 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             match result {
                 Ok(message) => {
                     log::info!("{message}");
+                    app.ui_state.collection_profile_id = None;
+                    app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
                     refresh_library_availability(app, ctx);
                 }
                 Err(error) => app.push_error("Archive operation", error),
+            }
+        }
+        AppMessage::CollectionSummariesReady { profile_id, result } => {
+            app.ui_state.collection_summaries_loading = false;
+            let current = app
+                .settings
+                .library
+                .active_profile()
+                .map(|profile| profile.profile_id.to_string());
+            if current.as_deref() != Some(profile_id.as_str()) {
+                return;
+            }
+            match result {
+                Ok(summaries) => {
+                    app.ui_state.collection_profile_id = Some(profile_id);
+                    app.ui_state.collection_summaries = std::sync::Arc::new(summaries);
+                }
+                Err(error) => app.push_error("Collection", error),
+            }
+        }
+        AppMessage::CollectionEditorReady { release_id, result } => {
+            if app.ui_state.collection_editor_loading.as_deref() != Some(release_id.as_str()) {
+                return;
+            }
+            app.ui_state.collection_editor_loading = None;
+            match result {
+                Ok(editor) if editor.archive_release_id == release_id => {
+                    app.ui_state.collection_editor = Some(editor);
+                }
+                Ok(_) => app.push_error(
+                    "Collection details",
+                    "Loaded details did not match the selected release".to_owned(),
+                ),
+                Err(error) => app.push_error("Collection details", error),
             }
         }
         AppMessage::PlayablePolicyUpdated { op_id, result } => {
@@ -1644,6 +1688,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     if let Err(error) = crate::settings::save_settings(&app.settings) {
                         app.push_error("Save playable policy", error.to_string());
                     }
+                    app.ui_state.collection_profile_id = None;
+                    app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
                     refresh_library_availability(app, ctx);
                 }
                 Err(error) => app.push_error("Playable policy", error),
@@ -1657,12 +1703,32 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             match result {
                 Ok(Some(output)) => {
                     log::info!("Built playable copy {}", output.display());
+                    app.ui_state.collection_profile_id = None;
+                    app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
                     refresh_library_availability(app, ctx);
-                    app.ui_state.refresh_archive_after_folder_scan = true;
-                    let _ = app.message_tx.send(AppMessage::StartFolderScan);
+                    let target = app
+                        .browser
+                        .consoles
+                        .iter()
+                        .position(|console| output.starts_with(&console.folder_path))
+                        .and_then(|index| {
+                            crate::backend::scan::ConsoleScanTarget::durable(app, index)
+                        });
+                    if let Some(target) = target {
+                        app.ui_state.refresh_archive_after_console_scan =
+                            Some(target.folder_name.clone());
+                        crate::backend::scan::restart_console_scan(app, target, ctx);
+                    } else {
+                        // The archive projection already records the new
+                        // playable representation. Folder discovery is only a
+                        // fallback for a newly-created console destination.
+                        let _ = app.message_tx.send(AppMessage::StartFolderScan);
+                    }
                 }
                 Ok(None) => {
                     log::info!("Catalog-verified archived release");
+                    app.ui_state.collection_profile_id = None;
+                    app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
                     refresh_library_availability(app, ctx);
                 }
                 Err(error) => app.push_error("Archive action", error),
@@ -1696,6 +1762,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
             match result {
                 Ok(result) => {
+                    app.ui_state.collection_profile_id = None;
+                    app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
                     app.ui_state.dump_import_dialog =
                         Some(DumpImportDialogState::Complete { result });
                 }
@@ -1815,15 +1883,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     }
                 }
             }
-            if app.ui_state.refresh_archive_after_folder_scan {
-                app.ui_state.refresh_archive_after_folder_scan = false;
-                if let Some(profile) = app.settings.library.active_profile().cloned() {
-                    let _ = app
-                        .message_tx
-                        .send(AppMessage::StartArchiveRefresh { profile });
-                }
-            }
-
             log::info!(
                 "Folder scan complete: {} consoles discovered",
                 app.browser.consoles.len()
@@ -2305,6 +2364,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 fn refresh_library_availability(app: &mut RetroJunkApp, ctx: &egui::Context) {
     app.library_controller.invalidate_lists();
     app.browser.active_page = None;
+    app.refresh_console_summaries(ctx);
     if let Some(console_id) = app.ui_state.selected_console {
         app.request_console_page(console_id, ctx);
     }

@@ -572,14 +572,37 @@ pub struct ArchivedPlayableGap {
     pub carriers: Vec<ArchivedPlayableCarrier>,
 }
 
+/// A logical archival release projected into the ordinary Library list.
+///
+/// Unlike a playable entry, this row is keyed by the portable archive release
+/// id. `action` is present only when verification, conversion, or playlist
+/// creation remains useful.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedLibraryListItem {
+    pub summary: crate::archive::ArchiveReleaseSummary,
+    pub action: Option<ArchivedPlayableGap>,
+    pub playable_representations: Vec<ArchivedPlayableRepresentation>,
+    pub has_playable_library_entry: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedPlayableRepresentation {
+    pub format: String,
+    pub relative_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct LibraryEntryListPage {
     pub console_id: LibraryConsoleId,
     pub console_revision: u64,
     pub total_count: u64,
+    /// Logical rows after catalog-bound playable representations collapse
+    /// into their archival release.
+    pub logical_count: u64,
     pub counts: LibraryEntryCounts,
     pub availability_counts: LibraryAvailabilityCounts,
     pub archived_playable_gaps: Vec<ArchivedPlayableGap>,
+    pub archived_releases: Vec<ArchivedLibraryListItem>,
     pub offset: u64,
     pub rows: Vec<LibraryEntryListItem>,
 }
@@ -1150,42 +1173,82 @@ pub fn list_console_summaries(
             r.get::<_, u64>(13)?,
         ))
     })?;
-    rows.map(|r| {
-        let (
-            id,
-            platform,
-            folder_name,
-            folder_path,
-            state,
-            dat,
-            rev,
-            count,
-            matched,
-            unknown,
-            unrecognized,
-            ambiguous,
-            likely,
-            tagged,
-        ) = r?;
-        Ok(LibraryConsoleSummary {
-            id: LibraryConsoleId(id),
-            root_id,
-            platform,
-            folder_name,
-            folder_path,
-            scan_state: LibraryScanState::parse(state)?,
-            dat_game_count: dat,
-            entry_count: count,
-            matched_count: matched,
-            unknown_count: unknown,
-            unrecognized_count: unrecognized,
-            ambiguous_count: ambiguous,
-            likely_count: likely,
-            tagged_count: tagged,
-            revision: rev,
+    let mut summaries = rows
+        .map(|r| {
+            let (
+                id,
+                platform,
+                folder_name,
+                folder_path,
+                state,
+                dat,
+                rev,
+                count,
+                matched,
+                unknown,
+                unrecognized,
+                ambiguous,
+                likely,
+                tagged,
+            ) = r?;
+            Ok(LibraryConsoleSummary {
+                id: LibraryConsoleId(id),
+                root_id,
+                platform,
+                folder_name,
+                folder_path,
+                scan_state: LibraryScanState::parse(state)?,
+                dat_game_count: dat,
+                entry_count: count,
+                matched_count: matched,
+                unknown_count: unknown,
+                unrecognized_count: unrecognized,
+                ambiguous_count: ambiguous,
+                likely_count: likely,
+                tagged_count: tagged,
+                revision: rev,
+            })
         })
-    })
-    .collect()
+        .collect::<Result<Vec<_>, LibraryError>>()?;
+    drop(stmt);
+
+    let profile_id: Option<String> = conn
+        .query_row(
+            "SELECT ap.id FROM archive_profiles ap
+             JOIN library_roots lr ON lr.root_path=ap.playable_root
+             WHERE lr.id=?1 ORDER BY ap.id LIMIT 1",
+            [root_id.0],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(profile_id) = profile_id else {
+        return Ok(summaries);
+    };
+    let archived = crate::archive::list_archive_release_summaries(conn, &profile_id)
+        .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?;
+    for summary in &mut summaries {
+        let archive_count = archived
+            .iter()
+            .filter(|release| {
+                platform_ids_match(&release.platform_id, &summary.folder_name)
+                    || platform_ids_match(&release.platform_id, &summary.platform)
+            })
+            .count() as u64;
+        let unbound_count: u64 = conn.query_row(
+            "SELECT COUNT(*) FROM library_entries e WHERE e.console_id=?1
+             AND NOT EXISTS(
+                 SELECT 1 FROM library_entry_media_bindings b
+                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
+                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
+                 WHERE b.library_entry_id=e.id AND ar.profile_id=?2
+             )",
+            params![summary.id.0, profile_id],
+            |row| row.get(0),
+        )?;
+        summary.entry_count = unbound_count.saturating_add(archive_count);
+    }
+    Ok(summaries)
 }
 
 /// Remove a stale console projection only when it contains no entries.
@@ -1223,8 +1286,48 @@ pub fn query_entry_list(
         |r| r.get(0),
     )?;
     let counts = entry_counts(conn, q.console_id)?;
-    let (availability_counts, archived_playable_gaps, completeness) =
-        query_availability(conn, q.console_id)?;
+    let (_, archived_playable_gaps, completeness) = query_availability(conn, q.console_id)?;
+    let mut archived_releases =
+        query_archived_library_releases(conn, q.console_id, &archived_playable_gaps)?;
+    let availability_counts = unified_availability_counts(conn, q.console_id, &archived_releases)?;
+    let archive_search = q.search.trim().to_ascii_lowercase();
+    if !archive_search.is_empty() {
+        archived_releases.retain(|row| {
+            row.summary
+                .title
+                .to_ascii_lowercase()
+                .contains(&archive_search)
+                || row
+                    .summary
+                    .region
+                    .to_ascii_lowercase()
+                    .contains(&archive_search)
+                || row
+                    .summary
+                    .revision
+                    .to_ascii_lowercase()
+                    .contains(&archive_search)
+        });
+    }
+    let unbound_total: u64 = conn.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM library_entries e WHERE {where_sql}
+             AND NOT EXISTS(
+                 SELECT 1 FROM library_entry_media_bindings b
+                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
+                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
+                 JOIN archive_profiles ap ON ap.id=ar.profile_id
+                 JOIN library_consoles lc ON lc.id=e.console_id
+                 JOIN library_roots lr ON lr.id=lc.root_id
+                 WHERE b.library_entry_id=e.id AND ap.playable_root=lr.root_path
+             )"
+        ),
+        params![q.console_id.0, pattern],
+        |row| row.get(0),
+    )?;
+    let logical_count =
+        unbound_total.saturating_add(u64::try_from(archived_releases.len()).unwrap_or(u64::MAX));
     let order = order_sql(q.sort, q.direction);
     let sql = format!(
         "SELECT id,display_name,status,tag,region_override,data_size,
@@ -1330,12 +1433,175 @@ pub fn query_entry_list(
         console_id: q.console_id,
         console_revision: revision,
         total_count: total,
+        logical_count,
         counts,
         availability_counts,
         archived_playable_gaps,
+        archived_releases,
         offset: q.offset,
         rows,
     })
+}
+
+fn unified_availability_counts(
+    conn: &Connection,
+    console_id: LibraryConsoleId,
+    archived: &[ArchivedLibraryListItem],
+) -> Result<LibraryAvailabilityCounts, LibraryError> {
+    let mut counts = LibraryAvailabilityCounts {
+        playable_only: conn.query_row(
+            "SELECT COUNT(*) FROM library_entries e WHERE e.console_id=?1
+             AND NOT EXISTS(
+                 SELECT 1 FROM library_entry_media_bindings b
+                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
+                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
+                 JOIN archive_profiles ap ON ap.id=ar.profile_id
+                 JOIN library_consoles lc ON lc.id=e.console_id
+                 JOIN library_roots lr ON lr.id=lc.root_id
+                 WHERE b.library_entry_id=e.id AND ap.playable_root=lr.root_path
+             )",
+            [console_id.0],
+            |row| row.get(0),
+        )?,
+        ..Default::default()
+    };
+    for release in archived {
+        let summary = &release.summary;
+        let playable = summary.playable_present_count > 0 || release.has_playable_library_entry;
+        if !playable {
+            counts.archived_not_playable += 1;
+        } else if !summary.archive_complete {
+            counts.incomplete_archive_and_playable += 1;
+        } else if release
+            .action
+            .as_ref()
+            .is_some_and(|action| action.needs_playable)
+        {
+            counts.preferred_format_mismatch += 1;
+        } else {
+            counts.archived_and_playable += 1;
+        }
+    }
+    Ok(counts)
+}
+
+fn query_archived_library_releases(
+    conn: &Connection,
+    console_id: LibraryConsoleId,
+    actions: &[ArchivedPlayableGap],
+) -> Result<Vec<ArchivedLibraryListItem>, LibraryError> {
+    let (profile_id, folder_name, platform): (String, String, String) = conn
+        .query_row(
+            "SELECT ap.id,lc.folder_name,lc.platform
+             FROM library_consoles lc
+             JOIN library_roots lr ON lr.id=lc.root_id
+             JOIN archive_profiles ap ON ap.playable_root=lr.root_path
+             WHERE lc.id=?1
+             ORDER BY ap.id LIMIT 1",
+            [console_id.0],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .unwrap_or_default();
+    if profile_id.is_empty() {
+        return Ok(Vec::new());
+    }
+    let summaries = crate::archive::list_archive_release_summaries(conn, &profile_id)
+        .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?;
+    let mut playable_by_release =
+        std::collections::HashMap::<String, Vec<ArchivedPlayableRepresentation>>::new();
+    let mut representation_statement = conn.prepare(
+        "SELECT ar.id,rep.format,rep.relative_path
+         FROM archive_releases ar
+         JOIN physical_copies pc ON pc.archive_release_id=ar.id
+         JOIN carriers c ON c.physical_copy_id=pc.id
+         JOIN representations rep ON rep.carrier_id=c.id
+         WHERE ar.profile_id=?1 AND rep.role='playable' AND rep.presence_state='present'
+         ORDER BY ar.id,rep.relative_path COLLATE NOCASE,rep.id",
+    )?;
+    for representation in representation_statement.query_map([&profile_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            ArchivedPlayableRepresentation {
+                format: row.get(1)?,
+                relative_path: row.get(2)?,
+            },
+        ))
+    })? {
+        let (release_id, representation) = representation?;
+        let representations = playable_by_release.entry(release_id).or_default();
+        if !representations.contains(&representation) {
+            representations.push(representation);
+        }
+    }
+    let mut library_playable_releases = HashSet::new();
+    let mut library_playable_statement = conn.prepare(
+        "SELECT DISTINCT ar.id
+         FROM archive_releases ar
+         JOIN media m ON m.release_id=ar.catalog_release_id
+         JOIN library_entry_media_bindings b ON b.catalog_media_id=m.id
+         JOIN library_entries e ON e.id=b.library_entry_id
+         WHERE ar.profile_id=?1 AND e.console_id=?2",
+    )?;
+    for release_id in library_playable_statement
+        .query_map(params![profile_id, console_id.0], |row| {
+            row.get::<_, String>(0)
+        })?
+    {
+        library_playable_releases.insert(release_id?);
+    }
+    let mut rows = summaries
+        .into_iter()
+        .filter(|summary| {
+            platform_ids_match(&summary.platform_id, &folder_name)
+                || platform_ids_match(&summary.platform_id, &platform)
+        })
+        .map(|summary| {
+            let action = actions
+                .iter()
+                .find(|action| action.archive_release_id == summary.archive_release_id)
+                .cloned();
+            let playable_representations = playable_by_release
+                .remove(&summary.archive_release_id)
+                .unwrap_or_default();
+            let has_playable_library_entry =
+                library_playable_releases.contains(&summary.archive_release_id);
+            ArchivedLibraryListItem {
+                summary,
+                action,
+                playable_representations,
+                has_playable_library_entry,
+            }
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.summary
+            .title
+            .to_ascii_lowercase()
+            .cmp(&right.summary.title.to_ascii_lowercase())
+            .then_with(|| left.summary.region.cmp(&right.summary.region))
+            .then_with(|| left.summary.revision.cmp(&right.summary.revision))
+            .then_with(|| {
+                left.summary
+                    .archive_release_id
+                    .cmp(&right.summary.archive_release_id)
+            })
+    });
+    Ok(rows)
+}
+
+fn platform_ids_match(left: &str, right: &str) -> bool {
+    if left.eq_ignore_ascii_case(right) {
+        return true;
+    }
+    match (
+        left.parse::<retro_junk_core::Platform>(),
+        right.parse::<retro_junk_core::Platform>(),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
 }
 
 #[allow(clippy::too_many_lines)]

@@ -31,6 +31,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.heading("Details");
     ui.separator();
 
+    if app.ui_state.focused_archive_release.is_some() {
+        show_archive_release(ui, app);
+        return;
+    }
+
     let (Some(console_id), Some(entry_id)) =
         (app.ui_state.selected_console, app.ui_state.focused_entry)
     else {
@@ -605,6 +610,187 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             }
         }
     });
+}
+
+fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    let Some(release_id) = app.ui_state.focused_archive_release.as_deref() else {
+        return;
+    };
+    let release = app
+        .browser
+        .active_page
+        .as_ref()
+        .and_then(|page| {
+            page.archived_releases
+                .iter()
+                .find(|row| row.summary.archive_release_id == release_id)
+        })
+        .cloned();
+    let Some(release) = release else {
+        ui.label("This archival release is no longer in the active Library view.");
+        return;
+    };
+    let summary = &release.summary;
+    let mut requested_build = None;
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.label(egui::RichText::new(&summary.title).strong().size(18.0));
+        ui.add_space(4.0);
+        detail_row(ui, "Region", nonempty_or(&summary.region, "Unknown"));
+        if !summary.revision.is_empty() {
+            detail_row(ui, "Revision", &summary.revision);
+        }
+        detail_row(ui, "Platform", &summary.platform_id);
+        if let Some(catalog_id) = summary.catalog_release_id.as_deref() {
+            detail_row(ui, "Catalog release", catalog_id);
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(egui::RichText::new("Archive").strong());
+        let archive_state = if summary.archive_complete {
+            "Complete and catalog-verified"
+        } else if summary.expected_disc_count == 0 {
+            "Not catalog-bound; completeness is unknown"
+        } else {
+            "Incomplete"
+        };
+        detail_row(ui, "State", archive_state);
+        detail_row(
+            ui,
+            "Verified discs",
+            &format!(
+                "{} / {}",
+                summary.verified_disc_count, summary.expected_disc_count
+            ),
+        );
+        detail_row(
+            ui,
+            "Physical copies",
+            &summary.physical_copy_count.to_string(),
+        );
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(egui::RichText::new("Playable").strong());
+        detail_row(
+            ui,
+            "Present",
+            &format!(
+                "{} / {} indexed representation(s)",
+                summary.playable_present_count, summary.playable_count
+            ),
+        );
+        if release.has_playable_library_entry {
+            detail_row(ui, "Library entry", "Present and catalog-bound");
+        }
+        for (index, representation) in release.playable_representations.iter().enumerate() {
+            detail_row(
+                ui,
+                &format!("File {}", index + 1),
+                &format!(
+                    "{} ({})",
+                    representation.relative_path,
+                    representation.format.to_ascii_uppercase().replace('_', "-")
+                ),
+            );
+        }
+        if summary.desired_playable_count > 0 {
+            detail_row(
+                ui,
+                "Preferred policy",
+                &format!(
+                    "{} / {} disc(s) satisfied",
+                    summary.satisfied_playable_count, summary.desired_playable_count
+                ),
+            );
+        } else {
+            detail_row(ui, "Preferred policy", "Not configured");
+        }
+
+        ui.add_space(10.0);
+        if let Some(action) = release.action.as_ref() {
+            let needs_verification = action
+                .carriers
+                .iter()
+                .any(|carrier| !carrier.catalog_verified);
+            let label = archive_action_label(action, needs_verification);
+            let ready =
+                action.buildable && (!action.needs_playable || action.preferred_format.is_some());
+            let button = ui.add_enabled(ready, egui::Button::new(label));
+            let button = if action.needs_playable && action.preferred_format.is_none() {
+                button.on_disabled_hover_text(
+                    "Choose a preferred playable format for this console first",
+                )
+            } else if action.archived_disc_count < action.expected_disc_count {
+                button.on_disabled_hover_text(format!(
+                    "Archive is incomplete: {}/{} expected discs are present",
+                    action.archived_disc_count, action.expected_disc_count
+                ))
+            } else if !action.buildable {
+                button.on_disabled_hover_text(
+                    "One or more archived discs has no supported in-app conversion path",
+                )
+            } else {
+                button
+            };
+            if button.clicked() {
+                let format = action
+                    .preferred_format
+                    .as_deref()
+                    .and_then(parse_playable_format)
+                    .or_else(|| {
+                        (!action.needs_playable)
+                            .then_some(retro_junk_archive::RepresentationFormat::Rom)
+                    });
+                if let Some(format) = format {
+                    requested_build = Some((action.clone(), format));
+                }
+            }
+        } else {
+            ui.weak("No archive or playable action is currently needed.");
+        }
+    });
+    if let Some((action, format)) = requested_build {
+        let playable_platform_id = app
+            .selected_console_index()
+            .map(|index| app.browser.consoles[index].folder_name.clone())
+            .unwrap_or_else(|| summary.platform_id.clone());
+        crate::backend::playable_build::start(app, action, format, playable_platform_id, ui.ctx());
+    }
+}
+
+fn nonempty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
+    if value.is_empty() { fallback } else { value }
+}
+
+fn archive_action_label(
+    action: &retro_junk_db::ArchivedPlayableGap,
+    needs_verification: bool,
+) -> &'static str {
+    if action.needs_playlist && !action.needs_playable && needs_verification {
+        "Verify & create playlist"
+    } else if action.needs_playlist && !action.needs_playable {
+        "Create multi-disc playlist"
+    } else if !action.needs_playable {
+        "Verify archive"
+    } else if needs_verification && !action.allow_unverified {
+        "Verify & make playable"
+    } else if needs_verification {
+        "Make playable (unverified)"
+    } else {
+        "Make playable"
+    }
+}
+
+fn parse_playable_format(value: &str) -> Option<retro_junk_archive::RepresentationFormat> {
+    match value {
+        "rom" => Some(retro_junk_archive::RepresentationFormat::Rom),
+        "chd" => Some(retro_junk_archive::RepresentationFormat::Chd),
+        "rvz" => Some(retro_junk_archive::RepresentationFormat::Rvz),
+        "iso" => Some(retro_junk_archive::RepresentationFormat::Iso),
+        "cue_bin" | "cue-bin" => Some(retro_junk_archive::RepresentationFormat::CueBin),
+        _ => None,
+    }
 }
 
 fn disc_verification_label(verification: DiscVerification) -> &'static str {

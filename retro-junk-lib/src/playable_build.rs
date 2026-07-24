@@ -27,6 +27,10 @@ pub struct PlayableBuildRequest {
     /// Logical catalog disc count. Values greater than one enable playlist
     /// projection only after every disc in this physical set has been built.
     pub expected_disc_count: u32,
+    /// DAT-canonical filename stem used by the ordinary Rename operation.
+    pub canonical_output_stem: String,
+    /// DAT-canonical release name with any per-disc suffix removed.
+    pub canonical_release_name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -353,7 +357,7 @@ fn build_chd(
     std::fs::create_dir_all(&output_directory)?;
     job.output = output_directory.join(format!(
         "{}.chd",
-        playable_output_stem(release, carrier, request.expected_disc_count > 1)
+        playable_output_stem(request, release, carrier)
     ));
     if job.output.exists() {
         return Err(PlayableBuildError::Message(format!(
@@ -606,7 +610,7 @@ fn mirror(
     std::fs::create_dir_all(&output_directory)?;
     let output = output_directory.join(format!(
         "{}.{}",
-        playable_output_stem(release, carrier, request.expected_disc_count > 1),
+        playable_output_stem(request, release, carrier),
         extension
     ));
     if output.exists() {
@@ -710,10 +714,13 @@ fn find_input(directory: &Path, extensions: &[&str]) -> Result<PathBuf, Playable
 }
 
 fn playable_output_stem(
+    request: &PlayableBuildRequest,
     release: &IndexedRelease,
     carrier: &IndexedCarrier,
-    multi_disc: bool,
 ) -> String {
+    if !request.canonical_output_stem.trim().is_empty() {
+        return request.canonical_output_stem.clone();
+    }
     let mut name = release.manifest.title.clone();
     for value in [
         &release.manifest.region,
@@ -724,7 +731,7 @@ fn playable_output_stem(
             let _ = write!(name, " ({value})");
         }
     }
-    if multi_disc && carrier.manifest.sequence_number > 0 {
+    if request.expected_disc_count > 1 && carrier.manifest.sequence_number > 0 {
         let _ = write!(name, " (Disc {})", carrier.manifest.sequence_number);
     }
     retro_junk_archive::slugify(&name)
@@ -744,10 +751,7 @@ fn playable_output_directory(
         .playable_root
         .join(retro_junk_archive::slugify(platform));
     if request.expected_disc_count > 1 && carrier.manifest.sequence_number > 0 {
-        base.join(format!(
-            "{}.m3u",
-            retro_junk_archive::slugify(&release_output_name(release))
-        ))
+        base.join(format!("{}.m3u", canonical_release_name(request, release)))
     } else {
         base
     }
@@ -765,6 +769,14 @@ fn release_output_name(release: &IndexedRelease) -> String {
         }
     }
     name
+}
+
+fn canonical_release_name(request: &PlayableBuildRequest, release: &IndexedRelease) -> String {
+    if request.canonical_release_name.trim().is_empty() {
+        retro_junk_archive::slugify(&release_output_name(release))
+    } else {
+        request.canonical_release_name.clone()
+    }
 }
 
 fn project_selected_playlist(
@@ -829,15 +841,9 @@ fn project_selected_playlist(
     let directory = request
         .playable_root
         .join(retro_junk_archive::slugify(platform))
-        .join(format!(
-            "{}.m3u",
-            retro_junk_archive::slugify(&release_output_name(release))
-        ));
+        .join(format!("{}.m3u", canonical_release_name(request, release)));
     std::fs::create_dir_all(&directory)?;
-    let playlist = directory.join(format!(
-        "{}.m3u",
-        retro_junk_archive::slugify(&release_output_name(release))
-    ));
+    let playlist = directory.join(format!("{}.m3u", canonical_release_name(request, release)));
     let contents = discs
         .iter()
         .map(|(_, relative_path)| {
@@ -915,6 +921,8 @@ mod tests {
             retain_intermediate: false,
             playable_platform_id: "nes".to_owned(),
             expected_disc_count: 1,
+            canonical_output_stem: String::new(),
+            canonical_release_name: String::new(),
         };
         let outcome = build_playable(&request, &|_, _, _| {}, &AtomicBool::new(false)).unwrap();
         assert_eq!(
@@ -974,7 +982,7 @@ mod tests {
             physical_copy_id = Some(result.physical_copy.physical_copy_id);
             ingested.push(result.dump.dump_id.to_string());
         }
-        let request = |dump_id: String| PlayableBuildRequest {
+        let request = |dump_id: String, sequence: u32| PlayableBuildRequest {
             archive_root: archive.clone(),
             playable_root: playable.clone(),
             workspace_root: temp.path().join("work"),
@@ -985,25 +993,27 @@ mod tests {
             retain_intermediate: false,
             playable_platform_id: "psx".to_owned(),
             expected_disc_count: 2,
+            canonical_output_stem: format!("Two Disc Game (USA) (Disc {sequence})"),
+            canonical_release_name: "Two Disc Game (USA)".to_owned(),
         };
         build_playable(
-            &request(ingested[0].clone()),
+            &request(ingested[0].clone(), 1),
             &|_, _, _| {},
             &AtomicBool::new(false),
         )
         .unwrap();
-        let set_dir = playable.join("psx/two-disc-game-usa.m3u");
-        assert!(!set_dir.join("two-disc-game-usa.m3u").exists());
+        let set_dir = playable.join("psx/Two Disc Game (USA).m3u");
+        assert!(!set_dir.join("Two Disc Game (USA).m3u").exists());
         build_playable(
-            &request(ingested[1].clone()),
+            &request(ingested[1].clone(), 2),
             &|_, _, _| {},
             &AtomicBool::new(false),
         )
         .unwrap();
-        let playlist = std::fs::read_to_string(set_dir.join("two-disc-game-usa.m3u")).unwrap();
+        let playlist = std::fs::read_to_string(set_dir.join("Two Disc Game (USA).m3u")).unwrap();
         assert_eq!(
             playlist,
-            "two-disc-game-usa-disc-1.bin\ntwo-disc-game-usa-disc-2.bin\n"
+            "Two Disc Game (USA) (Disc 1).bin\nTwo Disc Game (USA) (Disc 2).bin\n"
         );
     }
 
