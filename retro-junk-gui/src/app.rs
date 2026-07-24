@@ -590,6 +590,12 @@ impl RetroJunkApp {
                         .rows
                         .iter()
                         .map(|row| (row.id, row.display_name.clone()))
+                        .chain(page.archived_releases.iter().flat_map(|release| {
+                            release
+                                .playable_library_entries
+                                .iter()
+                                .map(|entry| (entry.id, entry.display_name.clone()))
+                        }))
                         .collect();
                     let page_console_id = page.console_id;
                     self.browser.active_page = Some(page);

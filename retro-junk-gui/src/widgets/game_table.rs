@@ -95,7 +95,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     let ambiguous = page.counts.ambiguous;
     let unrecognized = page.counts.unrecognized;
     let tagged = page.counts.tagged;
-    let archive_release_count = page.archived_releases.len();
+    let archive_release_count = page
+        .availability_counts
+        .archived_and_playable
+        .saturating_add(page.availability_counts.incomplete_archive_and_playable)
+        .saturating_add(page.availability_counts.preferred_format_mismatch)
+        .saturating_add(page.availability_counts.archived_not_playable);
 
     // Rich rows are sparse (focus/selection only). Index them once so a large
     // selected page does not turn projection building into O(page × details).
@@ -111,8 +116,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         .iter()
         .map(|release| {
             let summary = &release.summary;
+            let bound_entry_ids = release
+                .playable_library_entries
+                .iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>();
             RowData {
                 entry_id: None,
+                bound_entry_ids: bound_entry_ids.clone(),
                 archive_release_id: Some(summary.archive_release_id.clone()),
                 status: if summary.archive_complete {
                     EntryStatus::Matched
@@ -122,9 +133,20 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 has_broken_refs: false,
                 has_hash_warnings: false,
                 has_cue_compat_issues: false,
-                asset_status: AssetStatus::Unknown,
+                asset_status: aggregate_asset_status(
+                    bound_entry_ids
+                        .iter()
+                        .filter_map(|id| app.browser.asset_statuses.get(id).copied())
+                        .chain(std::iter::once(archive_asset_status(
+                            &release.archived_assets,
+                        ))),
+                ),
                 name: summary.title.clone(),
-                file_path: None,
+                file_path: bound_entry_ids.iter().find_map(|id| {
+                    entry_lookup
+                        .get(id)
+                        .map(|entry| entry.game_entry.analysis_path().to_path_buf())
+                }),
                 serial: String::new(),
                 internal_name: String::new(),
                 regions: region_code(&summary.region),
@@ -144,6 +166,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 let entry = entry_lookup.get(&projection.id).copied();
                 RowData {
                     entry_id: Some(projection.id),
+                    bound_entry_ids: Vec::new(),
                     archive_release_id: None,
                     status: projection_status(&projection.status, &projection.tag),
                     has_broken_refs: projection.has_broken_references,
@@ -269,11 +292,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         let is_selected = data
                             .entry_id
                             .is_some_and(|id| app.ui_state.selected_entries.contains(&id));
-                        let is_focused = data
-                            .entry_id
-                            .is_some_and(|id| app.ui_state.focused_entry == Some(id))
-                            || data.archive_release_id.as_ref()
-                                == app.ui_state.focused_archive_release.as_ref();
+                        let is_focused = row_is_focused(
+                            data.entry_id,
+                            data.archive_release_id.as_deref(),
+                            app.ui_state.focused_entry,
+                            app.ui_state.focused_archive_release.as_deref(),
+                        );
 
                         // Highlight the entire row
                         row.set_selected(is_selected || is_focused);
@@ -353,6 +377,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                                 app.ui_state.focused_entry = Some(entry_id);
                                 app.ui_state.focused_archive_release = None;
                                 app.request_entry_detail(entry_id, ctx);
+                            } else if let Some(release_id) = data.archive_release_id.as_ref() {
+                                select_archive_release(app, release_id, &data.bound_entry_ids, ctx);
                             }
                         }
 
@@ -364,15 +390,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                                 app.ui_state.focused_archive_release = None;
                                 app.request_entry_detail(entry_id, ctx);
                             } else if let Some(release_id) = data.archive_release_id.as_ref() {
-                                app.ui_state.selected_entries.clear();
-                                app.ui_state.focused_entry = None;
-                                app.ui_state.focused_archive_release = Some(release_id.clone());
+                                select_archive_release(app, release_id, &data.bound_entry_ids, ctx);
                             }
                             app.ui_state.focused_panel = FocusedPanel::GameTable;
                         }
 
                         // Context menu on unioned response
-                        if data.entry_id.is_some() {
+                        if data.entry_id.is_some() || !data.bound_entry_ids.is_empty() {
                             row_resp.context_menu(|ui| {
                                 show_row_context_menu(ui, app, ctx, console_idx, data);
                             });
@@ -399,9 +423,9 @@ fn show_row_context_menu(
         ui.label("Loading the complete selection…");
         return;
     }
-    let Some(_entry_id) = data.entry_id else {
+    if data.entry_id.is_none() && data.bound_entry_ids.is_empty() {
         return;
-    };
+    }
     let Some(file_path) = data.file_path.as_ref() else {
         ui.label("Loading entry details…");
         return;
@@ -490,47 +514,51 @@ fn show_row_context_menu(
         }
     }
 
-    if ui.button("Auto Rename").clicked() {
-        backend::rename::rename_selected_entries(app, console_idx, ctx);
-        ui.close();
-    }
-
-    // Fix CUE Sheet — only show when at least one selected entry has CUE compat issues
-    {
-        let console = &app.browser.consoles[console_idx];
-        let has_cue_issues = app.ui_state.selected_entries.iter().any(|&i| {
-            console
-                .entry_by_id(i)
-                .is_some_and(super::super::state::LibraryEntry::has_cue_compat_issues)
-        });
-        if has_cue_issues && ui.button("Fix CUE Sheet").clicked() {
-            backend::fix_cue::fix_cue_for_selection(app, console_idx, ctx);
+    // Archive-derived playable files are named and tracked by immutable build
+    // evidence. Mutating their names/layout through ordinary library tools
+    // would stale that evidence; use the release-level build action instead.
+    if data.archive_release_id.is_none() {
+        if ui.button("Auto Rename").clicked() {
+            backend::rename::rename_selected_entries(app, console_idx, ctx);
             ui.close();
         }
-    }
 
-    // Compress to CHD — only for consoles whose analyzer supports it. The
-    // dialog itself explains per-disc skips and a missing chdman. Gated
-    // (advisory) while a compression is already running for this console.
-    if backend::chd_compress::console_supports_chd(app, console_idx) {
-        let busy = app.chd_compress_busy(&app.browser.consoles[console_idx].folder_name);
-        let button = ui
-            .add_enabled(!busy, egui::Button::new("Compress to CHD…"))
-            .on_disabled_hover_text("A CHD compression is already running for this console");
-        if button.clicked() {
-            let selection = app.selected_entry_indices();
-            backend::chd_compress::open_compress_dialog(app, console_idx, &selection);
-            ui.close();
+        // Fix CUE Sheet — only show when at least one selected entry has CUE compat issues
+        {
+            let console = &app.browser.consoles[console_idx];
+            let has_cue_issues = app.ui_state.selected_entries.iter().any(|&i| {
+                console
+                    .entry_by_id(i)
+                    .is_some_and(super::super::state::LibraryEntry::has_cue_compat_issues)
+            });
+            if has_cue_issues && ui.button("Fix CUE Sheet").clicked() {
+                backend::fix_cue::fix_cue_for_selection(app, console_idx, ctx);
+                ui.close();
+            }
         }
-    }
 
-    // Set Region submenu
-    show_set_region_submenu(ui, app, console_idx);
+        // Compress to CHD — only for consoles whose analyzer supports it. The
+        // dialog itself explains per-disc skips and a missing chdman. Gated
+        // (advisory) while a compression is already running for this console.
+        if backend::chd_compress::console_supports_chd(app, console_idx) {
+            let busy = app.chd_compress_busy(&app.browser.consoles[console_idx].folder_name);
+            let button = ui
+                .add_enabled(!busy, egui::Button::new("Compress to CHD…"))
+                .on_disabled_hover_text("A CHD compression is already running for this console");
+            if button.clicked() {
+                let selection = app.selected_entry_indices();
+                backend::chd_compress::open_compress_dialog(app, console_idx, &selection);
+                ui.close();
+            }
+        }
 
-    // Tag menu items (only for single selection)
-    if app.ui_state.selected_entries.len() == 1 {
-        let entry_id = *app.ui_state.selected_entries.iter().next().unwrap();
-        show_tag_menu_items(ui, app, console_idx, entry_id);
+        // Region overrides and tags belong to standalone playable entries,
+        // not to the authoritative archive release.
+        show_set_region_submenu(ui, app, console_idx);
+        if app.ui_state.selected_entries.len() == 1 {
+            let entry_id = *app.ui_state.selected_entries.iter().next().unwrap();
+            show_tag_menu_items(ui, app, console_idx, entry_id);
+        }
     }
 
     ui.separator();
@@ -724,6 +752,8 @@ fn region_code(region: &str) -> String {
 
 struct RowData {
     entry_id: Option<retro_junk_db::LibraryEntryId>,
+    /// Ordinary playable rows grouped under an archival release.
+    bound_entry_ids: Vec<retro_junk_db::LibraryEntryId>,
     archive_release_id: Option<String>,
     status: EntryStatus,
     has_broken_refs: bool,
@@ -753,7 +783,9 @@ enum AvailabilityState {
 impl AvailabilityState {
     fn from_archive(release: &retro_junk_db::ArchivedLibraryListItem) -> Self {
         let summary = &release.summary;
-        let playable = summary.playable_present_count > 0 || release.has_playable_library_entry;
+        let playable =
+            summary.playable_present_count > 0 || !release.playable_library_entries.is_empty();
+        let actual = archive_playable_formats(release);
         if summary.archive_complete {
             if release
                 .action
@@ -762,21 +794,21 @@ impl AvailabilityState {
                 && playable
             {
                 return Self::PreferredFormatMismatch {
-                    actual: "another format".to_owned(),
-                    preferred: "the configured format".to_owned(),
+                    actual,
+                    preferred: release
+                        .action
+                        .as_ref()
+                        .and_then(|action| action.preferred_format.as_deref())
+                        .map_or_else(|| "the configured format".to_owned(), display_format),
                 };
             }
             if playable {
-                Self::ArchivedAndPlayable {
-                    format: "indexed representation".to_owned(),
-                }
+                Self::ArchivedAndPlayable { format: actual }
             } else {
                 Self::ArchivedOnly
             }
         } else if playable {
-            Self::IncompleteArchiveAndPlayable {
-                format: "indexed representation".to_owned(),
-            }
+            Self::IncompleteArchiveAndPlayable { format: actual }
         } else {
             Self::IncompleteArchive
         }
@@ -837,6 +869,97 @@ impl AvailabilityState {
             }
         }
     }
+}
+
+fn archive_playable_formats(release: &retro_junk_db::ArchivedLibraryListItem) -> String {
+    let mut formats = release
+        .playable_representations
+        .iter()
+        .map(|representation| display_format(&representation.format))
+        .chain(
+            release
+                .playable_library_entries
+                .iter()
+                .map(|entry| display_format(&entry.playable_format)),
+        )
+        .collect::<Vec<_>>();
+    formats.sort();
+    formats.dedup();
+    if formats.is_empty() {
+        "unknown format".to_owned()
+    } else {
+        formats.join(" + ")
+    }
+}
+
+fn aggregate_asset_status(statuses: impl Iterator<Item = AssetStatus>) -> AssetStatus {
+    let mut saw_status = false;
+    let mut best = AssetStatus::Unknown;
+    for status in statuses {
+        saw_status = true;
+        best = match (best, status) {
+            (AssetStatus::Complete, _) | (_, AssetStatus::Complete) => AssetStatus::Complete,
+            (
+                AssetStatus::Partial {
+                    found: left,
+                    total: left_total,
+                },
+                AssetStatus::Partial {
+                    found: right,
+                    total: right_total,
+                },
+            ) => AssetStatus::Partial {
+                found: left.max(right),
+                total: left_total.max(right_total),
+            },
+            (AssetStatus::Partial { found, total }, _)
+            | (_, AssetStatus::Partial { found, total }) => AssetStatus::Partial { found, total },
+            (AssetStatus::None, _) | (_, AssetStatus::None) => AssetStatus::None,
+            _ => AssetStatus::Unknown,
+        };
+    }
+    saw_status.then_some(best).unwrap_or(AssetStatus::Unknown)
+}
+
+fn archive_asset_status(assets: &[retro_junk_db::ArchivedReleaseAsset]) -> AssetStatus {
+    let asset_count = assets
+        .iter()
+        .map(|asset| asset.asset_type.as_str())
+        .collect::<HashSet<_>>()
+        .len();
+    if asset_count == 0 {
+        AssetStatus::None
+    } else {
+        let total = u8::try_from(crate::state::SCRAPEABLE_ASSET_TYPES.len()).unwrap_or(u8::MAX);
+        let found = u8::try_from(asset_count).unwrap_or(u8::MAX).min(total);
+        if found == total {
+            AssetStatus::Complete
+        } else {
+            AssetStatus::Partial { found, total }
+        }
+    }
+}
+
+fn select_archive_release(
+    app: &mut RetroJunkApp,
+    release_id: &str,
+    bound_entry_ids: &[retro_junk_db::LibraryEntryId],
+    ctx: &egui::Context,
+) {
+    app.ui_state.selected_entries = bound_entry_ids.iter().copied().collect();
+    app.ui_state.focused_entry = None;
+    app.ui_state.focused_archive_release = Some(release_id.to_owned());
+    app.request_selected_entry_details(ctx);
+}
+
+fn row_is_focused(
+    entry_id: Option<retro_junk_db::LibraryEntryId>,
+    archive_release_id: Option<&str>,
+    focused_entry: Option<retro_junk_db::LibraryEntryId>,
+    focused_archive_release: Option<&str>,
+) -> bool {
+    entry_id.is_some_and(|id| focused_entry == Some(id))
+        || archive_release_id.is_some_and(|release_id| focused_archive_release == Some(release_id))
 }
 
 fn formats_satisfy_policy(actual: &str, preferred: &str) -> bool {
@@ -1021,5 +1144,18 @@ mod tests {
         assert!(super::formats_satisfy_policy("sfc", "rom"));
         assert!(!super::formats_satisfy_policy("chd", "rom"));
         assert!(super::formats_satisfy_policy("cue", "cue_bin"));
+    }
+
+    #[test]
+    fn absent_archive_identity_never_focuses_an_ordinary_row() {
+        let entry = retro_junk_db::LibraryEntryId(7);
+        assert!(!super::row_is_focused(Some(entry), None, None, None));
+        assert!(super::row_is_focused(Some(entry), None, Some(entry), None));
+        assert!(super::row_is_focused(
+            None,
+            Some("release"),
+            None,
+            Some("release")
+        ));
     }
 }

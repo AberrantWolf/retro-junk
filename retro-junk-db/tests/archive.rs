@@ -122,7 +122,7 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     let source = temp.path().join("game.nes");
     std::fs::write(&source, b"game").unwrap();
     let digests = retro_junk_archive::hash_file_digests(&source, &AtomicBool::new(false)).unwrap();
-    retro_junk_archive::ingest_new_carrier_dump(
+    let ingested = retro_junk_archive::ingest_new_carrier_dump(
         &root,
         &source,
         retro_junk_archive::NewCarrierDump {
@@ -151,6 +151,22 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         },
         &AtomicBool::new(false),
         |_| {},
+    )
+    .unwrap();
+    let cover = temp.path().join("cover.png");
+    std::fs::write(&cover, b"png").unwrap();
+    retro_junk_archive::add_release_file(
+        &root,
+        retro_junk_archive::NewReleaseFile {
+            release_id: ingested.release.archive_release_id,
+            source_file: &cover,
+            category: retro_junk_archive::ReleaseFileCategory::Artwork,
+            asset_type: "cover",
+            source: "test",
+            source_url: "https://example.invalid/cover.png",
+            caption: "",
+        },
+        &AtomicBool::new(false),
     )
     .unwrap();
     let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
@@ -231,10 +247,7 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         },
     )
     .unwrap();
-    assert!(page.rows[0].archived);
-    assert!(!page.rows[0].archive_complete);
-    assert_eq!(page.rows[0].playable_format, "nes");
-    assert_eq!(page.rows[0].preferred_format.as_deref(), Some("rom"));
+    assert!(page.rows.is_empty());
     assert_eq!(page.availability_counts.archived_and_playable, 0);
     assert_eq!(page.availability_counts.incomplete_archive_and_playable, 1);
     assert_eq!(page.availability_counts.archived_not_playable, 0);
@@ -244,7 +257,30 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         page.archived_releases[0].summary.archive_release_id,
         summary.archive_release_id
     );
+    assert_eq!(
+        page.archived_releases[0].playable_library_entries,
+        [retro_junk_db::ArchivedPlayableLibraryEntry {
+            id: retro_junk_db::LibraryEntryId(1),
+            display_name: "game.nes".to_owned(),
+            playable_format: "nes".to_owned(),
+        }]
+    );
     assert!(page.archived_releases[0].action.is_some());
+    assert_eq!(page.archived_releases[0].archived_assets.len(), 1);
+    assert_eq!(
+        page.archived_releases[0].archived_assets[0].asset_type,
+        "cover"
+    );
+    assert!(
+        std::path::Path::new(&page.archived_releases[0].archived_assets[0].absolute_path).is_file()
+    );
+    assert_eq!(
+        page.archived_releases[0]
+            .action
+            .as_ref()
+            .and_then(|action| action.preferred_format.as_deref()),
+        Some("rom")
+    );
     assert_eq!(page.logical_count, 1);
     assert!(!page.archived_playable_gaps[0].needs_playable);
     conn.execute("DELETE FROM library_entry_media_bindings", [])
@@ -273,9 +309,39 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         Some("rom")
     );
     assert_eq!(gaps.archived_playable_gaps[0].expected_disc_count, 1);
+    let logical_pages = [0, 1].map(|offset| {
+        retro_junk_db::query_entry_list(
+            &conn,
+            &retro_junk_db::LibraryEntryListQuery {
+                console_id: retro_junk_db::LibraryConsoleId(1),
+                search: String::new(),
+                filter: retro_junk_db::LibraryEntryFilter::All,
+                sort: retro_junk_db::LibraryEntrySortField::DisplayName,
+                direction: retro_junk_db::SortDirection::Ascending,
+                offset,
+                limit: 1,
+            },
+        )
+        .unwrap()
+    });
+    assert!(
+        logical_pages
+            .iter()
+            .all(|logical_page| logical_page.total_count == 2)
+    );
     assert_eq!(
-        page.rows[0].archive_release_id.as_deref(),
-        Some(summary.archive_release_id.as_str())
+        logical_pages
+            .iter()
+            .map(|logical_page| logical_page.rows.len())
+            .sum::<usize>(),
+        1
+    );
+    assert_eq!(
+        logical_pages
+            .iter()
+            .map(|logical_page| logical_page.archived_releases.len())
+            .sum::<usize>(),
+        1
     );
     let chd_policy = retro_junk_archive::DesiredPlayablePolicy {
         format: retro_junk_archive::RepresentationFormat::Chd,
@@ -413,6 +479,91 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         )
         .unwrap();
     assert_eq!(stale_release_bindings, 0);
+
+    // A generated container is not expected to reproduce the raw catalog
+    // hashes. Its exact evidence path is sufficient provenance to collapse the
+    // scanned playable file into the archival release.
+    let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
+    let playable_relative = "nes/Game (USA).chd";
+    let playable_file = temp.path().join("playable").join(playable_relative);
+    std::fs::create_dir_all(playable_file.parent().unwrap()).unwrap();
+    std::fs::write(&playable_file, b"chd").unwrap();
+    let evidence = retro_junk_archive::BuildEvidence {
+        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+        build_id: retro_junk_archive::BuildId::new(),
+        parent_representation_id: dump.manifest.representation_id,
+        child_representation_id: retro_junk_archive::RepresentationId::new(),
+        performed_at: "2026-07-24T00:00:00Z".to_owned(),
+        input_manifest_sha256: dump.manifest_sha256.clone(),
+        recipe_version: 1,
+        format: retro_junk_archive::RepresentationFormat::Chd,
+        relative_output_path: playable_relative.to_owned(),
+        output_sha256: String::new(),
+        output_size: 3,
+        catalog_verified: true,
+        round_trip_verified: true,
+        tool: None,
+        omitted_features: Vec::new(),
+        canonical_intermediate: None,
+    };
+    std::fs::create_dir_all(dump.directory.join("evidence")).unwrap();
+    std::fs::write(
+        dump.directory
+            .join("evidence")
+            .join(format!("build-{}.json", evidence.build_id)),
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(
+             id,console_id,entry_key,display_name,game_entry_json,status,data_size)
+         VALUES(3,1,'file:Game (USA).chd','Game (USA).chd',
+                '{\"SingleFile\":\"/playable/nes/Game (USA).chd\"}','unknown',3)",
+        [],
+    )
+    .unwrap();
+    let playable_snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &playable_snapshot,
+        &temp.path().join("playable"),
+        &temp.path().join("work"),
+    )
+    .unwrap();
+    let output_binding: (Option<String>, String) = conn
+        .query_row(
+            "SELECT representation_id,match_method
+             FROM library_entry_media_bindings WHERE library_entry_id=3",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        output_binding,
+        (
+            Some(evidence.child_representation_id.to_string()),
+            "archive_output_path".to_owned()
+        )
+    );
+    let playable_page = retro_junk_db::query_entry_list(
+        &conn,
+        &retro_junk_db::LibraryEntryListQuery {
+            console_id: retro_junk_db::LibraryConsoleId(1),
+            search: String::new(),
+            filter: retro_junk_db::LibraryEntryFilter::All,
+            sort: retro_junk_db::LibraryEntrySortField::DisplayName,
+            direction: retro_junk_db::SortDirection::Ascending,
+            offset: 0,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert!(
+        playable_page.archived_releases[0]
+            .playable_library_entries
+            .iter()
+            .any(|entry| entry.id == retro_junk_db::LibraryEntryId(3))
+    );
 
     conn.execute(
         "DELETE FROM playable_policies WHERE scope_type='carrier_override'",

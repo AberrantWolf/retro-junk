@@ -697,7 +697,35 @@ pub fn reconcile_archive_snapshot(
     // the catalog does; comparing archive-file sizes here would miss them.
     tx.execute(
         "DELETE FROM library_entry_media_bindings
-         WHERE match_method IN ('archive_projection','archive_release_projection')",
+         WHERE match_method IN (
+             'archive_projection',
+             'archive_output_path',
+             'archive_release_projection'
+         )",
+        [],
+    )?;
+    // A playable build is already provenance evidence: its manifest records
+    // the exact output path below the profile's playable root. Bind a scanned
+    // library row at that path directly instead of asking CHD (or another
+    // derivative container) to reproduce the preservation dump's raw hashes.
+    tx.execute(
+        "INSERT OR REPLACE INTO library_entry_media_bindings(
+             library_entry_id,catalog_media_id,representation_id,match_method)
+         SELECT DISTINCT le.id,c.catalog_media_id,rep.id,'archive_output_path'
+         FROM representations rep
+         JOIN carriers c ON c.id=rep.carrier_id
+         JOIN physical_copies pc ON pc.id=c.physical_copy_id
+         JOIN archive_releases ar ON ar.id=pc.archive_release_id
+         JOIN archive_profiles ap ON ap.id=ar.profile_id
+         JOIN library_roots lr ON lr.root_path=ap.playable_root
+         JOIN library_consoles lc ON lc.root_id=lr.id
+         JOIN library_entries le ON le.console_id=lc.id
+         WHERE rep.role='playable'
+           AND rep.location_role='playable'
+           AND rep.presence_state='present'
+           AND c.catalog_media_id IS NOT NULL
+           AND replace(rep.relative_path,'\\','/')=
+               replace(lc.folder_name || '/' || substr(le.entry_key,6),'\\','/')",
         [],
     )?;
     tx.execute(

@@ -54,36 +54,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         return;
     };
 
-    // Lazy media discovery: kick off background load on first focus.
-    // Sets an empty sentinel immediately to prevent re-triggering.
-    if app.browser.consoles[console_idx].entries[entry_idx]
-        .asset_paths
-        .is_none()
-        && !app.browser.asset_discovery_in_flight.contains(&entry_id)
-    {
-        // Sentinel: mark as "loading" so we don't spawn again next frame
-        app.browser.consoles[console_idx].entries[entry_idx].asset_paths =
-            Some(std::collections::HashMap::new());
-        app.browser.asset_discovery_in_flight.insert(entry_id);
-
-        if let Some(ref root_path) = app.root_path {
-            let folder_name = app.browser.consoles[console_idx].folder_name.clone();
-            let entry = &app.browser.consoles[console_idx].entries[entry_idx];
-            let entry_name = entry.game_entry.display_name().to_string();
-            let rom_stem = entry.game_entry.rom_stem().to_owned();
-
-            crate::backend::assets::load_assets_for_entry(
-                app.message_tx.clone(),
-                ui.ctx().clone(),
-                root_path.clone(),
-                folder_name,
-                entry_id,
-                entry_name,
-                rom_stem,
-                app.settings.general.assets_dir.clone(),
-            );
-        }
-    }
+    ensure_entry_assets(app, console_idx, entry_id, ui.ctx());
+    show_file_actions(ui, app, console_idx, true);
+    ui.separator();
 
     egui::ScrollArea::vertical().show(ui, |ui| {
         // Borrow console/entry for the read-only section before the region ComboBox.
@@ -581,33 +554,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
 
         // Media
-        if let Some(ref media) = entry.asset_paths
-            && !media.is_empty()
-        {
-            ui.add_space(4.0);
-            ui.separator();
-            ui.label(egui::RichText::new("Media").strong());
-            ui.add_space(2.0);
-
-            let panel_width = ui.available_width();
-
-            for &mt in DISPLAY_ASSET_TYPES {
-                if let Some(path) = media.get(&mt) {
-                    ui.add_space(4.0);
-                    ui.label(egui::RichText::new(mt.to_string()).weak());
-
-                    let uri = crate::state::asset_image_uri(path);
-                    let image = egui::Image::new(uri)
-                        .fit_to_exact_size(egui::vec2(panel_width, panel_width))
-                        .maintain_aspect_ratio(true)
-                        .corner_radius(4.0);
-
-                    let response = ui.add(image);
-                    if let Some(path_str) = path.to_str() {
-                        response.on_hover_text(path_str);
-                    }
-                }
-            }
+        if let Some(ref media) = entry.asset_paths {
+            show_media(ui, media);
         }
     });
 }
@@ -630,6 +578,20 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.label("This archival release is no longer in the active Library view.");
         return;
     };
+    let grouped_entry_id = release
+        .playable_library_entries
+        .first()
+        .map(|entry| entry.id);
+    if let (Some(console_idx), Some(entry_id)) = (app.selected_console_index(), grouped_entry_id) {
+        ensure_entry_assets(app, console_idx, entry_id, ui.ctx());
+    }
+    let grouped_media = grouped_entry_id.and_then(|entry_id| {
+        let console_idx = app.selected_console_index()?;
+        app.browser.consoles[console_idx]
+            .entry_by_id(entry_id)?
+            .asset_paths
+            .clone()
+    });
     let summary = &release.summary;
     let mut requested_build = None;
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -680,13 +642,36 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 summary.playable_present_count, summary.playable_count
             ),
         );
-        if release.has_playable_library_entry {
-            detail_row(ui, "Library entry", "Present and catalog-bound");
+        if !release.playable_library_entries.is_empty() {
+            let noun = if release.playable_library_entries.len() == 1 {
+                "Library file"
+            } else {
+                "Library files"
+            };
+            detail_row(
+                ui,
+                noun,
+                &format!(
+                    "{} grouped with this release",
+                    release.playable_library_entries.len()
+                ),
+            );
+            for entry in &release.playable_library_entries {
+                detail_row(
+                    ui,
+                    "Playable",
+                    &format!(
+                        "{} ({})",
+                        entry.display_name,
+                        entry.playable_format.to_ascii_uppercase().replace('_', "-")
+                    ),
+                );
+            }
         }
         for (index, representation) in release.playable_representations.iter().enumerate() {
             detail_row(
                 ui,
-                &format!("File {}", index + 1),
+                &format!("Derived file {}", index + 1),
                 &format!(
                     "{} ({})",
                     representation.relative_path,
@@ -708,6 +693,20 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
 
         ui.add_space(10.0);
+        if !release.playable_library_entries.is_empty() {
+            ui.weak(format!(
+                "File actions apply to {} grouped playable file(s).",
+                release.playable_library_entries.len()
+            ));
+            if let Some(console_idx) = app.selected_console_index() {
+                show_file_actions(ui, app, console_idx, false);
+            }
+            ui.add_space(6.0);
+        }
+        if let Some(media) = grouped_media.as_ref() {
+            show_media(ui, media);
+        }
+        show_archived_media(ui, &release.archived_assets);
         if let Some(action) = release.action.as_ref() {
             let needs_verification = action
                 .carriers
@@ -756,6 +755,148 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             .map(|index| app.browser.consoles[index].folder_name.clone())
             .unwrap_or_else(|| summary.platform_id.clone());
         crate::backend::playable_build::start(app, action, format, playable_platform_id, ui.ctx());
+    }
+}
+
+fn show_file_actions(
+    ui: &mut egui::Ui,
+    app: &mut RetroJunkApp,
+    console_idx: usize,
+    allow_rename: bool,
+) {
+    let has_selection = !app.ui_state.selected_entries.is_empty();
+    let details_ready = has_selection && app.selected_entry_details_loaded();
+    let disabled_reason = if has_selection {
+        "Loading the playable file details…"
+    } else {
+        "No playable file is grouped with this row"
+    };
+    ui.horizontal_wrapped(|ui| {
+        let scrape = ui
+            .add_enabled(details_ready, egui::Button::new("Scrape Media"))
+            .on_disabled_hover_text(disabled_reason);
+        if scrape.clicked() {
+            crate::backend::assets::scrape_missing_media_for_selection(app, console_idx, ui.ctx());
+        }
+        let hashes = ui
+            .add_enabled(details_ready, egui::Button::new("Calculate Hashes"))
+            .on_disabled_hover_text(disabled_reason);
+        if hashes.clicked() {
+            crate::backend::hash::compute_hashes_for_selection(app, console_idx);
+        }
+        let rescan = ui
+            .add_enabled(details_ready, egui::Button::new("Rescan"))
+            .on_disabled_hover_text(disabled_reason);
+        if rescan.clicked() {
+            crate::backend::scan::rescan_selected_entries(app, console_idx, ui.ctx());
+        }
+        if allow_rename {
+            let rename = ui
+                .add_enabled(details_ready, egui::Button::new("Auto Rename"))
+                .on_disabled_hover_text(disabled_reason);
+            if rename.clicked() {
+                crate::backend::rename::rename_selected_entries(app, console_idx, ui.ctx());
+            }
+        }
+    });
+}
+
+fn ensure_entry_assets(
+    app: &mut RetroJunkApp,
+    console_idx: usize,
+    entry_id: retro_junk_db::LibraryEntryId,
+    ctx: &egui::Context,
+) {
+    let Some(entry_idx) = app.browser.consoles[console_idx].entry_index(entry_id) else {
+        return;
+    };
+    if app.browser.consoles[console_idx].entries[entry_idx]
+        .asset_paths
+        .is_some()
+        || app.browser.asset_discovery_in_flight.contains(&entry_id)
+    {
+        return;
+    }
+
+    // Empty is the in-flight sentinel; image bytes remain lazy in egui's file
+    // loader and are never retained by this projection.
+    app.browser.consoles[console_idx].entries[entry_idx].asset_paths =
+        Some(std::collections::HashMap::new());
+    app.browser.asset_discovery_in_flight.insert(entry_id);
+
+    let Some(root_path) = app.root_path.clone() else {
+        return;
+    };
+    let folder_name = app.browser.consoles[console_idx].folder_name.clone();
+    let entry = &app.browser.consoles[console_idx].entries[entry_idx];
+    crate::backend::assets::load_assets_for_entry(
+        app.message_tx.clone(),
+        ctx.clone(),
+        root_path,
+        folder_name,
+        entry_id,
+        entry.game_entry.display_name().to_string(),
+        entry.game_entry.rom_stem().to_owned(),
+        app.settings.general.assets_dir.clone(),
+    );
+}
+
+fn show_media(
+    ui: &mut egui::Ui,
+    media: &std::collections::HashMap<retro_junk_frontend::AssetType, std::path::PathBuf>,
+) {
+    if media.is_empty() {
+        return;
+    }
+    ui.add_space(4.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Media").strong());
+    ui.add_space(2.0);
+
+    let panel_width = ui.available_width();
+    for &asset_type in DISPLAY_ASSET_TYPES {
+        if let Some(path) = media.get(&asset_type) {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(asset_type.to_string()).weak());
+            let uri = crate::state::asset_image_uri(path);
+            let image = egui::Image::new(uri)
+                .fit_to_exact_size(egui::vec2(panel_width, panel_width))
+                .maintain_aspect_ratio(true)
+                .corner_radius(4.0);
+            let response = ui.add(image);
+            if let Some(path_str) = path.to_str() {
+                response.on_hover_text(path_str);
+            }
+        }
+    }
+}
+
+fn show_archived_media(ui: &mut egui::Ui, assets: &[retro_junk_db::ArchivedReleaseAsset]) {
+    if assets.is_empty() {
+        return;
+    }
+    ui.add_space(4.0);
+    ui.separator();
+    ui.label(egui::RichText::new("Archived Media").strong());
+    ui.weak("Release-level source files stored in the authoritative archive.");
+    ui.add_space(2.0);
+
+    let panel_width = ui.available_width();
+    for asset in assets {
+        ui.add_space(4.0);
+        let label = if asset.source.is_empty() {
+            asset.asset_type.clone()
+        } else {
+            format!("{} · {}", asset.asset_type, asset.source)
+        };
+        ui.label(egui::RichText::new(label).weak());
+        let path = std::path::Path::new(&asset.absolute_path);
+        let uri = crate::state::asset_image_uri(path);
+        let image = egui::Image::new(uri)
+            .fit_to_exact_size(egui::vec2(panel_width, panel_width))
+            .maintain_aspect_ratio(true)
+            .corner_radius(4.0);
+        ui.add(image).on_hover_text(&asset.absolute_path);
     }
 }
 

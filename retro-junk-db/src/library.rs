@@ -582,13 +582,35 @@ pub struct ArchivedLibraryListItem {
     pub summary: crate::archive::ArchiveReleaseSummary,
     pub action: Option<ArchivedPlayableGap>,
     pub playable_representations: Vec<ArchivedPlayableRepresentation>,
-    pub has_playable_library_entry: bool,
+    /// Playable-library rows proven to represent this archival release.
+    ///
+    /// Keeping their durable IDs on the logical release row lets the GUI
+    /// expose ordinary file actions without rendering those rows a second
+    /// time.
+    pub playable_library_entries: Vec<ArchivedPlayableLibraryEntry>,
+    /// Release-level artwork and other scraped media stored inside the
+    /// authoritative archive.
+    pub archived_assets: Vec<ArchivedReleaseAsset>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchivedPlayableRepresentation {
     pub format: String,
     pub relative_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedPlayableLibraryEntry {
+    pub id: LibraryEntryId,
+    pub display_name: String,
+    pub playable_format: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedReleaseAsset {
+    pub asset_type: String,
+    pub absolute_path: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1280,11 +1302,6 @@ pub fn query_entry_list(
     );
     let where_sql =
         format!("console_id=?1 AND display_name LIKE ?2 ESCAPE '\\' COLLATE NOCASE {filter}");
-    let total = conn.query_row(
-        &format!("SELECT COUNT(*) FROM library_entries WHERE {where_sql}"),
-        params![q.console_id.0, pattern],
-        |r| r.get(0),
-    )?;
     let counts = entry_counts(conn, q.console_id)?;
     let (_, archived_playable_gaps, completeness) = query_availability(conn, q.console_id)?;
     let mut archived_releases =
@@ -1307,8 +1324,31 @@ pub fn query_entry_list(
                     .revision
                     .to_ascii_lowercase()
                     .contains(&archive_search)
+                || row.playable_library_entries.iter().any(|entry| {
+                    entry
+                        .display_name
+                        .to_ascii_lowercase()
+                        .contains(&archive_search)
+                })
         });
     }
+    let unbound_clause = "AND NOT EXISTS(
+             SELECT 1 FROM library_entry_media_bindings list_binding
+             JOIN carriers list_carrier
+               ON list_carrier.catalog_media_id=list_binding.catalog_media_id
+             JOIN physical_copies list_copy
+               ON list_copy.id=list_carrier.physical_copy_id
+             JOIN archive_releases list_release
+               ON list_release.id=list_copy.archive_release_id
+             JOIN archive_profiles list_profile
+               ON list_profile.id=list_release.profile_id
+             JOIN library_consoles list_console
+               ON list_console.id=library_entries.console_id
+             JOIN library_roots list_root
+               ON list_root.id=list_console.root_id
+             WHERE list_binding.library_entry_id=library_entries.id
+               AND list_profile.playable_root=list_root.root_path
+         )";
     let unbound_total: u64 = conn.query_row(
         &format!(
             "SELECT COUNT(*) FROM library_entries e WHERE {where_sql}
@@ -1329,6 +1369,54 @@ pub fn query_entry_list(
     let logical_count =
         unbound_total.saturating_add(u64::try_from(archived_releases.len()).unwrap_or(u64::MAX));
     let order = order_sql(q.sort, q.direction);
+    let page_limit = q.limit.clamp(1, 2000);
+    // Merge only compact sort keys before paging. Fetching every rich playable
+    // projection here would deserialize the entire console just to choose 300
+    // rows.
+    let logical_selection = if archived_releases.is_empty() {
+        None
+    } else {
+        let mut candidate_statement = conn.prepare(&format!(
+            "SELECT id,display_name,status,region_override,data_size
+             FROM library_entries
+             WHERE {where_sql} {unbound_clause}"
+        ))?;
+        let candidates = candidate_statement
+            .query_map(params![q.console_id.0, pattern], |row| {
+                Ok(LogicalPageCandidate {
+                    identity: LogicalPageIdentity::Playable(LibraryEntryId(row.get(0)?)),
+                    display_name: row.get::<_, String>(1)?.to_ascii_lowercase(),
+                    status: row.get(2)?,
+                    region: row.get::<_, String>(3)?.to_ascii_lowercase(),
+                    size: row.get(4)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let selected = select_logical_page(
+            candidates,
+            &archived_releases,
+            q.offset,
+            page_limit,
+            q.sort,
+            q.direction,
+        );
+        archived_releases.retain(|release| {
+            selected.contains(&LogicalPageIdentity::Archive(
+                release.summary.archive_release_id.clone(),
+            ))
+        });
+        Some(selected)
+    };
+    let selection_sql = if logical_selection.is_some() {
+        "AND id IN (SELECT CAST(value AS INTEGER) FROM json_each(?3))"
+    } else {
+        ""
+    };
+    let pagination_sql = if logical_selection.is_some() {
+        ""
+    } else {
+        "LIMIT ?3 OFFSET ?4"
+    };
     let sql = format!(
         "SELECT id,display_name,status,tag,region_override,data_size,
                 crc32,dat_game_name,
@@ -1377,52 +1465,70 @@ pub fn query_entry_list(
                         JOIN library_roots lr ON lr.id=lc.root_id
                         WHERE lc.id=library_entries.console_id)
                  ORDER BY ar.id LIMIT 1)
-         FROM library_entries WHERE {where_sql}
-         ORDER BY {order} LIMIT ?3 OFFSET ?4"
+         FROM library_entries WHERE {where_sql} {unbound_clause} {selection_sql}
+         ORDER BY {order} {pagination_sql}"
     );
     let mut stmt = conn.prepare(&sql)?;
-    let mut rows = stmt
-        .query_map(
-            params![q.console_id.0, pattern, q.limit.clamp(1, 2000), q.offset],
-            |r| {
-                let identification_json: Option<String> = r.get(12)?;
-                let hash_warnings_json: Option<String> = r.get(13)?;
-                let disc_identifications_json: Option<String> = r.get(14)?;
-                let entry_key: String = r.get(15)?;
-                let game_entry_json: String = r.get(16)?;
-                let projected_format: Option<String> = r.get(18)?;
-                let (serial, internal_name, detected_regions) = project_identification(
-                    identification_json.as_deref(),
-                    disc_identifications_json.as_deref(),
-                );
-                Ok(LibraryEntryListItem {
-                    id: LibraryEntryId(r.get(0)?),
-                    display_name: r.get(1)?,
-                    status: r.get(2)?,
-                    tag: r.get(3)?,
-                    region_override: r.get(4)?,
-                    data_size: r.get::<_, u64>(5)?,
-                    crc32: r.get(6)?,
-                    dat_game_name: r.get(7)?,
-                    serial,
-                    internal_name,
-                    detected_regions,
-                    has_hash_warnings: json_array_is_nonempty(hash_warnings_json.as_deref())
-                        || disc_hash_warnings_are_nonempty(disc_identifications_json.as_deref()),
-                    has_broken_references: r.get(8)?,
-                    has_cue_compat_issues: r.get(9)?,
-                    revision: r.get(10)?,
-                    source_revision: r.get(11)?,
-                    archived: r.get(17)?,
-                    archive_complete: false,
-                    playable_format: projected_format
-                        .unwrap_or_else(|| playable_format(&entry_key, &game_entry_json)),
-                    preferred_format: r.get(19)?,
-                    archive_release_id: r.get(20)?,
-                })
-            },
+    let map_row = |r: &rusqlite::Row<'_>| {
+        let identification_json: Option<String> = r.get(12)?;
+        let hash_warnings_json: Option<String> = r.get(13)?;
+        let disc_identifications_json: Option<String> = r.get(14)?;
+        let entry_key: String = r.get(15)?;
+        let game_entry_json: String = r.get(16)?;
+        let projected_format: Option<String> = r.get(18)?;
+        let (serial, internal_name, detected_regions) = project_identification(
+            identification_json.as_deref(),
+            disc_identifications_json.as_deref(),
+        );
+        Ok(LibraryEntryListItem {
+            id: LibraryEntryId(r.get(0)?),
+            display_name: r.get(1)?,
+            status: r.get(2)?,
+            tag: r.get(3)?,
+            region_override: r.get(4)?,
+            data_size: r.get::<_, u64>(5)?,
+            crc32: r.get(6)?,
+            dat_game_name: r.get(7)?,
+            serial,
+            internal_name,
+            detected_regions,
+            has_hash_warnings: json_array_is_nonempty(hash_warnings_json.as_deref())
+                || disc_hash_warnings_are_nonempty(disc_identifications_json.as_deref()),
+            has_broken_references: r.get(8)?,
+            has_cue_compat_issues: r.get(9)?,
+            revision: r.get(10)?,
+            source_revision: r.get(11)?,
+            archived: r.get(17)?,
+            archive_complete: false,
+            playable_format: projected_format
+                .unwrap_or_else(|| playable_format(&entry_key, &game_entry_json)),
+            preferred_format: r.get(19)?,
+            archive_release_id: r.get(20)?,
+        })
+    };
+    let mut rows = if let Some(selected) = logical_selection {
+        let entry_ids = selected
+            .iter()
+            .filter_map(|identity| match identity {
+                LogicalPageIdentity::Playable(id) => Some(id.0),
+                LogicalPageIdentity::Archive(_) => None,
+            })
+            .collect::<Vec<_>>();
+        if entry_ids.is_empty() {
+            Vec::new()
+        } else {
+            let ids_json = serde_json::to_string(&entry_ids)
+                .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?;
+            stmt.query_map(params![q.console_id.0, pattern, ids_json], map_row)?
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    } else {
+        stmt.query_map(
+            params![q.console_id.0, pattern, page_limit, q.offset],
+            map_row,
         )?
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, _>>()?
+    };
     for row in &mut rows {
         row.archive_complete = row
             .archive_release_id
@@ -1432,7 +1538,7 @@ pub fn query_entry_list(
     Ok(LibraryEntryListPage {
         console_id: q.console_id,
         console_revision: revision,
-        total_count: total,
+        total_count: logical_count,
         logical_count,
         counts,
         availability_counts,
@@ -1441,6 +1547,61 @@ pub fn query_entry_list(
         offset: q.offset,
         rows,
     })
+}
+
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum LogicalPageIdentity {
+    Playable(LibraryEntryId),
+    Archive(String),
+}
+
+struct LogicalPageCandidate {
+    identity: LogicalPageIdentity,
+    display_name: String,
+    status: String,
+    region: String,
+    size: u64,
+}
+
+fn select_logical_page(
+    mut candidates: Vec<LogicalPageCandidate>,
+    archived: &[ArchivedLibraryListItem],
+    offset: u64,
+    limit: u64,
+    sort: LibraryEntrySortField,
+    direction: SortDirection,
+) -> HashSet<LogicalPageIdentity> {
+    candidates.extend(archived.iter().map(|release| LogicalPageCandidate {
+        identity: LogicalPageIdentity::Archive(release.summary.archive_release_id.clone()),
+        display_name: release.summary.title.to_ascii_lowercase(),
+        status: if release.summary.archive_complete {
+            "matched".to_owned()
+        } else {
+            "unknown".to_owned()
+        },
+        region: release.summary.region.to_ascii_lowercase(),
+        size: 0,
+    }));
+    candidates.sort_by(|left, right| {
+        let primary = match sort {
+            LibraryEntrySortField::DisplayName => left.display_name.cmp(&right.display_name),
+            LibraryEntrySortField::Status => left.status.cmp(&right.status),
+            LibraryEntrySortField::Region => left.region.cmp(&right.region),
+            LibraryEntrySortField::Size => left.size.cmp(&right.size),
+        };
+        primary.then_with(|| left.identity.cmp(&right.identity))
+    });
+    if direction == SortDirection::Descending {
+        candidates.reverse();
+    }
+    let start = usize::try_from(offset).unwrap_or(usize::MAX);
+    let count = usize::try_from(limit).unwrap_or(usize::MAX);
+    candidates
+        .into_iter()
+        .skip(start)
+        .take(count)
+        .map(|candidate| candidate.identity)
+        .collect()
 }
 
 fn unified_availability_counts(
@@ -1468,7 +1629,8 @@ fn unified_availability_counts(
     };
     for release in archived {
         let summary = &release.summary;
-        let playable = summary.playable_present_count > 0 || release.has_playable_library_entry;
+        let playable =
+            summary.playable_present_count > 0 || !release.playable_library_entries.is_empty();
         if !playable {
             counts.archived_not_playable += 1;
         } else if !summary.archive_complete {
@@ -1535,21 +1697,62 @@ fn query_archived_library_releases(
             representations.push(representation);
         }
     }
-    let mut library_playable_releases = HashSet::new();
+    let mut library_playable_by_release =
+        std::collections::HashMap::<String, Vec<ArchivedPlayableLibraryEntry>>::new();
     let mut library_playable_statement = conn.prepare(
-        "SELECT DISTINCT ar.id
+        "SELECT DISTINCT ar.id,e.id,e.display_name,e.entry_key,e.game_entry_json
          FROM archive_releases ar
          JOIN media m ON m.release_id=ar.catalog_release_id
          JOIN library_entry_media_bindings b ON b.catalog_media_id=m.id
          JOIN library_entries e ON e.id=b.library_entry_id
-         WHERE ar.profile_id=?1 AND e.console_id=?2",
+         WHERE ar.profile_id=?1 AND e.console_id=?2
+         ORDER BY ar.id,e.display_name COLLATE NOCASE,e.id",
     )?;
-    for release_id in library_playable_statement
-        .query_map(params![profile_id, console_id.0], |row| {
-            row.get::<_, String>(0)
-        })?
-    {
-        library_playable_releases.insert(release_id?);
+    for row in library_playable_statement.query_map(params![profile_id, console_id.0], |row| {
+        let entry_key = row.get::<_, String>(3)?;
+        let game_entry_json = row.get::<_, String>(4)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            ArchivedPlayableLibraryEntry {
+                id: LibraryEntryId(row.get(1)?),
+                display_name: row.get(2)?,
+                playable_format: playable_format(&entry_key, &game_entry_json),
+            },
+        ))
+    })? {
+        let (release_id, entry) = row?;
+        let entries = library_playable_by_release.entry(release_id).or_default();
+        if !entries.contains(&entry) {
+            entries.push(entry);
+        }
+    }
+    let mut assets_by_release =
+        std::collections::HashMap::<String, Vec<ArchivedReleaseAsset>>::new();
+    let mut asset_statement = conn.prepare(
+        "SELECT f.archive_release_id,f.asset_type,
+                ap.archive_root || '/' || f.relative_path,f.source
+         FROM archive_release_files f
+         JOIN archive_releases ar ON ar.id=f.archive_release_id
+         JOIN archive_profiles ap ON ap.id=ar.profile_id
+         WHERE ar.profile_id=?1
+           AND f.category='artwork'
+         ORDER BY f.archive_release_id,f.asset_type,f.id",
+    )?;
+    for row in asset_statement.query_map([&profile_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            ArchivedReleaseAsset {
+                asset_type: row.get(1)?,
+                absolute_path: row.get(2)?,
+                source: row.get(3)?,
+            },
+        ))
+    })? {
+        let (release_id, asset) = row?;
+        let assets = assets_by_release.entry(release_id).or_default();
+        if !assets.contains(&asset) {
+            assets.push(asset);
+        }
     }
     let mut rows = summaries
         .into_iter()
@@ -1565,13 +1768,18 @@ fn query_archived_library_releases(
             let playable_representations = playable_by_release
                 .remove(&summary.archive_release_id)
                 .unwrap_or_default();
-            let has_playable_library_entry =
-                library_playable_releases.contains(&summary.archive_release_id);
+            let playable_library_entries = library_playable_by_release
+                .remove(&summary.archive_release_id)
+                .unwrap_or_default();
+            let archived_assets = assets_by_release
+                .remove(&summary.archive_release_id)
+                .unwrap_or_default();
             ArchivedLibraryListItem {
                 summary,
                 action,
                 playable_representations,
-                has_playable_library_entry,
+                playable_library_entries,
+                archived_assets,
             }
         })
         .collect::<Vec<_>>();
