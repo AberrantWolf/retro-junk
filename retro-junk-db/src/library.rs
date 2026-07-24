@@ -591,6 +591,9 @@ pub struct ArchivedLibraryListItem {
     /// Release-level artwork and other scraped media stored inside the
     /// authoritative archive.
     pub archived_assets: Vec<ArchivedReleaseAsset>,
+    /// Compact catalog identity used to scrape an archive-only release without
+    /// first manufacturing a playable file.
+    pub scrape_identity: Option<ArchivedScrapeIdentity>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -611,6 +614,50 @@ pub struct ArchivedReleaseAsset {
     pub asset_type: String,
     pub absolute_path: String,
     pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivedScrapeIdentity {
+    pub filename: String,
+    pub file_size: u64,
+    pub serial: String,
+    pub crc32: String,
+    pub md5: String,
+    pub sha1: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayableArtworkCandidate {
+    pub catalog_release_id: String,
+    pub folder_name: String,
+    pub game_entry_json: String,
+}
+
+/// Playable entries grouped by catalog release for archive artwork adoption.
+///
+/// This query does not depend on the archive projection already being
+/// reconciled, so it can run immediately after a new dump is published.
+pub fn playable_artwork_candidates(
+    conn: &Connection,
+) -> Result<Vec<PlayableArtworkCandidate>, LibraryError> {
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT m.release_id,lc.folder_name,e.game_entry_json
+         FROM media m
+         JOIN library_entry_media_bindings b ON b.catalog_media_id=m.id
+         JOIN library_entries e ON e.id=b.library_entry_id
+         JOIN library_consoles lc ON lc.id=e.console_id
+         ORDER BY m.release_id,lc.folder_name,e.id",
+    )?;
+    statement
+        .query_map([], |row| {
+            Ok(PlayableArtworkCandidate {
+                catalog_release_id: row.get(0)?,
+                folder_name: row.get(1)?,
+                game_entry_json: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
 }
 
 #[derive(Debug, Clone)]
@@ -1671,8 +1718,63 @@ fn query_archived_library_releases(
     }
     let summaries = crate::archive::list_archive_release_summaries(conn, &profile_id)
         .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?;
-    let mut playable_by_release =
-        std::collections::HashMap::<String, Vec<ArchivedPlayableRepresentation>>::new();
+    let mut playable_by_release = query_archived_playable_representations(conn, &profile_id)?;
+    let mut library_playable_by_release =
+        query_archived_playable_entries(conn, &profile_id, console_id)?;
+    let mut assets_by_release = query_archived_release_assets(conn, &profile_id)?;
+    let mut scrape_identity_by_release = query_archived_scrape_identities(conn, &profile_id)?;
+    let mut rows = summaries
+        .into_iter()
+        .filter(|summary| {
+            platform_ids_match(&summary.platform_id, &folder_name)
+                || platform_ids_match(&summary.platform_id, &platform)
+        })
+        .map(|summary| {
+            let action = actions
+                .iter()
+                .find(|action| action.archive_release_id == summary.archive_release_id)
+                .cloned();
+            let playable_representations = playable_by_release
+                .remove(&summary.archive_release_id)
+                .unwrap_or_default();
+            let playable_library_entries = library_playable_by_release
+                .remove(&summary.archive_release_id)
+                .unwrap_or_default();
+            let archived_assets = assets_by_release
+                .remove(&summary.archive_release_id)
+                .unwrap_or_default();
+            let scrape_identity = scrape_identity_by_release.remove(&summary.archive_release_id);
+            ArchivedLibraryListItem {
+                summary,
+                action,
+                playable_representations,
+                playable_library_entries,
+                archived_assets,
+                scrape_identity,
+            }
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.summary
+            .title
+            .to_ascii_lowercase()
+            .cmp(&right.summary.title.to_ascii_lowercase())
+            .then_with(|| left.summary.region.cmp(&right.summary.region))
+            .then_with(|| left.summary.revision.cmp(&right.summary.revision))
+            .then_with(|| {
+                left.summary
+                    .archive_release_id
+                    .cmp(&right.summary.archive_release_id)
+            })
+    });
+    Ok(rows)
+}
+
+fn query_archived_playable_representations(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<std::collections::HashMap<String, Vec<ArchivedPlayableRepresentation>>, LibraryError> {
+    let mut output = std::collections::HashMap::new();
     let mut representation_statement = conn.prepare(
         "SELECT ar.id,rep.format,rep.relative_path
          FROM archive_releases ar
@@ -1682,7 +1784,7 @@ fn query_archived_library_releases(
          WHERE ar.profile_id=?1 AND rep.role='playable' AND rep.presence_state='present'
          ORDER BY ar.id,rep.relative_path COLLATE NOCASE,rep.id",
     )?;
-    for representation in representation_statement.query_map([&profile_id], |row| {
+    for representation in representation_statement.query_map([profile_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
             ArchivedPlayableRepresentation {
@@ -1692,13 +1794,20 @@ fn query_archived_library_releases(
         ))
     })? {
         let (release_id, representation) = representation?;
-        let representations = playable_by_release.entry(release_id).or_default();
+        let representations = output.entry(release_id).or_insert_with(Vec::new);
         if !representations.contains(&representation) {
             representations.push(representation);
         }
     }
-    let mut library_playable_by_release =
-        std::collections::HashMap::<String, Vec<ArchivedPlayableLibraryEntry>>::new();
+    Ok(output)
+}
+
+fn query_archived_playable_entries(
+    conn: &Connection,
+    profile_id: &str,
+    console_id: LibraryConsoleId,
+) -> Result<std::collections::HashMap<String, Vec<ArchivedPlayableLibraryEntry>>, LibraryError> {
+    let mut output = std::collections::HashMap::new();
     let mut library_playable_statement = conn.prepare(
         "SELECT DISTINCT ar.id,e.id,e.display_name,e.entry_key,e.game_entry_json
          FROM archive_releases ar
@@ -1721,13 +1830,19 @@ fn query_archived_library_releases(
         ))
     })? {
         let (release_id, entry) = row?;
-        let entries = library_playable_by_release.entry(release_id).or_default();
+        let entries = output.entry(release_id).or_insert_with(Vec::new);
         if !entries.contains(&entry) {
             entries.push(entry);
         }
     }
-    let mut assets_by_release =
-        std::collections::HashMap::<String, Vec<ArchivedReleaseAsset>>::new();
+    Ok(output)
+}
+
+fn query_archived_release_assets(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<std::collections::HashMap<String, Vec<ArchivedReleaseAsset>>, LibraryError> {
+    let mut output = std::collections::HashMap::new();
     let mut asset_statement = conn.prepare(
         "SELECT f.archive_release_id,f.asset_type,
                 ap.archive_root || '/' || f.relative_path,f.source
@@ -1735,10 +1850,10 @@ fn query_archived_library_releases(
          JOIN archive_releases ar ON ar.id=f.archive_release_id
          JOIN archive_profiles ap ON ap.id=ar.profile_id
          WHERE ar.profile_id=?1
-           AND f.category='artwork'
+           AND f.category IN ('artwork','video')
          ORDER BY f.archive_release_id,f.asset_type,f.id",
     )?;
-    for row in asset_statement.query_map([&profile_id], |row| {
+    for row in asset_statement.query_map([profile_id], |row| {
         Ok((
             row.get::<_, String>(0)?,
             ArchivedReleaseAsset {
@@ -1749,54 +1864,52 @@ fn query_archived_library_releases(
         ))
     })? {
         let (release_id, asset) = row?;
-        let assets = assets_by_release.entry(release_id).or_default();
+        let assets = output.entry(release_id).or_insert_with(Vec::new);
         if !assets.contains(&asset) {
             assets.push(asset);
         }
     }
-    let mut rows = summaries
-        .into_iter()
-        .filter(|summary| {
-            platform_ids_match(&summary.platform_id, &folder_name)
-                || platform_ids_match(&summary.platform_id, &platform)
-        })
-        .map(|summary| {
-            let action = actions
-                .iter()
-                .find(|action| action.archive_release_id == summary.archive_release_id)
-                .cloned();
-            let playable_representations = playable_by_release
-                .remove(&summary.archive_release_id)
-                .unwrap_or_default();
-            let playable_library_entries = library_playable_by_release
-                .remove(&summary.archive_release_id)
-                .unwrap_or_default();
-            let archived_assets = assets_by_release
-                .remove(&summary.archive_release_id)
-                .unwrap_or_default();
-            ArchivedLibraryListItem {
-                summary,
-                action,
-                playable_representations,
-                playable_library_entries,
-                archived_assets,
-            }
-        })
-        .collect::<Vec<_>>();
-    rows.sort_by(|left, right| {
-        left.summary
-            .title
-            .to_ascii_lowercase()
-            .cmp(&right.summary.title.to_ascii_lowercase())
-            .then_with(|| left.summary.region.cmp(&right.summary.region))
-            .then_with(|| left.summary.revision.cmp(&right.summary.revision))
-            .then_with(|| {
-                left.summary
-                    .archive_release_id
-                    .cmp(&right.summary.archive_release_id)
-            })
-    });
-    Ok(rows)
+    Ok(output)
+}
+
+fn query_archived_scrape_identities(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<std::collections::HashMap<String, ArchivedScrapeIdentity>, LibraryError> {
+    let mut output = std::collections::HashMap::new();
+    let mut scrape_statement = conn.prepare(
+        "SELECT ar.id,m.rom_name,m.dat_name,m.file_size,m.media_serial,
+                m.crc32,m.md5,m.sha1
+         FROM archive_releases ar
+         JOIN media m ON m.release_id=ar.catalog_release_id
+         WHERE ar.profile_id=?1
+         ORDER BY ar.id,
+                  CASE WHEN m.disc_number > 0 THEN m.disc_number ELSE 2147483647 END,
+                  m.dat_name COLLATE NOCASE,m.id",
+    )?;
+    for row in scrape_statement.query_map([profile_id], |row| {
+        let rom_name = row.get::<_, String>(1)?;
+        let dat_name = row.get::<_, String>(2)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            ArchivedScrapeIdentity {
+                filename: if rom_name.is_empty() {
+                    dat_name
+                } else {
+                    rom_name
+                },
+                file_size: u64::try_from(row.get::<_, i64>(3)?).unwrap_or_default(),
+                serial: row.get(4)?,
+                crc32: row.get(5)?,
+                md5: row.get(6)?,
+                sha1: row.get(7)?,
+            },
+        ))
+    })? {
+        let (release_id, identity) = row?;
+        output.entry(release_id).or_insert(identity);
+    }
+    Ok(output)
 }
 
 fn platform_ids_match(left: &str, right: &str) -> bool {

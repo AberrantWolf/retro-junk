@@ -40,8 +40,8 @@ pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 #[path = "tests/archive_tests.rs"]
 mod tests;
 pub use assets::{
-    NewPhysicalCopyFile, NewReleaseFile, SupportingFileError, add_physical_copy_file,
-    add_release_file,
+    AddedReleaseFile, NewPhysicalCopyFile, NewReleaseFile, SupportingFileError,
+    add_physical_copy_file, add_release_file, add_release_files,
 };
 pub use collection::{
     CollectionError, ExpectedSourceFile, IngestedCarrierDump, NewCarrierDump,

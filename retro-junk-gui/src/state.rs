@@ -931,6 +931,8 @@ pub enum AppMessage {
         message: String,
         op_id: u64,
     },
+    /// Authoritative archive artwork changed; rebuild the Library projection.
+    ArchiveAssetsChanged,
     ModSearchResults {
         query: String,
         result: Result<Vec<retro_junk_db::WorkRow>, String>,
@@ -2099,6 +2101,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             log::error!("Scrape fatal error: {message}");
             app.push_error("Scrape Failed", &message);
             app.operations.retain(|op| op.id != op_id);
+        }
+
+        AppMessage::ArchiveAssetsChanged => {
+            app.ui_state.collection_profile_id = None;
+            app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
+            if let Some(profile) = app.settings.library.active_profile().cloned() {
+                let _ = app
+                    .message_tx
+                    .send(AppMessage::StartArchiveRefresh { profile });
+            } else {
+                refresh_library_availability(app, ctx);
+            }
         }
 
         AppMessage::StartFolderScan => {

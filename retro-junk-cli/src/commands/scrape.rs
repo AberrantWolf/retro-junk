@@ -24,19 +24,7 @@ fn archive_scraped_assets(
     let snapshot = retro_junk_archive::scan_archive(archive_root)
         .map_err(|error| CliError::other(error.to_string()))?;
     let cancelled = std::sync::atomic::AtomicBool::new(false);
-    let mut known = snapshot
-        .releases
-        .iter()
-        .flat_map(|release| {
-            release.supporting_files.iter().map(move |asset| {
-                (
-                    release.manifest.archive_release_id,
-                    asset.manifest.asset_type.clone(),
-                    asset.manifest.file.sha256.clone(),
-                )
-            })
-        })
-        .collect::<std::collections::BTreeSet<_>>();
+    let mut pending = Vec::new();
     for game in games {
         let candidates = snapshot
             .releases
@@ -83,40 +71,35 @@ fn archive_scraped_assets(
             continue;
         };
         for (asset_type, path) in &game.assets {
-            let (_, sha256) = retro_junk_archive::sha256_file(path, &cancelled)
-                .map_err(|error| CliError::other(error.to_string()))?;
-            let asset_type = asset_type.to_string();
-            let key = (
+            pending.push((
                 release.manifest.archive_release_id,
-                asset_type.clone(),
-                sha256,
-            );
-            if known.contains(&key) {
-                continue;
-            }
-            retro_junk_archive::add_release_file(
-                archive_root,
-                retro_junk_archive::NewReleaseFile {
-                    release_id: release.manifest.archive_release_id,
-                    source_file: path,
-                    category: if asset_type.eq_ignore_ascii_case("video") {
-                        retro_junk_archive::ReleaseFileCategory::Video
-                    } else if asset_type.to_ascii_lowercase().contains("manual") {
-                        retro_junk_archive::ReleaseFileCategory::Document
-                    } else {
-                        retro_junk_archive::ReleaseFileCategory::Artwork
-                    },
-                    asset_type: &asset_type,
-                    source: "screenscraper",
-                    source_url: "",
-                    caption: "",
-                },
-                &cancelled,
-            )
-            .map_err(|error| CliError::other(error.to_string()))?;
-            known.insert(key);
+                asset_type.to_string(),
+                path.clone(),
+            ));
         }
     }
+    let requests = pending
+        .iter()
+        .map(
+            |(release_id, asset_type, path)| retro_junk_archive::NewReleaseFile {
+                release_id: *release_id,
+                source_file: path,
+                category: if asset_type.eq_ignore_ascii_case("video") {
+                    retro_junk_archive::ReleaseFileCategory::Video
+                } else if asset_type.to_ascii_lowercase().contains("manual") {
+                    retro_junk_archive::ReleaseFileCategory::Document
+                } else {
+                    retro_junk_archive::ReleaseFileCategory::Artwork
+                },
+                asset_type,
+                source: "screenscraper",
+                source_url: "",
+                caption: "",
+            },
+        )
+        .collect::<Vec<_>>();
+    retro_junk_archive::add_release_files(archive_root, &requests, &cancelled)
+        .map_err(|error| CliError::other(error.to_string()))?;
     Ok(())
 }
 

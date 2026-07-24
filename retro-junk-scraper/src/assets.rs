@@ -138,6 +138,30 @@ pub fn collect_existing_assets(
     found
 }
 
+/// Resolve the source URL selected for each asset using the same region and
+/// fallback rules as the downloader.
+#[must_use]
+pub fn asset_source_urls(
+    game: &GameInfo,
+    selection: &AssetSelection,
+    preferred_region: &str,
+) -> std::collections::HashMap<AssetType, String> {
+    selection
+        .types
+        .iter()
+        .copied()
+        .filter(|asset_type| *asset_type != AssetType::Miximage)
+        .filter_map(|asset_type| {
+            game.media_for_region(ss_asset_type(asset_type), preferred_region)
+                .or_else(|| {
+                    ss_asset_type_fallback(asset_type)
+                        .and_then(|fallback| game.media_for_region(fallback, preferred_region))
+                })
+                .map(|media| (asset_type, media.url.clone()))
+        })
+        .collect()
+}
+
 /// Everything needed to download one game's assets, besides the client.
 ///
 /// Groups the per-game parameters so [`download_game_assets`] doesn't need a

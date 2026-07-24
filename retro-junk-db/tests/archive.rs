@@ -274,6 +274,10 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     assert!(
         std::path::Path::new(&page.archived_releases[0].archived_assets[0].absolute_path).is_file()
     );
+    let scrape_identity = page.archived_releases[0].scrape_identity.as_ref().unwrap();
+    assert_eq!(scrape_identity.filename, "Game");
+    assert_eq!(scrape_identity.file_size, digests.size);
+    assert_eq!(scrape_identity.sha1, digests.sha1);
     assert_eq!(
         page.archived_releases[0]
             .action

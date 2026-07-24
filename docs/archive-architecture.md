@@ -158,7 +158,18 @@ The preferred-format selectors are platform-aware rather than global lists. They
 
 Startup blocks interaction only when the durable catalog must be moved, validated, created from an existing legacy database, or schema-migrated. With a current local database, the last committed archive projection is immediately usable while a tracked background refresh locks and scans the authoritative archive. SQLite WAL transactions keep readers on the prior complete projection until the replacement commits atomically; archive-scoped GUI mutations are disabled or rejected by the same archive lock while refresh is active. Saved network-root probing is also independent of database readiness.
 
-Passing `--archive-root` to the existing `scrape` command adopts downloaded ScreenScraper originals into the matched release. `archive project-frontend-files` recreates frontend layout files from those originals. Physical photographs and provenance remain attached to physical copies, not catalog releases.
+Scraping follows archive ownership. When a Library release is archived, the
+GUI identifies it from catalog media even if no playable file exists, downloads
+ScreenScraper originals to device-local workspace, records their source URLs,
+publishes them as release supporting files, and then projects those bytes to
+every grouped playable filename. A playable-only title continues to scrape
+directly to the frontend media tree. Existing archive artwork is projected
+before missing-media lookup, and dump ingest performs an idempotent, batched
+check for artwork already beside a catalog-bound playable entry. Passing
+`--archive-root` to the CLI `scrape` command likewise adopts downloaded
+originals into the matched release; `archive project-frontend-files` can
+recreate frontend layout files from them. Physical photographs and provenance
+remain attached to physical copies, not catalog releases.
 
 ## Device-local Inbox and selective storage
 

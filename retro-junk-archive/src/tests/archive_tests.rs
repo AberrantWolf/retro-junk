@@ -427,20 +427,19 @@ fn release_assets_are_copied_and_indexed_as_authoritative_originals() {
     .unwrap();
     let cover = temp.path().join("cover.png");
     std::fs::write(&cover, b"original pixels").unwrap();
-    crate::add_release_file(
-        &archive,
-        crate::NewReleaseFile {
-            release_id: ingested.release.archive_release_id,
-            source_file: &cover,
-            category: crate::ReleaseFileCategory::Artwork,
-            asset_type: "box-front",
-            source: "screenscraper",
-            source_url: "https://example.invalid/cover",
-            caption: "front cover",
-        },
-        &AtomicBool::new(false),
-    )
-    .unwrap();
+    let request = crate::NewReleaseFile {
+        release_id: ingested.release.archive_release_id,
+        source_file: &cover,
+        category: crate::ReleaseFileCategory::Artwork,
+        asset_type: "box-front",
+        source: "screenscraper",
+        source_url: "https://example.invalid/cover",
+        caption: "front cover",
+    };
+    crate::add_release_file(&archive, request, &AtomicBool::new(false)).unwrap();
+    let duplicate =
+        crate::add_release_files(&archive, &[request], &AtomicBool::new(false)).unwrap();
+    assert!(!duplicate[0].added);
     let receipt = temp.path().join("receipt.txt");
     std::fs::write(&receipt, b"provenance").unwrap();
     crate::add_physical_copy_file(

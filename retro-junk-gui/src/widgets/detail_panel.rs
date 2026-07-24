@@ -702,6 +702,24 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 show_file_actions(ui, app, console_idx, false);
             }
             ui.add_space(6.0);
+        } else if let Some(console_idx) = app.selected_console_index() {
+            let scrape = ui
+                .add_enabled(
+                    release.scrape_identity.is_some(),
+                    egui::Button::new("Scrape Media"),
+                )
+                .on_disabled_hover_text(
+                    "This archive release is not catalog-bound, so it has no reliable scraper identity",
+                );
+            if scrape.clicked() {
+                crate::backend::assets::scrape_missing_media_for_selection(
+                    app,
+                    console_idx,
+                    ui.ctx(),
+                );
+            }
+            ui.weak("Scraped originals will be stored in the archive.");
+            ui.add_space(6.0);
         }
         if let Some(media) = grouped_media.as_ref() {
             show_media(ui, media);

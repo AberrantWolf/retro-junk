@@ -696,6 +696,7 @@ fn start_dump_import(
     let progress_sender = sender.clone();
     let db_path = app.db_path.clone();
     let profile = profile.clone();
+    let media_dir_setting = app.settings.general.assets_dir.clone();
     let handle = std::thread::spawn(move || {
         let result = retro_junk_archive_import::execute_import(
             plan,
@@ -737,10 +738,26 @@ fn start_dump_import(
                     current: 0,
                     total: 0,
                 });
-                let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                    .map_err(|error| error.to_string())?;
+                let mut snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
                     .map_err(|error| error.to_string())?;
                 let mut connection =
                     retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
+                let adopted = crate::backend::assets::adopt_playable_artwork(
+                    &connection,
+                    &snapshot,
+                    &profile,
+                    &media_dir_setting,
+                    &cancel,
+                )?;
+                if adopted > 0 {
+                    log::info!(
+                        "Adopted {adopted} existing playable artwork file(s) into the archive"
+                    );
+                    snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                        .map_err(|error| error.to_string())?;
+                }
                 retro_junk_db::reconcile_archive_snapshot(
                     &mut connection,
                     &snapshot,
@@ -1125,6 +1142,7 @@ fn start_archive_ingest(
     let profile = profile.clone();
     let carrier_manifest_path = editor.carrier_manifest_path.clone();
     let db_path = app.db_path.clone();
+    let media_dir_setting = app.settings.general.assets_dir.clone();
     let handle = std::thread::spawn(move || {
         let result = (|| -> Result<String, String> {
             let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
@@ -1161,11 +1179,25 @@ fn start_archive_ingest(
                 },
             )
             .map_err(|error| error.to_string())?;
-            let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+            let mut snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
                 .map_err(|error| error.to_string())?;
             if let Some(db_path) = db_path {
                 let mut connection =
                     retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
+                let adopted = crate::backend::assets::adopt_playable_artwork(
+                    &connection,
+                    &snapshot,
+                    &profile,
+                    &media_dir_setting,
+                    &cancel,
+                )?;
+                if adopted > 0 {
+                    log::info!(
+                        "Adopted {adopted} existing playable artwork file(s) into the archive"
+                    );
+                    snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                        .map_err(|error| error.to_string())?;
+                }
                 retro_junk_db::reconcile_archive_snapshot(
                     &mut connection,
                     &snapshot,
