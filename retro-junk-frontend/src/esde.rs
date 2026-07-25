@@ -33,110 +33,7 @@ impl Frontend for EsDeFrontend {
         xml.push_str("<gameList>\n");
 
         for game in games {
-            xml.push_str("  <game>\n");
-            write_tag(&mut xml, "path", &format!("./{}", game.rom_filename));
-            let display_name = if game.cover_title.is_empty() {
-                &game.name
-            } else {
-                &game.cover_title
-            };
-            write_tag(&mut xml, "name", display_name);
-
-            if !game.description.is_empty() {
-                write_tag(&mut xml, "desc", &game.description);
-            }
-            if !game.developer.is_empty() {
-                write_tag(&mut xml, "developer", &game.developer);
-            }
-            if !game.publisher.is_empty() {
-                write_tag(&mut xml, "publisher", &game.publisher);
-            }
-            if !game.genre.is_empty() {
-                write_tag(&mut xml, "genre", &game.genre);
-            }
-            if !game.players.is_empty() {
-                write_tag(&mut xml, "players", &game.players);
-            }
-            if let Some(rating) = game.rating {
-                write_tag(&mut xml, "rating", &format!("{rating:.1}"));
-            }
-            if !game.release_date.is_empty() {
-                // Convert YYYY-MM-DD or YYYYMMDD to YYYYMMDDTHHMMSS
-                let formatted = format_esde_date(&game.release_date);
-                write_tag(&mut xml, "releasedate", &formatted);
-            }
-
-            // Media paths — use relative paths from the ROM directory if possible
-            // Prefer miximage for <image>, fall back to screenshot
-            if game.assets.contains_key(&AssetType::Miximage) {
-                write_asset_tag(
-                    &mut xml,
-                    "image",
-                    game,
-                    AssetType::Miximage,
-                    rom_dir,
-                    media_dir,
-                );
-            } else {
-                write_asset_tag(
-                    &mut xml,
-                    "image",
-                    game,
-                    AssetType::Screenshot,
-                    rom_dir,
-                    media_dir,
-                );
-            }
-            write_asset_tag(
-                &mut xml,
-                "cover",
-                game,
-                AssetType::Cover,
-                rom_dir,
-                media_dir,
-            );
-            write_asset_tag(
-                &mut xml,
-                "marquee",
-                game,
-                AssetType::Marquee,
-                rom_dir,
-                media_dir,
-            );
-            write_asset_tag(
-                &mut xml,
-                "screenshot",
-                game,
-                AssetType::Screenshot,
-                rom_dir,
-                media_dir,
-            );
-            write_asset_tag(
-                &mut xml,
-                "titlescreen",
-                game,
-                AssetType::TitleScreen,
-                rom_dir,
-                media_dir,
-            );
-            write_asset_tag(
-                &mut xml,
-                "video",
-                game,
-                AssetType::Video,
-                rom_dir,
-                media_dir,
-            );
-            write_asset_tag(
-                &mut xml,
-                "fanart",
-                game,
-                AssetType::Fanart,
-                rom_dir,
-                media_dir,
-            );
-
-            xml.push_str("  </game>\n");
+            xml.push_str(&render_game(game, rom_dir, media_dir));
         }
 
         xml.push_str("</gameList>\n");
@@ -160,6 +57,113 @@ impl Frontend for EsDeFrontend {
             ("videos", AssetType::Video),
         ]
     }
+}
+
+/// Add a newly-created playable entry to an ES-DE gamelist without replacing
+/// existing entries or user-managed fields such as favorites and play counts.
+///
+/// ES-DE discovers media by filename in `MediaDirectory`, so this metadata is
+/// primarily for the display name and compatibility with other frontends.
+pub fn upsert_game_metadata(
+    game: &ScrapedGame,
+    rom_dir: &Path,
+    metadata_dir: &Path,
+    media_dir: &Path,
+) -> Result<bool, FrontendError> {
+    fs::create_dir_all(metadata_dir)?;
+    let gamelist_path = metadata_dir.join("gamelist.xml");
+    let wanted_path = format!("./{}", game.rom_filename.replace('\\', "/"));
+    if !gamelist_path.is_file() {
+        let xml = format!(
+            "<?xml version=\"1.0\"?>\n<gameList>\n{}</gameList>\n",
+            render_game(game, rom_dir, media_dir)
+        );
+        write_atomic(&gamelist_path, xml.as_bytes())?;
+        return Ok(true);
+    }
+
+    let existing = fs::read_to_string(&gamelist_path)?;
+    if existing
+        .lines()
+        .any(|line| tag_value(line, "path").is_some_and(|value| unescape_xml(value) == wanted_path))
+    {
+        return Ok(false);
+    }
+    let Some(insert_at) = existing.rfind("</gameList>") else {
+        return Err(FrontendError::InvalidMetadata(format!(
+            "{} has no closing gameList element",
+            gamelist_path.display()
+        )));
+    };
+    let mut updated = existing;
+    updated.insert_str(insert_at, &render_game(game, rom_dir, media_dir));
+    write_atomic(&gamelist_path, updated.as_bytes())?;
+    Ok(true)
+}
+
+fn render_game(game: &ScrapedGame, rom_dir: &Path, media_dir: &Path) -> String {
+    let mut xml = String::new();
+    xml.push_str("  <game>\n");
+    write_tag(
+        &mut xml,
+        "path",
+        &format!("./{}", game.rom_filename.replace('\\', "/")),
+    );
+    let display_name = if game.cover_title.is_empty() {
+        &game.name
+    } else {
+        &game.cover_title
+    };
+    write_tag(&mut xml, "name", display_name);
+
+    for (tag, value) in [
+        ("desc", game.description.as_str()),
+        ("developer", game.developer.as_str()),
+        ("publisher", game.publisher.as_str()),
+        ("genre", game.genre.as_str()),
+        ("players", game.players.as_str()),
+    ] {
+        if !value.is_empty() {
+            write_tag(&mut xml, tag, value);
+        }
+    }
+    if let Some(rating) = game.rating {
+        write_tag(&mut xml, "rating", &format!("{rating:.1}"));
+    }
+    if !game.release_date.is_empty() {
+        write_tag(
+            &mut xml,
+            "releasedate",
+            &format_esde_date(&game.release_date),
+        );
+    }
+
+    let image_type = if game.assets.contains_key(&AssetType::Miximage) {
+        AssetType::Miximage
+    } else {
+        AssetType::Screenshot
+    };
+    write_asset_tag(&mut xml, "image", game, image_type, rom_dir, media_dir);
+    for (tag, asset_type) in [
+        ("cover", AssetType::Cover),
+        ("marquee", AssetType::Marquee),
+        ("screenshot", AssetType::Screenshot),
+        ("titlescreen", AssetType::TitleScreen),
+        ("video", AssetType::Video),
+        ("fanart", AssetType::Fanart),
+    ] {
+        write_asset_tag(&mut xml, tag, game, asset_type, rom_dir, media_dir);
+    }
+    xml.push_str("  </game>\n");
+    xml
+}
+
+fn tag_value<'a>(line: &'a str, tag: &str) -> Option<&'a str> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = line.find(&open)? + open.len();
+    let end = line.rfind(&close)?;
+    (end >= start).then_some(&line[start..end])
 }
 
 fn write_atomic(path: &Path, contents: &[u8]) -> Result<(), FrontendError> {

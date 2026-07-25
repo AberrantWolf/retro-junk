@@ -48,6 +48,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
         if ui
             .add_enabled(
+                !busy && app.db_path.is_some(),
+                egui::Button::new("Identify archived carriers"),
+            )
+            .on_hover_text(
+                "Reproduce unbound or stale Redumper masters and match complete track sets against the current catalog",
+            )
+            .clicked()
+        {
+            crate::backend::archive::start_catalog_identification_operation(app, &profile);
+        }
+        if ui
+            .add_enabled(
                 !busy && archive_initialized,
                 egui::Button::new("Import dumps…"),
             )
@@ -347,6 +359,7 @@ fn load_editor(
         retain_intermediate: details.retain_intermediate,
         allow_unverified: details.allow_unverified,
         ingest_format: "rom".to_owned(),
+        release_asset_type: "cover".to_owned(),
     })
 }
 
@@ -375,7 +388,14 @@ fn show_editor(
             ui.end_row();
             ui.label("Catalog");
             if editor.catalog_release_id.is_empty() {
-                ui.colored_label(egui::Color32::YELLOW, &editor.release_binding_state);
+                if editor.release_binding_state == "carrier_resolved" {
+                    ui.label(format!(
+                        "{} · exact carrier matches (compatible masterings)",
+                        editor.catalog_source
+                    ));
+                } else {
+                    ui.colored_label(egui::Color32::YELLOW, &editor.release_binding_state);
+                }
             } else {
                 ui.label(format!(
                     "{} · {}",
@@ -465,11 +485,37 @@ fn show_editor(
             "Allow build without catalog evidence",
         );
         ui.end_row();
+        ui.label("New release artwork type");
+        egui::ComboBox::from_id_salt("archive_release_asset_type")
+            .selected_text(&editor.release_asset_type)
+            .show_ui(ui, |ui| {
+                for asset_type in [
+                    "cover",
+                    "3D box",
+                    "screenshot",
+                    "title screen",
+                    "marquee",
+                    "fanart",
+                    "physical media",
+                    "miximage",
+                ] {
+                    ui.selectable_value(
+                        &mut editor.release_asset_type,
+                        asset_type.to_owned(),
+                        asset_type,
+                    );
+                }
+            });
+        ui.end_row();
     });
     let save = ui.button("Save physical copy and policy").clicked();
     let mut add_file = None;
+    let mut add_release_artwork = false;
     let mut ingest_source = None;
     ui.horizontal(|ui| {
+        if ui.button("Add release artwork…").clicked() {
+            add_release_artwork = true;
+        }
         if ui.button("Add physical-copy photo…").clicked() {
             add_file = Some((
                 retro_junk_archive::PhysicalCopyFileCategory::Photo,
@@ -530,6 +576,39 @@ fn show_editor(
                 crate::backend::archive::start_archive_operation(app, profile, false);
             }
             Err(error) => app.push_error("Physical-copy file", error),
+        }
+    }
+    if add_release_artwork
+        && let Some(source_file) = rfd::FileDialog::new()
+            .add_filter("Artwork", &["png", "jpg", "jpeg", "webp"])
+            .pick_file()
+    {
+        let result = (|| -> Result<(), String> {
+            let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            let release_id = editor_snapshot
+                .archive_release_id
+                .parse::<retro_junk_archive::ArchiveReleaseId>()
+                .map_err(|error| error.to_string())?;
+            retro_junk_archive::add_release_file(
+                &profile.archive_root,
+                retro_junk_archive::NewReleaseFile {
+                    release_id,
+                    source_file: &source_file,
+                    category: retro_junk_archive::ReleaseFileCategory::Artwork,
+                    asset_type: &editor_snapshot.release_asset_type,
+                    source: "user",
+                    source_url: "",
+                    caption: "",
+                },
+                &AtomicBool::new(false),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => crate::backend::archive::start_archive_operation(app, profile, false),
+            Err(error) => app.push_error("Release artwork", error),
         }
     }
     if let Some(source) = ingest_source {
@@ -629,6 +708,7 @@ fn start_dump_import_planning(
         new_physical_copy: false,
         redumper_path: None,
         workspace_root: Some(profile.workspace_root.clone()),
+        stage_packages_locally: profile.network_mode,
         playable_root,
     };
     let handle = std::thread::spawn(move || {
@@ -800,9 +880,20 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                         );
                         ui.end_row();
                     });
-                ui.weak(
-                    "Package files are staged locally once, and preservation hashes are calculated during that copy.",
-                );
+                if app
+                    .settings
+                    .library
+                    .active_profile()
+                    .is_some_and(|profile| profile.network_mode)
+                {
+                    ui.weak(
+                        "Network mode is on: package files are staged locally once, and preservation hashes are calculated during that copy.",
+                    );
+                } else {
+                    ui.weak(
+                        "Network mode is off: preservation hashes and package analysis run against the source files in place.",
+                    );
+                }
                 show_import_progress(ui, app, *op_id);
                 if ui.button("Cancel").clicked() {
                     cancel_operation(app, *op_id);
@@ -841,7 +932,9 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(format!("{:?}", candidate.format));
                                 ui.separator();
-                                ui.label(format!("{:?}", candidate.identification));
+                                ui.label(import_identification_label(
+                                    &candidate.identification,
+                                ));
                                 ui.separator();
                                 if let Some(selected) = candidate.selected_match.as_ref() {
                                     ui.label(format!(
@@ -907,6 +1000,48 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                                         candidate.physical_copy_id = Some(copy_id);
                                         candidate.disposition = retro_junk_archive_import::ImportDisposition::Ready;
                                     }
+                                }
+                                retro_junk_archive_import::ImportDisposition::Unresolved { .. }
+                                    if ui.button("Archive as an unbound release…").clicked() => {
+                                    let title = candidate
+                                        .source
+                                        .file_stem()
+                                        .and_then(|value| value.to_str())
+                                        .unwrap_or("Unknown release")
+                                        .to_owned();
+                                    let platform_id = import_request
+                                        .platform_hint
+                                        .clone()
+                                        .unwrap_or_else(|| candidate.archive_platform_id.clone());
+                                    candidate.disposition =
+                                        retro_junk_archive_import::ImportDisposition::ReadyUnbound {
+                                            title,
+                                            platform_id,
+                                        };
+                                    candidate.identification =
+                                        retro_junk_archive_import::IdentificationResolution::Unresolved;
+                                }
+                                retro_junk_archive_import::ImportDisposition::ReadyUnbound {
+                                    mut title,
+                                    mut platform_id,
+                                } => {
+                                    ui.weak("No catalog match will be claimed. Give the release an honest local identity.");
+                                    egui::Grid::new(("unbound-import-identity", index))
+                                        .num_columns(2)
+                                        .show(ui, |ui| {
+                                            ui.label("Title");
+                                            ui.text_edit_singleline(&mut title);
+                                            ui.end_row();
+                                            ui.label("Platform");
+                                            ui.text_edit_singleline(&mut platform_id);
+                                            ui.end_row();
+                                        });
+                                    candidate.archive_platform_id.clone_from(&platform_id);
+                                    candidate.disposition =
+                                        retro_junk_archive_import::ImportDisposition::ReadyUnbound {
+                                            title,
+                                            platform_id,
+                                        };
                                 }
                                 _ => {}
                             }
@@ -1040,6 +1175,9 @@ fn import_disposition_label(disposition: &retro_junk_archive_import::ImportDispo
     use retro_junk_archive_import::ImportDisposition;
     match disposition {
         ImportDisposition::Ready => "ready to import".to_owned(),
+        ImportDisposition::ReadyUnbound { .. } => {
+            "ready to import without catalog binding".to_owned()
+        }
         ImportDisposition::AlreadyArchived { .. } => "already archived".to_owned(),
         ImportDisposition::NeedsCatalogChoice { .. } => "catalog choice required".to_owned(),
         ImportDisposition::NeedsPhysicalCopyChoice { .. } => {
@@ -1048,6 +1186,38 @@ fn import_disposition_label(disposition: &retro_junk_archive_import::ImportDispo
         ImportDisposition::Unresolved { reason } | ImportDisposition::Invalid { reason } => {
             reason.clone()
         }
+    }
+}
+
+fn import_identification_label(
+    identification: &retro_junk_archive_import::IdentificationResolution,
+) -> &'static str {
+    use retro_junk_archive_import::{IdentificationMethod, IdentificationResolution};
+    match identification {
+        IdentificationResolution::CatalogVerified {
+            method: IdentificationMethod::CompleteTrackSet,
+        } => "Catalog hashes verified · complete track set",
+        IdentificationResolution::CatalogVerified {
+            method: IdentificationMethod::ExactFileHash,
+        } => "Catalog hashes verified · exact file",
+        IdentificationResolution::CatalogVerified {
+            method: IdentificationMethod::FormatAwareFileHash,
+        } => "Catalog hashes verified · normalized payload",
+        IdentificationResolution::CatalogVerified { .. } => "Catalog hashes verified",
+        IdentificationResolution::Identified {
+            method: IdentificationMethod::HeaderSerial,
+        } => "Catalog identity inferred from header serial · not hash verified",
+        IdentificationResolution::Identified {
+            method: IdentificationMethod::FolderSerial,
+        } => "Catalog identity inferred from folder serial · not hash verified",
+        IdentificationResolution::Identified {
+            method: IdentificationMethod::UserSelection,
+        } => "Catalog identity selected by user · not hash verified",
+        IdentificationResolution::Identified { .. } => {
+            "Catalog identity inferred · not hash verified"
+        }
+        IdentificationResolution::Ambiguous => "Catalog identity ambiguous",
+        IdentificationResolution::Unresolved => "Catalog identity unresolved",
     }
 }
 

@@ -211,4 +211,32 @@ mod tests {
             PathBuf::from("/fast-scratch/retro-junk")
         );
     }
+
+    #[test]
+    fn legacy_collection_profiles_default_to_network_mode() {
+        let profile = retro_junk_archive::CollectionProfile::from_legacy_playable_root(
+            std::path::Path::new("/collections/roms"),
+        );
+        let serialized = toml::to_string(&profile).unwrap();
+        let legacy = serialized
+            .lines()
+            .filter(|line| !line.starts_with("network_mode"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let loaded: retro_junk_archive::CollectionProfile = toml::from_str(&legacy).unwrap();
+
+        assert!(loaded.network_mode);
+    }
+
+    #[test]
+    fn collection_network_mode_round_trips_when_disabled() {
+        let mut profile = retro_junk_archive::CollectionProfile::from_legacy_playable_root(
+            std::path::Path::new("/collections/roms"),
+        );
+        profile.network_mode = false;
+        let loaded: retro_junk_archive::CollectionProfile =
+            toml::from_str(&toml::to_string(&profile).unwrap()).unwrap();
+
+        assert!(!loaded.network_mode);
+    }
 }

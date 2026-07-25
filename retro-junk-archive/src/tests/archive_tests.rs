@@ -29,6 +29,47 @@ fn archive_lock_is_exclusive_and_released_on_drop() {
 }
 
 #[test]
+fn low_level_ingest_rejects_multiple_redumper_images() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    let source = temp.path().join("combined-redumper");
+    initialize_archive(&archive, &ArchiveRootManifest::new("Boundary test")).unwrap();
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("disc1.scram"), b"disc one").unwrap();
+    std::fs::write(source.join("disc2.scram"), b"disc two").unwrap();
+
+    let result = ingest_new_carrier_dump(
+        &archive,
+        &source,
+        NewCarrierDump {
+            platform_id: "ps1".to_owned(),
+            title: "Two Disc Game".to_owned(),
+            region: "japan".to_owned(),
+            revision: String::new(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: String::new(),
+            sequence_number: 1,
+            carrier_label: String::new(),
+            carrier_kind: crate::CarrierKind::OpticalDisc,
+            format: RepresentationFormat::RedumperRaw,
+            catalog_binding: crate::CatalogBinding::default(),
+            source_package: crate::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
+            physical_copy_id: None,
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    );
+
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("disc1, disc2"));
+    assert!(error.contains("separate subdirectory"));
+    assert_eq!(scan_archive(&archive).unwrap().releases.len(), 0);
+}
+
+#[test]
 fn legacy_japanese_nes_release_is_moved_to_famicom_without_recopying_dump() {
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
@@ -89,6 +130,65 @@ fn legacy_japanese_nes_release_is_moved_to_famicom_without_recopying_dump() {
         upgrade_legacy_regional_physical_platforms(&archive).unwrap(),
         0
     );
+}
+
+#[test]
+fn legacy_japanese_saturn_release_is_moved_to_saturnjp_without_recopying_dump() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    let mut root_manifest = ArchiveRootManifest::new("Japanese Saturn migration");
+    root_manifest.applied_migrations.clear();
+    initialize_archive(&archive, &root_manifest).unwrap();
+    let disc = temp.path().join("game.iso");
+    std::fs::write(&disc, b"preserved saturn bytes").unwrap();
+    let imported = ingest_new_carrier_dump(
+        &archive,
+        &disc,
+        NewCarrierDump {
+            platform_id: "saturn".to_owned(),
+            title: "Japanese Saturn Game".to_owned(),
+            region: "Japan".to_owned(),
+            revision: String::new(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: String::new(),
+            sequence_number: 1,
+            carrier_label: String::new(),
+            carrier_kind: crate::CarrierKind::OpticalDisc,
+            format: RepresentationFormat::Iso,
+            catalog_binding: crate::CatalogBinding::default(),
+            source_package: crate::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
+            physical_copy_id: None,
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    let old_release_directory = imported
+        .dump_directory
+        .ancestors()
+        .find(|path| path.join("release.toml").is_file())
+        .unwrap()
+        .to_path_buf();
+
+    assert_eq!(
+        upgrade_legacy_regional_physical_platforms(&archive).unwrap(),
+        1
+    );
+    assert!(!old_release_directory.exists());
+    let snapshot = scan_archive(&archive).unwrap();
+    assert_eq!(snapshot.releases[0].manifest.platform_id, "saturnjp");
+    assert!(
+        snapshot.releases[0]
+            .directory
+            .starts_with(archive.join("saturnjp"))
+    );
+    let raw = snapshot.releases[0].physical_copies[0].carriers[0].dumps[0]
+        .directory
+        .join("raw/game.iso");
+    assert_eq!(std::fs::read(raw).unwrap(), b"preserved saturn bytes");
 }
 
 #[test]
@@ -311,12 +411,18 @@ fn archive_layout_groups_release_physical_copy_and_carrier() {
     );
     let physical_copy = ArchiveLayout::physical_copy_dir(&release, 1);
     let carrier = ArchiveLayout::carrier_dir(&physical_copy, "SCUS-94163", 1);
+    let second_carrier = ArchiveLayout::carrier_dir(&physical_copy, "SCUS-94163", 2);
     assert!(
         carrier
             .to_string_lossy()
             .contains("ps1/final-fantasy-vii-usa/physical-copies/copy-01")
     );
     assert!(carrier.to_string_lossy().ends_with("carriers/scus-94163"));
+    assert!(
+        second_carrier
+            .to_string_lossy()
+            .ends_with("carriers/scus-94163-disc-2")
+    );
 }
 
 #[test]
@@ -468,4 +574,149 @@ fn release_assets_are_copied_and_indexed_as_authoritative_originals() {
         15
     );
     assert_eq!(std::fs::read(&cover).unwrap(), b"original pixels");
+}
+
+#[test]
+fn carrier_binding_replaces_a_single_identity_and_generalizes_a_mixed_parent() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    initialize_archive(&archive, &ArchiveRootManifest::new("Binding")).unwrap();
+    let disc = temp.path().join("disc.bin");
+    std::fs::write(&disc, b"disc").unwrap();
+    let imported = ingest_new_carrier_dump(
+        &archive,
+        &disc,
+        NewCarrierDump {
+            platform_id: "saturn".to_owned(),
+            title: "Game".to_owned(),
+            region: "japan".to_owned(),
+            revision: "mastering-a".to_owned(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: "GS-0000".to_owned(),
+            sequence_number: 1,
+            carrier_label: String::new(),
+            carrier_kind: crate::CarrierKind::OpticalDisc,
+            format: RepresentationFormat::Rom,
+            catalog_binding: crate::CatalogBinding {
+                catalog_work_id: "work".to_owned(),
+                catalog_release_id: "release-a".to_owned(),
+                catalog_media_id: "media-a".to_owned(),
+                ..Default::default()
+            },
+            source_package: crate::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
+            physical_copy_id: None,
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    let release_path = imported
+        .dump_directory
+        .ancestors()
+        .find(|path| path.join("release.toml").is_file())
+        .unwrap()
+        .join("release.toml");
+    let carrier_path = imported
+        .dump_directory
+        .ancestors()
+        .find(|path| path.join("carrier.toml").is_file())
+        .unwrap()
+        .join("carrier.toml");
+    assert!(
+        !crate::bind_carrier_to_catalog(
+            &release_path,
+            &carrier_path,
+            &crate::CatalogBinding {
+                catalog_work_id: "work".to_owned(),
+                catalog_release_id: "release-b".to_owned(),
+                catalog_media_id: "media-b".to_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    );
+    let rebound = scan_archive(&archive).unwrap();
+    assert_eq!(
+        rebound.releases[0]
+            .manifest
+            .catalog_binding
+            .catalog_release_id,
+        "release-b"
+    );
+
+    let second_disc = temp.path().join("disc-2.bin");
+    std::fs::write(&second_disc, b"disc two").unwrap();
+    let second = ingest_new_carrier_dump(
+        &archive,
+        &second_disc,
+        NewCarrierDump {
+            platform_id: "saturn".to_owned(),
+            title: "Game".to_owned(),
+            region: "japan".to_owned(),
+            revision: "mastering-a".to_owned(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: "GS-0000".to_owned(),
+            sequence_number: 2,
+            carrier_label: String::new(),
+            carrier_kind: crate::CarrierKind::OpticalDisc,
+            format: RepresentationFormat::Rom,
+            catalog_binding: crate::CatalogBinding::default(),
+            source_package: crate::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
+            physical_copy_id: Some(imported.physical_copy.physical_copy_id),
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    let second_carrier_path = second
+        .dump_directory
+        .ancestors()
+        .find(|path| path.join("carrier.toml").is_file())
+        .unwrap()
+        .join("carrier.toml");
+    assert!(
+        crate::bind_carrier_to_catalog(
+            &release_path,
+            &second_carrier_path,
+            &crate::CatalogBinding {
+                catalog_work_id: "work".to_owned(),
+                catalog_release_id: "release-c".to_owned(),
+                catalog_media_id: "media-c".to_owned(),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    );
+
+    let snapshot = scan_archive(&archive).unwrap();
+    assert_eq!(
+        snapshot.releases[0]
+            .manifest
+            .catalog_binding
+            .catalog_work_id,
+        "work"
+    );
+    assert!(
+        snapshot.releases[0]
+            .manifest
+            .catalog_binding
+            .catalog_release_id
+            .is_empty()
+    );
+    let carrier = snapshot.releases[0].physical_copies[0]
+        .carriers
+        .iter()
+        .find(|carrier| carrier.manifest.sequence_number == 2)
+        .unwrap();
+    assert_eq!(
+        carrier.manifest.catalog_binding.catalog_release_id,
+        "release-c"
+    );
+    assert_eq!(carrier.manifest.catalog_binding.catalog_media_id, "media-c");
 }

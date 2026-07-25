@@ -79,6 +79,30 @@ fn show_library_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 profile_action = Some(ProfileAction::Workspace(path));
             }
         });
+        let mut network_mode = profile.network_mode;
+        if ui
+            .checkbox(
+                &mut network_mode,
+                "Network mode (stage large files locally before processing)",
+            )
+            .on_hover_text(
+                "Useful for seek-heavy work on SMB/NFS. Turn this off to keep processing \
+                 and required scratch on the source filesystem instead of staging inputs \
+                 in the device-local workspace.",
+            )
+            .changed()
+        {
+            profile_action = Some(ProfileAction::NetworkMode(network_mode));
+        }
+        if network_mode {
+            ui.weak(
+                "Large inputs are copied to the local workspace first. This is usually best for CHD verification over a network mount.",
+            );
+        } else {
+            ui.weak(
+                "Large inputs stay on their source filesystem. Tools that require isolated scratch keep it on the archive filesystem.",
+            );
+        }
         let initialized = profile
             .archive_root
             .join("retro-junk-archive.toml")
@@ -157,6 +181,7 @@ enum ProfileAction {
     Archive(std::path::PathBuf),
     Playable(std::path::PathBuf),
     Workspace(std::path::PathBuf),
+    NetworkMode(bool),
     Initialize,
 }
 
@@ -200,6 +225,7 @@ fn apply_profile_action(app: &mut RetroJunkApp, action: ProfileAction) {
             app.settings.library.current_root = Some(path);
         }
         ProfileAction::Workspace(path) => profile.workspace_root = path,
+        ProfileAction::NetworkMode(enabled) => profile.network_mode = enabled,
         ProfileAction::Initialize => {
             let mut manifest = retro_junk_archive::ArchiveRootManifest::new(&profile.display_name);
             manifest.profile_id = profile.profile_id;

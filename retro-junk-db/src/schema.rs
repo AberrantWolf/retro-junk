@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 19;
+pub const CURRENT_VERSION: i32 = 20;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -290,6 +290,7 @@ const TABLES: &[(&str, &str)] = &[
         "archive_releases",
         "(id TEXT PRIMARY KEY,
           profile_id TEXT NOT NULL REFERENCES archive_profiles(id) ON DELETE CASCADE,
+          catalog_work_id TEXT REFERENCES works(id) ON DELETE SET NULL,
           catalog_release_id TEXT REFERENCES releases(id) ON DELETE SET NULL,
           platform_id TEXT NOT NULL,
           title TEXT NOT NULL,
@@ -468,6 +469,7 @@ CREATE INDEX IF NOT EXISTS idx_library_entries_display ON library_entries(consol
 
 const ARCHIVE_INDEXES_SQL: &str = "
 CREATE INDEX IF NOT EXISTS idx_archive_releases_profile ON archive_releases(profile_id, platform_id, title);
+CREATE INDEX IF NOT EXISTS idx_archive_releases_work ON archive_releases(catalog_work_id, platform_id, region);
 CREATE INDEX IF NOT EXISTS idx_physical_copies_release ON physical_copies(archive_release_id);
 CREATE INDEX IF NOT EXISTS idx_carriers_copy ON carriers(physical_copy_id);
 CREATE INDEX IF NOT EXISTS idx_dump_events_media ON dump_events(carrier_id);
@@ -981,6 +983,25 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 conn.execute_batch("PRAGMA foreign_keys=ON;")?;
                 result?;
                 conn.execute_batch("PRAGMA foreign_key_check;")?;
+            }
+            19 => {
+                let has_archive_releases: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_releases')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_archive_releases
+                    && conn
+                        .prepare("SELECT catalog_work_id FROM archive_releases LIMIT 0")
+                        .is_err()
+                {
+                    conn.execute_batch(
+                        "ALTER TABLE archive_releases
+                         ADD COLUMN catalog_work_id TEXT REFERENCES works(id) ON DELETE SET NULL;
+                         CREATE INDEX IF NOT EXISTS idx_archive_releases_work
+                         ON archive_releases(catalog_work_id, platform_id, region);",
+                    )?;
+                }
             }
             14 => {
                 let has_match_state: bool = conn.query_row(

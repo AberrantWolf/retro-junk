@@ -78,11 +78,13 @@ impl StagingLease {
 #[derive(Debug)]
 struct StagingLeaseInner {
     directory: PathBuf,
+    remove_on_drop: bool,
 }
 
 impl Drop for StagingLeaseInner {
     fn drop(&mut self) {
-        if let Err(error) = std::fs::remove_dir_all(&self.directory)
+        if self.remove_on_drop
+            && let Err(error) = std::fs::remove_dir_all(&self.directory)
             && error.kind() != std::io::ErrorKind::NotFound
         {
             log_cleanup_failure(&self.directory, &error);
@@ -199,6 +201,7 @@ pub fn stage_planned_package(
     })?;
     let lease = StagingLease(Arc::new(StagingLeaseInner {
         directory: lease_directory,
+        remove_on_drop: true,
     }));
 
     let mut files = Vec::with_capacity(plan.files.len());
@@ -249,6 +252,43 @@ pub fn stage_planned_package(
         lease,
         original_source: plan.source.clone(),
         local_source,
+        files,
+        total_bytes,
+    })
+}
+
+/// Calculate the same package inventory as staging while leaving every file
+/// in place. This avoids the additional local write when sequential access to
+/// the source is preferable to a device-local copy.
+pub fn hash_planned_package_in_place(
+    plan: &StagingPlan,
+    cancel: &AtomicBool,
+    mut on_bytes: impl FnMut(u64),
+) -> Result<PreparedPackage, StageError> {
+    let lease = StagingLease(Arc::new(StagingLeaseInner {
+        directory: PathBuf::new(),
+        remove_on_drop: false,
+    }));
+    let mut files = Vec::with_capacity(plan.files.len());
+    let mut total_bytes = 0_u64;
+    for planned in &plan.files {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(StageError::Cancelled);
+        }
+        let digests = hash_file(&planned.original_path, cancel, &mut on_bytes)?;
+        total_bytes = total_bytes.saturating_add(digests.size);
+        files.push(PreparedFile {
+            original_path: planned.original_path.clone(),
+            local_path: planned.original_path.clone(),
+            relative_path: planned.relative_path.to_string_lossy().replace('\\', "/"),
+            digests,
+        });
+    }
+    files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    Ok(PreparedPackage {
+        lease,
+        original_source: plan.source.clone(),
+        local_source: plan.source.clone(),
         files,
         total_bytes,
     })
@@ -362,6 +402,52 @@ fn copy_and_hash(
         path: target_path.display().to_string(),
         source,
     })?;
+    if before != snapshot(source_path)? || before.size != size {
+        return Err(StageError::SourceChanged(source_path.display().to_string()));
+    }
+    Ok(ContentDigests {
+        size,
+        crc32: format!("{:08x}", crc32.finalize()),
+        md5: format!("{:x}", md5.compute()),
+        sha1: format!("{:x}", sha1.finalize()),
+        sha256: format!("{:x}", sha256.finalize()),
+    })
+}
+
+fn hash_file(
+    source_path: &Path,
+    cancel: &AtomicBool,
+    on_bytes: &mut impl FnMut(u64),
+) -> Result<ContentDigests, StageError> {
+    let before = snapshot(source_path)?;
+    let mut source = File::open(source_path).map_err(|source| StageError::Io {
+        path: source_path.display().to_string(),
+        source,
+    })?;
+    let mut crc32 = crc32fast::Hasher::new();
+    let mut md5 = md5::Context::new();
+    let mut sha1 = Sha1::new();
+    let mut sha256 = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = vec![0_u8; COPY_BUFFER_SIZE];
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(StageError::Cancelled);
+        }
+        let count = source.read(&mut buffer).map_err(|source| StageError::Io {
+            path: source_path.display().to_string(),
+            source,
+        })?;
+        if count == 0 {
+            break;
+        }
+        size = size.saturating_add(count as u64);
+        crc32.update(&buffer[..count]);
+        md5.consume(&buffer[..count]);
+        sha1.update(&buffer[..count]);
+        sha256.update(&buffer[..count]);
+        on_bytes(count as u64);
+    }
     if before != snapshot(source_path)? || before.size != size {
         return Err(StageError::SourceChanged(source_path.display().to_string()));
     }
@@ -495,6 +581,23 @@ mod tests {
         assert_eq!(digests.sha1, "a9993e364706816aba3e25717850c26c9cd0d89d");
         assert_eq!(
             digests.sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn hashes_a_package_in_place_without_creating_a_local_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("game.rom");
+        std::fs::write(&source, b"abc").unwrap();
+        let plan = plan_package(&source).unwrap();
+        let package =
+            hash_planned_package_in_place(&plan, &AtomicBool::new(false), |_| {}).unwrap();
+
+        assert_eq!(package.local_source, source);
+        assert_eq!(package.files[0].local_path, source);
+        assert_eq!(
+            package.files[0].digests.sha256,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
     }

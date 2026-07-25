@@ -504,6 +504,9 @@ pub enum TagDialog {
         query: String,
         results: Vec<retro_junk_db::WorkRow>,
         selected: Option<usize>,
+        platform_id: String,
+        disc_number_required: bool,
+        disc_number: String,
         console_id: retro_junk_db::LibraryConsoleId,
         entry_id: retro_junk_db::LibraryEntryId,
     },
@@ -680,6 +683,7 @@ pub struct PhysicalCopyEditor {
     pub retain_intermediate: bool,
     pub allow_unverified: bool,
     pub ingest_format: String,
+    pub release_asset_type: String,
 }
 
 /// How a `BackgroundOperation`'s `progress_current/progress_total` pair should
@@ -856,6 +860,10 @@ pub enum AppMessage {
         op_id: u64,
         result: Result<Option<std::path::PathBuf>, String>,
     },
+    AssetProjectionComplete {
+        op_id: u64,
+        result: Result<retro_junk_lib::archive_assets::AssetProjectionReport, String>,
+    },
     ArchiveImportPlanReady {
         op_id: u64,
         result: Result<retro_junk_archive_import::DumpImportPlan, String>,
@@ -930,6 +938,10 @@ pub enum AppMessage {
     ScrapeFatalError {
         message: String,
         op_id: u64,
+    },
+    MiximageComplete {
+        generated: usize,
+        failures: Vec<String>,
     },
     /// Authoritative archive artwork changed; rebuild the Library projection.
     ArchiveAssetsChanged,
@@ -1043,6 +1055,7 @@ impl AppMessage {
                 | Self::ArchiveOperationComplete { .. }
                 | Self::PlayablePolicyUpdated { .. }
                 | Self::PlayableBuildComplete { .. }
+                | Self::AssetProjectionComplete { .. }
                 | Self::ArchiveImportPlanReady { .. }
                 | Self::ArchiveImportComplete { .. }
                 | Self::ChdmanProbeResult { .. }
@@ -1736,6 +1749,25 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 Err(error) => app.push_error("Archive action", error),
             }
         }
+        AppMessage::AssetProjectionComplete { op_id, result } => {
+            app.operations.retain(|operation| operation.id != op_id);
+            if let Some(handle) = app.op_threads.remove(&op_id) {
+                let _ = handle.join();
+            }
+            match result {
+                Ok(report) => {
+                    log::info!(
+                        "Restored {} archived media file(s); {} already current",
+                        report.copied,
+                        report.current
+                    );
+                    if let Some(console_id) = app.ui_state.selected_console {
+                        app.request_console_page(console_id, ctx);
+                    }
+                }
+                Err(error) => app.push_error("Restore archived media", error),
+            }
+        }
         AppMessage::ArchiveImportPlanReady { op_id, result } => {
             app.operations.retain(|operation| operation.id != op_id);
             if let Some(handle) = app.op_threads.remove(&op_id) {
@@ -2101,6 +2133,18 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             log::error!("Scrape fatal error: {message}");
             app.push_error("Scrape Failed", &message);
             app.operations.retain(|op| op.id != op_id);
+        }
+
+        AppMessage::MiximageComplete {
+            generated,
+            failures,
+        } => {
+            if generated > 0 {
+                log::info!("Generated {generated} miximage(s)");
+            }
+            if !failures.is_empty() {
+                app.push_error("Generate miximage", failures.join("\n"));
+            }
         }
 
         AppMessage::ArchiveAssetsChanged => {

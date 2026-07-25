@@ -23,8 +23,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     let list_columns = app.context.get_by_platform(console.platform).map_or_else(
         EntryListColumns::default,
         |registered| EntryListColumns {
-            serial: registered.metadata.identification.serial,
-            internal_name: registered.metadata.identification.internal_name,
+            internal_name: registered.metadata.identification.internal_name
+                && registered.analyzer.dat_source() != retro_junk_lib::DatSource::Redump,
             region: registered.metadata.identification.region,
             dat_match: registered.analyzer.has_dat_support(),
         },
@@ -48,6 +48,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     // Cmd+A / Ctrl+A: select all visible entries
     if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
         app.ui_state.selected_entries = visible_ids.iter().copied().collect();
+        app.ui_state.selected_archive_releases.clear();
     }
 
     // Keyboard navigation (only when game table has focus)
@@ -80,6 +81,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 }
             } else {
                 app.ui_state.selected_entries.clear();
+                app.ui_state.selected_archive_releases.clear();
                 app.ui_state.selected_entries.insert(entry_id);
             }
 
@@ -147,10 +149,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         .get(id)
                         .map(|entry| entry.game_entry.analysis_path().to_path_buf())
                 }),
-                serial: String::new(),
                 internal_name: String::new(),
                 regions: region_code(&summary.region),
-                crc32: String::new(),
                 dat_match: summary.catalog_release_id.clone().unwrap_or_default(),
                 availability: AvailabilityState::from_archive(release),
             }
@@ -180,10 +180,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         .unwrap_or(AssetStatus::Unknown),
                     name: projection.display_name.clone(),
                     file_path: entry.map(|entry| entry.game_entry.analysis_path().to_path_buf()),
-                    serial: projection.serial.clone(),
                     internal_name: projection.internal_name.clone(),
                     regions: projected_regions(projection),
-                    crc32: projection.crc32.clone(),
                     dat_match: projection.dat_game_name.clone(),
                     availability: AvailabilityState::from_projection(projection),
                 }
@@ -233,16 +231,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 .column(Column::exact(30.0)) // Status badge + media indicator
                 .column(Column::initial(280.0).at_least(100.0)) // Name
                 .column(Column::initial(145.0).at_least(90.0)); // Availability
-            if list_columns.serial {
-                table = table.column(Column::initial(120.0).at_least(60.0));
-            }
             if list_columns.internal_name {
                 table = table.column(Column::initial(140.0).at_least(60.0));
             }
             if list_columns.region {
                 table = table.column(Column::initial(80.0).at_least(40.0));
             }
-            table = table.column(Column::initial(80.0).at_least(60.0)); // CRC32
             if list_columns.dat_match {
                 table = table.column(Column::initial(200.0).at_least(80.0));
             }
@@ -261,11 +255,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     header.col(|ui| {
                         ui.strong("Availability");
                     });
-                    if list_columns.serial {
-                        header.col(|ui| {
-                            ui.strong("Serial");
-                        });
-                    }
                     if list_columns.internal_name {
                         header.col(|ui| {
                             ui.strong("Internal Name");
@@ -276,9 +265,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             ui.strong("Region");
                         });
                     }
-                    header.col(|ui| {
-                        ui.strong("CRC32");
-                    });
                     if list_columns.dat_match {
                         header.col(|ui| {
                             ui.strong("DAT Match");
@@ -291,7 +277,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         let data = &row_data[row_idx];
                         let is_selected = data
                             .entry_id
-                            .is_some_and(|id| app.ui_state.selected_entries.contains(&id));
+                            .is_some_and(|id| app.ui_state.selected_entries.contains(&id))
+                            || data.archive_release_id.as_ref().is_some_and(|id| {
+                                app.ui_state.selected_archive_releases.contains(id)
+                            });
                         let is_focused = row_is_focused(
                             data.entry_id,
                             data.archive_release_id.as_deref(),
@@ -353,16 +342,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
                         // Union all column responses for click and context menu
                         let mut row_resp = r1.1 | name_response.1 | availability_response.1;
-                        if list_columns.serial {
-                            row_resp |= row.col(|ui| paint_cell_text(ui, &data.serial)).1;
-                        }
                         if list_columns.internal_name {
                             row_resp |= row.col(|ui| paint_cell_text(ui, &data.internal_name)).1;
                         }
                         if list_columns.region {
                             row_resp |= row.col(|ui| paint_cell_text(ui, &data.regions)).1;
                         }
-                        row_resp |= row.col(|ui| paint_cell_text(ui, &data.crc32)).1;
                         if list_columns.dat_match {
                             row_resp |= row.col(|ui| paint_cell_text(ui, &data.dat_match)).1;
                         }
@@ -372,13 +357,25 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             if let Some(entry_id) = data.entry_id {
                                 if !app.ui_state.selected_entries.contains(&entry_id) {
                                     app.ui_state.selected_entries.clear();
+                                    app.ui_state.selected_archive_releases.clear();
                                     app.ui_state.selected_entries.insert(entry_id);
                                 }
                                 app.ui_state.focused_entry = Some(entry_id);
                                 app.ui_state.focused_archive_release = None;
                                 app.request_entry_detail(entry_id, ctx);
                             } else if let Some(release_id) = data.archive_release_id.as_ref() {
-                                select_archive_release(app, release_id, &data.bound_entry_ids, ctx);
+                                if app.ui_state.selected_archive_releases.contains(release_id) {
+                                    app.ui_state.focused_entry = None;
+                                    app.ui_state.focused_archive_release = Some(release_id.clone());
+                                } else {
+                                    select_archive_release(
+                                        app,
+                                        release_id,
+                                        &data.bound_entry_ids,
+                                        egui::Modifiers::NONE,
+                                        ctx,
+                                    );
+                                }
                             }
                         }
 
@@ -387,16 +384,41 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                             if let Some(entry_id) = data.entry_id {
                                 let modifiers = ctx.input(|i| i.modifiers);
                                 handle_row_click(app, entry_id, modifiers, &visible_ids);
-                                app.ui_state.focused_archive_release = None;
-                                app.request_entry_detail(entry_id, ctx);
+                                if !app.ui_state.selected_entries.contains(&entry_id)
+                                    && app.selected_library_row_count() == 1
+                                    && let Some(release_id) = app
+                                        .ui_state
+                                        .selected_archive_releases
+                                        .iter()
+                                        .next()
+                                        .cloned()
+                                {
+                                    app.ui_state.focused_entry = None;
+                                    app.ui_state.focused_archive_release = Some(release_id);
+                                } else {
+                                    app.ui_state.focused_archive_release = None;
+                                    if let Some(focused) = app.ui_state.focused_entry {
+                                        app.request_entry_detail(focused, ctx);
+                                    }
+                                }
                             } else if let Some(release_id) = data.archive_release_id.as_ref() {
-                                select_archive_release(app, release_id, &data.bound_entry_ids, ctx);
+                                let modifiers = ctx.input(|i| i.modifiers);
+                                select_archive_release(
+                                    app,
+                                    release_id,
+                                    &data.bound_entry_ids,
+                                    modifiers,
+                                    ctx,
+                                );
                             }
                             app.ui_state.focused_panel = FocusedPanel::GameTable;
                         }
 
                         // Context menu on unioned response
-                        if data.entry_id.is_some() || !data.bound_entry_ids.is_empty() {
+                        if row_supports_context_menu(
+                            data.entry_id,
+                            data.archive_release_id.as_deref(),
+                        ) {
                             row_resp.context_menu(|ui| {
                                 show_row_context_menu(ui, app, ctx, console_idx, data);
                             });
@@ -418,12 +440,30 @@ fn show_row_context_menu(
     console_idx: usize,
     data: &RowData,
 ) {
+    if app.selected_library_row_count() > 1 {
+        show_multi_row_context_menu(ui, app, ctx, console_idx);
+        return;
+    }
+    let archive_release = data.archive_release_id.as_ref().and_then(|release_id| {
+        app.browser
+            .active_page
+            .as_ref()?
+            .archived_releases
+            .iter()
+            .find(|release| &release.summary.archive_release_id == release_id)
+            .cloned()
+    });
+    if let Some(release) = archive_release.as_ref() {
+        show_archive_context_menu(ui, app, ctx, console_idx, release);
+        if data.bound_entry_ids.is_empty() {
+            return;
+        }
+        ui.separator();
+    }
+
     if !app.selected_entry_details_loaded() {
         ui.spinner();
         ui.label("Loading the complete selection…");
-        return;
-    }
-    if data.entry_id.is_none() && data.bound_entry_ids.is_empty() {
         return;
     }
     let Some(file_path) = data.file_path.as_ref() else {
@@ -445,7 +485,7 @@ fn show_row_context_menu(
     }
 
     // Adaptive scrape menu items based on aggregate media state
-    {
+    if archive_release.is_none() {
         let console = &app.browser.consoles[console_idx];
         let mut any_has_media = false;
         let mut all_have_all_media = true;
@@ -577,13 +617,12 @@ fn show_row_context_menu(
         crate::util::copy_and_close(ui, paths);
     }
 
-    let has_serial = !data.serial.is_empty()
-        || app.ui_state.selected_entries.iter().any(|&i| {
-            app.browser.consoles[console_idx]
-                .entry_by_id(i)
-                .and_then(|e| e.identification.as_ref())
-                .is_some_and(|id| !id.serial_number.is_empty())
-        });
+    let has_serial = app.ui_state.selected_entries.iter().any(|&i| {
+        app.browser.consoles[console_idx]
+            .entry_by_id(i)
+            .and_then(|e| e.identification.as_ref())
+            .is_some_and(|id| !id.serial_number.is_empty())
+    });
     if ui
         .add_enabled(has_serial, egui::Button::new("Copy Serial"))
         .clicked()
@@ -598,13 +637,12 @@ fn show_row_context_menu(
         crate::util::copy_and_close(ui, serials);
     }
 
-    let has_crc32 = !data.crc32.is_empty()
-        || app.ui_state.selected_entries.iter().any(|&i| {
-            app.browser.consoles[console_idx]
-                .entry_by_id(i)
-                .and_then(|e| e.hashes.as_ref())
-                .is_some()
-        });
+    let has_crc32 = app.ui_state.selected_entries.iter().any(|&i| {
+        app.browser.consoles[console_idx]
+            .entry_by_id(i)
+            .and_then(|e| e.hashes.as_ref())
+            .is_some()
+    });
     if ui
         .add_enabled(has_crc32, egui::Button::new("Copy CRC32"))
         .clicked()
@@ -630,6 +668,254 @@ fn show_row_context_menu(
             entry.dat_match.as_ref().map(|dm| dm.game_name.clone())
         });
         crate::util::copy_and_close(ui, dat_names);
+    }
+}
+
+fn show_archive_context_menu(
+    ui: &mut egui::Ui,
+    app: &mut RetroJunkApp,
+    ctx: &egui::Context,
+    console_idx: usize,
+    release: &retro_junk_db::ArchivedLibraryListItem,
+) {
+    let scrape = ui
+        .add_enabled(
+            release.scrape_identity.is_some(),
+            egui::Button::new("Scrape Missing Artwork"),
+        )
+        .on_disabled_hover_text("This release has no reliable catalog scraper identity");
+    if scrape.clicked() {
+        backend::assets::scrape_missing_artwork_for_selection(app, console_idx, ctx);
+        ui.close();
+    }
+    if ui.button("Generate Miximage").clicked() {
+        backend::assets::regenerate_miximages_for_selection(app, console_idx, ctx);
+        ui.close();
+    }
+
+    let frontend_stems = release
+        .playable_library_entries
+        .iter()
+        .filter_map(|entry| {
+            let name = entry.display_name.as_str();
+            if name.to_ascii_lowercase().ends_with(".m3u") {
+                Some(name.to_owned())
+            } else {
+                std::path::Path::new(name)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .map(str::to_owned)
+            }
+        })
+        .collect::<Vec<_>>();
+    let has_frontend_target = !release.playable_library_entries.is_empty()
+        || !release.playable_representations.is_empty();
+    let restore = ui
+        .add_enabled(
+            has_frontend_target && !release.archived_assets.is_empty(),
+            egui::Button::new("Restore Archived Media"),
+        )
+        .on_disabled_hover_text(if release.archived_assets.is_empty() {
+            "This release has no archived media"
+        } else {
+            "Make or adopt a playable representation first"
+        });
+    if restore.clicked() {
+        backend::assets::restore_archived_media_for_release(
+            app,
+            release.summary.archive_release_id.clone(),
+            app.browser.consoles[console_idx].folder_name.clone(),
+            frontend_stems,
+        );
+        ui.close();
+    }
+
+    if let Some(action) = release.action.as_ref() {
+        ui.separator();
+        let needs_verification = action
+            .carriers
+            .iter()
+            .any(|carrier| !carrier.catalog_verified);
+        let label = if action.needs_playlist && !action.needs_playable {
+            "Create Multi-disc Playlist"
+        } else if !action.needs_playable {
+            "Verify Archive"
+        } else if needs_verification && !action.allow_unverified {
+            "Verify & Make Playable"
+        } else {
+            "Make Playable"
+        };
+        let format = action
+            .preferred_format
+            .as_deref()
+            .and_then(parse_archive_playable_format)
+            .or_else(|| {
+                (!action.needs_playable).then_some(retro_junk_archive::RepresentationFormat::Rom)
+            });
+        let build = ui
+            .add_enabled(
+                action.buildable && format.is_some(),
+                egui::Button::new(label),
+            )
+            .on_disabled_hover_text(
+                if action.preferred_format.is_none() && action.needs_playable {
+                    "Choose a preferred playable format for this console first"
+                } else {
+                    "The archived carrier set is incomplete or has no supported conversion"
+                },
+            );
+        if build.clicked()
+            && let Some(format) = format
+        {
+            backend::playable_build::start(
+                app,
+                action.clone(),
+                format,
+                app.browser.consoles[console_idx].folder_name.clone(),
+                ctx,
+            );
+            ui.close();
+        }
+    }
+}
+
+fn show_multi_row_context_menu(
+    ui: &mut egui::Ui,
+    app: &mut RetroJunkApp,
+    ctx: &egui::Context,
+    console_idx: usize,
+) {
+    ui.strong(format!(
+        "{} items selected",
+        app.selected_library_row_count()
+    ));
+    let selected_releases = app
+        .browser
+        .active_page
+        .as_ref()
+        .map(|page| {
+            page.archived_releases
+                .iter()
+                .filter(|release| {
+                    app.ui_state
+                        .selected_archive_releases
+                        .contains(&release.summary.archive_release_id)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let details_ready = app.selected_entry_details_loaded();
+    if !details_ready {
+        ui.spinner();
+        ui.label("Loading the complete selection…");
+    }
+
+    let scrape_ready = details_ready
+        && selected_releases
+            .iter()
+            .all(|release| release.scrape_identity.is_some());
+    if ui
+        .add_enabled(
+            scrape_ready,
+            egui::Button::new("Scrape Only Missing Artwork"),
+        )
+        .clicked()
+    {
+        backend::assets::scrape_missing_artwork_for_selection(app, console_idx, ctx);
+        ui.close();
+    }
+    if ui
+        .add_enabled(details_ready, egui::Button::new("Generate Miximages"))
+        .clicked()
+    {
+        backend::assets::regenerate_miximages_for_selection(app, console_idx, ctx);
+        ui.close();
+    }
+
+    if !app.ui_state.selected_entries.is_empty() {
+        ui.separator();
+        if ui
+            .add_enabled(details_ready, egui::Button::new("Rescan"))
+            .clicked()
+        {
+            backend::scan::rescan_selected_entries(app, console_idx, ctx);
+            ui.close();
+        }
+        if ui
+            .add_enabled(details_ready, egui::Button::new("Calculate Missing Hashes"))
+            .clicked()
+        {
+            backend::hash::compute_hashes_for_selection(app, console_idx);
+            ui.close();
+        }
+        if ui
+            .add_enabled(details_ready, egui::Button::new("Recalculate Hashes"))
+            .clicked()
+        {
+            backend::hash::recompute_hashes_for_selection(app, console_idx);
+            ui.close();
+        }
+    }
+
+    let actions = selected_releases
+        .iter()
+        .filter_map(|release| release.action.clone())
+        .collect::<Vec<_>>();
+    if !selected_releases.is_empty() {
+        ui.separator();
+        let ready = actions.len() == selected_releases.len()
+            && actions.iter().all(|action| {
+                action.buildable && (!action.needs_playable || action.preferred_format.is_some())
+            });
+        let needs_playable = actions.iter().any(|action| action.needs_playable);
+        let needs_verification = actions.iter().any(|action| {
+            action
+                .carriers
+                .iter()
+                .any(|carrier| !carrier.catalog_verified)
+        });
+        let label = if !needs_playable {
+            "Verify Selected Archives"
+        } else if needs_verification {
+            "Verify & Make Selected Playable"
+        } else {
+            "Make Selected Playable"
+        };
+        if ui
+            .add_enabled(ready, egui::Button::new(label))
+            .on_disabled_hover_text(
+                "Every selected archive must be complete and have a preferred playable format",
+            )
+            .clicked()
+        {
+            let folder_name = app.browser.consoles[console_idx].folder_name.clone();
+            for action in actions {
+                let format = action
+                    .preferred_format
+                    .as_deref()
+                    .and_then(parse_archive_playable_format)
+                    .or_else(|| {
+                        (!action.needs_playable)
+                            .then_some(retro_junk_archive::RepresentationFormat::Rom)
+                    });
+                if let Some(format) = format {
+                    backend::playable_build::start(app, action, format, folder_name.clone(), ctx);
+                }
+            }
+            ui.close();
+        }
+    }
+}
+
+fn parse_archive_playable_format(value: &str) -> Option<retro_junk_archive::RepresentationFormat> {
+    match value {
+        "rom" => Some(retro_junk_archive::RepresentationFormat::Rom),
+        "chd" => Some(retro_junk_archive::RepresentationFormat::Chd),
+        "rvz" => Some(retro_junk_archive::RepresentationFormat::Rvz),
+        "iso" => Some(retro_junk_archive::RepresentationFormat::Iso),
+        "cue_bin" | "cue-bin" => Some(retro_junk_archive::RepresentationFormat::CueBin),
+        _ => None,
     }
 }
 
@@ -710,7 +996,6 @@ fn collect_selected_field(
 /// Serial for a table row: the entry's own, falling back to the first
 #[derive(Clone, Copy, Default)]
 struct EntryListColumns {
-    serial: bool,
     internal_name: bool,
     region: bool,
     dat_match: bool,
@@ -762,10 +1047,8 @@ struct RowData {
     asset_status: AssetStatus,
     name: String,
     file_path: Option<PathBuf>,
-    serial: String,
     internal_name: String,
     regions: String,
-    crc32: String,
     dat_match: String,
     availability: AvailabilityState,
 }
@@ -944,9 +1227,36 @@ fn select_archive_release(
     app: &mut RetroJunkApp,
     release_id: &str,
     bound_entry_ids: &[retro_junk_db::LibraryEntryId],
+    modifiers: egui::Modifiers,
     ctx: &egui::Context,
 ) {
-    app.ui_state.selected_entries = bound_entry_ids.iter().copied().collect();
+    if modifiers.ctrl || modifiers.command {
+        if app.ui_state.selected_archive_releases.remove(release_id) {
+            for entry_id in bound_entry_ids {
+                app.ui_state.selected_entries.remove(entry_id);
+            }
+            app.ui_state.focused_archive_release = app
+                .ui_state
+                .selected_archive_releases
+                .iter()
+                .next()
+                .cloned();
+            app.ui_state.focused_entry = app.ui_state.selected_entries.iter().next().copied();
+            return;
+        }
+        app.ui_state
+            .selected_archive_releases
+            .insert(release_id.to_owned());
+        app.ui_state
+            .selected_entries
+            .extend(bound_entry_ids.iter().copied());
+    } else {
+        app.ui_state.selected_entries = bound_entry_ids.iter().copied().collect();
+        app.ui_state.selected_archive_releases.clear();
+        app.ui_state
+            .selected_archive_releases
+            .insert(release_id.to_owned());
+    }
     app.ui_state.focused_entry = None;
     app.ui_state.focused_archive_release = Some(release_id.to_owned());
     app.request_selected_entry_details(ctx);
@@ -960,6 +1270,13 @@ fn row_is_focused(
 ) -> bool {
     entry_id.is_some_and(|id| focused_entry == Some(id))
         || archive_release_id.is_some_and(|release_id| focused_archive_release == Some(release_id))
+}
+
+fn row_supports_context_menu(
+    entry_id: Option<retro_junk_db::LibraryEntryId>,
+    archive_release_id: Option<&str>,
+) -> bool {
+    entry_id.is_some() || archive_release_id.is_some()
 }
 
 fn formats_satisfy_policy(actual: &str, preferred: &str) -> bool {
@@ -1009,9 +1326,8 @@ fn handle_row_click(
     if modifiers.ctrl || modifiers.command {
         // Toggle selection
         if app.ui_state.selected_entries.contains(&entry_id) {
-            // Deselect: don't move focused_entry to this row — that would keep
-            // it visually highlighted through the is_focused path.
             app.ui_state.selected_entries.remove(&entry_id);
+            app.ui_state.focused_entry = app.ui_state.selected_entries.iter().next().copied();
             return;
         }
         app.ui_state.selected_entries.insert(entry_id);
@@ -1028,11 +1344,13 @@ fn handle_row_click(
             }
         } else {
             app.ui_state.selected_entries.clear();
+            app.ui_state.selected_archive_releases.clear();
             app.ui_state.selected_entries.insert(entry_id);
         }
     } else {
         // Single select
         app.ui_state.selected_entries.clear();
+        app.ui_state.selected_archive_releases.clear();
         app.ui_state.selected_entries.insert(entry_id);
     }
 
@@ -1066,6 +1384,20 @@ fn show_tag_menu_items(
         return;
     };
     let effective = entry.effective_status();
+    let platform_id = app
+        .context
+        .get_by_platform(app.browser.consoles[console_idx].platform)
+        .map_or_else(
+            || app.browser.consoles[console_idx].folder_name.clone(),
+            |registered| registered.analyzer.short_name().to_owned(),
+        );
+    let is_disc_based = app
+        .context
+        .get_by_platform(app.browser.consoles[console_idx].platform)
+        .is_some_and(|registered| {
+            registered.analyzer.dat_source() == retro_junk_lib::DatSource::Redump
+        });
+    let disc_number_required = mod_disc_number_required(is_disc_based, &entry.game_entry);
 
     match effective {
         EntryStatus::Unrecognized => {
@@ -1085,6 +1417,9 @@ fn show_tag_menu_items(
                     query: String::new(),
                     results: Vec::new(),
                     selected: None,
+                    platform_id,
+                    disc_number_required,
+                    disc_number: String::new(),
                     console_id: app.browser.consoles[console_idx].id.unwrap(),
                     entry_id,
                 };
@@ -1098,8 +1433,36 @@ fn show_tag_menu_items(
                 ui.close();
             }
         }
-        _ => {}
+        _ => {
+            ui.separator();
+            if ui.button("Mark as Modded Version of\u{2026}").clicked() {
+                app.ui_state.tag_dialog = TagDialog::ModSearch {
+                    query: String::new(),
+                    results: Vec::new(),
+                    selected: None,
+                    platform_id,
+                    disc_number_required,
+                    disc_number: String::new(),
+                    console_id: app.browser.consoles[console_idx].id.unwrap(),
+                    entry_id,
+                };
+                ui.close();
+            }
+        }
     }
+}
+
+fn mod_disc_number_required(
+    is_disc_based: bool,
+    entry: &retro_junk_lib::scanner::GameEntry,
+) -> bool {
+    is_disc_based
+        && matches!(
+            entry,
+            retro_junk_lib::scanner::GameEntry::SingleFile(path)
+                if !path.extension().and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("m3u"))
+        )
 }
 
 fn paint_cell_text(ui: &mut egui::Ui, text: &str) {
@@ -1123,6 +1486,7 @@ mod tests {
     use super::projection_status;
     use crate::state::EntryStatus;
     use retro_junk_catalog::CatalogTag;
+    use retro_junk_lib::scanner::GameEntry;
 
     #[test]
     fn projected_tags_override_stored_analysis_status() {
@@ -1136,6 +1500,29 @@ mod tests {
         );
         assert_eq!(projection_status("ambiguous", ""), EntryStatus::Ambiguous);
         assert_eq!(projection_status("likely", ""), EntryStatus::LikelyMatched);
+    }
+
+    #[test]
+    fn loose_disc_requires_number_but_m3u_game_folder_does_not() {
+        assert!(super::mod_disc_number_required(
+            true,
+            &GameEntry::SingleFile("/roms/saturn/Modded Game.chd".into())
+        ));
+        assert!(!super::mod_disc_number_required(
+            true,
+            &GameEntry::MultiDisc {
+                name: "Modded Game.m3u".to_owned(),
+                files: vec!["/roms/psx/Modded Game.m3u/disc-1.chd".into()],
+            }
+        ));
+        assert!(!super::mod_disc_number_required(
+            true,
+            &GameEntry::SingleFile("/roms/psx/Modded Game.m3u".into())
+        ));
+        assert!(!super::mod_disc_number_required(
+            false,
+            &GameEntry::SingleFile("/roms/nes/Modded Game.nes".into())
+        ));
     }
 
     #[test]
@@ -1157,5 +1544,94 @@ mod tests {
             None,
             Some("release")
         ));
+    }
+
+    #[test]
+    fn archive_only_rows_support_context_menus() {
+        assert!(super::row_supports_context_menu(None, Some("release")));
+        assert!(super::row_supports_context_menu(
+            Some(retro_junk_db::LibraryEntryId(1)),
+            None
+        ));
+        assert!(!super::row_supports_context_menu(None, None));
+    }
+
+    #[test]
+    fn control_click_toggles_entries_without_losing_the_other_selection() {
+        let mut app = crate::app::RetroJunkApp::with_parts(
+            &egui::Context::default(),
+            crate::settings::AppSettings::default(),
+            None,
+            None,
+        );
+        let first = retro_junk_db::LibraryEntryId(1);
+        let second = retro_junk_db::LibraryEntryId(2);
+        let visible = [first, second];
+
+        super::handle_row_click(&mut app, first, egui::Modifiers::NONE, &visible);
+        super::handle_row_click(
+            &mut app,
+            second,
+            egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            &visible,
+        );
+        assert_eq!(app.ui_state.selected_entries.len(), 2);
+
+        super::handle_row_click(
+            &mut app,
+            first,
+            egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            &visible,
+        );
+        assert_eq!(
+            app.ui_state.selected_entries,
+            std::collections::HashSet::from([second])
+        );
+        assert_eq!(app.ui_state.focused_entry, Some(second));
+    }
+
+    #[test]
+    fn control_click_toggles_logical_archive_rows() {
+        let ctx = egui::Context::default();
+        let mut app = crate::app::RetroJunkApp::with_parts(
+            &ctx,
+            crate::settings::AppSettings::default(),
+            None,
+            None,
+        );
+
+        super::select_archive_release(&mut app, "release-a", &[], egui::Modifiers::NONE, &ctx);
+        super::select_archive_release(
+            &mut app,
+            "release-b",
+            &[],
+            egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            &ctx,
+        );
+        assert_eq!(app.ui_state.selected_archive_releases.len(), 2);
+
+        super::select_archive_release(
+            &mut app,
+            "release-a",
+            &[],
+            egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            &ctx,
+        );
+        assert_eq!(
+            app.ui_state.selected_archive_releases,
+            std::collections::HashSet::from(["release-b".to_owned()])
+        );
     }
 }

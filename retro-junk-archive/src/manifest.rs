@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::MANIFEST_SCHEMA_VERSION;
 
-pub const REGIONAL_PHYSICAL_PLATFORM_MIGRATION: &str = "regional-physical-platform-v1";
+pub const REGIONAL_PHYSICAL_PLATFORM_MIGRATION: &str = "regional-physical-platform-v2";
 
 macro_rules! archive_id {
     ($name:ident) => {
@@ -158,6 +158,14 @@ pub enum CarrierKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CatalogBinding {
+    /// Stable work-level identity shared by compatible releases/masterings.
+    ///
+    /// A logical owned release may contain individually verified carriers
+    /// whose catalog release IDs differ. In that case the release manifest
+    /// keeps this work ID while `catalog_release_id` remains empty; each
+    /// carrier retains its exact release/media binding.
+    #[serde(default)]
+    pub catalog_work_id: String,
     #[serde(default)]
     pub catalog_release_id: String,
     #[serde(default)]

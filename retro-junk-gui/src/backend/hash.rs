@@ -108,6 +108,7 @@ fn hash_one(
     progress: &dyn Fn(u64, u64),
     phase: &dyn Fn(String, u64, u64),
     workspace_root: &std::path::Path,
+    stage_large_files: bool,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<HashOutcome, String> {
     log::debug!("compute_hashes: opening file {}", item.path.display());
@@ -157,7 +158,7 @@ fn hash_one(
         .path
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("chd"));
-    let staged = if is_chd {
+    let staged = if is_chd && stage_large_files {
         phase(
             format!("Caching {} locally", item.entry_name),
             0,
@@ -186,7 +187,7 @@ fn hash_one(
         8 * 1024 * 1024,
         std::fs::File::open(hash_path).map_err(|e| e.to_string())?,
     );
-    if is_chd {
+    if is_chd && stage_large_files {
         phase(
             format!("Decoding and hashing {}", item.entry_name),
             item.file_size,
@@ -195,7 +196,7 @@ fn hash_one(
     }
     log::debug!("compute_hashes: calling hasher for {}", item.path.display());
     let hash_progress = |done: u64, total: u64| {
-        if is_chd {
+        if is_chd && stage_large_files {
             progress(
                 item.file_size.saturating_add(done),
                 item.file_size.saturating_add(total),
@@ -421,6 +422,11 @@ fn spawn_hash_work(
         .map_or_else(retro_junk_io::default_transient_workspace, |profile| {
             profile.workspace_root.clone()
         });
+    let stage_large_files = app
+        .settings
+        .library
+        .active_profile()
+        .is_none_or(|profile| profile.network_mode);
     let description = format!("Computing hashes ({} files)", work.len());
     let scope = folder_name.clone();
 
@@ -510,6 +516,7 @@ fn spawn_hash_work(
                     &throttled_progress,
                     &report_phase,
                     &workspace_root,
+                    stage_large_files,
                     &cancel,
                 ) {
                     Ok(outcome) => {
@@ -850,6 +857,7 @@ mod tests {
             },
             &|_, _, _| {},
             dir.path(),
+            true,
             &std::sync::atomic::AtomicBool::new(false),
         )
         .unwrap();
@@ -893,6 +901,7 @@ mod tests {
             &|_, _| {},
             &|_, _, _| {},
             dir.path(),
+            true,
             &std::sync::atomic::AtomicBool::new(false),
         )
         .unwrap();

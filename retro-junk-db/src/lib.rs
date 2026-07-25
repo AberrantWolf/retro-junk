@@ -30,12 +30,12 @@ pub use library::{
     apply_filesystem_transition, begin_console_scan, clear_library_cache,
     create_homebrew_and_tag_entry, create_modded_and_tag_entry, delete_library_console_if_empty,
     delete_library_root, ensure_library_console, file_source_key, get_library_root_id,
-    list_console_summaries, load_consoles_for_root, load_entries_for_console, load_entry_detail,
-    load_entry_details, load_entry_details_for_console, load_export_entries_for_console,
-    mark_console_stale, normalize_relative_path, playable_artwork_candidates, query_entry_list,
-    reconcile_console_scan, set_entry_region_override, set_entry_tag, set_source_key,
-    source_fingerprint, source_fingerprint_from_game_entry_json, source_key_from_game_entry_json,
-    upsert_library_root,
+    list_console_summaries, load_archived_library_releases_for_console, load_consoles_for_root,
+    load_entries_for_console, load_entry_detail, load_entry_details,
+    load_entry_details_for_console, load_export_entries_for_console, mark_console_stale,
+    normalize_relative_path, playable_artwork_candidates, query_entry_list, reconcile_console_scan,
+    set_entry_region_override, set_entry_tag, set_source_key, source_fingerprint,
+    source_fingerprint_from_game_entry_json, source_key_from_game_entry_json, upsert_library_root,
 };
 pub use operations::{
     MediaHashes, MediaTrack, OperationError, SeedStats, apply_disagreement_resolution,
@@ -62,10 +62,11 @@ pub use queries::{
     get_release_by_id, get_work_by_id, list_collection, list_collection_paged, list_import_logs,
     list_platforms, list_unresolved_disagreements, match_media_by_hash, match_media_by_hashes,
     match_media_by_serial, match_media_by_serials, match_media_ids_by_track_hash,
-    media_for_release, platform_media_counts, platform_release_counts, releases_for_platform,
-    releases_for_work, releases_missing_asset_type, releases_to_enrich, releases_with_no_assets,
-    search_companies, search_media, search_releases, search_releases_filtered,
-    search_releases_paged, search_works, works_for_platform,
+    media_for_release, media_for_work_scope, platform_media_counts, platform_release_counts,
+    releases_for_platform, releases_for_work, releases_missing_asset_type, releases_to_enrich,
+    releases_with_no_assets, search_companies, search_media, search_releases,
+    search_releases_filtered, search_releases_paged, search_works, search_works_for_platform,
+    works_for_platform,
 };
 pub use rusqlite::Connection;
 pub use schema::{configure_connection, database_needs_migration, open_database, open_memory};

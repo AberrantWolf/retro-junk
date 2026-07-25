@@ -22,6 +22,51 @@ fn schema_is_idempotent() {
 }
 
 #[test]
+fn v20_adds_work_identity_to_archive_releases() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("v19.db");
+    let connection = rusqlite::Connection::open(&db_path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE schema_version(version INTEGER NOT NULL);
+             INSERT INTO schema_version(version) VALUES(19);
+             CREATE TABLE works(id TEXT PRIMARY KEY);
+             CREATE TABLE archive_releases(
+                 id TEXT PRIMARY KEY,
+                 profile_id TEXT NOT NULL,
+                 catalog_release_id TEXT,
+                 platform_id TEXT NOT NULL,
+                 title TEXT NOT NULL,
+                 region TEXT NOT NULL DEFAULT '',
+                 revision TEXT NOT NULL DEFAULT '',
+                 variant TEXT NOT NULL DEFAULT '',
+                 manifest_path TEXT NOT NULL,
+                 manifest_sha256 TEXT NOT NULL,
+                 binding_state TEXT NOT NULL DEFAULT 'unresolved');",
+        )
+        .unwrap();
+    drop(connection);
+
+    let connection = open_database(&db_path).unwrap();
+    connection
+        .execute(
+            "UPDATE archive_releases SET catalog_work_id=NULL WHERE 1=0",
+            [],
+        )
+        .unwrap();
+    let index_exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                 WHERE type='index' AND name='idx_archive_releases_work')",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(index_exists);
+}
+
+#[test]
 fn migration_probe_is_read_only_and_distinguishes_current_legacy_and_missing_databases() {
     let dir = tempfile::tempdir().unwrap();
     let missing = dir.path().join("missing.db");

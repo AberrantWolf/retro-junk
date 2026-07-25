@@ -61,6 +61,7 @@ pub enum LibraryStoreRequest {
         work_id: String,
         platform_id: String,
         region: String,
+        disc_number: Option<u32>,
         hashes: Option<retro_junk_db::MediaHashes>,
     },
     ApplyAnalysis {
@@ -108,6 +109,10 @@ pub enum LibraryStoreValue {
     EntryList(LibraryEntryListPage),
     EntryDetail(Option<LibraryEntryDetail>),
     EntryDetails(Vec<LibraryEntryDetail>),
+    ConsoleDetails {
+        entries: Vec<LibraryEntryDetail>,
+        archived_releases: Vec<retro_junk_db::ArchivedLibraryListItem>,
+    },
     ChangeSet(LibraryChangeSet),
     ShutdownComplete,
 }
@@ -302,9 +307,12 @@ fn execute(
         R::EntryDetails(ids) => {
             LibraryStoreValue::EntryDetails(retro_junk_db::load_entry_details(conn, &ids)?)
         }
-        R::ConsoleEntryDetails(console_id) => LibraryStoreValue::EntryDetails(
-            retro_junk_db::load_entry_details_for_console(conn, console_id)?,
-        ),
+        R::ConsoleEntryDetails(console_id) => LibraryStoreValue::ConsoleDetails {
+            entries: retro_junk_db::load_entry_details_for_console(conn, console_id)?,
+            archived_releases: retro_junk_db::load_archived_library_releases_for_console(
+                conn, console_id,
+            )?,
+        },
         R::SetRegionOverride { entry_id, value } => LibraryStoreValue::ChangeSet(
             retro_junk_db::set_entry_region_override(conn, entry_id, value.as_deref())?,
         ),
@@ -328,6 +336,7 @@ fn execute(
             work_id,
             platform_id,
             region,
+            disc_number,
             hashes,
         } => LibraryStoreValue::ChangeSet(retro_junk_db::create_modded_and_tag_entry(
             conn,
@@ -335,6 +344,7 @@ fn execute(
             &work_id,
             &platform_id,
             &region,
+            disc_number,
             hashes.as_ref(),
         )?),
         R::ApplyAnalysis {
@@ -781,7 +791,10 @@ mod tests {
             .unwrap();
         assert!(matches!(
             reply.payload,
-            Ok(LibraryStoreValue::EntryDetails(ref rows)) if rows.len() == 350
+            Ok(LibraryStoreValue::ConsoleDetails {
+                ref entries,
+                ref archived_releases,
+            }) if entries.len() == 350 && archived_releases.is_empty()
         ));
         store.shutdown_and_join(3);
     }

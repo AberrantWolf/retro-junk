@@ -63,7 +63,12 @@ impl ArchiveLayout {
     #[must_use]
     pub fn carrier_dir(copy_dir: &Path, serial: &str, sequence_number: u32) -> PathBuf {
         let key = if !serial.trim().is_empty() {
-            slugify(serial)
+            let serial = slugify(serial);
+            if sequence_number > 1 {
+                format!("{serial}-disc-{sequence_number}")
+            } else {
+                serial
+            }
         } else if sequence_number > 0 {
             format!("carrier-{sequence_number}")
         } else {

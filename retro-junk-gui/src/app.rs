@@ -40,6 +40,7 @@ pub enum ResultsDialog {
 enum ConsoleDetailsAction {
     HashAll,
     ScrapeAll,
+    ScrapeMissing,
     CompressAll,
 }
 
@@ -79,6 +80,8 @@ pub struct UiState {
     pub focused_entry: Option<retro_junk_db::LibraryEntryId>,
     /// Durable entry identities for multi-select.
     pub selected_entries: HashSet<retro_junk_db::LibraryEntryId>,
+    /// Durable logical archive-release identities for multi-select.
+    pub selected_archive_releases: HashSet<String>,
     /// Text filter for the game table.
     pub filter_text: String,
     /// Offset of the active 300-row SQL page.
@@ -147,6 +150,7 @@ impl Default for UiState {
             scroll_to_console: None,
             focused_entry: None,
             selected_entries: HashSet::new(),
+            selected_archive_releases: HashSet::new(),
             filter_text: String::new(),
             page_offset: 0,
             detail_panel_open: true,
@@ -240,10 +244,25 @@ impl RetroJunkApp {
     /// in the detail panel. `forget_image` clears file bytes, decoded pixels,
     /// and GPU textures from every installed egui loader.
     pub fn reconcile_detail_assets(&mut self, ctx: &egui::Context) {
-        let target = (self.ui_state.current_view == View::Library
-            && self.ui_state.detail_panel_open)
-            .then_some(self.ui_state.focused_entry)
-            .flatten();
+        let target = if self.ui_state.current_view == View::Library
+            && self.ui_state.detail_panel_open
+            && self.selected_library_row_count() <= 1
+        {
+            self.ui_state.focused_entry.or_else(|| {
+                let release_id = self.ui_state.focused_archive_release.as_deref()?;
+                self.browser
+                    .active_page
+                    .as_ref()?
+                    .archived_releases
+                    .iter()
+                    .find(|release| release.summary.archive_release_id == release_id)?
+                    .playable_library_entries
+                    .first()
+                    .map(|entry| entry.id)
+            })
+        } else {
+            None
+        };
         if self.browser.detail_asset_entry == target {
             return;
         }
@@ -586,6 +605,27 @@ impl RetroJunkApp {
                         .entry_counts
                         .insert(page.console_id, page.logical_count);
                     let ids: Vec<_> = page.rows.iter().map(|row| row.id).collect();
+                    let archive_ids = page
+                        .archived_releases
+                        .iter()
+                        .map(|release| release.summary.archive_release_id.clone())
+                        .collect::<HashSet<_>>();
+                    self.ui_state
+                        .selected_archive_releases
+                        .retain(|id| archive_ids.contains(id));
+                    if self
+                        .ui_state
+                        .focused_archive_release
+                        .as_ref()
+                        .is_some_and(|id| !archive_ids.contains(id))
+                    {
+                        self.ui_state.focused_archive_release = self
+                            .ui_state
+                            .selected_archive_releases
+                            .iter()
+                            .next()
+                            .cloned();
+                    }
                     let asset_rows: Vec<_> = page
                         .rows
                         .iter()
@@ -662,52 +702,64 @@ impl RetroJunkApp {
                         self.browser.consoles[console_index].entries.push(entry);
                     }
                 }
-                Ok(crate::backend::library_store::LibraryStoreValue::EntryDetails(details)) => {
-                    if let Some((pending_request, console_id, action)) =
+                Ok(crate::backend::library_store::LibraryStoreValue::ConsoleDetails {
+                    entries,
+                    archived_releases,
+                }) => {
+                    let Some((pending_request, console_id, action)) =
                         self.pending_console_details_request
-                        && pending_request == request_id
-                    {
-                        self.pending_console_details_request = None;
-                        let Some(console_index) = self.browser.find_by_id(console_id) else {
-                            continue;
-                        };
-                        self.browser.consoles[console_index].entries = details
-                            .into_iter()
-                            .filter(|detail| detail.console_id == console_id)
-                            .filter_map(detail_to_entry)
-                            .collect();
-                        self.ui_state.selected_entries = self.browser.consoles[console_index]
-                            .entries
-                            .iter()
-                            .filter_map(|entry| entry.id)
-                            .collect();
-                        match action {
-                            ConsoleDetailsAction::HashAll => {
-                                crate::backend::hash::compute_hashes_for_selection(
-                                    self,
-                                    console_index,
-                                );
-                            }
-                            ConsoleDetailsAction::ScrapeAll => {
-                                crate::backend::assets::rescrape_media_for_selection(
-                                    self,
-                                    console_index,
-                                    ctx,
-                                );
-                            }
-                            ConsoleDetailsAction::CompressAll => {
-                                let indices: Vec<_> =
-                                    (0..self.browser.consoles[console_index].entries.len())
-                                        .collect();
-                                crate::backend::chd_compress::open_compress_dialog(
-                                    self,
-                                    console_index,
-                                    &indices,
-                                );
-                            }
-                        }
+                    else {
+                        continue;
+                    };
+                    if pending_request != request_id {
                         continue;
                     }
+                    self.pending_console_details_request = None;
+                    let Some(console_index) = self.browser.find_by_id(console_id) else {
+                        continue;
+                    };
+                    self.browser.consoles[console_index].entries = entries
+                        .into_iter()
+                        .filter(|detail| detail.console_id == console_id)
+                        .filter_map(detail_to_entry)
+                        .collect();
+                    self.ui_state.selected_entries = self.browser.consoles[console_index]
+                        .entries
+                        .iter()
+                        .filter_map(|entry| entry.id)
+                        .collect();
+                    match action {
+                        ConsoleDetailsAction::HashAll => {
+                            crate::backend::hash::compute_hashes_for_selection(self, console_index);
+                        }
+                        ConsoleDetailsAction::ScrapeAll => {
+                            crate::backend::assets::rescrape_media_for_console(
+                                self,
+                                console_index,
+                                ctx,
+                                archived_releases,
+                            );
+                        }
+                        ConsoleDetailsAction::ScrapeMissing => {
+                            crate::backend::assets::scrape_missing_artwork_for_console(
+                                self,
+                                console_index,
+                                ctx,
+                                archived_releases,
+                            );
+                        }
+                        ConsoleDetailsAction::CompressAll => {
+                            let indices: Vec<_> =
+                                (0..self.browser.consoles[console_index].entries.len()).collect();
+                            crate::backend::chd_compress::open_compress_dialog(
+                                self,
+                                console_index,
+                                &indices,
+                            );
+                        }
+                    }
+                }
+                Ok(crate::backend::library_store::LibraryStoreValue::EntryDetails(details)) => {
                     if self.pending_selection_details_request != Some(request_id) {
                         continue;
                     }
@@ -954,6 +1006,10 @@ impl RetroJunkApp {
         self.load_console_details_for_action(console_idx, ConsoleDetailsAction::ScrapeAll, ctx);
     }
 
+    pub fn scrape_missing_artwork(&mut self, console_idx: usize, ctx: &egui::Context) {
+        self.load_console_details_for_action(console_idx, ConsoleDetailsAction::ScrapeMissing, ctx);
+    }
+
     pub fn compress_all_to_chd(&mut self, console_idx: usize, ctx: &egui::Context) {
         self.load_console_details_for_action(console_idx, ConsoleDetailsAction::CompressAll, ctx);
     }
@@ -998,6 +1054,38 @@ impl RetroJunkApp {
             })
             .map(|(index, _)| index)
             .collect()
+    }
+
+    /// Number of logical rows selected in the unified Library table.
+    ///
+    /// Playable entries grouped under a selected archive release are action
+    /// targets for that release, not additional selected rows.
+    pub fn selected_library_row_count(&self) -> usize {
+        let grouped_entry_ids = self
+            .browser
+            .active_page
+            .as_ref()
+            .into_iter()
+            .flat_map(|page| &page.archived_releases)
+            .filter(|release| {
+                self.ui_state
+                    .selected_archive_releases
+                    .contains(&release.summary.archive_release_id)
+            })
+            .flat_map(|release| {
+                release
+                    .playable_library_entries
+                    .iter()
+                    .map(|entry| entry.id)
+            })
+            .collect::<HashSet<_>>();
+        self.ui_state.selected_archive_releases.len()
+            + self
+                .ui_state
+                .selected_entries
+                .iter()
+                .filter(|id| !grouped_entry_ids.contains(id))
+                .count()
     }
 
     /// Cancel every in-flight background operation and join its thread (D2).
@@ -1190,6 +1278,7 @@ impl RetroJunkApp {
         self.ui_state.selected_console = None;
         self.ui_state.focused_entry = None;
         self.ui_state.selected_entries.clear();
+        self.ui_state.selected_archive_releases.clear();
         self.ui_state.page_offset = 0;
         self.ui_state.loading_library = true;
         self.open_browser_root(&root, ctx);

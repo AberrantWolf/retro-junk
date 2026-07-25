@@ -396,6 +396,7 @@ pub fn switch_to_root_unchecked(
     app.ui_state.focused_entry = None;
     app.ui_state.focused_archive_release = None;
     app.ui_state.selected_entries.clear();
+    app.ui_state.selected_archive_releases.clear();
     app.library_controller.switch_root();
     app.message_tx = app
         .message_tx

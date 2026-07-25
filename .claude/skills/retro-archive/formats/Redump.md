@@ -126,6 +126,35 @@ industry-standard format supported by all major ROM management tools.
 - No parent/clone relationships are expressed in Redump DATs
 - Multi-disc games appear as separate `<game>` entries
 
+## Carrier-Level Identity and Multi-Disc Sets
+
+Redump identity is fundamentally **per physical disc/mastering**, not per
+retail box. Ring-code/mastering groups and multi-disc records describe exact
+carriers. Redump does not encode which particular Disc 1 and Disc 2 specimens
+were originally paired in one package.
+
+Consequences for an owned-copy archive:
+
+- Keep each exact Redump release/media identity on the carrier.
+- Group compatible carriers by their shared logical work, platform, and
+  region when their mastering-specific release IDs differ.
+- Compute completeness by distinct disc positions across that compatible
+  work scope, while requiring exact current verification for the carrier
+  occupying each position.
+- Do not claim that a mixed-mastering copy is factory-original merely because
+  both masterings are documented for overlapping editions. That establishes
+  compatibility and historical plausibility, not specimen-level provenance.
+
+For example, Redump's Saturn listings document Sakura Taisen Disc 1
+masterings `(7M, 9M, 10M)` and Disc 2 masterings `(8M, 9M)` for overlapping
+editions, including the original release:
+https://redump.info/discs?dumper=monocrom&page=3
+
+Redumper raw packages are also carrier-level. If a directory contains more
+than one image stem, split the files into one subdirectory per disc and import
+their parent. This prevents logs and track sets from separate carriers from
+being accidentally combined.
+
 ### Optional URL Parameters
 
 The Redump DAT download URL accepts comma-separated parameters to include additional fields:

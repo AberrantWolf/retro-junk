@@ -19,8 +19,11 @@ pub struct PlayableBuildRequest {
     pub dump_id: String,
     pub format: RepresentationFormat,
     pub chdman_path: PathBuf,
+    pub redumper_path: PathBuf,
+    pub dolphin_tool_path: PathBuf,
     pub allow_unverified: bool,
     pub retain_intermediate: bool,
+    pub options: std::collections::BTreeMap<String, String>,
     /// Concrete console folder in the playable library (for example `psx`
     /// even when the archive/catalog canonical identifier is `ps1`).
     pub playable_platform_id: String,
@@ -57,7 +60,7 @@ pub struct CatalogVerificationRequest {
     pub catalog: CatalogEvidence,
 }
 
-/// Regenerate a Redumper dump's ordered track set in disposable local storage
+/// Regenerate a Redumper dump's ordered track set in disposable workspace storage
 /// and append catalog evidence when every expected digest matches.
 #[allow(clippy::too_many_lines)]
 pub fn verify_dump_against_catalog(
@@ -89,7 +92,7 @@ pub fn verify_dump_against_catalog(
     let (actual_tracks, tool, detail) = if dump.manifest.format == RepresentationFormat::RedumperRaw
     {
         progress(
-            "Copying raw dump to local workspace for Redumper verification",
+            "Copying raw dump to an isolated workspace for Redumper verification",
             0,
             0,
         );
@@ -103,7 +106,7 @@ pub fn verify_dump_against_catalog(
                 cancelled,
                 |current, total| {
                     progress(
-                        "Copying raw dump to local workspace for Redumper verification",
+                        "Copying raw dump to an isolated workspace for Redumper verification",
                         current,
                         total,
                     );
@@ -271,6 +274,9 @@ pub fn build_playable(
         RepresentationFormat::Chd => {
             build_chd(request, release, carrier, dump, progress, cancelled)
         }
+        RepresentationFormat::Rvz => {
+            build_rvz(request, release, carrier, dump, progress, cancelled)
+        }
         ref format if *format == dump.manifest.format && dump.manifest.files.len() == 1 => {
             mirror(request, release, carrier, dump, progress, cancelled)
         }
@@ -320,8 +326,8 @@ fn build_chd(
                 prepared_cache = Some(cache);
                 input
             } else {
-                progress("Preparing Redumper files in the local workspace", 0, 0);
-                let redumper = Redumper::detect(Path::new(""))
+                progress("Preparing Redumper files in an isolated workspace", 0, 0);
+                let redumper = Redumper::detect(&request.redumper_path)
                     .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
                 let prepared = redumper
                     .prepare_with_progress(
@@ -330,7 +336,7 @@ fn build_chd(
                         cancelled,
                         |current, total| {
                             progress(
-                                "Preparing Redumper files in the local workspace",
+                                "Preparing Redumper files in an isolated workspace",
                                 current,
                                 total,
                             );
@@ -478,6 +484,174 @@ fn build_chd(
     Ok(PlayableBuildOutcome {
         output: outcome.output,
         format: RepresentationFormat::Chd,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn build_rvz(
+    request: &PlayableBuildRequest,
+    release: &IndexedRelease,
+    carrier: &IndexedCarrier,
+    dump: &IndexedDump,
+    progress: &dyn Fn(&str, u64, u64),
+    cancelled: &AtomicBool,
+) -> Result<PlayableBuildOutcome, PlayableBuildError> {
+    if dump.manifest.format != RepresentationFormat::Iso || dump.manifest.files.len() != 1 {
+        return Err(PlayableBuildError::Message(
+            "RVZ builds require a single-file ISO preservation master".to_owned(),
+        ));
+    }
+    let catalog_verified = catalog_verified(dump);
+    if !catalog_verified && !request.allow_unverified {
+        return Err(PlayableBuildError::Message(
+            "The current dump has no catalog verification. Verify it first, or enable unverified builds for this policy.".to_owned(),
+        ));
+    }
+    let dolphin_tool = if request.dolphin_tool_path.as_os_str().is_empty() {
+        PathBuf::from("DolphinTool")
+    } else {
+        request.dolphin_tool_path.clone()
+    };
+    progress("Checking DolphinTool", 0, 0);
+    let help = std::process::Command::new(&dolphin_tool)
+        .arg("--help")
+        .output()
+        .map_err(|error| {
+            PlayableBuildError::Message(format!("Could not run DolphinTool: {error}"))
+        })?;
+    let banner = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&help.stdout),
+        String::from_utf8_lossy(&help.stderr)
+    );
+    if !help.status.success()
+        || (!banner.to_ascii_lowercase().contains("dolphin")
+            && !banner.to_ascii_lowercase().contains("convert"))
+    {
+        return Err(PlayableBuildError::Message(
+            "DolphinTool did not provide a recognized help response".to_owned(),
+        ));
+    }
+    let output_directory = playable_output_directory(request, release, carrier);
+    std::fs::create_dir_all(&output_directory)?;
+    let output = output_directory.join(format!(
+        "{}.rvz",
+        playable_output_stem(request, release, carrier)
+    ));
+    if output.exists() {
+        return Err(PlayableBuildError::Message(format!(
+            "Playable output already exists: {}",
+            output.display()
+        )));
+    }
+    let build_id = BuildId::new();
+    let temporary_output = output_directory.join(format!(".{build_id}.rvz.tmp"));
+    let workspace = request.workspace_root.join(format!("rvz-build-{build_id}"));
+    std::fs::create_dir_all(&workspace)?;
+    let round_trip = workspace.join("round-trip.iso");
+    let input = dump
+        .directory
+        .join("raw")
+        .join(&dump.manifest.files[0].path);
+    let block_size = request
+        .options
+        .get("block_size")
+        .map_or("131072", String::as_str);
+    let compression = request
+        .options
+        .get("compression")
+        .map_or("zstd", String::as_str);
+    let level = request
+        .options
+        .get("compression_level")
+        .map_or("5", String::as_str);
+    progress("Converting ISO to RVZ", 0, dump.manifest.files[0].size);
+    let convert = std::process::Command::new(&dolphin_tool)
+        .args(["convert", "-i"])
+        .arg(&input)
+        .arg("-o")
+        .arg(&temporary_output)
+        .args([
+            "-f",
+            "rvz",
+            "-b",
+            block_size,
+            "-c",
+            compression,
+            "-l",
+            level,
+        ])
+        .output()
+        .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
+    if !convert.status.success() {
+        let _ = std::fs::remove_file(&temporary_output);
+        let _ = std::fs::remove_dir_all(&workspace);
+        return Err(PlayableBuildError::Message(format!(
+            "DolphinTool RVZ conversion failed: {}",
+            String::from_utf8_lossy(&convert.stderr)
+        )));
+    }
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        let _ = std::fs::remove_file(&temporary_output);
+        let _ = std::fs::remove_dir_all(&workspace);
+        return Err(PlayableBuildError::Message(
+            "operation cancelled".to_owned(),
+        ));
+    }
+    progress("Round-trip verifying RVZ", 0, dump.manifest.files[0].size);
+    let extract = std::process::Command::new(&dolphin_tool)
+        .args(["convert", "-i"])
+        .arg(&temporary_output)
+        .arg("-o")
+        .arg(&round_trip)
+        .args(["-f", "iso"])
+        .output()
+        .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
+    let verified = if extract.status.success() {
+        let (_, original_sha256) = sha256_file(&input, cancelled)
+            .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
+        let (_, round_trip_sha256) = sha256_file(&round_trip, cancelled)
+            .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
+        original_sha256 == round_trip_sha256
+    } else {
+        false
+    };
+    let _ = std::fs::remove_dir_all(&workspace);
+    if !verified {
+        let _ = std::fs::remove_file(&temporary_output);
+        return Err(PlayableBuildError::Message(
+            "RVZ round-trip ISO did not match the preservation master".to_owned(),
+        ));
+    }
+    let (output_size, output_sha256) = sha256_file(&temporary_output, cancelled)
+        .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
+    std::fs::rename(&temporary_output, &output)?;
+    let evidence = BuildEvidence {
+        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+        build_id,
+        parent_representation_id: dump.manifest.representation_id,
+        child_representation_id: RepresentationId::new(),
+        performed_at: chrono::Utc::now().to_rfc3339(),
+        input_manifest_sha256: dump.manifest_sha256.clone(),
+        recipe_version: 1,
+        format: RepresentationFormat::Rvz,
+        relative_output_path: relative(&request.playable_root, &output),
+        output_sha256,
+        output_size,
+        catalog_verified,
+        round_trip_verified: true,
+        tool: Some(ToolRecord {
+            name: "DolphinTool".to_owned(),
+            version: banner.lines().next().unwrap_or_default().trim().to_owned(),
+            build: String::new(),
+        }),
+        omitted_features: Vec::new(),
+        canonical_intermediate: None,
+    };
+    write_evidence(dump, &evidence, &output)?;
+    Ok(PlayableBuildOutcome {
+        output,
+        format: RepresentationFormat::Rvz,
     })
 }
 
@@ -917,8 +1091,11 @@ mod tests {
             dump_id: ingested.dump.dump_id.to_string(),
             format: RepresentationFormat::Rom,
             chdman_path: PathBuf::new(),
+            redumper_path: PathBuf::new(),
+            dolphin_tool_path: PathBuf::new(),
             allow_unverified: false,
             retain_intermediate: false,
+            options: std::collections::BTreeMap::new(),
             playable_platform_id: "nes".to_owned(),
             expected_disc_count: 1,
             canonical_output_stem: String::new(),
@@ -989,8 +1166,11 @@ mod tests {
             dump_id,
             format: RepresentationFormat::Rom,
             chdman_path: PathBuf::new(),
+            redumper_path: PathBuf::new(),
+            dolphin_tool_path: PathBuf::new(),
             allow_unverified: false,
             retain_intermediate: false,
+            options: std::collections::BTreeMap::new(),
             playable_platform_id: "psx".to_owned(),
             expected_disc_count: 2,
             canonical_output_stem: format!("Two Disc Game (USA) (Disc {sequence})"),
@@ -1015,6 +1195,94 @@ mod tests {
             playlist,
             "Two Disc Game (USA) (Disc 1).bin\nTwo Disc Game (USA) (Disc 2).bin\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rvz_build_round_trips_through_shared_builder() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("archive");
+        let playable = temp.path().join("playable");
+        let source = temp.path().join("game.iso");
+        std::fs::write(&source, b"disc image").unwrap();
+        retro_junk_archive::initialize_archive(
+            &archive,
+            &retro_junk_archive::ArchiveRootManifest::new("Test"),
+        )
+        .unwrap();
+        let ingested = retro_junk_archive::ingest_new_carrier_dump(
+            &archive,
+            &source,
+            retro_junk_archive::NewCarrierDump {
+                platform_id: "gamecube".to_owned(),
+                title: "Game".to_owned(),
+                region: String::new(),
+                revision: String::new(),
+                variant: String::new(),
+                owner_id: "default".to_owned(),
+                physical_copy_label: String::new(),
+                serial: String::new(),
+                sequence_number: 0,
+                carrier_label: String::new(),
+                carrier_kind: retro_junk_archive::CarrierKind::OpticalDisc,
+                format: RepresentationFormat::Iso,
+                catalog_binding: retro_junk_archive::CatalogBinding::default(),
+                source_package: retro_junk_archive::SourcePackageRecord::default(),
+                expected_files: Vec::new(),
+                physical_copy_id: None,
+            },
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        let tool = temp.path().join("DolphinTool");
+        std::fs::write(
+            &tool,
+            r#"#!/bin/sh
+if [ "$1" = "--help" ]; then echo "Dolphin convert"; exit 0; fi
+input=""
+output=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -i) input="$2"; shift 2 ;;
+    -o) output="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+cp "$input" "$output"
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&tool).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&tool, permissions).unwrap();
+        let request = PlayableBuildRequest {
+            archive_root: archive.clone(),
+            playable_root: playable,
+            workspace_root: temp.path().join("work"),
+            dump_id: ingested.dump.dump_id.to_string(),
+            format: RepresentationFormat::Rvz,
+            chdman_path: PathBuf::new(),
+            redumper_path: PathBuf::new(),
+            dolphin_tool_path: tool,
+            allow_unverified: true,
+            retain_intermediate: false,
+            options: std::collections::BTreeMap::new(),
+            playable_platform_id: "gamecube".to_owned(),
+            expected_disc_count: 1,
+            canonical_output_stem: "Game".to_owned(),
+            canonical_release_name: "Game".to_owned(),
+        };
+        let outcome = build_playable(&request, &|_, _, _| {}, &AtomicBool::new(false)).unwrap();
+        assert_eq!(std::fs::read(&outcome.output).unwrap(), b"disc image");
+        let snapshot = scan_archive(&archive).unwrap();
+        let evidence =
+            &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0].builds[0].evidence;
+        assert_eq!(evidence.format, RepresentationFormat::Rvz);
+        assert!(evidence.round_trip_verified);
+        assert!(!evidence.catalog_verified);
     }
 
     #[cfg(unix)]

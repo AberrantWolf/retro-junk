@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -19,6 +20,12 @@ pub enum CollectionError {
     NotInitialized(String),
     #[error("archive path already contains non-archive data: {0}")]
     NonEmptyRoot(String),
+    #[error(
+        "carrier matched catalog work {found}, but its archived parent is already bound to {expected}"
+    )]
+    CatalogWorkConflict { found: String, expected: String },
+    #[error(transparent)]
+    InvalidPackage(#[from] RedumperPackageError),
     #[error(transparent)]
     Manifest(#[from] crate::ManifestError),
     #[error(transparent)]
@@ -28,6 +35,19 @@ pub enum CollectionError {
         path: String,
         source: std::io::Error,
     },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RedumperPackageError {
+    #[error("I/O error while inspecting Redumper package {path}: {source}")]
+    Io {
+        path: String,
+        source: std::io::Error,
+    },
+    #[error(
+        "{path} contains multiple Redumper images ({images}) — put each image's files in a separate subdirectory and import their parent directory"
+    )]
+    MultipleImages { path: String, images: String },
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +85,167 @@ pub struct IngestedCarrierDump {
     pub carrier: CarrierManifest,
     pub dump: DumpManifest,
     pub dump_directory: PathBuf,
+}
+
+/// Reject a directory that combines raw capture files from multiple discs.
+///
+/// This is public so import planning can report the same boundary violation
+/// before the caller commits to an ingest.
+pub fn validate_redumper_package(source: &Path) -> Result<(), RedumperPackageError> {
+    if !source.is_dir() {
+        return Ok(());
+    }
+    let entries = std::fs::read_dir(source).map_err(|source_error| RedumperPackageError::Io {
+        path: source.display().to_string(),
+        source: source_error,
+    })?;
+    let mut image_names = BTreeSet::new();
+    for entry in entries {
+        let entry = entry.map_err(|source_error| RedumperPackageError::Io {
+            path: source.display().to_string(),
+            source: source_error,
+        })?;
+        let path = entry.path();
+        let Some(extension) = path.extension().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "scram" | "scrap" | "sdram" | "sbram"
+        ) && let Some(stem) = path.file_stem().and_then(|value| value.to_str())
+        {
+            image_names.insert(stem.to_owned());
+        }
+    }
+    if image_names.len() <= 1 {
+        return Ok(());
+    }
+    Err(RedumperPackageError::MultipleImages {
+        path: source.display().to_string(),
+        images: image_names.into_iter().collect::<Vec<_>>().join(", "),
+    })
+}
+
+/// Apply an exact catalog identity to one carrier and keep its parent release
+/// honest when the owned copy spans compatible mastering-specific releases.
+///
+/// A parent stays release-bound while all identified carriers agree. If an
+/// incoming carrier names another release for the same work, the parent keeps
+/// only the work identity; exact release and media IDs remain on each carrier.
+pub fn bind_carrier_to_catalog(
+    release_manifest_path: &Path,
+    carrier_manifest_path: &Path,
+    binding: &CatalogBinding,
+) -> Result<bool, CollectionError> {
+    let original_release: ReleaseManifest = read_toml(release_manifest_path)?;
+    let mut release = original_release.clone();
+    let mut carrier: CarrierManifest = read_toml(carrier_manifest_path)?;
+
+    let existing_work = &release.catalog_binding.catalog_work_id;
+    if !existing_work.is_empty()
+        && !binding.catalog_work_id.is_empty()
+        && existing_work != &binding.catalog_work_id
+    {
+        return Err(CollectionError::CatalogWorkConflict {
+            found: binding.catalog_work_id.clone(),
+            expected: existing_work.clone(),
+        });
+    }
+
+    carrier.catalog_binding = binding.clone();
+    let already_work_level = !release.catalog_binding.catalog_work_id.is_empty()
+        && release.catalog_binding.catalog_release_id.is_empty();
+    let mixed_catalog_releases = !release.catalog_binding.catalog_release_id.is_empty()
+        && release.catalog_binding.catalog_release_id != binding.catalog_release_id
+        && sibling_uses_catalog_release(
+            release_manifest_path
+                .parent()
+                .unwrap_or_else(|| Path::new("")),
+            carrier_manifest_path,
+            &release.catalog_binding.catalog_release_id,
+        )?;
+    release
+        .catalog_binding
+        .catalog_work_id
+        .clone_from(&binding.catalog_work_id);
+    release.catalog_binding.source.clone_from(&binding.source);
+    release
+        .catalog_binding
+        .dat_name
+        .clone_from(&binding.dat_name);
+    release
+        .catalog_binding
+        .source_version
+        .clone_from(&binding.source_version);
+    let work_level = already_work_level || mixed_catalog_releases;
+    if work_level {
+        release.catalog_binding.catalog_release_id.clear();
+        release.catalog_binding.catalog_media_id.clear();
+        release.catalog_binding.serials.clear();
+        release.catalog_binding.expected_tracks.clear();
+        release.revision.clear();
+        release.variant.clear();
+    } else {
+        release
+            .catalog_binding
+            .catalog_release_id
+            .clone_from(&binding.catalog_release_id);
+        release
+            .catalog_binding
+            .catalog_media_id
+            .clone_from(&binding.catalog_media_id);
+    }
+
+    write_toml_atomic(release_manifest_path, &release)?;
+    if let Err(error) = write_toml_atomic(carrier_manifest_path, &carrier) {
+        let _ = write_toml_atomic(release_manifest_path, &original_release);
+        return Err(error.into());
+    }
+    Ok(work_level)
+}
+
+fn sibling_uses_catalog_release(
+    release_directory: &Path,
+    target_carrier_manifest: &Path,
+    catalog_release_id: &str,
+) -> Result<bool, CollectionError> {
+    let copies_directory = release_directory.join("physical-copies");
+    if !copies_directory.is_dir() {
+        return Ok(false);
+    }
+    for copy in std::fs::read_dir(&copies_directory).map_err(|source| CollectionError::Io {
+        path: copies_directory.display().to_string(),
+        source,
+    })? {
+        let copy = copy.map_err(|source| CollectionError::Io {
+            path: copies_directory.display().to_string(),
+            source,
+        })?;
+        let carriers_directory = copy.path().join("carriers");
+        if !carriers_directory.is_dir() {
+            continue;
+        }
+        for carrier in
+            std::fs::read_dir(&carriers_directory).map_err(|source| CollectionError::Io {
+                path: carriers_directory.display().to_string(),
+                source,
+            })?
+        {
+            let carrier = carrier.map_err(|source| CollectionError::Io {
+                path: carriers_directory.display().to_string(),
+                source,
+            })?;
+            let manifest_path = carrier.path().join("carrier.toml");
+            if manifest_path == target_carrier_manifest || !manifest_path.is_file() {
+                continue;
+            }
+            let sibling: CarrierManifest = read_toml(&manifest_path)?;
+            if sibling.catalog_binding.catalog_release_id == catalog_release_id {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Set or clear the archive-authoritative playable default for one platform.
@@ -216,7 +397,7 @@ pub fn upgrade_legacy_regional_physical_platforms(root: &Path) -> Result<usize, 
         }
         if matches!(
             platform_folder.to_ascii_lowercase().as_str(),
-            "nes" | "snes" | "genesis" | "pce"
+            "nes" | "snes" | "genesis" | "pce" | "saturn"
         ) {
             let _ = std::fs::remove_dir(&platform_directory);
         }
@@ -295,6 +476,7 @@ fn regional_physical_platform(platform: &str, region: &str) -> Option<&'static s
         "pce" if matches!(region.as_str(), "usa" | "us" | "canada" | "europe" | "eur") => {
             Some("tg16")
         }
+        "saturn" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("saturnjp"),
         _ => None,
     }
 }
@@ -327,6 +509,9 @@ pub fn ingest_new_carrier_dump(
     cancel: &AtomicBool,
     on_progress: impl Fn(IngestProgress),
 ) -> Result<IngestedCarrierDump, CollectionError> {
+    if matches!(spec.format, RepresentationFormat::RedumperRaw) {
+        validate_redumper_package(source)?;
+    }
     let root_manifest = archive_root.join("retro-junk-archive.toml");
     if !root_manifest.is_file() {
         return Err(CollectionError::NotInitialized(
@@ -345,13 +530,31 @@ pub fn ingest_new_carrier_dump(
         variant: spec.variant,
         catalog_binding: spec.catalog_binding.clone(),
     };
+    let requested_physical_copy_id = spec.physical_copy_id;
     let existing_release = crate::scan_archive(archive_root).ok().and_then(|snapshot| {
         snapshot.releases.into_iter().find(|candidate| {
+            let owns_requested_copy = requested_physical_copy_id.is_some_and(|requested| {
+                candidate
+                    .physical_copies
+                    .iter()
+                    .any(|copy| copy.manifest.physical_copy_id == requested)
+            });
+            let same_catalog_work = !proposed_release.catalog_binding.catalog_work_id.is_empty()
+                && (candidate.manifest.catalog_binding.catalog_work_id
+                    == proposed_release.catalog_binding.catalog_work_id
+                    || candidate.physical_copies.iter().any(|copy| {
+                        copy.carriers.iter().any(|carrier| {
+                            carrier.manifest.catalog_binding.catalog_work_id
+                                == proposed_release.catalog_binding.catalog_work_id
+                        })
+                    }));
             candidate.manifest.platform_id == proposed_release.platform_id
-                && candidate.manifest.title == proposed_release.title
                 && candidate.manifest.region == proposed_release.region
-                && candidate.manifest.revision == proposed_release.revision
-                && candidate.manifest.variant == proposed_release.variant
+                && (owns_requested_copy
+                    || same_catalog_work
+                    || (candidate.manifest.title == proposed_release.title
+                        && candidate.manifest.revision == proposed_release.revision
+                        && candidate.manifest.variant == proposed_release.variant))
         })
     });
     let copy_number = existing_release.as_ref().map_or(1, |existing| {
@@ -372,19 +575,40 @@ pub fn ingest_new_carrier_dump(
                 .cloned()
         })
     });
-    let (release, release_dir, created_release) = if let Some(existing) = &existing_release {
-        (existing.manifest.clone(), existing.directory.clone(), false)
-    } else {
-        let layout = ArchiveLayout::new(archive_root);
-        let directory = layout.release_dir(
-            &proposed_release.platform_id,
-            &proposed_release.title,
-            &proposed_release.region,
-            &proposed_release.revision,
-            proposed_release.archive_release_id,
-        );
-        (proposed_release, directory, true)
-    };
+    let (release, release_dir, created_release, updated_release) =
+        if let Some(existing) = &existing_release {
+            let mut manifest = existing.manifest.clone();
+            let incoming = &proposed_release.catalog_binding;
+            let same_work = !incoming.catalog_work_id.is_empty()
+                && manifest.catalog_binding.catalog_work_id == incoming.catalog_work_id;
+            let mixed_catalog_releases = same_work
+                && !manifest.catalog_binding.catalog_release_id.is_empty()
+                && manifest.catalog_binding.catalog_release_id != incoming.catalog_release_id;
+            if mixed_catalog_releases {
+                manifest
+                    .catalog_binding
+                    .catalog_work_id
+                    .clone_from(&incoming.catalog_work_id);
+                manifest.catalog_binding.catalog_release_id.clear();
+                manifest.catalog_binding.catalog_media_id.clear();
+                manifest.catalog_binding.serials.clear();
+                manifest.catalog_binding.expected_tracks.clear();
+                manifest.revision.clear();
+                manifest.variant.clear();
+            }
+            let updated = manifest != existing.manifest;
+            (manifest, existing.directory.clone(), false, updated)
+        } else {
+            let layout = ArchiveLayout::new(archive_root);
+            let directory = layout.release_dir(
+                &proposed_release.platform_id,
+                &proposed_release.title,
+                &proposed_release.region,
+                &proposed_release.revision,
+                proposed_release.archive_release_id,
+            );
+            (proposed_release, directory, true, false)
+        };
     let (physical_copy, copy_dir, created_copy, existing_carriers) =
         if let Some(existing) = requested_copy {
             (
@@ -468,7 +692,7 @@ pub fn ingest_new_carrier_dump(
         source,
     })?;
     let hierarchy_result = (|| {
-        if created_release {
+        if created_release || updated_release {
             write_toml_atomic(&release_dir.join("release.toml"), &release)?;
         }
         if created_copy {
@@ -480,15 +704,17 @@ pub fn ingest_new_carrier_dump(
         Ok::<_, CollectionError>(())
     })();
     if let Err(error) = hierarchy_result {
-        let _ = if created_release {
-            std::fs::remove_dir_all(&release_dir)
+        if created_release {
+            let _ = std::fs::remove_dir_all(&release_dir);
+        } else if updated_release {
+            if let Some(existing) = &existing_release {
+                let _ = write_toml_atomic(&release_dir.join("release.toml"), &existing.manifest);
+            }
         } else if created_copy {
-            std::fs::remove_dir_all(&copy_dir)
+            let _ = std::fs::remove_dir_all(&copy_dir);
         } else if created_carrier {
-            std::fs::remove_dir_all(&carrier_dir)
-        } else {
-            Ok(())
-        };
+            let _ = std::fs::remove_dir_all(&carrier_dir);
+        }
         return Err(error);
     }
 
@@ -505,15 +731,18 @@ pub fn ingest_new_carrier_dump(
             dump_directory: dump_dir,
         }),
         Err(error) => {
-            let _ = if created_release {
-                std::fs::remove_dir_all(&release_dir)
+            if created_release {
+                let _ = std::fs::remove_dir_all(&release_dir);
+            } else if updated_release {
+                if let Some(existing) = &existing_release {
+                    let _ =
+                        write_toml_atomic(&release_dir.join("release.toml"), &existing.manifest);
+                }
             } else if created_copy {
-                std::fs::remove_dir_all(&copy_dir)
+                let _ = std::fs::remove_dir_all(&copy_dir);
             } else if created_carrier {
-                std::fs::remove_dir_all(&carrier_dir)
-            } else {
-                Ok(())
-            };
+                let _ = std::fs::remove_dir_all(&carrier_dir);
+            }
             Err(error.into())
         }
     }

@@ -48,6 +48,35 @@ fn complete_track_matching_rejects_partial_and_accepts_exact_sets() {
 }
 
 #[test]
+fn complete_track_matching_accepts_primary_hash_only_for_single_track_media() {
+    let conn = open_memory().unwrap();
+    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('psx','PlayStation','PSX','Sony',5,'cd',1994,'','Psx')", []).unwrap();
+    conn.execute(
+        "INSERT INTO works(id,canonical_name) VALUES('work-single','Single Track Game')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title,revision) VALUES('release-original','work-single','psx','japan','Single Track Game',''),('release-revision','work-single','psx','japan','Single Track Game','Rev 1')", []).unwrap();
+    conn.execute("INSERT INTO media(id,release_id,dat_source,file_size,crc32,sha1,md5) VALUES('media-original','release-original','redump',2352,'aa','1111','bb'),('media-revision','release-revision','redump',2352,'cc','2222','dd')", []).unwrap();
+    // This medium deliberately repeats the revision's primary digest. Its
+    // extra track means a one-track audit must not claim it as complete.
+    conn.execute("INSERT INTO media(id,release_id,dat_source,file_size,crc32,sha1,md5) VALUES('media-multitrack','release-revision','redump',2352,'cc','2222','dd')", []).unwrap();
+    conn.execute("INSERT INTO media_tracks(media_id,track_number,track_name,file_size,crc32,sha1,md5) VALUES('media-multitrack',1,'Track 1',2352,'cc','2222','dd'),('media-multitrack',2,'Track 2',4704,'ee','3333','ff')", []).unwrap();
+
+    let actual = vec![TrackDigest {
+        number: 1,
+        size: 2352,
+        crc32: "cc".to_owned(),
+        md5: "dd".to_owned(),
+        sha1: "2222".to_owned(),
+    }];
+    let matches = match_complete_catalog_media(&conn, "psx", &actual).unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].media_id, "media-revision");
+    assert_eq!(matches[0].revision, "Rev 1");
+}
+
+#[test]
 fn flat_file_matching_requires_size_and_every_available_catalog_digest() {
     let conn = open_memory().unwrap();
     conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes')", []).unwrap();
@@ -639,4 +668,58 @@ fn multidisc_playable_format_comes_from_disc_images_not_playlist_name() {
     )
     .unwrap();
     assert_eq!(page.rows[0].playable_format, "chd");
+}
+
+#[test]
+fn saturn_archive_projection_keeps_japan_in_saturnjp() {
+    let conn = open_memory().unwrap();
+    conn.execute_batch(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,'/playable');
+         INSERT INTO library_consoles(
+             id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state)
+         VALUES(1,1,'saturn','saturn','/playable/saturn','fp','ready'),
+               (2,1,'saturn','saturnjp','/playable/saturnjp','fp','ready');
+         INSERT INTO archive_profiles(
+             id,display_name,manifest_path,manifest_sha256,archive_root,playable_root)
+         VALUES('profile','Saturn','manifest','hash','/archive','/playable');
+         INSERT INTO archive_releases(
+             id,profile_id,platform_id,title,region,manifest_path,manifest_sha256)
+         VALUES('usa','profile','saturn','USA Game','USA','usa/release.toml','usa-hash'),
+               ('japan','profile','saturnjp','Japan Game','Japan','japan/release.toml','jp-hash');
+         INSERT INTO physical_copies(
+             id,archive_release_id,copy_number,manifest_path,manifest_sha256)
+         VALUES('usa-copy','usa',1,'usa/copy.toml','usa-copy-hash'),
+               ('jp-copy','japan',1,'japan/copy.toml','jp-copy-hash');
+         INSERT INTO carriers(
+             id,physical_copy_id,kind,sequence_number,manifest_path,manifest_sha256)
+         VALUES('usa-disc','usa-copy','optical_disc',1,'usa/carrier.toml','usa-carrier-hash'),
+               ('jp-disc','jp-copy','optical_disc',1,'japan/carrier.toml','jp-carrier-hash');",
+    )
+    .unwrap();
+
+    let query = |console_id| {
+        retro_junk_db::query_entry_list(
+            &conn,
+            &retro_junk_db::LibraryEntryListQuery {
+                console_id: retro_junk_db::LibraryConsoleId(console_id),
+                search: String::new(),
+                filter: retro_junk_db::LibraryEntryFilter::All,
+                sort: retro_junk_db::LibraryEntrySortField::DisplayName,
+                direction: retro_junk_db::SortDirection::Ascending,
+                offset: 0,
+                limit: 10,
+            },
+        )
+        .unwrap()
+    };
+
+    let saturn = query(1);
+    assert_eq!(saturn.archived_releases.len(), 1);
+    assert_eq!(saturn.archived_releases[0].summary.title, "USA Game");
+    let saturn_japan = query(2);
+    assert_eq!(saturn_japan.archived_releases.len(), 1);
+    assert_eq!(
+        saturn_japan.archived_releases[0].summary.title,
+        "Japan Game"
+    );
 }

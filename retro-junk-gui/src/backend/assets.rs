@@ -119,6 +119,14 @@ struct CandidateArchiveAsset {
     path: PathBuf,
 }
 
+struct MiximageWorkItem {
+    entry_id: Option<retro_junk_db::LibraryEntryId>,
+    entry_name: String,
+    rom_stem: String,
+    archive_release_id: Option<retro_junk_archive::ArchiveReleaseId>,
+    archived_assets: HashMap<AssetType, PathBuf>,
+}
+
 /// Returns true for scrape errors that should abort the entire operation.
 fn is_fatal_scrape_error(err: &ScrapeError) -> bool {
     matches!(
@@ -129,13 +137,23 @@ fn is_fatal_scrape_error(err: &ScrapeError) -> bool {
     )
 }
 
+fn default_asset_selection(artwork_only: bool) -> retro_junk_scraper::AssetSelection {
+    let mut selection = retro_junk_scraper::AssetSelection::default();
+    if artwork_only {
+        selection
+            .types
+            .retain(|asset_type| *asset_type != AssetType::Video);
+    }
+    selection
+}
+
 /// Re-scrape media (force redownload of all media types).
 pub fn rescrape_media_for_selection(
     app: &mut RetroJunkApp,
     console_idx: usize,
     ctx: &egui::Context,
 ) {
-    scrape_media_for_selection(app, console_idx, ctx, true);
+    scrape_media_for_selection(app, console_idx, ctx, true, false, None);
 }
 
 /// Scrape only missing media (skip types that already exist on disk).
@@ -144,7 +162,94 @@ pub fn scrape_missing_media_for_selection(
     console_idx: usize,
     ctx: &egui::Context,
 ) {
-    scrape_media_for_selection(app, console_idx, ctx, false);
+    scrape_media_for_selection(app, console_idx, ctx, false, false, None);
+}
+
+/// Scrape only missing image artwork for selected rows, excluding videos.
+pub fn scrape_missing_artwork_for_selection(
+    app: &mut RetroJunkApp,
+    console_idx: usize,
+    ctx: &egui::Context,
+) {
+    scrape_media_for_selection(app, console_idx, ctx, false, true, None);
+}
+
+/// Re-scrape a whole console using unpaginated archive-release details.
+pub fn rescrape_media_for_console(
+    app: &mut RetroJunkApp,
+    console_idx: usize,
+    ctx: &egui::Context,
+    archived_releases: Vec<retro_junk_db::ArchivedLibraryListItem>,
+) {
+    scrape_media_for_selection(app, console_idx, ctx, true, false, Some(archived_releases));
+}
+
+/// Scrape only missing media for a whole console using unpaginated
+/// archive-release details.
+pub fn scrape_missing_artwork_for_console(
+    app: &mut RetroJunkApp,
+    console_idx: usize,
+    ctx: &egui::Context,
+    archived_releases: Vec<retro_junk_db::ArchivedLibraryListItem>,
+) {
+    scrape_media_for_selection(app, console_idx, ctx, false, true, Some(archived_releases));
+}
+
+/// Restore archived originals to the active frontend layout without network
+/// access. This is deliberately separate from scraping: a cleaned or newly
+/// synced device can reconstruct its media tree while offline.
+pub fn restore_archived_media_for_release(
+    app: &mut RetroJunkApp,
+    release_id: String,
+    folder_name: String,
+    frontend_stems: Vec<String>,
+) {
+    let Some(profile) = app.settings.library.active_profile().cloned() else {
+        app.push_error("Restore archived media", "No active collection profile");
+        return;
+    };
+    let Some(media_directory) = state::asset_dir_for_console(
+        &profile.playable_root,
+        &folder_name,
+        &app.settings.general.assets_dir,
+    ) else {
+        app.push_error(
+            "Restore archived media",
+            "Cannot determine the frontend media directory",
+        );
+        return;
+    };
+    spawn_background_op(
+        app,
+        "Restoring archived media".to_owned(),
+        OperationKind::Other,
+        folder_name,
+        ProgressDisplay::Count,
+        move |op_id, cancel, tx| {
+            let result = (|| {
+                let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+                    .map_err(|error| error.to_string())?;
+                let release = snapshot
+                    .releases
+                    .iter()
+                    .find(|release| release.manifest.archive_release_id.to_string() == release_id)
+                    .ok_or_else(|| "Archived release is no longer present".to_owned())?;
+                let stems = if frontend_stems.is_empty() {
+                    retro_junk_lib::archive_assets::release_media_stems(release)
+                } else {
+                    frontend_stems.into_iter().collect()
+                };
+                retro_junk_lib::archive_assets::project_release_assets(
+                    release,
+                    &media_directory,
+                    &stems,
+                    &cancel,
+                )
+                .map_err(|error| error.to_string())
+            })();
+            let _ = tx.send(AppMessage::AssetProjectionComplete { op_id, result });
+        },
+    );
 }
 
 /// Scrape media from `ScreenScraper` for selected entries.
@@ -156,6 +261,8 @@ fn scrape_media_for_selection(
     console_idx: usize,
     ctx: &egui::Context,
     force_redownload: bool,
+    artwork_only: bool,
+    archive_rows_override: Option<Vec<retro_junk_db::ArchivedLibraryListItem>>,
 ) {
     let console = &app.browser.consoles[console_idx];
     let platform = console.platform;
@@ -168,12 +275,14 @@ fn scrape_media_for_selection(
     // Borrow the analyzer for extract_scraper_serial (UI thread only)
     let analyzer = app.context.get_by_platform(platform);
     let archive_profile = app.settings.library.active_profile().cloned();
-    let archive_rows = app
-        .browser
-        .active_page
-        .as_ref()
-        .map(|page| page.archived_releases.clone())
-        .unwrap_or_default();
+    let whole_console = archive_rows_override.is_some();
+    let archive_rows = archive_rows_override.unwrap_or_else(|| {
+        app.browser
+            .active_page
+            .as_ref()
+            .map(|page| page.archived_releases.clone())
+            .unwrap_or_default()
+    });
 
     // Collect work items from selected entries
     let mut work: Vec<ScrapeWorkItem> = app
@@ -248,14 +357,38 @@ fn scrape_media_for_selection(
         })
         .collect();
 
-    if work.is_empty()
-        && let Some(release_id) = app.ui_state.focused_archive_release.as_deref()
-        && let Some(release) = archive_rows
+    let selected_archive_ids = if whole_console {
+        archive_rows
             .iter()
-            .find(|release| release.summary.archive_release_id == release_id)
-        && let Some(identity) = release.scrape_identity.as_ref()
-        && let Ok(archive_release_id) = release.summary.archive_release_id.parse()
-    {
+            .map(|release| release.summary.archive_release_id.clone())
+            .collect::<Vec<_>>()
+    } else if app.ui_state.selected_archive_releases.is_empty() {
+        app.ui_state
+            .focused_archive_release
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        app.ui_state
+            .selected_archive_releases
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let represented_archive_ids = work
+        .iter()
+        .filter_map(|item| item.archive_release_id.map(|id| id.to_string()))
+        .collect::<std::collections::HashSet<_>>();
+    for release in archive_rows.iter().filter(|release| {
+        selected_archive_ids.contains(&release.summary.archive_release_id)
+            && !represented_archive_ids.contains(&release.summary.archive_release_id)
+    }) {
+        let Some(identity) = release.scrape_identity.as_ref() else {
+            continue;
+        };
+        let Ok(archive_release_id) = release.summary.archive_release_id.parse() else {
+            continue;
+        };
         let serial = identity.serial.clone();
         let scraper_serial = analyzer
             .and_then(|analyzer| analyzer.analyzer.extract_scraper_serial(&serial))
@@ -312,6 +445,8 @@ fn scrape_media_for_selection(
     let ctx = ctx.clone();
     let verb = if force_redownload {
         "Scraping media"
+    } else if artwork_only {
+        "Scraping missing artwork"
     } else {
         "Scraping missing media"
     };
@@ -390,7 +525,7 @@ fn scrape_media_for_selection(
                     return;
                 };
 
-                let selection = retro_junk_scraper::AssetSelection::default();
+                let selection = default_asset_selection(artwork_only);
                 // Event channel for download_game_media (we don't consume events, just log)
                 let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
 
@@ -884,24 +1019,76 @@ pub fn regenerate_miximages_for_selection(
     let Some(root_path) = app.root_path.clone() else {
         return;
     };
+    let archive_profile = app.settings.library.active_profile().cloned();
+    let archive_rows = app
+        .browser
+        .active_page
+        .as_ref()
+        .map(|page| page.archived_releases.clone())
+        .unwrap_or_default();
 
-    // Collect (entry_name, rom_stem) for selected entries
-    let work: Vec<(retro_junk_db::LibraryEntryId, String, String)> = app
+    let mut work: Vec<MiximageWorkItem> = app
         .ui_state
         .selected_entries
         .iter()
         .copied()
         .filter_map(|i| {
             let entry = console.entry_by_id(i)?;
-            Some((
-                i,
-                entry.game_entry.display_name().to_string(),
-                entry.game_entry.rom_stem().to_string(),
-            ))
+            let archived_release = archive_rows.iter().find(|release| {
+                release
+                    .playable_library_entries
+                    .iter()
+                    .any(|playable| playable.id == i)
+            });
+            Some(MiximageWorkItem {
+                entry_id: Some(i),
+                entry_name: entry.game_entry.display_name().to_string(),
+                rom_stem: entry.game_entry.rom_stem().to_string(),
+                archive_release_id: archived_release
+                    .and_then(|release| release.summary.archive_release_id.parse().ok()),
+                archived_assets: archived_release.map_or_else(HashMap::new, archived_asset_paths),
+            })
         })
         .collect();
 
+    let selected_archive_ids = if app.ui_state.selected_archive_releases.is_empty() {
+        app.ui_state
+            .focused_archive_release
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        app.ui_state
+            .selected_archive_releases
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let represented_archive_ids = work
+        .iter()
+        .filter_map(|item| item.archive_release_id.map(|id| id.to_string()))
+        .collect::<std::collections::HashSet<_>>();
+    for release in archive_rows.iter().filter(|release| {
+        selected_archive_ids.contains(&release.summary.archive_release_id)
+            && !represented_archive_ids.contains(&release.summary.archive_release_id)
+    }) {
+        let Ok(archive_release_id) = release.summary.archive_release_id.parse() else {
+            continue;
+        };
+        work.push(MiximageWorkItem {
+            entry_id: None,
+            entry_name: release.summary.title.clone(),
+            rom_stem: format!("archive-{archive_release_id}"),
+            archive_release_id: Some(archive_release_id),
+            archived_assets: archived_asset_paths(release),
+        });
+    }
+
     if work.is_empty() {
+        app.push_error(
+            "Generate miximage",
+            "No playable entry or archived release is selected",
+        );
         return;
     }
 
@@ -934,7 +1121,15 @@ pub fn regenerate_miximages_for_selection(
                     }
                 };
 
-            for (file_num, (entry_id, _entry_name, rom_stem)) in work.iter().enumerate() {
+            let scratch_root = archive_profile.as_ref().map(|profile| {
+                profile
+                    .workspace_root
+                    .join("miximages")
+                    .join(op_id.to_string())
+            });
+            let mut generated = Vec::new();
+            let mut failures = Vec::new();
+            for (file_num, item) in work.iter().enumerate() {
                 if cancel.load(Ordering::Relaxed) {
                     break;
                 }
@@ -946,8 +1141,30 @@ pub fn regenerate_miximages_for_selection(
                 });
                 ctx.request_repaint();
 
-                let updated_media =
-                    generate_miximage_for_entry(&media_dir, rom_stem, &layout, &ctx);
+                let target = if item.entry_id.is_some() {
+                    media_dir.clone()
+                } else if let Some(scratch_root) = scratch_root.as_ref() {
+                    scratch_root.join(file_num.to_string())
+                } else {
+                    failures.push(format!(
+                        "{} has no playable target or archive workspace",
+                        item.entry_name
+                    ));
+                    continue;
+                };
+                match generate_miximage_with_archived_assets(
+                    &item.archived_assets,
+                    &target,
+                    &item.rom_stem,
+                    &layout,
+                ) {
+                    Ok(output_path) => {
+                        ctx.forget_image(&state::asset_image_uri(&output_path));
+                        generated.push((item.archive_release_id, output_path));
+                    }
+                    Err(error) => failures.push(format!("{}: {error}", item.entry_name)),
+                }
+                let updated_media = state::collect_existing_assets(&target, &item.rom_stem);
 
                 // Invalidate any currently displayed component images without
                 // loading bulk-operation results into memory.
@@ -958,18 +1175,100 @@ pub fn regenerate_miximages_for_selection(
                     }
                 }
 
-                let _ = tx.send(AppMessage::AssetsLoaded {
-                    folder_name: folder_name.clone(),
-                    entry_id: *entry_id,
-                    assets: updated_media,
-                });
+                if let Some(entry_id) = item.entry_id {
+                    let _ = tx.send(AppMessage::AssetsLoaded {
+                        folder_name: folder_name.clone(),
+                        entry_id,
+                        assets: updated_media,
+                    });
+                }
                 ctx.request_repaint();
             }
 
+            let archived_miximages = generated
+                .iter()
+                .filter_map(|(release_id, path)| release_id.map(|release_id| (release_id, path)))
+                .collect::<Vec<_>>();
+            if let Some(profile) = archive_profile.as_ref()
+                && !archived_miximages.is_empty()
+            {
+                let requests = archived_miximages
+                    .iter()
+                    .map(|(release_id, path)| retro_junk_archive::NewReleaseFile {
+                        release_id: *release_id,
+                        source_file: path,
+                        category: retro_junk_archive::ReleaseFileCategory::Artwork,
+                        asset_type: "miximage",
+                        source: "retro-junk miximage",
+                        source_url: "",
+                        caption: "",
+                    })
+                    .collect::<Vec<_>>();
+                match retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                    .map_err(|error| error.to_string())
+                    .and_then(|_lock| {
+                        retro_junk_archive::add_release_files(
+                            &profile.archive_root,
+                            &requests,
+                            &cancel,
+                        )
+                        .map_err(|error| error.to_string())
+                    }) {
+                    Ok(results) => {
+                        if results.iter().any(|result| result.added) {
+                            let _ = tx.send(AppMessage::ArchiveAssetsChanged);
+                        }
+                    }
+                    Err(error) => failures.push(format!(
+                        "Generated miximage could not be stored in the archive: {error}"
+                    )),
+                }
+            }
+            if let Some(scratch_root) = scratch_root.as_ref()
+                && let Err(error) = std::fs::remove_dir_all(scratch_root)
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                log::warn!(
+                    "Could not remove miximage workspace {}: {error}",
+                    scratch_root.display()
+                );
+            }
+            let _ = tx.send(AppMessage::MiximageComplete {
+                generated: generated.len(),
+                failures,
+            });
             let _ = tx.send(AppMessage::OperationComplete { op_id });
             ctx.request_repaint();
         },
     );
+}
+
+fn archived_asset_paths(
+    release: &retro_junk_db::ArchivedLibraryListItem,
+) -> HashMap<AssetType, PathBuf> {
+    release
+        .archived_assets
+        .iter()
+        .filter_map(|asset| {
+            asset_type_from_archive_name(&asset.asset_type)
+                .map(|asset_type| (asset_type, PathBuf::from(&asset.absolute_path)))
+        })
+        .collect()
+}
+
+fn generate_miximage_with_archived_assets(
+    archived_assets: &HashMap<AssetType, PathBuf>,
+    media_dir: &Path,
+    rom_stem: &str,
+    layout: &retro_junk_frontend::miximage_layout::MiximageLayout,
+) -> Result<PathBuf, String> {
+    for (asset_type, source) in archived_assets {
+        project_asset(source, media_dir, rom_stem, *asset_type)
+            .map_err(|error| format!("could not restore {asset_type}: {error}"))?;
+    }
+    retro_junk_lib::archive_assets::generate_frontend_miximage(media_dir, rom_stem, layout)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "a screenshot is required before a miximage can be generated".to_owned())
 }
 
 /// Generate a miximage for a single entry from its existing on-disk media.
@@ -1005,6 +1304,14 @@ fn generate_miximage_for_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artwork_only_selection_excludes_video_but_keeps_images() {
+        let selection = default_asset_selection(true);
+        assert!(!selection.types.contains(&AssetType::Video));
+        assert!(selection.types.contains(&AssetType::Cover));
+        assert!(selection.types.contains(&AssetType::Screenshot));
+    }
     use std::sync::atomic::AtomicBool;
 
     #[test]
@@ -1088,6 +1395,7 @@ mod tests {
             archive_root: archive_root.clone(),
             playable_root,
             workspace_root: temp.path().join("workspace"),
+            network_mode: true,
             platform_defaults: Vec::new(),
         };
         let snapshot = retro_junk_archive::scan_archive(&archive_root).unwrap();
@@ -1115,5 +1423,28 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn miximage_generation_restores_archived_components_to_playable_media() {
+        let temp = tempfile::tempdir().unwrap();
+        let screenshot = temp.path().join("archived-screenshot.png");
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([20, 40, 60, 255]))
+            .save(&screenshot)
+            .unwrap();
+        let media_dir = temp.path().join("roms-media/nes");
+        let archived_assets = HashMap::from([(AssetType::Screenshot, screenshot)]);
+
+        let output = generate_miximage_with_archived_assets(
+            &archived_assets,
+            &media_dir,
+            "Game",
+            &retro_junk_frontend::miximage_layout::MiximageLayout::default(),
+        )
+        .unwrap();
+
+        assert!(media_dir.join("screenshots/Game.png").is_file());
+        assert_eq!(output, media_dir.join("miximages/Game.png"));
+        assert!(output.is_file());
     }
 }

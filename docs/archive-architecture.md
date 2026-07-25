@@ -8,7 +8,7 @@ Version 0.4 separates two jobs that cannot be represented honestly by one file:
 
 Device-local paths live in a collection profile. The archive itself is portable and contains no absolute paths. SQLite is a rebuildable search/index projection; TOML manifests and JSON evidence in the archive are authoritative.
 
-The profile workspace defaults to a device-local cache directory rather than beneath the archive. Imports copy each source package into a disposable workspace lease with one sequential source read while calculating CRC32, MD5, SHA-1, and SHA-256. Before reading source bytes on Unix hosts, staging verifies that the workspace has room for the complete package plus a 64 MiB safety reserve. Identification, normalized ROM hashing, CUE track hashing, and Redumper inspection use that local package. Archive publication then compares its copy pass with the staged digests and re-reads the archive destination with SHA-256 before publishing it. This deliberately trades temporary local space for fewer network reads; `--consume` retains an additional source verification before deletion.
+The profile workspace defaults to a device-local cache directory rather than beneath the archive. With network mode enabled, imports copy each source package into a disposable workspace lease with one sequential source read while calculating CRC32, MD5, SHA-1, and SHA-256. Before reading source bytes on Unix hosts, staging verifies that the workspace has room for the complete package plus a 64 MiB safety reserve. Identification, normalized ROM hashing, CUE track hashing, and Redumper inspection use that staged package. With network mode disabled, ordinary package analysis reads source files in place; external tools that require writable isolation use the archive's operational `.retro-junk/work` area rather than making a device-local copy. Archive publication then compares its copy pass with the prepared digests and re-reads the archive destination with SHA-256 before publishing it. Network mode deliberately trades temporary local space for fewer network reads; `--consume` retains an additional source verification before deletion.
 
 ## Layout
 
@@ -39,7 +39,7 @@ archive/
                   evidence/   # append-only verification/build records
 ```
 
-Release, physical-copy, carrier, dump, representation, verification, and build identities are UUIDv7 values. A release can contain multiple owned physical copies; one physical copy can contain multiple carriers, such as the discs in a multi-disc game. `copy-01` is a stable display path, while `physical_copy_id` is the durable identity used by manifests and the database.
+Release, physical-copy, carrier, dump, representation, verification, and build identities are UUIDv7 values. A release can contain multiple owned physical copies; one physical copy can contain multiple carriers, such as the discs in a multi-disc game. `copy-01` is a stable display path, while `physical_copy_id` is the durable identity used by manifests and the database. Exact mastering-specific catalog release/media IDs live on carriers. When the carriers in an owned multi-disc copy resolve to compatible records from different mastering groups, the parent intentionally retains only their shared catalog work/platform/region identity; completeness is the set of distinct verified disc positions across that scope.
 
 The vocabulary is deliberately narrow: a **release** is the cataloged edition, a **physical copy** is an owned specimen, a **carrier** is a cartridge/disc/card/tape within it, a **dump** is one capture event, and a **representation** is either the preservation master or a derived playable form. “Media” remains a catalog/frontend term only; “supporting files” covers artwork, video, documentation, photographs, provenance, and metadata without making those unlike things one archive object.
 
@@ -56,6 +56,9 @@ A `.scram` hash is an integrity hash, not a Redump identity hash. Redumper audit
 CHD and RVZ builds require current catalog evidence by default. `--allow-unverified` permits an explicitly warned build; its evidence records that it was not catalog verified. chdman and DolphinTool derivatives are converted back and compared with their canonical inputs in either case. Evidence is current only while its `input_manifest_sha256` matches the representation it describes.
 
 ## CLI workflow
+
+The complete starting-state/destination inventory is maintained in
+[Collection and library convergence matrix](collection-library-state-matrix.md).
 
 ```console
 retro-junk archive init /collections/archive --name "My Collection"
@@ -116,7 +119,15 @@ retro-junk archive build-chd /collections/archive \
   --playable-root /collections/roms --dump-id <uuid>
 
 # Execute all effective policies. Re-running skips current, present outputs.
+# The command verifies all prerequisites release-wide, creates a playlist only
+# for a complete set, restores archived frontend artwork, and safely adds new
+# entries to ES-DE gamelist.xml files by default.
 retro-junk archive build /collections/archive \
+  --playable-root /collections/roms
+
+# Rebuild miximages offline from archived artwork components. Generated images
+# are placed in the frontend media tree and retained in the archive.
+retro-junk archive generate-miximages /collections/archive \
   --playable-root /collections/roms
 
 # GameCube/Wii ISO masters can be policy-built to round-trip-verified RVZ.
@@ -152,7 +163,7 @@ Catalog platform identity and physical platform identity are deliberately separa
 
 The Collection view is release-centric and rolls up physical copies, carriers, preservation masters, playable derivatives, and each evidence class. Its **Import dumps…** button opens a modal workflow that inventories and identifies a selected directory in the background, presents ambiguous catalog or physical-copy choices, and blocks the main UI only while that workflow is open. **Import existing playable library…** uses the same review workflow but disables source removal and records retained matching files as existing playable representations. It can also ingest a new dump for an existing carrier manually, refresh/reindex, verify stored bytes, edit condition/acquisition/provenance, attach physical photos/documents, and set a carrier policy. Profiles pair archive/playable/workspace roots and can initialize the portable archive from Settings.
 
-The Library view combines playable filesystem entries with the archive projection without pretending that an archived-only carrier has a playable path. Playable rows show whether they are unarchived, archived in the preferred format, or archived with a non-preferred playable format. A separate per-console queue lists archival carriers whose preferred playable representation is absent. The toolbar writes the console's default policy to the portable root manifest. That small edit incrementally updates only inherited policy rows for the affected profile/platform in SQLite; explicit carrier overrides remain unchanged, and a full network archive traversal is reserved for reindex and recovery. Queue actions mirror single-file archival-equivalent ROMs with byte verification or build CHDs with round-trip verification, append build evidence, refresh the archive projection, and rescan the playable library. Disc inputs prepared from Redumper raw sets use the device-local profile workspace; unavailable source/target conversions remain visible but disabled rather than silently changing the requested policy.
+The Library view combines playable filesystem entries with the archive projection without pretending that an archived-only carrier has a playable path. Playable rows show whether they are unarchived, archived in the preferred format, or archived with a non-preferred playable format. A separate per-console queue lists archival carriers whose preferred playable representation is absent. The toolbar writes the console's default policy to the portable root manifest. That small edit incrementally updates only inherited policy rows for the affected profile/platform in SQLite; explicit carrier overrides remain unchanged, and a full network archive traversal is reserved for reindex and recovery. Queue actions mirror single-file archival-equivalent ROMs with byte verification or build CHDs with round-trip verification, append build evidence, refresh the archive projection, and rescan the playable library. Disc inputs prepared from Redumper raw sets use the device-local profile workspace only in network mode; otherwise their required isolated scratch remains on the archive filesystem. Unavailable source/target conversions remain visible but disabled rather than silently changing the requested policy.
 
 The preferred-format selectors are platform-aware rather than global lists. They offer native emulator files for cartridge-oriented systems; CHD and BIN/CUE for PS1, Sega CD, Saturn, and Dreamcast; CHD, ISO, and BIN/CUE for PS2; CHD and ISO for PSP; RVZ and ISO for GameCube/Wii; and ISO for Xbox 360. When no modeled representation honestly matches a mainstream emulator's input model—currently original Xbox, PS3, and Vita—only **No preference** is offered. A previously stored unsupported value remains visible and labeled unsupported until the user changes it. Original Xbox is deliberately excluded because xemu's XISO is not equivalent to a Redump-style ISO and needs its own representation and conversion pipeline.
 

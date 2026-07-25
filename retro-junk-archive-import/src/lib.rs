@@ -16,6 +16,8 @@ use sha2::{Digest, Sha256};
 pub enum ImportError {
     #[error("import source is not a regular file or directory: {0}")]
     InvalidSource(String),
+    #[error("invalid dump package: {0}")]
+    InvalidPackage(String),
     #[error("symbolic links are not accepted in dump packages: {0}")]
     SymbolicLink(String),
     #[error("CUE sheet references a file outside its dump package: {0}")]
@@ -44,6 +46,10 @@ pub struct DumpImportRequest {
     pub new_physical_copy: bool,
     pub redumper_path: Option<PathBuf>,
     pub workspace_root: Option<PathBuf>,
+    /// Copy packages to the device-local workspace before analysis. When
+    /// false, calculate inventory hashes and perform analysis against the
+    /// original source paths.
+    pub stage_packages_locally: bool,
     /// When set, imported byte-identical files are also recorded as existing
     /// playable representations relative to this root.
     pub playable_root: Option<PathBuf>,
@@ -114,6 +120,7 @@ pub enum IdentificationMethod {
 #[derive(Debug, Clone)]
 pub enum ImportDisposition {
     Ready,
+    ReadyUnbound { title: String, platform_id: String },
     AlreadyArchived { dump_id: DumpId, directory: PathBuf },
     NeedsCatalogChoice { candidates: Vec<CatalogCandidate> },
     NeedsPhysicalCopyChoice { copies: Vec<PhysicalCopyCandidate> },
@@ -125,6 +132,7 @@ pub enum ImportDisposition {
 pub struct CatalogCandidate {
     pub media_id: String,
     pub release_id: String,
+    pub work_id: String,
     pub title: String,
     pub platform_id: String,
     pub region: String,
@@ -237,10 +245,14 @@ pub fn plan_import(
         .clone()
         .unwrap_or_else(retro_junk_io::default_transient_workspace);
     on_phase(PlanningProgress {
-        description: format!(
-            "Copying packages to local workspace {} while calculating hashes",
-            workspace_root.display()
-        ),
+        description: if request.stage_packages_locally {
+            format!(
+                "Copying packages to local workspace {} while calculating hashes",
+                workspace_root.display()
+            )
+        } else {
+            "Calculating package hashes in place".to_owned()
+        },
         kind: PlanningProgressKind::Bytes,
         current: 0,
         total: total_hint,
@@ -257,25 +269,38 @@ pub fn plan_import(
     for (analysis_index, (source, staging_plan)) in staged_plans.into_iter().enumerate() {
         check_cancel(cancel)?;
         on_phase(PlanningProgress {
-            description: format!("Copying package to local workspace: {}", source.display()),
+            description: if request.stage_packages_locally {
+                format!("Copying package to local workspace: {}", source.display())
+            } else {
+                format!("Hashing package in place: {}", source.display())
+            },
             kind: PlanningProgressKind::Bytes,
             current: hashed,
             total: total_hint,
         });
-        let prepared = retro_junk_io::stage_planned_package(
-            &staging_plan,
-            &workspace_root,
-            cancel,
-            |bytes| {
-                hashed = hashed.saturating_add(bytes);
-                on_progress(hashed, total_hint);
-            },
-        )?;
+        let mut report_bytes = |bytes| {
+            hashed = hashed.saturating_add(bytes);
+            on_progress(hashed, total_hint);
+        };
+        let prepared = if request.stage_packages_locally {
+            retro_junk_io::stage_planned_package(
+                &staging_plan,
+                &workspace_root,
+                cancel,
+                &mut report_bytes,
+            )?
+        } else {
+            retro_junk_io::hash_planned_package_in_place(&staging_plan, cancel, &mut report_bytes)?
+        };
         let staged_source = prepared.local_source.clone();
         let package = inventory_prepared(&prepared);
         staging_leases.push(prepared.lease().clone());
         on_phase(PlanningProgress {
-            description: format!("Analyzing staged package: {}", source.display()),
+            description: if request.stage_packages_locally {
+                format!("Analyzing staged package: {}", source.display())
+            } else {
+                format!("Analyzing package in place: {}", source.display())
+            },
             kind: PlanningProgressKind::Items,
             current: analysis_index as u64,
             total: analysis_total,
@@ -414,12 +439,42 @@ pub fn plan_import(
                 [selected] => {
                     let archive_platform_id =
                         physical_archive_platform(&request, &source, selected);
+                    let compatible_catalog_releases = if selected.work_id.is_empty() {
+                        BTreeSet::new()
+                    } else {
+                        retro_junk_db::releases_for_work(catalog, &selected.work_id)
+                            .map_err(|error| ImportError::Catalog(error.to_string()))?
+                            .into_iter()
+                            .filter(|release| {
+                                release.platform_id == selected.platform_id
+                                    && release.region == selected.region
+                            })
+                            .map(|release| release.id)
+                            .collect::<BTreeSet<_>>()
+                    };
                     let copies = archive
                         .releases
                         .iter()
                         .find(|release| {
                             release.manifest.catalog_binding.catalog_release_id
                                 == selected.release_id
+                                || compatible_catalog_releases
+                                    .contains(&release.manifest.catalog_binding.catalog_release_id)
+                                || (!selected.work_id.is_empty()
+                                    && (release.manifest.catalog_binding.catalog_work_id
+                                        == selected.work_id
+                                        || release.physical_copies.iter().any(|copy| {
+                                            copy.carriers.iter().any(|carrier| {
+                                                carrier.manifest.catalog_binding.catalog_work_id
+                                                    == selected.work_id
+                                                    || compatible_catalog_releases.contains(
+                                                        &carrier
+                                                            .manifest
+                                                            .catalog_binding
+                                                            .catalog_release_id,
+                                                    )
+                                            })
+                                        })))
                                 || (release.manifest.platform_id == archive_platform_id
                                     && release.manifest.title == selected.title
                                     && release.manifest.region == selected.region
@@ -520,7 +575,7 @@ pub fn execute_import(
     let total_candidates = plan.candidates.len() as u64;
     let mut copied_bytes = 0_u64;
     let mut results = Vec::with_capacity(plan.candidates.len());
-    let mut created_copies = BTreeMap::<String, PhysicalCopyId>::new();
+    let mut created_copies = BTreeMap::<String, Vec<(PhysicalCopyId, BTreeSet<u32>)>>::new();
     let mut imported_packages =
         BTreeMap::<String, (PathBuf, retro_junk_archive::DumpManifest)>::new();
     for (index, candidate) in plan.candidates.into_iter().enumerate() {
@@ -581,10 +636,23 @@ pub fn execute_import(
                     .selected_match
                     .as_ref()
                     .expect("ready import has match");
-                let physical_copy_id = candidate
-                    .physical_copy_id
-                    .or_else(|| created_copies.get(&selected.release_id).copied());
+                let logical_release_key = catalog_candidate_release_key(selected);
+                let physical_copy_id = candidate.physical_copy_id.or_else(|| {
+                    (selected.sequence_number > 0)
+                        .then(|| {
+                            created_copies.get(&logical_release_key).and_then(|copies| {
+                                copies
+                                    .iter()
+                                    .find(|(_, positions)| {
+                                        !positions.contains(&selected.sequence_number)
+                                    })
+                                    .map(|(copy_id, _)| *copy_id)
+                            })
+                        })
+                        .flatten()
+                });
                 let binding = CatalogBinding {
+                    catalog_work_id: selected.work_id.clone(),
                     catalog_release_id: selected.release_id.clone(),
                     catalog_media_id: selected.media_id.clone(),
                     source: selected.source.clone(),
@@ -595,7 +663,7 @@ pub fn execute_import(
                     } else {
                         vec![selected.serial.clone()]
                     },
-                    expected_tracks: Vec::new(),
+                    expected_tracks: candidate.verification_tracks.clone(),
                 };
                 let source_package = source_record(&candidate.source, &candidate.package);
                 let spec = NewCarrierDump {
@@ -645,9 +713,17 @@ pub fn execute_import(
                 match imported {
                     Ok(imported) => {
                         copied_bytes = copied_bytes.saturating_add(candidate.package.total_bytes);
-                        created_copies
-                            .entry(selected.release_id.clone())
-                            .or_insert(imported.physical_copy.physical_copy_id);
+                        let copies = created_copies.entry(logical_release_key).or_default();
+                        if let Some((_, positions)) = copies.iter_mut().find(|(copy_id, _)| {
+                            *copy_id == imported.physical_copy.physical_copy_id
+                        }) {
+                            positions.insert(selected.sequence_number);
+                        } else {
+                            copies.push((
+                                imported.physical_copy.physical_copy_id,
+                                BTreeSet::from([selected.sequence_number]),
+                            ));
+                        }
                         if matches!(
                             candidate.identification,
                             IdentificationResolution::CatalogVerified { .. }
@@ -682,7 +758,97 @@ pub fn execute_import(
                             &candidate,
                             CandidateImportOutcome::Imported,
                             removed,
-                            "imported and verified",
+                            imported_verification_detail(&candidate.identification),
+                        ));
+                    }
+                    Err(error) => results.push(result(
+                        &candidate,
+                        CandidateImportOutcome::Failed,
+                        false,
+                        &error.to_string(),
+                    )),
+                }
+            }
+            ImportDisposition::ReadyUnbound { title, platform_id } => {
+                if title.trim().is_empty() || platform_id.trim().is_empty() {
+                    results.push(result(
+                        &candidate,
+                        CandidateImportOutcome::Skipped,
+                        false,
+                        "unbound imports require both a title and platform",
+                    ));
+                    continue;
+                }
+                let source_package = source_record(&candidate.source, &candidate.package);
+                let spec = NewCarrierDump {
+                    platform_id: platform_id.trim().to_owned(),
+                    title: title.trim().to_owned(),
+                    region: String::new(),
+                    revision: String::new(),
+                    variant: String::new(),
+                    owner_id: plan.request.owner_id.clone(),
+                    physical_copy_label: String::new(),
+                    serial: String::new(),
+                    sequence_number: 0,
+                    carrier_label: String::new(),
+                    carrier_kind: candidate.carrier_kind.clone(),
+                    format: candidate.format.clone(),
+                    catalog_binding: CatalogBinding::default(),
+                    source_package,
+                    expected_files: candidate
+                        .package
+                        .files
+                        .iter()
+                        .map(|file| retro_junk_archive::ExpectedSourceFile {
+                            relative_path: file.relative_path.clone(),
+                            digests: file.digests.clone(),
+                        })
+                        .collect(),
+                    physical_copy_id: None,
+                };
+                let imported = retro_junk_archive::ingest_new_carrier_dump(
+                    &plan.request.archive_root,
+                    &candidate.staged_source,
+                    spec,
+                    cancel,
+                    |progress| {
+                        on_progress(ImportProgress {
+                            completed_candidates: index as u64,
+                            total_candidates,
+                            copied_bytes: copied_bytes.saturating_add(progress.copied_bytes),
+                            total_bytes: plan.total_source_bytes,
+                        });
+                    },
+                );
+                match imported {
+                    Ok(imported) => {
+                        copied_bytes = copied_bytes.saturating_add(candidate.package.total_bytes);
+                        append_playable_adoption(
+                            &plan.request,
+                            &candidate,
+                            &imported.dump_directory,
+                            &imported.dump,
+                            false,
+                        )?;
+                        imported_packages.insert(
+                            batch_key,
+                            (imported.dump_directory.clone(), imported.dump.clone()),
+                        );
+                        if consume {
+                            report_consume_verification(&on_phase, &candidate);
+                        }
+                        let removed = consume
+                            && verify_and_consume(
+                                &candidate,
+                                &imported.dump_directory,
+                                &imported.dump,
+                                cancel,
+                            )?;
+                        results.push(result(
+                            &candidate,
+                            CandidateImportOutcome::Imported,
+                            removed,
+                            "imported; archive integrity verified, no catalog identity claimed",
                         ));
                     }
                     Err(error) => results.push(result(
@@ -779,6 +945,7 @@ fn discover_packages(
             context.matches_any_console(name) || catalog_platform_name(name).is_some()
         });
     if looks_like_package(source) && !source_is_platform_directory {
+        validate_package_layout(source)?;
         return Ok(vec![source.to_path_buf()]);
     }
     let mut packages = Vec::new();
@@ -814,7 +981,15 @@ fn discover_packages(
         return Err(ImportError::InvalidSource(source.display().to_string()));
     }
     packages.sort();
+    for package in &packages {
+        validate_package_layout(package)?;
+    }
     Ok(packages)
+}
+
+fn validate_package_layout(package: &Path) -> Result<(), ImportError> {
+    retro_junk_archive::validate_redumper_package(package)
+        .map_err(|error| ImportError::InvalidPackage(error.to_string()))
 }
 
 fn infer_playable_platform(
@@ -856,7 +1031,7 @@ pub fn physical_archive_platform(
     let catalog_platform = selected.platform_id.trim().to_ascii_lowercase();
     if !matches!(
         catalog_platform.as_str(),
-        "nes" | "snes" | "genesis" | "pce"
+        "nes" | "snes" | "genesis" | "pce" | "saturn"
     ) {
         return selected.platform_id.clone();
     }
@@ -907,6 +1082,7 @@ fn catalog_platform_name(value: &str) -> Option<&'static str> {
         }
         "pce" | "pc engine" | "pc-engine" | "pcengine" | "tg16" | "tg-16" | "turbografx"
         | "turbografx-16" | "turbo grafx 16" => Some("pce"),
+        "saturn" | "saturnjp" | "sega saturn" => Some("saturn"),
         _ => None,
     }
 }
@@ -926,6 +1102,8 @@ fn named_physical_platform(catalog_platform: &str, value: &str) -> Option<&'stat
         ("pce", "tg16" | "tg-16" | "turbografx" | "turbografx-16" | "turbo grafx 16") => {
             Some("tg16")
         }
+        ("saturn", "saturn" | "sega saturn") => Some("saturn"),
+        ("saturn", "saturnjp") => Some("saturnjp"),
         _ => None,
     }
 }
@@ -950,6 +1128,8 @@ fn regional_physical_platform(catalog_platform: &str, region: &str) -> Option<&'
             Some("tg16")
         }
         "pce" => Some("pce"),
+        "saturn" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("saturnjp"),
+        "saturn" => Some("saturn"),
         _ => None,
     }
 }
@@ -1721,6 +1901,7 @@ impl From<retro_junk_db::CompleteCatalogMediaMatch> for CatalogCandidate {
         Self {
             media_id: value.media_id,
             release_id: value.release_id,
+            work_id: value.work_id,
             title: value.game,
             platform_id: value.platform_id,
             region: value.region,
@@ -1739,6 +1920,18 @@ fn deduplicate_matches(matches: &mut Vec<CatalogCandidate>) {
     matches.dedup_by(|a, b| a.media_id == b.media_id);
 }
 
+fn catalog_candidate_release_key(candidate: &CatalogCandidate) -> String {
+    if candidate.work_id.is_empty() {
+        return candidate.release_id.clone();
+    }
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        candidate.work_id,
+        candidate.platform_id.to_ascii_lowercase(),
+        candidate.region.to_ascii_lowercase()
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
@@ -1746,21 +1939,23 @@ mod tests {
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn serial_folders_are_identified_and_grouped_into_one_physical_copy() {
+    fn compatible_carrier_masterings_are_grouped_into_one_physical_copy() {
         let temp = tempfile::tempdir().unwrap();
         let inbox = temp.path().join("inbox");
         let archive = temp.path().join("archive");
         std::fs::create_dir_all(inbox.join("SLUS-00001")).unwrap();
         std::fs::create_dir_all(inbox.join("SLUS-00002")).unwrap();
+        std::fs::create_dir_all(inbox.join("SLUS-00003")).unwrap();
         std::fs::write(inbox.join("SLUS-00001/disc.bin"), b"disc one").unwrap();
         std::fs::write(inbox.join("SLUS-00002/disc.bin"), b"disc two").unwrap();
+        std::fs::write(inbox.join("SLUS-00003/disc.bin"), b"disc one b").unwrap();
         retro_junk_archive::initialize_archive(
             &archive,
             &retro_junk_archive::ArchiveRootManifest::new("Import test"),
         )
         .unwrap();
 
-        let catalog = retro_junk_db::open_memory().unwrap();
+        let mut catalog = retro_junk_db::open_memory().unwrap();
         catalog.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('psx','PlayStation','PSX','Sony',5,'cd',1994,'','Psx')", []).unwrap();
         catalog
             .execute(
@@ -1768,9 +1963,12 @@ mod tests {
                 [],
             )
             .unwrap();
-        catalog.execute("INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('release','work','psx','usa','Two Disc Game')", []).unwrap();
-        catalog.execute("INSERT INTO media(id,release_id,media_serial,disc_number,dat_source) VALUES('disc-1','release','SLUS-00001',1,'redump')", []).unwrap();
-        catalog.execute("INSERT INTO media(id,release_id,media_serial,disc_number,dat_source) VALUES('disc-2','release','SLUS-00002',2,'redump')", []).unwrap();
+        catalog.execute("INSERT INTO releases(id,work_id,platform_id,region,revision,title) VALUES('release-a','work','psx','usa','mastering-a','Two Disc Game')", []).unwrap();
+        catalog.execute("INSERT INTO releases(id,work_id,platform_id,region,revision,title) VALUES('release-b','work','psx','usa','mastering-b','Two Disc Game')", []).unwrap();
+        catalog.execute("INSERT INTO releases(id,work_id,platform_id,region,revision,title) VALUES('release-c','work','psx','usa','mastering-c','Two Disc Game')", []).unwrap();
+        catalog.execute("INSERT INTO media(id,release_id,media_serial,disc_number,dat_source) VALUES('disc-1','release-a','SLUS-00001',1,'redump')", []).unwrap();
+        catalog.execute("INSERT INTO media(id,release_id,media_serial,disc_number,dat_source) VALUES('disc-2','release-b','SLUS-00002',2,'redump')", []).unwrap();
+        catalog.execute("INSERT INTO media(id,release_id,media_serial,disc_number,dat_source) VALUES('disc-1b','release-c','SLUS-00003',1,'redump')", []).unwrap();
         catalog
             .execute(
                 "INSERT INTO media_serial_keys(media_id,serial_key) VALUES('disc-1','SLUS00001')",
@@ -1780,6 +1978,12 @@ mod tests {
         catalog
             .execute(
                 "INSERT INTO media_serial_keys(media_id,serial_key) VALUES('disc-2','SLUS00002')",
+                [],
+            )
+            .unwrap();
+        catalog
+            .execute(
+                "INSERT INTO media_serial_keys(media_id,serial_key) VALUES('disc-1b','SLUS00003')",
                 [],
             )
             .unwrap();
@@ -1796,6 +2000,7 @@ mod tests {
                 new_physical_copy: false,
                 redumper_path: None,
                 workspace_root: Some(temp.path().join("work")),
+                stage_packages_locally: true,
                 playable_root: None,
             },
             &retro_junk_lib::AnalysisContext::new(),
@@ -1806,9 +2011,9 @@ mod tests {
         )
         .unwrap();
         let progress = progress.into_inner();
-        assert_eq!(progress.first(), Some(&(0, 16)));
-        assert_eq!(progress.last(), Some(&(16, 16)));
-        assert!(progress.iter().all(|(_, total)| *total == 16));
+        assert_eq!(progress.first(), Some(&(0, 26)));
+        assert_eq!(progress.last(), Some(&(26, 26)));
+        assert!(progress.iter().all(|(_, total)| *total == 26));
         let phases = phases.into_inner();
         assert!(phases.iter().any(|phase| {
             phase.kind == PlanningProgressKind::Indeterminate
@@ -1817,12 +2022,12 @@ mod tests {
         assert!(
             phases
                 .iter()
-                .any(|phase| { phase.kind == PlanningProgressKind::Bytes && phase.total == 16 })
+                .any(|phase| { phase.kind == PlanningProgressKind::Bytes && phase.total == 26 })
         );
         assert!(phases.iter().any(|phase| {
-            phase.kind == PlanningProgressKind::Items && phase.current == 2 && phase.total == 2
+            phase.kind == PlanningProgressKind::Items && phase.current == 3 && phase.total == 3
         }));
-        assert_eq!(plan.candidates.len(), 2);
+        assert_eq!(plan.candidates.len(), 3);
         assert!(plan.candidates.iter().all(|candidate| {
             matches!(candidate.disposition, ImportDisposition::Ready)
                 && matches!(
@@ -1848,21 +2053,97 @@ mod tests {
                 && phase.description.contains("Publishing archival package")
         }));
         assert!(execution_phases.iter().any(|phase| {
-            phase.kind == PlanningProgressKind::Items && phase.current == 2 && phase.total == 2
+            phase.kind == PlanningProgressKind::Items && phase.current == 3 && phase.total == 3
         }));
         assert!(result.results.iter().all(|candidate| {
             candidate.outcome == CandidateImportOutcome::Imported && !candidate.source_removed
         }));
         let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
         assert_eq!(snapshot.releases.len(), 1);
-        assert_eq!(snapshot.releases[0].physical_copies.len(), 1);
+        assert_eq!(snapshot.releases[0].physical_copies.len(), 2);
         assert_eq!(snapshot.releases[0].physical_copies[0].carriers.len(), 2);
+        assert_eq!(snapshot.releases[0].physical_copies[1].carriers.len(), 1);
+        assert_eq!(
+            snapshot.releases[0]
+                .manifest
+                .catalog_binding
+                .catalog_work_id,
+            "work"
+        );
+        assert!(
+            snapshot.releases[0]
+                .manifest
+                .catalog_binding
+                .catalog_release_id
+                .is_empty()
+        );
+        let exact_carrier_releases = snapshot.releases[0]
+            .physical_copies
+            .iter()
+            .flat_map(|copy| &copy.carriers)
+            .map(|carrier| carrier.manifest.catalog_binding.catalog_release_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            exact_carrier_releases,
+            ["release-a", "release-b", "release-c"].into()
+        );
         assert!(
             snapshot.releases[0]
                 .directory
                 .join("physical-copies/copy-01")
                 .is_dir()
         );
+
+        for carrier in snapshot.releases[0]
+            .physical_copies
+            .iter()
+            .flat_map(|copy| &copy.carriers)
+        {
+            let dump = &carrier.dumps[0];
+            let verification_id = retro_junk_archive::VerificationId::new();
+            let evidence = retro_junk_archive::VerificationEvidence {
+                schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+                verification_id,
+                representation_id: dump.manifest.representation_id,
+                performed_at: chrono::Utc::now().to_rfc3339(),
+                input_manifest_sha256: dump.manifest_sha256.clone(),
+                kind: retro_junk_archive::VerificationKind::Catalog,
+                outcome: retro_junk_archive::VerificationOutcome::Verified,
+                tool: None,
+                catalog: Some(retro_junk_archive::CatalogEvidence {
+                    source: "redump".to_owned(),
+                    system: "psx".to_owned(),
+                    version: String::new(),
+                    game: "Two Disc Game".to_owned(),
+                    complete_track_set: true,
+                }),
+                tracks: Vec::new(),
+                detail: "test catalog evidence".to_owned(),
+            };
+            let evidence_directory = dump.directory.join("evidence");
+            std::fs::create_dir_all(&evidence_directory).unwrap();
+            retro_junk_archive::write_json_new(
+                &evidence_directory.join(format!("verification-{verification_id}.json")),
+                &evidence,
+            )
+            .unwrap();
+        }
+        let verified_snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+        retro_junk_db::reconcile_archive_snapshot(
+            &mut catalog,
+            &verified_snapshot,
+            &temp.path().join("playable"),
+            &temp.path().join("work"),
+        )
+        .unwrap();
+        let summaries = retro_junk_db::list_archive_release_summaries(
+            &catalog,
+            &verified_snapshot.manifest.profile_id.to_string(),
+        )
+        .unwrap();
+        assert_eq!(summaries[0].expected_disc_count, 2);
+        assert_eq!(summaries[0].verified_disc_count, 2);
+        assert!(summaries[0].archive_complete);
     }
 
     #[test]
@@ -1901,6 +2182,43 @@ mod tests {
     }
 
     #[test]
+    fn import_planning_can_hash_and_analyze_a_package_in_place() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("game.nes");
+        let archive = temp.path().join("archive");
+        let workspace = temp.path().join("workspace");
+        std::fs::write(&source, b"in-place rom bytes").unwrap();
+        retro_junk_archive::initialize_archive(
+            &archive,
+            &retro_junk_archive::ArchiveRootManifest::new("In-place import"),
+        )
+        .unwrap();
+
+        let plan = plan_import(
+            DumpImportRequest {
+                source: source.clone(),
+                archive_root: archive,
+                platform_hint: None,
+                owner_id: "default".to_owned(),
+                new_physical_copy: false,
+                redumper_path: None,
+                workspace_root: Some(workspace.clone()),
+                stage_packages_locally: false,
+                playable_root: None,
+            },
+            &retro_junk_lib::AnalysisContext::new(),
+            &retro_junk_db::open_memory().unwrap(),
+            &AtomicBool::new(false),
+            |_, _| {},
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(plan.candidates[0].staged_source, source);
+        assert!(!workspace.exists());
+    }
+
+    #[test]
     fn combined_catalogs_keep_separate_regional_physical_platforms() {
         let request = DumpImportRequest {
             source: PathBuf::from("/roms"),
@@ -1910,11 +2228,13 @@ mod tests {
             new_physical_copy: false,
             redumper_path: None,
             workspace_root: None,
+            stage_packages_locally: true,
             playable_root: Some(PathBuf::from("/roms")),
         };
         let mut selected = CatalogCandidate {
             media_id: "media".to_owned(),
             release_id: "release".to_owned(),
+            work_id: "work".to_owned(),
             title: "Game".to_owned(),
             platform_id: "nes".to_owned(),
             region: "Japan".to_owned(),
@@ -1977,6 +2297,27 @@ mod tests {
         assert_eq!(
             physical_archive_platform(&request, Path::new("/roms/game.pce"), &selected),
             "pce"
+        );
+
+        selected.platform_id = "saturn".to_owned();
+        selected.region = "Japan".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.chd"), &selected),
+            "saturnjp"
+        );
+        selected.region = "USA".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.chd"), &selected),
+            "saturn"
+        );
+        selected.region = "Japan".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/saturn/game.chd"), &selected),
+            "saturnjp"
+        );
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/saturnjp/game.chd"), &selected),
+            "saturnjp"
         );
 
         let mut explicit_nes = request;
@@ -2051,6 +2392,7 @@ mod tests {
                 new_physical_copy: false,
                 redumper_path: None,
                 workspace_root: Some(temp.path().join("work")),
+                stage_packages_locally: true,
                 playable_root: Some(playable.clone()),
             },
             &context,
@@ -2085,6 +2427,100 @@ mod tests {
             bytes
         );
         assert!(rom.is_file());
+    }
+
+    #[test]
+    fn unresolved_dump_can_be_imported_without_claiming_catalog_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("homebrew.nes");
+        let archive = temp.path().join("archive");
+        std::fs::write(&source, b"uncatalogued homebrew").unwrap();
+        retro_junk_archive::initialize_archive(
+            &archive,
+            &retro_junk_archive::ArchiveRootManifest::new("Import test"),
+        )
+        .unwrap();
+        let catalog = retro_junk_db::open_memory().unwrap();
+        let cancel = AtomicBool::new(false);
+        let mut plan = plan_import(
+            DumpImportRequest {
+                source,
+                archive_root: archive.clone(),
+                platform_hint: Some("nes".to_owned()),
+                owner_id: "default".to_owned(),
+                new_physical_copy: false,
+                redumper_path: None,
+                workspace_root: Some(temp.path().join("workspace")),
+                stage_packages_locally: true,
+                playable_root: None,
+            },
+            &retro_junk_lib::create_default_context(),
+            &catalog,
+            &cancel,
+            |_, _| {},
+            |_| {},
+        )
+        .unwrap();
+        assert!(matches!(
+            plan.candidates[0].disposition,
+            ImportDisposition::Unresolved { .. }
+        ));
+        plan.candidates[0].disposition = ImportDisposition::ReadyUnbound {
+            title: "Homebrew Game".to_owned(),
+            platform_id: "nes".to_owned(),
+        };
+
+        let result = execute_import(plan, false, &cancel, |_| {}, |_| {}).unwrap();
+        assert_eq!(result.results[0].outcome, CandidateImportOutcome::Imported);
+        let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+        assert_eq!(snapshot.releases[0].manifest.title, "Homebrew Game");
+        assert_eq!(snapshot.releases[0].manifest.platform_id, "nes");
+        assert!(
+            snapshot.releases[0]
+                .manifest
+                .catalog_binding
+                .catalog_release_id
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn multiple_redumper_images_require_separate_subdirectories() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("multi-disc");
+        let archive = temp.path().join("archive");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("disc1.scram"), b"disc one").unwrap();
+        std::fs::write(source.join("disc2.scram"), b"disc two").unwrap();
+        retro_junk_archive::initialize_archive(
+            &archive,
+            &retro_junk_archive::ArchiveRootManifest::new("Import test"),
+        )
+        .unwrap();
+
+        let error = plan_import(
+            DumpImportRequest {
+                source,
+                archive_root: archive,
+                platform_hint: Some("saturn".to_owned()),
+                owner_id: "default".to_owned(),
+                new_physical_copy: false,
+                redumper_path: None,
+                workspace_root: Some(temp.path().join("workspace")),
+                stage_packages_locally: true,
+                playable_root: None,
+            },
+            &retro_junk_lib::create_default_context(),
+            &retro_junk_db::open_memory().unwrap(),
+            &AtomicBool::new(false),
+            |_, _| {},
+            |_| {},
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("disc1, disc2"));
+        assert!(message.contains("separate subdirectory"));
     }
 
     #[test]
@@ -2225,6 +2661,20 @@ fn result(
     }
 }
 
+fn imported_verification_detail(identification: &IdentificationResolution) -> &'static str {
+    match identification {
+        IdentificationResolution::CatalogVerified { .. } => {
+            "imported; archive integrity and catalog hashes verified"
+        }
+        IdentificationResolution::Identified { .. } => {
+            "imported; archive integrity verified, catalog identity inferred but not hash verified"
+        }
+        IdentificationResolution::Ambiguous | IdentificationResolution::Unresolved => {
+            "imported; archive integrity verified, catalog identity not verified"
+        }
+    }
+}
+
 fn batch_duplicate_key(candidate: &DumpImportCandidate) -> String {
     format!(
         "{}\0{}\0{}",
@@ -2242,7 +2692,9 @@ fn disposition_reason(disposition: &ImportDisposition) -> &str {
         ImportDisposition::NeedsCatalogChoice { .. } => "catalog match is ambiguous",
         ImportDisposition::NeedsPhysicalCopyChoice { .. } => "several physical copies exist",
         ImportDisposition::Unresolved { reason } | ImportDisposition::Invalid { reason } => reason,
-        ImportDisposition::Ready | ImportDisposition::AlreadyArchived { .. } => "",
+        ImportDisposition::Ready
+        | ImportDisposition::ReadyUnbound { .. }
+        | ImportDisposition::AlreadyArchived { .. } => "",
     }
 }
 

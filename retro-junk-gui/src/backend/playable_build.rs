@@ -44,6 +44,13 @@ pub fn start(
     ));
     let sender = app.message_tx.clone();
     let chdman = PathBuf::from(app.settings.general.chdman_path.trim());
+    let processing_workspace_root = profile.processing_workspace_root();
+    let media_directory = crate::state::asset_dir_for_console(
+        &profile.playable_root,
+        &playable_platform_id,
+        &app.settings.general.assets_dir,
+    );
+    let metadata_dir_setting = app.settings.general.metadata_dir.clone();
     let handle = std::thread::spawn(move || {
         let result = (|| {
             let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
@@ -96,7 +103,7 @@ pub fn start(
                 retro_junk_lib::playable_build::verify_dump_against_catalog(
                     &retro_junk_lib::playable_build::CatalogVerificationRequest {
                         archive_root: profile.archive_root.clone(),
-                        workspace_root: profile.workspace_root.clone(),
+                        workspace_root: processing_workspace_root.clone(),
                         dump_id,
                         redumper_path: PathBuf::new(),
                         expected_tracks: tracks,
@@ -180,12 +187,15 @@ pub fn start(
                 let request = retro_junk_lib::playable_build::PlayableBuildRequest {
                     archive_root: profile.archive_root.clone(),
                     playable_root: profile.playable_root.clone(),
-                    workspace_root: profile.workspace_root.clone(),
+                    workspace_root: processing_workspace_root.clone(),
                     dump_id,
                     format: format.clone(),
                     chdman_path: chdman.clone(),
+                    redumper_path: PathBuf::new(),
+                    dolphin_tool_path: PathBuf::new(),
                     allow_unverified: release.allow_unverified,
                     retain_intermediate: release.retain_intermediate,
+                    options: std::collections::BTreeMap::new(),
                     playable_platform_id: playable_platform_id.clone(),
                     expected_disc_count: release.expected_disc_count,
                     canonical_output_stem: canonical_names
@@ -220,8 +230,32 @@ pub fn start(
                     &files,
                 )?);
             }
+            let frontend_output = outputs.last().cloned();
             let snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
                 .map_err(|error| error.to_string())?;
+            if let Some(media_directory) = media_directory.as_deref()
+                && let Some(indexed_release) = snapshot.releases.iter().find(|item| {
+                    item.manifest.archive_release_id.to_string() == release.archive_release_id
+                })
+            {
+                retro_junk_lib::archive_assets::project_release_assets(
+                    indexed_release,
+                    media_directory,
+                    &retro_junk_lib::archive_assets::release_media_stems(indexed_release),
+                    &cancel,
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            if let Some(frontend_output) = frontend_output.as_deref() {
+                upsert_esde_entry(
+                    &profile.playable_root,
+                    &playable_platform_id,
+                    &metadata_dir_setting,
+                    media_directory.as_deref(),
+                    frontend_output,
+                    &release.title,
+                )?;
+            }
             let mut connection =
                 retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
             retro_junk_db::reconcile_archive_snapshot(
@@ -239,6 +273,69 @@ pub fn start(
     ctx.request_repaint_after(std::time::Duration::from_millis(20));
 }
 
+fn upsert_esde_entry(
+    playable_root: &std::path::Path,
+    platform_id: &str,
+    metadata_dir_setting: &str,
+    media_directory: Option<&std::path::Path>,
+    output: &std::path::Path,
+    title: &str,
+) -> Result<(), String> {
+    let rom_dir = playable_root.join(platform_id);
+    let relative = output.strip_prefix(&rom_dir).map_err(|_| {
+        format!(
+            "Playable output {} is outside {}",
+            output.display(),
+            rom_dir.display()
+        )
+    })?;
+    let rom_filename = relative.to_string_lossy().replace('\\', "/");
+    let stem = if relative
+        .parent()
+        .and_then(std::path::Path::file_name)
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".m3u"))
+    {
+        relative
+            .parent()
+            .and_then(std::path::Path::file_name)
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_owned()
+    } else {
+        relative
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let media_directory = media_directory.unwrap_or(&rom_dir);
+    let assets = crate::state::collect_existing_assets(media_directory, &stem);
+    let metadata_directory =
+        crate::state::metadata_dir_for_console(playable_root, platform_id, metadata_dir_setting);
+    retro_junk_frontend::esde::upsert_game_metadata(
+        &retro_junk_frontend::ScrapedGame {
+            rom_stem: stem,
+            rom_filename,
+            name: title.to_owned(),
+            description: String::new(),
+            developer: String::new(),
+            publisher: String::new(),
+            genre: String::new(),
+            players: String::new(),
+            rating: None,
+            release_date: String::new(),
+            assets,
+            cover_title: String::new(),
+        },
+        &rom_dir,
+        &metadata_directory,
+        media_directory,
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
 fn load_existing_disc_paths(
     connection: &retro_junk_db::Connection,
     archive_release_id: &str,
@@ -249,7 +346,9 @@ fn load_existing_disc_paths(
         .prepare(
             "SELECT DISTINCT m.disc_number,e.game_entry_json,lc.folder_path
              FROM archive_releases ar
-             JOIN media m ON m.release_id=ar.catalog_release_id AND m.disc_number>0
+             JOIN physical_copies pc ON pc.archive_release_id=ar.id
+             JOIN carriers c ON c.physical_copy_id=pc.id
+             JOIN media m ON m.id=c.catalog_media_id AND m.disc_number>0
              JOIN library_entries e ON e.dat_game_name=m.dat_name
              JOIN library_consoles lc ON lc.id=e.console_id
              JOIN library_roots lr ON lr.id=lc.root_id

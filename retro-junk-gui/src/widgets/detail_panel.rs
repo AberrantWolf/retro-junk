@@ -31,6 +31,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.heading("Details");
     ui.separator();
 
+    if app.selected_library_row_count() > 1 {
+        show_multi_selection(ui, app);
+        return;
+    }
+
     if app.ui_state.focused_archive_release.is_some() {
         show_archive_release(ui, app);
         return;
@@ -560,6 +565,183 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     });
 }
 
+fn show_multi_selection(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    let count = app.selected_library_row_count();
+    ui.strong(format!("{count} library items selected"));
+    ui.weak("Only values and actions shared by the selection are shown.");
+    ui.add_space(8.0);
+
+    let Some(console_idx) = app.selected_console_index() else {
+        return;
+    };
+    let console = &app.browser.consoles[console_idx];
+    let folder_name = console.folder_name.clone();
+    detail_row(ui, "Console", console.platform_name);
+
+    let selected_releases = app
+        .browser
+        .active_page
+        .as_ref()
+        .map(|page| {
+            page.archived_releases
+                .iter()
+                .filter(|release| {
+                    app.ui_state
+                        .selected_archive_releases
+                        .contains(&release.summary.archive_release_id)
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let grouped_ids = selected_releases
+        .iter()
+        .flat_map(|release| {
+            release
+                .playable_library_entries
+                .iter()
+                .map(|entry| entry.id)
+        })
+        .collect::<std::collections::HashSet<_>>();
+    let selected_entries = app.ui_state.selected_entries.iter().filter_map(|id| {
+        (!grouped_ids.contains(id))
+            .then(|| console.entry_by_id(*id))
+            .flatten()
+    });
+
+    let regions = selected_releases
+        .iter()
+        .map(|release| release.summary.region.clone())
+        .chain(selected_entries.clone().map(|entry| {
+            entry
+                .effective_regions()
+                .iter()
+                .map(retro_junk_lib::Region::name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        }))
+        .collect::<Vec<_>>();
+    if regions.len() == count
+        && let Some(region) = common_value(&regions).filter(|region| !region.is_empty())
+    {
+        detail_row(ui, "Region", region);
+    }
+
+    let archive_states = selected_releases
+        .iter()
+        .map(|release| {
+            if release.summary.archive_complete {
+                "Complete"
+            } else {
+                "Incomplete"
+            }
+        })
+        .collect::<Vec<_>>();
+    if archive_states.len() == count
+        && let Some(state) = common_value(&archive_states)
+    {
+        detail_row(ui, "Archive", state);
+    }
+
+    ui.add_space(10.0);
+    let details_ready = app.selected_entry_details_loaded();
+    let all_releases_scrapeable = selected_releases
+        .iter()
+        .all(|release| release.scrape_identity.is_some());
+    let can_scrape = details_ready
+        && (!app.ui_state.selected_entries.is_empty() || !selected_releases.is_empty())
+        && all_releases_scrapeable;
+    let scrape = ui
+        .add_enabled(can_scrape, egui::Button::new("Scrape only missing artwork"))
+        .on_disabled_hover_text(if details_ready {
+            "One or more archived releases has no reliable scraper identity"
+        } else {
+            "Loading the complete selection…"
+        });
+    if scrape.clicked() {
+        crate::backend::assets::scrape_missing_artwork_for_selection(app, console_idx, ui.ctx());
+    }
+
+    ui.horizontal_wrapped(|ui| {
+        let has_playable_entries = !app.ui_state.selected_entries.is_empty();
+        if ui
+            .add_enabled(
+                details_ready && has_playable_entries,
+                egui::Button::new("Calculate missing hashes"),
+            )
+            .clicked()
+        {
+            crate::backend::hash::compute_hashes_for_selection(app, console_idx);
+        }
+        if ui
+            .add_enabled(
+                details_ready && has_playable_entries,
+                egui::Button::new("Rescan"),
+            )
+            .clicked()
+        {
+            crate::backend::scan::rescan_selected_entries(app, console_idx, ui.ctx());
+        }
+    });
+
+    let archive_actions = selected_releases
+        .iter()
+        .filter_map(|release| release.action.clone())
+        .collect::<Vec<_>>();
+    if !selected_releases.is_empty() {
+        let all_have_actions = archive_actions.len() == selected_releases.len();
+        let all_ready = all_have_actions
+            && archive_actions.iter().all(|action| {
+                action.buildable && (!action.needs_playable || action.preferred_format.is_some())
+            });
+        let any_needs_playable = archive_actions.iter().any(|action| action.needs_playable);
+        let any_needs_verification = archive_actions.iter().any(|action| {
+            action
+                .carriers
+                .iter()
+                .any(|carrier| !carrier.catalog_verified)
+        });
+        let label = if !any_needs_playable {
+            "Verify selected archives"
+        } else if any_needs_verification {
+            "Verify & make selected playable"
+        } else {
+            "Make selected playable"
+        };
+        let button = ui
+            .add_enabled(all_ready, egui::Button::new(label))
+            .on_disabled_hover_text(
+                "Every selected archive must be complete and have a preferred playable format",
+            );
+        if button.clicked() {
+            for action in archive_actions {
+                let format = action
+                    .preferred_format
+                    .as_deref()
+                    .and_then(parse_playable_format)
+                    .or_else(|| {
+                        (!action.needs_playable)
+                            .then_some(retro_junk_archive::RepresentationFormat::Rom)
+                    });
+                if let Some(format) = format {
+                    crate::backend::playable_build::start(
+                        app,
+                        action,
+                        format,
+                        folder_name.clone(),
+                        ui.ctx(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn common_value<T: PartialEq>(values: &[T]) -> Option<&T> {
+    let first = values.first()?;
+    values.iter().all(|value| value == first).then_some(first)
+}
+
 fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     let Some(release_id) = app.ui_state.focused_archive_release.as_deref() else {
         return;
@@ -725,6 +907,46 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             show_media(ui, media);
         }
         show_archived_media(ui, &release.archived_assets);
+        if !release.archived_assets.is_empty() {
+            let has_frontend_target = !release.playable_library_entries.is_empty()
+                || !release.playable_representations.is_empty();
+            let restore = ui
+                .add_enabled(
+                    has_frontend_target,
+                    egui::Button::new("Restore archived media files"),
+                )
+                .on_hover_text(
+                    "Rebuild frontend artwork and video files without contacting ScreenScraper",
+                )
+                .on_disabled_hover_text("Make or adopt a playable representation first");
+            if restore.clicked() {
+                let frontend_stems = release
+                    .playable_library_entries
+                    .iter()
+                    .filter_map(|entry| {
+                        let name = entry.display_name.as_str();
+                        if name.to_ascii_lowercase().ends_with(".m3u") {
+                            Some(name.to_owned())
+                        } else {
+                            std::path::Path::new(name)
+                                .file_stem()
+                                .and_then(|value| value.to_str())
+                                .map(str::to_owned)
+                        }
+                    })
+                    .collect();
+            let folder_name = app.selected_console_index().map_or_else(
+                || summary.platform_id.clone(),
+                |index| app.browser.consoles[index].folder_name.clone(),
+            );
+            crate::backend::assets::restore_archived_media_for_release(
+                app,
+                summary.archive_release_id.clone(),
+                folder_name,
+                    frontend_stems,
+            );
+            }
+        }
         if let Some(action) = release.action.as_ref() {
             let needs_verification = action
                 .carriers

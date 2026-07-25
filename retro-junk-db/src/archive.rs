@@ -84,6 +84,7 @@ pub struct ArchiveCollectionDetails {
 pub struct CompleteCatalogMediaMatch {
     pub media_id: String,
     pub release_id: String,
+    pub work_id: String,
     pub game: String,
     pub source: String,
     pub source_version: String,
@@ -105,7 +106,7 @@ pub fn match_catalog_serial_any_platform(
         return Ok(Vec::new());
     }
     let mut statement = conn.prepare(
-        "SELECT DISTINCT m.id,m.release_id,r.title,m.dat_source,
+        "SELECT DISTINCT m.id,m.release_id,r.work_id,r.title,m.dat_source,
                 COALESCE((SELECT il.source_version FROM import_log il
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
@@ -120,15 +121,16 @@ pub fn match_catalog_serial_any_platform(
         Ok(CompleteCatalogMediaMatch {
             media_id: row.get(0)?,
             release_id: row.get(1)?,
-            game: row.get(2)?,
-            source: row.get(3)?,
-            source_version: row.get(4)?,
-            platform_id: row.get(5)?,
-            region: row.get(6)?,
-            revision: row.get(7)?,
-            variant: row.get(8)?,
-            serial: row.get(9)?,
-            sequence_number: u32::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+            work_id: row.get(2)?,
+            game: row.get(3)?,
+            source: row.get(4)?,
+            source_version: row.get(5)?,
+            platform_id: row.get(6)?,
+            region: row.get(7)?,
+            revision: row.get(8)?,
+            variant: row.get(9)?,
+            serial: row.get(10)?,
+            sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -157,7 +159,7 @@ fn match_catalog_file_inner(
     actual: &retro_junk_archive::FileDigests,
 ) -> Result<Vec<CompleteCatalogMediaMatch>, OperationError> {
     let mut statement = conn.prepare(
-        "SELECT m.id,m.release_id,r.title,m.dat_source,
+        "SELECT m.id,m.release_id,r.work_id,r.title,m.dat_source,
                 COALESCE((SELECT il.source_version FROM import_log il
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
@@ -182,15 +184,16 @@ fn match_catalog_file_inner(
             Ok(CompleteCatalogMediaMatch {
                 media_id: row.get(0)?,
                 release_id: row.get(1)?,
-                game: row.get(2)?,
-                source: row.get(3)?,
-                source_version: row.get(4)?,
-                platform_id: row.get(5)?,
-                region: row.get(6)?,
-                revision: row.get(7)?,
-                variant: row.get(8)?,
-                serial: row.get(9)?,
-                sequence_number: u32::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                work_id: row.get(2)?,
+                game: row.get(3)?,
+                source: row.get(4)?,
+                source_version: row.get(5)?,
+                platform_id: row.get(6)?,
+                region: row.get(7)?,
+                revision: row.get(8)?,
+                variant: row.get(9)?,
+                serial: row.get(10)?,
+                sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
             })
         },
     )?;
@@ -251,6 +254,54 @@ pub fn match_complete_catalog_media_any_platform(
     match_complete_catalog_media_inner(conn, "", actual)
 }
 
+fn match_single_track_catalog_media(
+    conn: &Connection,
+    platform_id: &str,
+    track: &TrackDigest,
+) -> Result<Vec<CompleteCatalogMediaMatch>, OperationError> {
+    let mut statement = conn.prepare(
+        "SELECT m.id,m.release_id,r.work_id,r.title,m.dat_source,
+                COALESCE((SELECT il.source_version FROM import_log il
+                          WHERE il.source_type=m.dat_source
+                          ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
+                r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number
+         FROM media m JOIN releases r ON r.id=m.release_id
+         WHERE (?1='' OR r.platform_id=?1) AND m.file_size=?2
+           AND NOT EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
+           AND (m.sha1<>'' OR m.md5<>'' OR m.crc32<>'')
+           AND (m.sha1='' OR m.sha1=lower(?3))
+           AND (m.md5='' OR m.md5=lower(?4))
+           AND (m.crc32='' OR m.crc32=lower(?5))
+         ORDER BY m.id",
+    )?;
+    let rows = statement.query_map(
+        params![
+            platform_id,
+            i64::try_from(track.size).unwrap_or(i64::MAX),
+            track.sha1,
+            track.md5,
+            track.crc32,
+        ],
+        |row| {
+            Ok(CompleteCatalogMediaMatch {
+                media_id: row.get(0)?,
+                release_id: row.get(1)?,
+                work_id: row.get(2)?,
+                game: row.get(3)?,
+                source: row.get(4)?,
+                source_version: row.get(5)?,
+                platform_id: row.get(6)?,
+                region: row.get(7)?,
+                revision: row.get(8)?,
+                variant: row.get(9)?,
+                serial: row.get(10)?,
+                sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+            })
+        },
+    )?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 fn match_complete_catalog_media_inner(
     conn: &Connection,
     platform_id: &str,
@@ -259,8 +310,16 @@ fn match_complete_catalog_media_inner(
     if actual.is_empty() || actual.iter().any(|track| track.sha1.is_empty()) {
         return Ok(Vec::new());
     }
+    // Single-track Redump games have one non-CUE ROM in the DAT. The catalog
+    // importer stores that ROM directly on `media`; only games with multiple
+    // non-CUE ROMs receive `media_tracks` rows. Treat a primary media digest as
+    // the complete set only when that medium has no track rows, so one matching
+    // data track can never verify a catalogued multi-track disc.
+    if let [track] = actual {
+        return match_single_track_catalog_media(conn, platform_id, track);
+    }
     let mut candidates = conn.prepare(
-        "SELECT DISTINCT m.id,m.release_id,r.title,m.dat_source,
+        "SELECT DISTINCT m.id,m.release_id,r.work_id,r.title,m.dat_source,
                 COALESCE((SELECT il.source_version FROM import_log il
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
@@ -282,15 +341,16 @@ fn match_complete_catalog_media_inner(
             Ok(CompleteCatalogMediaMatch {
                 media_id: row.get(0)?,
                 release_id: row.get(1)?,
-                game: row.get(2)?,
-                source: row.get(3)?,
-                source_version: row.get(4)?,
-                platform_id: row.get(5)?,
-                region: row.get(6)?,
-                revision: row.get(7)?,
-                variant: row.get(8)?,
-                serial: row.get(9)?,
-                sequence_number: u32::try_from(row.get::<_, i64>(10)?).unwrap_or(0),
+                work_id: row.get(2)?,
+                game: row.get(3)?,
+                source: row.get(4)?,
+                source_version: row.get(5)?,
+                platform_id: row.get(6)?,
+                region: row.get(7)?,
+                revision: row.get(8)?,
+                variant: row.get(9)?,
+                serial: row.get(10)?,
+                sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
             })
         },
     )?;
@@ -375,17 +435,40 @@ pub fn reconcile_archive_snapshot(
             "releases",
             &release.manifest.catalog_binding.catalog_release_id,
         )?;
+        let catalog_work = if release.manifest.catalog_binding.catalog_work_id.is_empty() {
+            catalog_release
+                .as_deref()
+                .map(|release_id| {
+                    tx.query_row(
+                        "SELECT work_id FROM releases WHERE id=?1",
+                        [release_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                })
+                .transpose()?
+                .flatten()
+        } else {
+            existing_id(
+                &tx,
+                "works",
+                &release.manifest.catalog_binding.catalog_work_id,
+            )?
+        };
         let binding_state = if catalog_release.is_some() {
             "resolved"
+        } else if catalog_work.is_some() {
+            "carrier_resolved"
         } else {
             "unresolved"
         };
         tx.execute(
-            "INSERT INTO archive_releases(id,profile_id,catalog_release_id,platform_id,title,region,revision,variant,manifest_path,manifest_sha256,binding_state)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            "INSERT INTO archive_releases(id,profile_id,catalog_work_id,catalog_release_id,platform_id,title,region,revision,variant,manifest_path,manifest_sha256,binding_state)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             params![
                 release.manifest.archive_release_id.to_string(),
                 profile_id,
+                catalog_work,
                 catalog_release,
                 release.manifest.platform_id,
                 release.manifest.title,
@@ -927,27 +1010,102 @@ pub fn list_archive_release_summaries(
     profile_id: &str,
 ) -> Result<Vec<ArchiveReleaseSummary>, OperationError> {
     let mut statement = conn.prepare(
-        "SELECT ar.id,ar.catalog_release_id,ar.platform_id,ar.title,ar.region,ar.revision,
-                COUNT(DISTINCT ci.id),COUNT(DISTINCT cm.id),COUNT(DISTINCT de.id),
-                COUNT(DISTINCT CASE WHEN rep.role='preservation_master' THEN rep.id END),
-                COUNT(DISTINCT CASE WHEN rep.role='preservation_master' AND rep.presence_state='present' THEN rep.id END),
-                COUNT(DISTINCT CASE WHEN rep.role='playable' THEN rep.id END),
-                COUNT(DISTINCT CASE WHEN rep.role='playable' AND rep.presence_state='present' THEN rep.id END),
-                COUNT(DISTINCT pp.scope_id),
-                COUNT(DISTINCT CASE WHEN pp.scope_id IS NOT NULL AND rep.role='playable' AND rep.presence_state='present' AND rep.format=pp.format THEN cm.id END),
-                COUNT(DISTINCT CASE WHEN ve.kind='integrity' AND ve.outcome='verified' AND ve.input_manifest_sha256=rep.input_manifest_sha256 THEN rep.id END),
-                COUNT(DISTINCT CASE WHEN ve.kind='reproduction' AND ve.outcome='verified' AND ve.input_manifest_sha256=rep.input_manifest_sha256 THEN rep.id END),
-                COUNT(DISTINCT CASE WHEN (ve.kind='catalog' AND ve.outcome='verified' AND ve.input_manifest_sha256=rep.input_manifest_sha256) OR rep.catalog_verified=1 THEN rep.id END),
-                COUNT(DISTINCT CASE WHEN (ve.kind='round_trip' AND ve.outcome='verified' AND ve.input_manifest_sha256=rep.input_manifest_sha256) OR rep.round_trip_verified=1 THEN rep.id END)
+        "WITH copy_rollup AS (
+             SELECT archive_release_id,COUNT(*) AS physical_copy_count
+             FROM physical_copies GROUP BY archive_release_id
+         ),
+         carrier_scope AS (
+             SELECT pc.archive_release_id,c.id AS carrier_id
+             FROM physical_copies pc
+             JOIN carriers c ON c.physical_copy_id=pc.id
+         ),
+         carrier_rollup AS (
+             SELECT archive_release_id,COUNT(*) AS carrier_count
+             FROM carrier_scope GROUP BY archive_release_id
+         ),
+         dump_rollup AS (
+             SELECT cs.archive_release_id,COUNT(de.id) AS dump_count
+             FROM carrier_scope cs
+             JOIN dump_events de ON de.carrier_id=cs.carrier_id
+             GROUP BY cs.archive_release_id
+         ),
+         representation_rollup AS (
+             SELECT cs.archive_release_id,
+                    COUNT(CASE WHEN rep.role='preservation_master' THEN 1 END)
+                      AS preservation_count,
+                    COUNT(CASE WHEN rep.role='preservation_master'
+                                AND rep.presence_state='present' THEN 1 END)
+                      AS preservation_present_count,
+                    COUNT(CASE WHEN rep.role='playable' THEN 1 END)
+                      AS playable_count,
+                    COUNT(CASE WHEN rep.role='playable'
+                                AND rep.presence_state='present' THEN 1 END)
+                      AS playable_present_count
+             FROM carrier_scope cs
+             JOIN representations rep ON rep.carrier_id=cs.carrier_id
+             GROUP BY cs.archive_release_id
+         ),
+         policy_rollup AS (
+             SELECT cs.archive_release_id,
+                    COUNT(DISTINCT pp.scope_id) AS desired_playable_count,
+                    COUNT(DISTINCT CASE
+                         WHEN rep.role='playable'
+                          AND rep.presence_state='present'
+                          AND rep.format=pp.format
+                         THEN cs.carrier_id END) AS satisfied_playable_count
+             FROM carrier_scope cs
+             JOIN playable_policies pp
+               ON pp.scope_type='carrier' AND pp.scope_id=cs.carrier_id
+             LEFT JOIN representations rep ON rep.carrier_id=cs.carrier_id
+             GROUP BY cs.archive_release_id
+         ),
+         verification_rollup AS (
+             SELECT cs.archive_release_id,
+                    COUNT(DISTINCT CASE
+                         WHEN ve.kind='integrity' AND ve.outcome='verified'
+                          AND ve.input_manifest_sha256=rep.input_manifest_sha256
+                         THEN rep.id END) AS integrity_verified_count,
+                    COUNT(DISTINCT CASE
+                         WHEN ve.kind='reproduction' AND ve.outcome='verified'
+                          AND ve.input_manifest_sha256=rep.input_manifest_sha256
+                         THEN rep.id END) AS reproduction_verified_count,
+                    COUNT(DISTINCT CASE
+                         WHEN (ve.kind='catalog' AND ve.outcome='verified'
+                               AND ve.input_manifest_sha256=rep.input_manifest_sha256)
+                           OR rep.catalog_verified=1
+                         THEN rep.id END) AS catalog_verified_count,
+                    COUNT(DISTINCT CASE
+                         WHEN (ve.kind='round_trip' AND ve.outcome='verified'
+                               AND ve.input_manifest_sha256=rep.input_manifest_sha256)
+                           OR rep.round_trip_verified=1
+                         THEN rep.id END) AS round_trip_verified_count
+             FROM carrier_scope cs
+             JOIN representations rep ON rep.carrier_id=cs.carrier_id
+             LEFT JOIN verification_events ve ON ve.representation_id=rep.id
+             GROUP BY cs.archive_release_id
+         )
+         SELECT ar.id,ar.catalog_release_id,ar.platform_id,ar.title,ar.region,ar.revision,
+                COALESCE(cr.physical_copy_count,0),
+                COALESCE(car.carrier_count,0),
+                COALESCE(dr.dump_count,0),
+                COALESCE(rr.preservation_count,0),
+                COALESCE(rr.preservation_present_count,0),
+                COALESCE(rr.playable_count,0),
+                COALESCE(rr.playable_present_count,0),
+                COALESCE(pr.desired_playable_count,0),
+                COALESCE(pr.satisfied_playable_count,0),
+                COALESCE(vr.integrity_verified_count,0),
+                COALESCE(vr.reproduction_verified_count,0),
+                COALESCE(vr.catalog_verified_count,0),
+                COALESCE(vr.round_trip_verified_count,0)
          FROM archive_releases ar
-         LEFT JOIN physical_copies ci ON ci.archive_release_id=ar.id
-         LEFT JOIN carriers cm ON cm.physical_copy_id=ci.id
-         LEFT JOIN dump_events de ON de.carrier_id=cm.id
-         LEFT JOIN representations rep ON rep.carrier_id=cm.id
-         LEFT JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=cm.id
-         LEFT JOIN verification_events ve ON ve.representation_id=rep.id
+         LEFT JOIN copy_rollup cr ON cr.archive_release_id=ar.id
+         LEFT JOIN carrier_rollup car ON car.archive_release_id=ar.id
+         LEFT JOIN dump_rollup dr ON dr.archive_release_id=ar.id
+         LEFT JOIN representation_rollup rr ON rr.archive_release_id=ar.id
+         LEFT JOIN policy_rollup pr ON pr.archive_release_id=ar.id
+         LEFT JOIN verification_rollup vr ON vr.archive_release_id=ar.id
          WHERE ar.profile_id=?1
-         GROUP BY ar.id
          ORDER BY ar.platform_id,ar.title COLLATE NOCASE,ar.id",
     )?;
     let rows = statement.query_map([profile_id], |row| {
@@ -992,27 +1150,36 @@ pub fn list_archive_release_summaries(
     Ok(summaries)
 }
 
-pub(crate) fn archive_release_completeness(
-    conn: &Connection,
-    profile_id: &str,
-    playable_root: &str,
-) -> Result<std::collections::HashMap<String, (u64, u64)>, OperationError> {
-    let mut statement = conn.prepare(
-        "WITH expected_media AS (
-             SELECT release_id,
+const ARCHIVE_RELEASE_COMPLETENESS_SQL: &str = "WITH candidate_media AS (
+             SELECT ar.id AS archive_release_id,m.id AS media_id,m.disc_number
+             FROM archive_releases ar
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             JOIN media m ON m.release_id=ar.catalog_release_id
+             WHERE (?1='' OR ar.profile_id=?1)
+               AND (?2='' OR ap.playable_root=?2)
+               AND ar.catalog_release_id IS NOT NULL
+             UNION ALL
+             SELECT ar.id,m.id,m.disc_number
+             FROM archive_releases ar
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             CROSS JOIN releases r INDEXED BY idx_releases_natural
+             JOIN media m ON m.release_id=r.id
+             WHERE (?1='' OR ar.profile_id=?1)
+               AND (?2='' OR ap.playable_root=?2)
+               AND ar.catalog_release_id IS NULL
+               AND ar.catalog_work_id IS NOT NULL
+               AND r.work_id=ar.catalog_work_id
+               AND r.platform_id=ar.platform_id
+               AND r.region=ar.region
+         ),
+         release_expected AS (
+             SELECT archive_release_id AS id,
                     CASE WHEN MAX(disc_number)>0
                          THEN COUNT(DISTINCT CASE WHEN disc_number>0 THEN disc_number END)
                          ELSE 1 END AS expected_count,
                     MAX(disc_number)>0 AS numbered
-             FROM media GROUP BY release_id
-         ),
-         release_expected AS (
-             SELECT ar.id,em.release_id,em.expected_count,em.numbered
-             FROM archive_releases ar
-             JOIN archive_profiles ap ON ap.id=ar.profile_id
-             JOIN expected_media em ON em.release_id=ar.catalog_release_id
-             WHERE (?1='' OR ar.profile_id=?1)
-               AND (?2='' OR ap.playable_root=?2)
+             FROM candidate_media
+             GROUP BY archive_release_id
          ),
          per_copy AS (
              SELECT re.id AS archive_release_id,pc.id AS physical_copy_id,
@@ -1024,7 +1191,9 @@ pub(crate) fn archive_release_completeness(
              FROM release_expected re
              JOIN physical_copies pc ON pc.archive_release_id=re.id
              LEFT JOIN carriers c ON c.physical_copy_id=pc.id
-             LEFT JOIN media m ON m.id=c.catalog_media_id AND m.release_id=re.release_id
+             LEFT JOIN candidate_media cm
+                ON cm.archive_release_id=re.id AND cm.media_id=c.catalog_media_id
+             LEFT JOIN media m ON m.id=cm.media_id
              LEFT JOIN representations rep ON rep.carrier_id=c.id
                 AND rep.role='preservation_master' AND rep.presence_state='present'
              LEFT JOIN verification_events ve ON ve.representation_id=rep.id
@@ -1037,8 +1206,14 @@ pub(crate) fn archive_release_completeness(
          SELECT re.id,re.expected_count,COALESCE(MAX(pc.verified_count),0)
          FROM release_expected re
          LEFT JOIN per_copy pc ON pc.archive_release_id=re.id
-         GROUP BY re.id,re.expected_count",
-    )?;
+         GROUP BY re.id,re.expected_count";
+
+pub(crate) fn archive_release_completeness(
+    conn: &Connection,
+    profile_id: &str,
+    playable_root: &str,
+) -> Result<std::collections::HashMap<String, (u64, u64)>, OperationError> {
+    let mut statement = conn.prepare(ARCHIVE_RELEASE_COMPLETENESS_SQL)?;
     statement
         .query_map(params![profile_id, playable_root], |row| {
             Ok((
@@ -1048,6 +1223,35 @@ pub(crate) fn archive_release_completeness(
         })?
         .collect::<Result<_, _>>()
         .map_err(Into::into)
+}
+
+#[cfg(test)]
+mod query_plan_tests {
+    use super::*;
+
+    #[test]
+    fn work_level_completeness_never_scans_the_catalog_media_table() {
+        let connection = crate::schema::open_memory().unwrap();
+        let explain = format!("EXPLAIN QUERY PLAN {ARCHIVE_RELEASE_COMPLETENESS_SQL}");
+        let mut statement = connection.prepare(&explain).unwrap();
+        let details = statement
+            .query_map(params!["profile", ""], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("idx_releases_natural")),
+            "work lookup lost its catalog release index: {details:#?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|detail| detail != "SCAN m" && !detail.starts_with("SCAN m ")),
+            "completeness regressed to a full media scan: {details:#?}"
+        );
+    }
 }
 
 pub fn load_archive_collection_details(

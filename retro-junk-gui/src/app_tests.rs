@@ -83,6 +83,7 @@ fn collection_row_opens_resizable_details_with_log_viewer_open() {
         archive_root: archive_root.clone(),
         playable_root: playable_root.clone(),
         workspace_root: workspace_root.clone(),
+        network_mode: true,
         platform_defaults: Vec::new(),
     };
     let mut settings = crate::settings::AppSettings::default();
@@ -268,6 +269,93 @@ fn changing_detail_focus_releases_every_previous_asset_path() {
     app.ui_state.focused_entry = Some(first_id);
     app.reconcile_detail_assets(&ctx);
     assert!(app.browser.consoles[0].entries[1].asset_paths.is_none());
+}
+
+#[test]
+fn archive_detail_owns_grouped_playable_assets() {
+    use std::path::PathBuf;
+
+    use retro_junk_db::{
+        ArchiveReleaseSummary, ArchivedLibraryListItem, ArchivedPlayableLibraryEntry,
+        LibraryAvailabilityCounts, LibraryEntryCounts, LibraryEntryListPage,
+    };
+    use retro_junk_lib::scanner::GameEntry;
+
+    let ctx = egui::Context::default();
+    let mut app =
+        RetroJunkApp::with_parts(&ctx, crate::settings::AppSettings::default(), None, None);
+    let entry = crate::test_support::test_entry(GameEntry::SingleFile(PathBuf::from("game.chd")));
+    let entry_id = entry.id.unwrap();
+    let console = crate::test_support::test_console("psx", vec![entry]);
+    let console_id = console.id.unwrap();
+    app.browser.consoles.push(console);
+    app.browser.active_page = Some(LibraryEntryListPage {
+        console_id,
+        console_revision: 0,
+        total_count: 1,
+        logical_count: 1,
+        counts: LibraryEntryCounts::default(),
+        availability_counts: LibraryAvailabilityCounts::default(),
+        archived_playable_gaps: Vec::new(),
+        archived_releases: vec![ArchivedLibraryListItem {
+            summary: ArchiveReleaseSummary {
+                archive_release_id: "archive-release".to_owned(),
+                catalog_release_id: None,
+                platform_id: "psx".to_owned(),
+                title: "Game".to_owned(),
+                region: "usa".to_owned(),
+                revision: String::new(),
+                physical_copy_count: 1,
+                carrier_count: 1,
+                dump_count: 1,
+                preservation_count: 1,
+                preservation_present_count: 1,
+                playable_count: 1,
+                playable_present_count: 1,
+                desired_playable_count: 1,
+                satisfied_playable_count: 1,
+                integrity_verified_count: 1,
+                reproduction_verified_count: 1,
+                catalog_verified_count: 1,
+                round_trip_verified_count: 0,
+                expected_disc_count: 1,
+                verified_disc_count: 1,
+                archive_complete: true,
+            },
+            action: None,
+            playable_representations: Vec::new(),
+            playable_library_entries: vec![ArchivedPlayableLibraryEntry {
+                id: entry_id,
+                display_name: "game.chd".to_owned(),
+                playable_format: "chd".to_owned(),
+            }],
+            archived_assets: Vec::new(),
+            scrape_identity: None,
+        }],
+        offset: 0,
+        rows: Vec::new(),
+    });
+    app.ui_state.current_view = View::Library;
+    app.ui_state.detail_panel_open = true;
+    app.ui_state.selected_console = Some(console_id);
+    app.ui_state.focused_entry = None;
+    app.ui_state.focused_archive_release = Some("archive-release".to_owned());
+    app.ui_state
+        .selected_archive_releases
+        .insert("archive-release".to_owned());
+    app.ui_state.selected_entries.insert(entry_id);
+
+    app.reconcile_detail_assets(&ctx);
+
+    assert_eq!(app.selected_library_row_count(), 1);
+    assert_eq!(app.browser.detail_asset_entry, Some(entry_id));
+
+    app.ui_state
+        .selected_entries
+        .insert(retro_junk_db::LibraryEntryId(999));
+    app.reconcile_detail_assets(&ctx);
+    assert_eq!(app.selected_library_row_count(), 2);
+    assert_eq!(app.browser.detail_asset_entry, None);
 }
 
 #[test]

@@ -199,6 +199,12 @@ ES-DE-specific metadata fields when regenerating gamelists: `altemulator`, `brok
   divide by the maximum value.
 - System folder names (used in paths) follow ES-DE's `es_systems.xml` naming convention (e.g.,
   `n64`, `snes`, `megadrive`, `psx`).
+- ES-DE defines both `saturn` (Sega Saturn) and `saturnjp` (Sega Saturn [Japan]) as separate
+  systems. Both use `saturn` as the scraper platform, but they have distinct ROM folders and
+  themes; preserve that regional folder identity when projecting a library.
+- For Saturn and other multi-disc systems, ES-DE supports a game directory whose name ends in
+  `.m3u`, containing the playlist and its disc images. Treat that directory as one playable game,
+  while a loose CHD/CUE/ISO entry represents one playable disc.
 
 ## Using retro-junk Output with ES-DE
 

@@ -416,7 +416,7 @@ fn create_modded_media_and_detach() {
     )
     .unwrap();
 
-    let media_id = create_modded_media(&conn, "nes:smb", "nes", "usa", None).unwrap();
+    let media_id = create_modded_media(&conn, "nes:smb", "nes", "usa", None, None).unwrap();
 
     // Media should exist with modded tag
     let tag: Option<String> = conn
@@ -436,4 +436,29 @@ fn create_modded_media_and_detach() {
         )
         .unwrap();
     assert_eq!(count, 0);
+}
+
+#[test]
+fn create_modded_disc_media_records_selected_disc_number() {
+    let conn = open_memory().unwrap();
+    let platform = test_platform();
+    upsert_platform(&conn, &platform).unwrap();
+    insert_work(&conn, "game", "Multi-disc Game").unwrap();
+    upsert_release(
+        &conn,
+        &test_release("game:nes:usa", "game", "Multi-disc Game"),
+    )
+    .unwrap();
+
+    let media_id = create_modded_media(&conn, "game", "nes", "usa", Some(2), None).unwrap();
+    let disc_number: u32 = conn
+        .query_row(
+            "SELECT disc_number FROM media WHERE id=?1",
+            [&media_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(disc_number, 2);
+    assert!(media_id.contains(":disc-2:"));
 }

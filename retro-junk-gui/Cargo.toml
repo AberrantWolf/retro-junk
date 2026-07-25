@@ -47,6 +47,7 @@ env_logger.workspace = true
 [dev-dependencies]
 egui_kittest = { version = "0.35", features = ["eframe"] }
 tempfile = "3"
+image.workspace = true
 
 [package.metadata.dist]
 dist = true

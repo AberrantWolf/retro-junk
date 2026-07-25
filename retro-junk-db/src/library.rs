@@ -492,9 +492,7 @@ pub struct LibraryEntryListItem {
     pub data_size: u64,
     /// Compact columns rendered by the table. Keeping these in the list
     /// projection avoids loading and deserializing every rich entry payload.
-    pub crc32: String,
     pub dat_game_name: String,
-    pub serial: String,
     pub internal_name: String,
     /// Serialized `Region` variant names from the persisted identification.
     pub detected_regions: Vec<String>,
@@ -1027,12 +1025,20 @@ pub fn create_modded_and_tag_entry(
     work_id: &str,
     platform_id: &str,
     region: &str,
+    disc_number: Option<u32>,
     hashes: Option<&crate::operations::MediaHashes>,
 ) -> Result<LibraryChangeSet, LibraryError> {
     mutate_entry_with_catalog(conn, id, "modded", |tx| {
-        crate::operations::create_modded_media(tx, work_id, platform_id, region, hashes)
-            .map(|_| ())
-            .map_err(|error| LibraryError::CatalogMutation(error.to_string()))
+        crate::operations::create_modded_media(
+            tx,
+            work_id,
+            platform_id,
+            region,
+            disc_number,
+            hashes,
+        )
+        .map(|_| ())
+        .map_err(|error| LibraryError::CatalogMutation(error.to_string()))
     })
 }
 
@@ -1296,12 +1302,10 @@ pub fn list_console_summaries(
     let archived = crate::archive::list_archive_release_summaries(conn, &profile_id)
         .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?;
     for summary in &mut summaries {
+        let archive_platform = archive_platform_scope(&summary.folder_name, &summary.platform);
         let archive_count = archived
             .iter()
-            .filter(|release| {
-                platform_ids_match(&release.platform_id, &summary.folder_name)
-                    || platform_ids_match(&release.platform_id, &summary.platform)
-            })
+            .filter(|release| platform_ids_match(&release.platform_id, &archive_platform))
             .count() as u64;
         let unbound_count: u64 = conn.query_row(
             "SELECT COUNT(*) FROM library_entries e WHERE e.console_id=?1
@@ -1466,7 +1470,7 @@ pub fn query_entry_list(
     };
     let sql = format!(
         "SELECT id,display_name,status,tag,region_override,data_size,
-                crc32,dat_game_name,
+                dat_game_name,
                 broken_references_json IS NOT NULL AND broken_references_json <> '[]',
                 cue_compat_issues_json IS NOT NULL AND cue_compat_issues_json <> '[]',
                 revision,source_revision,identification_json,hash_warnings_json,
@@ -1517,16 +1521,14 @@ pub fn query_entry_list(
     );
     let mut stmt = conn.prepare(&sql)?;
     let map_row = |r: &rusqlite::Row<'_>| {
-        let identification_json: Option<String> = r.get(12)?;
-        let hash_warnings_json: Option<String> = r.get(13)?;
-        let disc_identifications_json: Option<String> = r.get(14)?;
-        let entry_key: String = r.get(15)?;
-        let game_entry_json: String = r.get(16)?;
-        let projected_format: Option<String> = r.get(18)?;
-        let (serial, internal_name, detected_regions) = project_identification(
-            identification_json.as_deref(),
-            disc_identifications_json.as_deref(),
-        );
+        let identification_json: Option<String> = r.get(11)?;
+        let hash_warnings_json: Option<String> = r.get(12)?;
+        let disc_identifications_json: Option<String> = r.get(13)?;
+        let entry_key: String = r.get(14)?;
+        let game_entry_json: String = r.get(15)?;
+        let projected_format: Option<String> = r.get(17)?;
+        let (internal_name, detected_regions) =
+            project_identification(identification_json.as_deref());
         Ok(LibraryEntryListItem {
             id: LibraryEntryId(r.get(0)?),
             display_name: r.get(1)?,
@@ -1534,23 +1536,21 @@ pub fn query_entry_list(
             tag: r.get(3)?,
             region_override: r.get(4)?,
             data_size: r.get::<_, u64>(5)?,
-            crc32: r.get(6)?,
-            dat_game_name: r.get(7)?,
-            serial,
+            dat_game_name: r.get(6)?,
             internal_name,
             detected_regions,
             has_hash_warnings: json_array_is_nonempty(hash_warnings_json.as_deref())
                 || disc_hash_warnings_are_nonempty(disc_identifications_json.as_deref()),
-            has_broken_references: r.get(8)?,
-            has_cue_compat_issues: r.get(9)?,
-            revision: r.get(10)?,
-            source_revision: r.get(11)?,
-            archived: r.get(17)?,
+            has_broken_references: r.get(7)?,
+            has_cue_compat_issues: r.get(8)?,
+            revision: r.get(9)?,
+            source_revision: r.get(10)?,
+            archived: r.get(16)?,
             archive_complete: false,
             playable_format: projected_format
                 .unwrap_or_else(|| playable_format(&entry_key, &game_entry_json)),
-            preferred_format: r.get(19)?,
-            archive_release_id: r.get(20)?,
+            preferred_format: r.get(18)?,
+            archive_release_id: r.get(19)?,
         })
     };
     let mut rows = if let Some(selected) = logical_selection {
@@ -1723,12 +1723,10 @@ fn query_archived_library_releases(
         query_archived_playable_entries(conn, &profile_id, console_id)?;
     let mut assets_by_release = query_archived_release_assets(conn, &profile_id)?;
     let mut scrape_identity_by_release = query_archived_scrape_identities(conn, &profile_id)?;
+    let archive_platform = archive_platform_scope(&folder_name, &platform);
     let mut rows = summaries
         .into_iter()
-        .filter(|summary| {
-            platform_ids_match(&summary.platform_id, &folder_name)
-                || platform_ids_match(&summary.platform_id, &platform)
-        })
+        .filter(|summary| platform_ids_match(&summary.platform_id, &archive_platform))
         .map(|summary| {
             let action = actions
                 .iter()
@@ -1768,6 +1766,17 @@ fn query_archived_library_releases(
             })
     });
     Ok(rows)
+}
+
+/// Load every archive-backed logical release for one console without applying
+/// Library-table pagination. Whole-console actions use this to avoid treating
+/// off-page archived releases as ordinary playable-only entries.
+pub fn load_archived_library_releases_for_console(
+    conn: &Connection,
+    console_id: LibraryConsoleId,
+) -> Result<Vec<ArchivedLibraryListItem>, LibraryError> {
+    let (_, actions, _) = query_availability(conn, console_id)?;
+    query_archived_library_releases(conn, console_id, &actions)
 }
 
 fn query_archived_playable_representations(
@@ -1811,8 +1820,9 @@ fn query_archived_playable_entries(
     let mut library_playable_statement = conn.prepare(
         "SELECT DISTINCT ar.id,e.id,e.display_name,e.entry_key,e.game_entry_json
          FROM archive_releases ar
-         JOIN media m ON m.release_id=ar.catalog_release_id
-         JOIN library_entry_media_bindings b ON b.catalog_media_id=m.id
+         JOIN physical_copies pc ON pc.archive_release_id=ar.id
+         JOIN carriers c ON c.physical_copy_id=pc.id
+         JOIN library_entry_media_bindings b ON b.catalog_media_id=c.catalog_media_id
          JOIN library_entries e ON e.id=b.library_entry_id
          WHERE ar.profile_id=?1 AND e.console_id=?2
          ORDER BY ar.id,e.display_name COLLATE NOCASE,e.id",
@@ -1881,7 +1891,9 @@ fn query_archived_scrape_identities(
         "SELECT ar.id,m.rom_name,m.dat_name,m.file_size,m.media_serial,
                 m.crc32,m.md5,m.sha1
          FROM archive_releases ar
-         JOIN media m ON m.release_id=ar.catalog_release_id
+         JOIN physical_copies pc ON pc.archive_release_id=ar.id
+         JOIN carriers c ON c.physical_copy_id=pc.id
+         JOIN media m ON m.id=c.catalog_media_id
          WHERE ar.profile_id=?1
          ORDER BY ar.id,
                   CASE WHEN m.disc_number > 0 THEN m.disc_number ELSE 2147483647 END,
@@ -1916,12 +1928,35 @@ fn platform_ids_match(left: &str, right: &str) -> bool {
     if left.eq_ignore_ascii_case(right) {
         return true;
     }
+    if regional_archive_platform(left).is_some() || regional_archive_platform(right).is_some() {
+        return regional_archive_platform(left) == regional_archive_platform(right);
+    }
     match (
         left.parse::<retro_junk_core::Platform>(),
         right.parse::<retro_junk_core::Platform>(),
     ) {
         (Ok(left), Ok(right)) => left == right,
         _ => false,
+    }
+}
+
+fn archive_platform_scope(folder_name: &str, platform: &str) -> String {
+    regional_archive_platform(folder_name).map_or_else(|| platform.to_owned(), str::to_owned)
+}
+
+fn regional_archive_platform(value: &str) -> Option<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "nes" => Some("nes"),
+        "famicom" | "fc" => Some("famicom"),
+        "snes" | "snesna" => Some("snes"),
+        "sfc" | "super famicom" | "super-famicom" => Some("super-famicom"),
+        "genesis" | "gen" => Some("genesis"),
+        "megadrive" | "megadrivejp" | "mega drive" | "md" => Some("megadrive"),
+        "pce" | "pc engine" | "pc-engine" | "pcengine" => Some("pce"),
+        "tg16" | "tg-16" | "turbografx" | "turbografx-16" | "turbo grafx 16" => Some("tg16"),
+        "saturn" | "sega saturn" => Some("saturn"),
+        "saturnjp" => Some("saturnjp"),
+        _ => None,
     }
 }
 
@@ -1942,6 +1977,7 @@ fn query_availability(
         [console_id.0],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    let archive_platform = archive_platform_scope(&folder_name, &platform);
     let mut playable_only = 0;
     let mut archived_and_playable = 0;
     let mut incomplete_archive_and_playable = 0;
@@ -2021,7 +2057,70 @@ fn query_availability(
     }
 
     let mut statement = conn.prepare(
-        "SELECT ar.id,c.id,
+        "WITH candidate_media AS (
+             SELECT ar.id AS archive_release_id,m.id AS media_id,m.disc_number
+             FROM archive_releases ar
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             JOIN media m ON m.release_id=ar.catalog_release_id
+             WHERE ap.playable_root=(SELECT lr.root_path FROM library_roots lr
+                                     JOIN library_consoles lc ON lc.root_id=lr.id
+                                     WHERE lc.id=?3)
+               AND ar.catalog_release_id IS NOT NULL
+             UNION ALL
+             SELECT ar.id,m.id,m.disc_number
+             FROM archive_releases ar
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             CROSS JOIN releases r INDEXED BY idx_releases_natural
+             JOIN media m ON m.release_id=r.id
+             WHERE ap.playable_root=(SELECT lr.root_path FROM library_roots lr
+                                     JOIN library_consoles lc ON lc.root_id=lr.id
+                                     WHERE lc.id=?3)
+               AND ar.catalog_release_id IS NULL
+               AND ar.catalog_work_id IS NOT NULL
+               AND r.work_id=ar.catalog_work_id
+               AND lower(r.platform_id)=lower(?2)
+               AND r.region=ar.region
+         ),
+         release_expected AS (
+             SELECT archive_release_id,
+                    CASE WHEN MAX(disc_number)>0
+                         THEN COUNT(DISTINCT CASE WHEN disc_number>0 THEN disc_number END)
+                         ELSE 1 END AS expected_count,
+                    MAX(disc_number)>0 AS numbered
+             FROM candidate_media
+             GROUP BY archive_release_id
+         ),
+         copy_counts AS (
+             SELECT pc2.id AS physical_copy_id,
+                    COUNT(DISTINCT CASE WHEN de2.id IS NOT NULL THEN
+                         CASE WHEN re2.numbered
+                              THEN CASE WHEN scoped.disc_number>0
+                                        THEN scoped.disc_number END
+                              ELSE c2.id END
+                    END) AS present_count,
+                    COUNT(DISTINCT CASE WHEN ve2.id IS NOT NULL THEN
+                         CASE WHEN re2.numbered
+                              THEN CASE WHEN scoped.disc_number>0
+                                        THEN scoped.disc_number END
+                              ELSE c2.id END
+                    END) AS verified_count
+             FROM physical_copies pc2
+             JOIN release_expected re2 ON re2.archive_release_id=pc2.archive_release_id
+             LEFT JOIN carriers c2 ON c2.physical_copy_id=pc2.id
+             LEFT JOIN candidate_media scoped
+               ON scoped.archive_release_id=pc2.archive_release_id
+              AND scoped.media_id=c2.catalog_media_id
+             LEFT JOIN dump_events de2 ON de2.carrier_id=c2.id
+             LEFT JOIN verification_events ve2
+               ON ve2.representation_id=de2.representation_id
+              AND ve2.kind='catalog' AND ve2.outcome='verified'
+              AND ve2.input_manifest_sha256=de2.manifest_sha256
+              AND (ve2.complete_track_set=1 OR NOT EXISTS(
+                   SELECT 1 FROM media_tracks mt
+                   WHERE mt.media_id=c2.catalog_media_id))
+             GROUP BY pc2.id
+         )
+         SELECT ar.id,c.id,
                 (SELECT de.id FROM dump_events de WHERE de.carrier_id=c.id
                  ORDER BY de.captured_at DESC,de.id DESC LIMIT 1),
                 c.catalog_media_id,ar.title,ar.region,c.sequence_number,
@@ -2039,39 +2138,9 @@ fn query_availability(
                  JOIN dump_events de ON de.representation_id=rf.representation_id
                  WHERE de.id=(SELECT newest.id FROM dump_events newest WHERE newest.carrier_id=c.id
                               ORDER BY newest.captured_at DESC,newest.id DESC LIMIT 1)),
-                CASE
-                  WHEN EXISTS(SELECT 1 FROM media expected
-                              WHERE expected.release_id=ar.catalog_release_id
-                                AND expected.disc_number>0)
-                  THEN (SELECT COUNT(DISTINCT expected.disc_number) FROM media expected
-                        WHERE expected.release_id=ar.catalog_release_id
-                          AND expected.disc_number>0)
-                  ELSE (SELECT EXISTS(SELECT 1 FROM media expected
-                                     WHERE expected.release_id=ar.catalog_release_id))
-                END,
-                (SELECT COUNT(DISTINCT CASE WHEN expected.disc_number>0
-                                            THEN expected.disc_number ELSE c2.id END)
-                 FROM carriers c2
-                 JOIN media expected ON expected.id=c2.catalog_media_id
-                 WHERE c2.physical_copy_id=pc.id
-                   AND expected.release_id=ar.catalog_release_id
-                   AND EXISTS(SELECT 1 FROM dump_events present
-                              WHERE present.carrier_id=c2.id)),
-                (SELECT COUNT(DISTINCT CASE WHEN expected.disc_number>0
-                                            THEN expected.disc_number ELSE c2.id END)
-                 FROM carriers c2
-                 JOIN media expected ON expected.id=c2.catalog_media_id
-                 WHERE c2.physical_copy_id=pc.id
-                   AND expected.release_id=ar.catalog_release_id
-                   AND EXISTS(SELECT 1 FROM dump_events de
-                              JOIN verification_events ve
-                                ON ve.representation_id=de.representation_id
-                              WHERE de.carrier_id=c2.id
-                                AND ve.kind='catalog' AND ve.outcome='verified'
-                                AND ve.input_manifest_sha256=de.manifest_sha256
-                                AND (ve.complete_track_set=1 OR NOT EXISTS(
-                                     SELECT 1 FROM media_tracks mt
-                                     WHERE mt.media_id=c2.catalog_media_id)))),
+                COALESCE(re.expected_count,0),
+                COALESCE(cc.present_count,0),
+                COALESCE(cc.verified_count,0),
                 EXISTS(SELECT 1 FROM representations rep
                        WHERE rep.carrier_id=c.id AND rep.role='playable'
                          AND rep.presence_state='present'
@@ -2080,8 +2149,7 @@ fn query_availability(
                        JOIN library_entries e ON e.id=b.library_entry_id
                        JOIN library_consoles lc ON lc.id=e.console_id
                        WHERE b.catalog_media_id=c.catalog_media_id
-                         AND (lower(lc.folder_name)=lower(?1)
-                              OR lower(lc.platform)=lower(?2))
+                         AND lc.id=?3
                          AND (pp.format IS NULL
                               OR (pp.format='rom' AND lower(e.entry_key) NOT LIKE '%.chd'
                                   AND lower(e.entry_key) NOT LIKE '%.rvz'
@@ -2113,31 +2181,40 @@ fn query_availability(
                          ON playlist_entry.id=playlist_binding.library_entry_id
                        JOIN media playlist_media
                          ON playlist_media.id=playlist_binding.catalog_media_id
+                       JOIN releases playlist_release
+                         ON playlist_release.id=playlist_media.release_id
                        JOIN library_consoles playlist_console
                          ON playlist_console.id=playlist_entry.console_id
-                       WHERE playlist_media.release_id=ar.catalog_release_id
+                       WHERE (playlist_media.release_id=ar.catalog_release_id
+                              OR (ar.catalog_release_id IS NULL
+                                  AND ar.catalog_work_id IS NOT NULL
+                                  AND playlist_release.work_id=ar.catalog_work_id
+                                  AND lower(playlist_release.platform_id)=lower(?2)
+                                  AND playlist_release.region=ar.region))
                          AND json_extract(
                              playlist_entry.game_entry_json,'$.MultiDisc') IS NOT NULL
-                         AND (lower(playlist_console.folder_name)=lower(?1)
-                              OR lower(playlist_console.platform)=lower(?2)))
+                         AND playlist_console.id=?3)
          FROM archive_releases ar
          JOIN archive_profiles ap ON ap.id=ar.profile_id
          JOIN physical_copies pc ON pc.archive_release_id=ar.id
          JOIN carriers c ON c.physical_copy_id=pc.id
          LEFT JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=c.id
-         WHERE (lower(ar.platform_id)=lower(?1) OR lower(ar.platform_id)=lower(?2))
+         LEFT JOIN release_expected re ON re.archive_release_id=ar.id
+         LEFT JOIN copy_counts cc ON cc.physical_copy_id=pc.id
+         WHERE lower(ar.platform_id)=lower(?1)
            AND ap.playable_root=(SELECT lr.root_path FROM library_roots lr
                                 JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=?3)
          ORDER BY ar.title COLLATE NOCASE,c.sequence_number,c.id",
     )?;
     let archived_playable_gaps = statement
-        .query_map(params![folder_name, platform, console_id.0], |row| {
+        .query_map(params![archive_platform, platform, console_id.0], |row| {
             let source_format: Option<String> = row.get(7)?;
             let preferred_format: Option<String> = row.get(8)?;
             let file_count: u64 = row.get(12)?;
             let needs_playable = !row.get::<_, bool>(16)? && !row.get::<_, bool>(17)?;
             let buildable = match (source_format.as_deref(), preferred_format.as_deref()) {
-                (Some("redumper_raw" | "cue_bin" | "iso"), Some("chd")) => true,
+                (Some("redumper_raw" | "cue_bin" | "iso"), Some("chd"))
+                | (Some("iso"), Some("rvz")) => true,
                 (Some(source), Some(preferred)) if source == preferred && file_count == 1 => true,
                 _ => false,
             };
@@ -2321,16 +2398,9 @@ fn playable_format(entry_key: &str, game_entry_json: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn project_identification(
-    identification_json: Option<&str>,
-    disc_identifications_json: Option<&str>,
-) -> (String, String, Vec<String>) {
-    let identification = identification_json.and_then(|json| serde_json::from_str(json).ok());
-    let serial = identification
-        .as_ref()
-        .and_then(|value: &serde_json::Value| value.get("serial_number"))
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_default();
+fn project_identification(identification_json: Option<&str>) -> (String, Vec<String>) {
+    let identification: Option<serde_json::Value> =
+        identification_json.and_then(|json| serde_json::from_str(json).ok());
     let internal_name = identification
         .as_ref()
         .and_then(|value| value.get("internal_name"))
@@ -2346,20 +2416,7 @@ fn project_identification(
         .filter_map(serde_json::Value::as_str)
         .map(str::to_owned)
         .collect();
-    let serial = if serial.is_empty() {
-        disc_identifications_json
-            .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
-            .and_then(|value| {
-                value.as_array()?.iter().find_map(|disc| {
-                    let serial = disc.get("identification")?.get("serial_number")?.as_str()?;
-                    (!serial.is_empty()).then(|| serial.to_owned())
-                })
-            })
-            .unwrap_or_default()
-    } else {
-        serial.to_owned()
-    };
-    (serial, internal_name, detected_regions)
+    (internal_name, detected_regions)
 }
 
 fn json_array_is_nonempty(json: Option<&str>) -> bool {
@@ -2909,4 +2966,18 @@ pub(crate) fn migrate_library_v11(conn: &Connection) -> Result<(), LibraryError>
         [],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod regional_platform_tests {
+    #[test]
+    fn japanese_saturn_is_a_distinct_archive_projection() {
+        assert_eq!(super::archive_platform_scope("saturn", "saturn"), "saturn");
+        assert_eq!(
+            super::archive_platform_scope("saturnjp", "saturn"),
+            "saturnjp"
+        );
+        assert!(!super::platform_ids_match("saturn", "saturnjp"));
+        assert!(super::platform_ids_match("psx", "ps1"));
+    }
 }

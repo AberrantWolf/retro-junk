@@ -380,6 +380,10 @@ pub(crate) enum ArchiveAction {
         #[arg(long)]
         workspace_root: Option<PathBuf>,
 
+        /// Existing frontend media root; defaults to the playable root's sibling media directory
+        #[arg(long)]
+        media_root: Option<PathBuf>,
+
         #[arg(long)]
         dry_run: bool,
 
@@ -670,6 +674,26 @@ pub(crate) enum ArchiveAction {
         #[arg(long)]
         dolphin_tool: Option<PathBuf>,
 
+        /// Catalog database used for release-wide disc counts and verification
+        #[arg(long)]
+        db: Option<PathBuf>,
+
+        /// Frontend media root; defaults to the playable root's sibling media directory
+        #[arg(long)]
+        media_root: Option<PathBuf>,
+
+        /// ES-DE metadata root; defaults to the playable root's sibling metadata directory
+        #[arg(long)]
+        metadata_root: Option<PathBuf>,
+
+        /// Do not restore archived artwork after successful builds
+        #[arg(long)]
+        no_project_assets: bool,
+
+        /// Do not add newly-created playable entries to ES-DE gamelist.xml files
+        #[arg(long)]
+        no_update_gamelists: bool,
+
         /// Show pending work without building it
         #[arg(short = 'n', long)]
         dry_run: bool,
@@ -687,6 +711,27 @@ pub(crate) enum ArchiveAction {
         /// Frontend media root (platform and asset subdirectories are created below it)
         #[arg(long)]
         media_root: PathBuf,
+    },
+
+    /// Generate miximages from archived components and store them in the archive
+    GenerateMiximages {
+        archive_root: PathBuf,
+
+        /// Playable-library root
+        #[arg(long)]
+        playable_root: PathBuf,
+
+        /// Frontend media root; defaults to the playable root's sibling media directory
+        #[arg(long)]
+        media_root: Option<PathBuf>,
+
+        /// Scratch root; defaults to ARCHIVE/.retro-junk/work
+        #[arg(long)]
+        workspace_root: Option<PathBuf>,
+
+        /// Limit generation to one archive release ID
+        #[arg(long)]
+        release_id: Option<String>,
     },
 
     /// Adopt existing playable files when they exactly match archived masters

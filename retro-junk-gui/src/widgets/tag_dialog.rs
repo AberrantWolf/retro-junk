@@ -104,6 +104,9 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 ref mut query,
                 ref mut results,
                 ref mut selected,
+                ref platform_id,
+                disc_number_required,
+                ref mut disc_number,
                 ..
             } = app.ui_state.tag_dialog
             {
@@ -118,17 +121,18 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     results.clear();
                     if let Some(db_path) = app.db_path.clone() {
                         let requested_query = query.clone();
+                        let requested_platform = platform_id.clone();
                         let tx = app.message_tx.clone();
                         let repaint = ctx.clone();
                         std::thread::spawn(move || {
                             let result = retro_junk_db::open_database(&db_path)
                                 .map_err(|error| error.to_string())
                                 .and_then(|connection| {
-                                    retro_junk_db::search_works(
+                                    retro_junk_db::search_works_for_platform(
                                         &connection,
                                         &requested_query,
+                                        &requested_platform,
                                         20,
-                                        0,
                                     )
                                     .map_err(|error| error.to_string())
                                 });
@@ -164,8 +168,34 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     });
 
                 ui.add_space(8.0);
+                if disc_number_required {
+                    ui.horizontal(|ui| {
+                        ui.label("Disc number:");
+                        ui.add(
+                            egui::TextEdit::singleline(disc_number)
+                                .desired_width(50.0)
+                                .hint_text("1"),
+                        );
+                    });
+                    ui.weak("Required because the selected playable entry is one disc image.");
+                    if !disc_number.trim().is_empty()
+                        && parse_disc_number(disc_number).is_none()
+                    {
+                        ui.colored_label(
+                            ui.visuals().error_fg_color,
+                            "Enter a positive whole number.",
+                        );
+                    }
+                    ui.add_space(8.0);
+                } else {
+                    ui.weak(
+                        "The selected playable entry is a game folder, so this tags the game as a whole.",
+                    );
+                    ui.add_space(8.0);
+                }
                 ui.horizontal(|ui| {
-                    let can_confirm = selected.is_some();
+                    let can_confirm = selected.is_some()
+                        && (!disc_number_required || parse_disc_number(disc_number).is_some());
                     if ui
                         .add_enabled(can_confirm, egui::Button::new("Confirm"))
                         .clicked()
@@ -183,6 +213,9 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
         if let TagDialog::ModSearch {
             ref results,
             selected: Some(sel_idx),
+            ref platform_id,
+            disc_number_required,
+            ref disc_number,
             console_id,
             entry_id,
             ..
@@ -200,11 +233,6 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
             };
 
             if let Some(console) = app.browser.consoles.get(console_idx) {
-                let platform_id = app
-                    .context
-                    .get_by_platform(console.platform)
-                    .map(|registered| registered.analyzer.short_name().to_owned())
-                    .unwrap_or_else(|| console.folder_name.clone());
                 let entry_ref = console.entries.get(entry_idx);
                 let region = entry_ref
                     .and_then(|e: &crate::state::LibraryEntry| {
@@ -227,8 +255,13 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     crate::backend::library_store::LibraryStoreRequest::CreateModdedAndTag {
                         entry_id,
                         work_id,
-                        platform_id,
+                        platform_id: platform_id.clone(),
                         region,
+                        disc_number: if disc_number_required {
+                            parse_disc_number(disc_number)
+                        } else {
+                            None
+                        },
                         hashes,
                     },
                     ctx,
@@ -238,5 +271,25 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
         app.ui_state.tag_dialog = TagDialog::None;
     } else if cancelled {
         app.ui_state.tag_dialog = TagDialog::None;
+    }
+}
+
+fn parse_disc_number(value: &str) -> Option<u32> {
+    value
+        .trim()
+        .parse::<u32>()
+        .ok()
+        .filter(|number| *number > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn disc_number_must_be_a_positive_integer() {
+        assert_eq!(super::parse_disc_number(" 2 "), Some(2));
+        assert_eq!(super::parse_disc_number(""), None);
+        assert_eq!(super::parse_disc_number("0"), None);
+        assert_eq!(super::parse_disc_number("-1"), None);
+        assert_eq!(super::parse_disc_number("disc 2"), None);
     }
 }

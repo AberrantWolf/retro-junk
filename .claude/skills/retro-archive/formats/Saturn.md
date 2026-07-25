@@ -2,6 +2,8 @@
 
 Used by: [Sega Saturn](../consoles/Saturn_Overview.md)
 
+Catalog and preservation rules: [Redump](Redump.md)
+
 ## File Extensions
 - `.bin/.cue` - Binary disc image with cue sheet (preferred for accuracy)
 - `.iso` - ISO disc image (loses audio tracks)

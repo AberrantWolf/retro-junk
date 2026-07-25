@@ -44,7 +44,8 @@ pub use assets::{
     add_physical_copy_file, add_release_file, add_release_files,
 };
 pub use collection::{
-    CollectionError, ExpectedSourceFile, IngestedCarrierDump, NewCarrierDump,
-    ingest_new_carrier_dump, initialize_archive, set_platform_playable_default,
-    upgrade_legacy_regional_physical_platforms,
+    CollectionError, ExpectedSourceFile, IngestedCarrierDump, NewCarrierDump, RedumperPackageError,
+    bind_carrier_to_catalog, ingest_new_carrier_dump, initialize_archive,
+    set_platform_playable_default, upgrade_legacy_regional_physical_platforms,
+    validate_redumper_package,
 };

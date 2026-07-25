@@ -697,8 +697,14 @@ pub fn create_modded_media(
     work_id: &str,
     platform_id: &str,
     region: &str,
+    disc_number: Option<u32>,
     hashes: Option<&MediaHashes>,
 ) -> Result<String, OperationError> {
+    if disc_number == Some(0) {
+        return Err(OperationError::InvalidField(
+            "disc number must be greater than zero".to_owned(),
+        ));
+    }
     // Find an existing release or create one
     let release_id = if let Some(r) = find_release(conn, work_id, platform_id, region, "", "")? {
         r.id
@@ -732,7 +738,13 @@ pub fn create_modded_media(
             .as_secs()
             .to_string(),
     };
-    let media_id = format!("{release_id}:modded:{media_suffix}");
+    let disc_number = disc_number.unwrap_or(0);
+    let media_scope = if disc_number == 0 {
+        "game".to_owned()
+    } else {
+        format!("disc-{disc_number}")
+    };
+    let media_id = format!("{release_id}:modded:{media_scope}:{media_suffix}");
     let (crc32, sha1, md5, file_size) = match hashes {
         Some(h) => (
             h.crc32.as_str(),
@@ -744,12 +756,21 @@ pub fn create_modded_media(
     };
 
     conn.execute(
-        "INSERT INTO media (id, release_id, tag, crc32, sha1, md5, file_size)
-         VALUES (?1, ?2, 'modded', ?3, ?4, ?5, ?6)
+        "INSERT INTO media (id, release_id, tag, disc_number, crc32, sha1, md5, file_size)
+         VALUES (?1, ?2, 'modded', ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(id) DO UPDATE SET
-           tag = 'modded', crc32 = excluded.crc32, sha1 = excluded.sha1,
+           tag = 'modded', disc_number = excluded.disc_number,
+           crc32 = excluded.crc32, sha1 = excluded.sha1,
            md5 = excluded.md5, file_size = excluded.file_size, updated_at = datetime('now')",
-        params![media_id, release_id, crc32, sha1, md5, file_size],
+        params![
+            media_id,
+            release_id,
+            disc_number,
+            crc32,
+            sha1,
+            md5,
+            file_size
+        ],
     )?;
 
     Ok(media_id)

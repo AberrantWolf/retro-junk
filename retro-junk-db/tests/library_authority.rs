@@ -252,7 +252,6 @@ fn list_projection_contains_all_automatically_known_row_fields() {
     )
     .unwrap();
     let projected = &page.rows[0];
-    assert_eq!(projected.serial, "DISC-1");
     assert_eq!(projected.internal_name, "HEADER TITLE");
     assert_eq!(projected.detected_regions, ["Usa", "Europe"]);
     assert!(projected.has_hash_warnings);

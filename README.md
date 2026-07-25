@@ -4,6 +4,10 @@ A CLI tool for analyzing, renaming, and scraping metadata for retro game ROMs an
 
 Version 0.4 adds a portable, evidence-backed [preservation archive](docs/archive-architecture.md) alongside the emulator-ready library. Raw masters and provenance remain authoritative while CHD and other playable forms are reproducible derivatives.
 
+See the [collection/library convergence matrix](docs/collection-library-state-matrix.md)
+for the supported route from playable-only, archive-only, incomplete,
+wrong-format, and missing-artwork states to the closest honest destination.
+
 ## 📦 Install
 
 **From GitHub Releases** (prebuilt binaries for macOS, Linux, Windows):

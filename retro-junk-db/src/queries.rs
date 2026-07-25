@@ -335,6 +335,28 @@ pub fn media_for_release(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// Find every carrier variant for one logical work/platform/region.
+///
+/// Multi-disc physical copies can legitimately contain discs from different
+/// mastering-specific catalog releases. Callers use the distinct disc numbers
+/// as the logical required slots while retaining exact media IDs per carrier.
+pub fn media_for_work_scope(
+    conn: &Connection,
+    work_id: &str,
+    platform_id: &str,
+    region: &str,
+) -> Result<Vec<Media>, OperationError> {
+    let sql = format!(
+        "SELECT {JOINED_MEDIA_COLUMNS} FROM media m
+         JOIN releases r ON r.id=m.release_id
+         WHERE r.work_id=?1 AND r.platform_id=?2 AND r.region=?3
+         ORDER BY m.disc_number,m.dat_name,m.id"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![work_id, platform_id, region], row_to_media)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
 // ── Release Lookups ─────────────────────────────────────────────────────────
 
 /// Query releases with a single-param WHERE clause.
@@ -1115,6 +1137,27 @@ pub fn search_works(
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![pattern], row_to_work)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Search works that have at least one release on the selected platform.
+pub fn search_works_for_platform(
+    conn: &Connection,
+    query: &str,
+    platform_id: &str,
+    limit: u32,
+) -> Result<Vec<WorkRow>, OperationError> {
+    let pattern = format!("%{query}%");
+    let sql = format!(
+        "SELECT DISTINCT w.id,w.canonical_name,w.tag
+         FROM works w
+         JOIN releases r ON r.work_id=w.id
+         WHERE w.canonical_name LIKE ?1 AND r.platform_id=?2
+         ORDER BY w.canonical_name
+         LIMIT {limit}"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(params![pattern, platform_id], row_to_work)?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 

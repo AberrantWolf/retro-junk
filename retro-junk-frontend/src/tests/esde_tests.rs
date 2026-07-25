@@ -115,3 +115,25 @@ fn rewrite_gamelist_does_not_match_partial_stems() {
     let map = stem_map(&[("dump", "Cool Game (USA)")]);
     assert!(rewrite_gamelist_stems(content, &map).is_none());
 }
+
+#[test]
+fn upsert_adds_new_game_without_replacing_user_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let rom_dir = dir.path().join("roms");
+    let metadata_dir = dir.path().join("metadata");
+    let media_dir = dir.path().join("media");
+    std::fs::create_dir_all(&metadata_dir).unwrap();
+    std::fs::write(
+        metadata_dir.join("gamelist.xml"),
+        "<?xml version=\"1.0\"?>\n<gameList>\n  <game>\n    <path>./old.rom</path>\n    <name>Old Game</name>\n    <favorite>true</favorite>\n  </game>\n</gameList>\n",
+    )
+    .unwrap();
+    let mut game = make_game("New Game", "");
+    game.rom_filename = "new.rom".to_owned();
+
+    assert!(upsert_game_metadata(&game, &rom_dir, &metadata_dir, &media_dir).unwrap());
+    assert!(!upsert_game_metadata(&game, &rom_dir, &metadata_dir, &media_dir).unwrap());
+    let xml = std::fs::read_to_string(metadata_dir.join("gamelist.xml")).unwrap();
+    assert!(xml.contains("<favorite>true</favorite>"));
+    assert_eq!(xml.matches("<path>./new.rom</path>").count(), 1);
+}

@@ -41,6 +41,42 @@ impl fmt::Display for AssetType {
 }
 
 impl AssetType {
+    /// Parse the stable semantic names stored in archive supporting-file
+    /// manifests. Older aliases remain accepted so an archive can be
+    /// re-projected after the frontend layout evolves.
+    #[must_use]
+    pub fn from_archive_name(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cover" | "box-front" => Some(Self::Cover),
+            "3d box" | "cover3d" | "cover-3d" => Some(Self::Cover3D),
+            "screenshot" => Some(Self::Screenshot),
+            "title screen" | "titlescreen" => Some(Self::TitleScreen),
+            "marquee" => Some(Self::Marquee),
+            "video" => Some(Self::Video),
+            "fanart" => Some(Self::Fanart),
+            "physical media" | "physicalmedia" => Some(Self::PhysicalMedia),
+            "miximage" => Some(Self::Miximage),
+            _ => None,
+        }
+    }
+
+    /// ES-DE-compatible media subdirectory used by both CLI and GUI
+    /// projections.
+    #[must_use]
+    pub const fn subdirectory(self) -> &'static str {
+        match self {
+            Self::Cover => "covers",
+            Self::Cover3D => "3dboxes",
+            Self::Screenshot => "screenshots",
+            Self::TitleScreen => "titlescreens",
+            Self::Marquee => "marquees",
+            Self::Video => "videos",
+            Self::Fanart => "fanart",
+            Self::PhysicalMedia => "physicalmedia",
+            Self::Miximage => "miximages",
+        }
+    }
+
     /// File extension for this asset type.
     #[must_use]
     pub fn default_extension(&self) -> &'static str {

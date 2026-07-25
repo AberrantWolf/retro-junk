@@ -1,9 +1,39 @@
+use std::cmp::Ordering;
+
 use crate::app::RetroJunkApp;
 use crate::backend;
-use crate::state::{FocusedPanel, ScanStatus};
+use crate::state::{ConsoleState, FocusedPanel, ScanStatus};
 use crate::util;
 use crate::widgets::keyboard_nav;
 use crate::widgets::status_badge;
+
+fn compare_list_text(left: &str, right: &str) -> Ordering {
+    left.to_ascii_lowercase()
+        .cmp(&right.to_ascii_lowercase())
+        .then_with(|| left.cmp(right))
+}
+
+fn console_list_name(console: &ConsoleState) -> &str {
+    if console.platform == retro_junk_core::Platform::Ps1 {
+        console.platform.short_name()
+    } else {
+        &console.folder_name
+    }
+}
+
+fn ordered_console_indices(consoles: &[ConsoleState]) -> Vec<usize> {
+    let mut indices = (0..consoles.len()).collect::<Vec<_>>();
+    indices.sort_by(|&left, &right| {
+        let left = &consoles[left];
+        let right = &consoles[right];
+        compare_list_text(left.manufacturer, right.manufacturer)
+            .then_with(|| compare_list_text(console_list_name(left), console_list_name(right)))
+            .then_with(|| compare_list_text(left.platform_name, right.platform_name))
+            .then_with(|| compare_list_text(&left.folder_name, &right.folder_name))
+            .then_with(|| left.folder_path.cmp(&right.folder_path))
+    });
+    indices
+}
 
 /// Render the manufacturer-grouped console tree.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
@@ -16,24 +46,18 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         return;
     }
 
-    // Collect unique manufacturers in order
-    let manufacturers: Vec<&str> = {
+    // Sort the render projection rather than relying on async folder/database
+    // discovery order. This keeps both pointer and keyboard navigation stable.
+    let ordered_console_indices = ordered_console_indices(&app.browser.consoles);
+    let manufacturers: Vec<String> = {
         let mut seen = Vec::new();
-        for c in &app.browser.consoles {
-            if !seen.contains(&c.manufacturer) {
-                seen.push(c.manufacturer);
+        for &index in &ordered_console_indices {
+            let manufacturer = app.browser.consoles[index].manufacturer.to_owned();
+            if !seen.contains(&manufacturer) {
+                seen.push(manufacturer);
             }
         }
         seen
-    };
-
-    // Build ordered console indices (manufacturer-grouped, matching render order)
-    let ordered_console_indices: Vec<usize> = {
-        let consoles = &app.browser.consoles;
-        manufacturers
-            .iter()
-            .flat_map(|&mfr| (0..consoles.len()).filter(move |&i| consoles[i].manufacturer == mfr))
-            .collect()
     };
 
     // Keyboard navigation (only when console tree has focus)
@@ -58,6 +82,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 app.ui_state.focused_entry = None;
                 app.ui_state.focused_archive_release = None;
                 app.ui_state.selected_entries.clear();
+                app.ui_state.selected_archive_releases.clear();
                 app.ui_state.filter_text.clear();
                 app.ui_state.page_offset = 0;
 
@@ -71,28 +96,29 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     }
 
     for mfr in manufacturers {
-        egui::CollapsingHeader::new(egui::RichText::new(mfr).strong())
+        egui::CollapsingHeader::new(egui::RichText::new(&mfr).strong())
             .id_salt(format!("mfr_{mfr}"))
             .default_open(true)
             .show(ui, |ui| {
-                for i in 0..app.browser.consoles.len() {
+                for &i in &ordered_console_indices {
                     if app.browser.consoles[i].manufacturer != mfr {
                         continue;
                     }
 
                     let console = &app.browser.consoles[i];
+                    let list_name = console_list_name(console);
                     let persisted_entry_count = app.browser.entry_count(console);
                     let console_id = console.id;
                     let is_selected = app.ui_state.selected_console == console_id;
 
                     let label = match console.scan_status {
-                        ScanStatus::NotScanned => console.folder_name.clone(),
-                        ScanStatus::Scanning => format!("{} (...)", console.folder_name),
+                        ScanStatus::NotScanned => list_name.to_owned(),
+                        ScanStatus::Scanning => format!("{list_name} (...)"),
                         ScanStatus::Scanned => {
                             if console.loose_disc_files.is_empty() {
-                                format!("{} ({})", console.folder_name, persisted_entry_count)
+                                format!("{list_name} ({persisted_entry_count})")
                             } else {
-                                format!("{}  ({}*)", console.folder_name, persisted_entry_count)
+                                format!("{list_name}  ({persisted_entry_count}*)")
                             }
                         }
                     };
@@ -132,6 +158,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         app.ui_state.focused_entry = None;
                         app.ui_state.focused_archive_release = None;
                         app.ui_state.selected_entries.clear();
+                        app.ui_state.selected_archive_releases.clear();
                         app.ui_state.filter_text.clear();
                         app.ui_state.page_offset = 0;
                         app.ui_state.focused_panel = FocusedPanel::ConsoleTree;
@@ -212,6 +239,17 @@ fn show_console_context_menu(
         ui.close();
     }
 
+    if ui
+        .add_enabled(
+            is_scanned && entry_count > 0,
+            egui::Button::new("Scrape Only Missing Artwork"),
+        )
+        .clicked()
+    {
+        app.scrape_missing_artwork(console_idx, ctx);
+        ui.close();
+    }
+
     // Organize: only for disc-based consoles with loose disc files
     {
         let console = &app.browser.consoles[console_idx];
@@ -273,5 +311,39 @@ fn show_console_context_menu(
     if ui.button(util::REVEAL_LABEL).clicked() {
         util::reveal_in_file_manager(folder_path);
         ui.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{console_list_name, ordered_console_indices};
+    use crate::test_support::test_console;
+    use retro_junk_core::Platform;
+
+    #[test]
+    fn psx_folder_uses_canonical_ps1_list_name() {
+        let console = test_console("psx", Vec::new());
+        assert_eq!(console_list_name(&console), "ps1");
+    }
+
+    #[test]
+    fn console_projection_is_sorted_by_displayed_name() {
+        let mut psp = test_console("psp", Vec::new());
+        psp.platform = Platform::Psp;
+        psp.platform_name = "PlayStation Portable";
+
+        let ps1 = test_console("psx", Vec::new());
+
+        let mut ps2 = test_console("ps2", Vec::new());
+        ps2.platform = Platform::Ps2;
+        ps2.platform_name = "PlayStation 2";
+
+        let consoles = vec![psp, ps1, ps2];
+        let names = ordered_console_indices(&consoles)
+            .into_iter()
+            .map(|index| console_list_name(&consoles[index]))
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, ["ps1", "ps2", "psp"]);
     }
 }

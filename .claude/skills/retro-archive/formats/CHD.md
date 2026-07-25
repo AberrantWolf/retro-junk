@@ -100,20 +100,25 @@ The `retro-junk-disc` crate's `hash_chd_raw_sectors()` function implements this.
 
 ### Network-hosted CHDs
 
-The regular-library verifier stages a CHD into the device-local collection
-workspace with one large-buffered sequential read before opening it through a
-buffered local reader. Hunk decoding can otherwise translate into many
-latency-sensitive seek/read operations against SMB or NFS. The temporary file
-is lease-owned and removed after hashing. Hash results remain stored in the
-library database while its source fingerprint is current. The CHD header hash
-cannot replace this work because Redump verification hashes the applicable raw
-track sector domain rather than the complete CHD logical domain.
+With a collection's **Network mode** enabled, the regular-library verifier
+stages a CHD into the device-local collection workspace with one large-buffered
+sequential read before opening it through a buffered local reader. Hunk
+decoding can otherwise translate into many latency-sensitive seek/read
+operations against SMB or NFS. With Network mode disabled, the verifier opens
+and decodes the CHD in place, avoiding the extra full copy when the source
+storage performs well enough. The temporary staged file is lease-owned and
+removed after hashing. Hash results remain stored in the library database while
+its source fingerprint is current. The CHD header hash cannot replace this
+work because Redump verification hashes the applicable raw track sector domain
+rather than the complete CHD logical domain.
 
-The GUI exposes the two expensive phases separately as **Caching locally** and
-**Decoding and hashing**. Staging checks local free space before reading the
-network source and retains a 64 MiB safety reserve. **Calculate Missing
-Hashes** reuses the durable result while the library source fingerprint is
-unchanged; **Recalculate Hashes** is the explicit full reread path.
+When Network mode is enabled, the GUI exposes the two expensive phases
+separately as **Caching locally** and **Decoding and hashing**. Staging checks
+local free space before reading the network source and retains a 64 MiB safety
+reserve. In in-place mode only the decoding/hashing phase is shown.
+**Calculate Missing Hashes** reuses the durable result while the library source
+fingerprint is unchanged; **Recalculate Hashes** is the explicit full reread
+path.
 
 ### DVD-media CHDs (`createdvd`) need a different hashing path
 
