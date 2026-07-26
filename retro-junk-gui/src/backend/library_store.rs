@@ -83,6 +83,7 @@ pub enum LibraryStoreRequest {
     },
     MarkConsoleStale(LibraryConsoleId),
     DeleteConsoleIfEmpty(LibraryConsoleId),
+    DeleteConsole(LibraryConsoleId),
     DeleteRoot(LibraryRootId),
     DeleteRootPath(String),
     ClearCache,
@@ -162,11 +163,11 @@ impl LibraryStore {
     pub fn submit(
         &self,
         envelope: StoreEnvelope<LibraryStoreRequest>,
-    ) -> Result<(), mpsc::TrySendError<StoreEnvelope<LibraryStoreRequest>>> {
+    ) -> Result<(), mpsc::SendError<StoreEnvelope<LibraryStoreRequest>>> {
         if is_read_request(&envelope.payload) {
-            self.read_tx.try_send(envelope)
+            self.read_tx.send(envelope)
         } else {
-            self.write_tx.try_send(envelope)
+            self.write_tx.send(envelope)
         }
     }
 
@@ -396,6 +397,10 @@ fn execute(
         }
         R::DeleteConsoleIfEmpty(id) => {
             retro_junk_db::delete_library_console_if_empty(conn, id)?;
+            LibraryStoreValue::ChangeSet(LibraryChangeSet::default())
+        }
+        R::DeleteConsole(id) => {
+            retro_junk_db::delete_library_console(conn, id)?;
             LibraryStoreValue::ChangeSet(LibraryChangeSet::default())
         }
         R::DeleteRoot(id) => {

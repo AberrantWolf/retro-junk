@@ -1337,6 +1337,18 @@ pub fn delete_library_console_if_empty(
     )? == 1)
 }
 
+/// Remove a rebuildable console projection and all of its cached entries.
+///
+/// Callers must first prove that the physical folder is gone or empty. The
+/// library tables are a disposable projection; authoritative archive and
+/// catalog records are not deleted by this operation.
+pub fn delete_library_console(
+    conn: &Connection,
+    console_id: LibraryConsoleId,
+) -> Result<bool, LibraryError> {
+    Ok(conn.execute("DELETE FROM library_consoles WHERE id=?1", [console_id.0])? > 0)
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn query_entry_list(
     conn: &Connection,
@@ -1946,14 +1958,26 @@ fn archive_platform_scope(folder_name: &str, platform: &str) -> String {
 
 fn regional_archive_platform(value: &str) -> Option<&'static str> {
     match value.trim().to_ascii_lowercase().as_str() {
+        "gb" | "gameboy" | "game boy" => Some("gb"),
+        "gbc" | "gameboy color" | "game boy color" => Some("gbc"),
+        "sgb" | "super game boy" => Some("sgb"),
         "nes" => Some("nes"),
         "famicom" | "fc" => Some("famicom"),
-        "snes" | "snesna" => Some("snes"),
+        "snes" => Some("snes"),
+        "snesna" => Some("snesna"),
         "sfc" | "super famicom" | "super-famicom" => Some("super-famicom"),
         "genesis" | "gen" => Some("genesis"),
-        "megadrive" | "megadrivejp" | "mega drive" | "md" => Some("megadrive"),
+        "megadrive" | "mega drive" | "md" => Some("megadrive"),
+        "megadrivejp" => Some("megadrivejp"),
+        "segacd" | "sega cd" => Some("segacd"),
+        "megacd" | "mega cd" => Some("megacd"),
+        "megacdjp" => Some("megacdjp"),
+        "32x" | "sega32x" => Some("sega32x"),
+        "sega32xna" => Some("sega32xna"),
         "pce" | "pc engine" | "pc-engine" | "pcengine" => Some("pce"),
         "tg16" | "tg-16" | "turbografx" | "turbografx-16" | "turbo grafx 16" => Some("tg16"),
+        "pcecd" | "pc engine cd" | "pcenginecd" => Some("pcecd"),
+        "tg-cd" | "turbografx-cd" => Some("tg-cd"),
         "saturn" | "sega saturn" => Some("saturn"),
         "saturnjp" => Some("saturnjp"),
         _ => None,
@@ -2979,5 +3003,18 @@ mod regional_platform_tests {
         );
         assert!(!super::platform_ids_match("saturn", "saturnjp"));
         assert!(super::platform_ids_match("psx", "ps1"));
+    }
+
+    #[test]
+    fn shared_analyzers_do_not_merge_distinct_es_de_systems() {
+        assert!(!super::platform_ids_match("gb", "gbc"));
+        assert!(!super::platform_ids_match("gb", "sgb"));
+        assert!(!super::platform_ids_match("snes", "snesna"));
+        assert!(!super::platform_ids_match("snes", "super-famicom"));
+        assert!(!super::platform_ids_match("genesis", "megadrive"));
+        assert!(!super::platform_ids_match("megadrive", "megadrivejp"));
+        assert!(!super::platform_ids_match("pce", "tg16"));
+        assert!(!super::platform_ids_match("pcecd", "tg-cd"));
+        assert!(!super::platform_ids_match("segacd", "megacd"));
     }
 }

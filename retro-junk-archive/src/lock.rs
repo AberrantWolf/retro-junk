@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArchiveLockError {
@@ -70,6 +71,37 @@ impl ArchiveLock {
             source,
         })?;
         Ok(Self { path })
+    }
+
+    /// Wait in FIFO-friendly polling intervals for the current archive writer.
+    ///
+    /// The lock file remains the cross-process authority; this helper prevents
+    /// completed background work from being discarded merely because another
+    /// in-process action is publishing at the same time.
+    pub fn acquire_wait(
+        root: &Path,
+        cancel: &AtomicBool,
+    ) -> Result<Option<Self>, ArchiveLockError> {
+        let mut reported_wait = false;
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Ok(None);
+            }
+            match Self::acquire(root) {
+                Ok(lock) => return Ok(Some(lock)),
+                Err(ArchiveLockError::Busy(_)) => {
+                    if !reported_wait {
+                        log::info!(
+                            "Waiting for the current archive writer at {}",
+                            root.display()
+                        );
+                        reported_wait = true;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 }
 

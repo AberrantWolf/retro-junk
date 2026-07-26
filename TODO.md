@@ -16,6 +16,15 @@
 
 - [ ] **Show hash match status in detail panel** — After hashing, the detail panel shows CRC32/SHA1/MD5 values but doesn't visually indicate whether they match known DAT entries. Add a match/mismatch indicator next to hash values.
 
+- [ ] **Try copy-on-write reflinks before physically copying disposable staging data** —
+  For same-filesystem staging on reflink-capable filesystems, attempt a native
+  COW clone (`FICLONE` on Linux, `clonefile` on macOS), hash the cloned snapshot,
+  and transparently fall back to the existing single-pass copy-and-hash path
+  for unsupported or cross-device sources. Never substitute hard links: tools
+  such as Redumper require an isolated writable workspace. Keep free-space
+  checks conservative because later writes can materialize cloned extents, and
+  surface whether each staging operation used a reflink or physical copy.
+
 ## Disc Sets & Verification (deferred from 2026-07-10 rename work)
 
 - [ ] **Surface per-track verification in analyze output** — Rename now

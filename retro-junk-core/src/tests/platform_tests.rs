@@ -27,6 +27,8 @@ fn aliases_resolve_correctly() {
         ("ogxbox", Platform::Xbox),
         ("sc3000", Platform::Sg1000),
         ("mark iii", Platform::MasterSystem),
+        ("pcenginecd", Platform::PceCd),
+        ("tg-cd", Platform::PceCd),
     ];
     for (input, expected) in cases {
         let parsed: Platform = input.parse().unwrap();

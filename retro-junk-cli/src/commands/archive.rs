@@ -47,6 +47,10 @@ pub(crate) fn run_archive(
             owner,
             new_physical_copy,
             redumper,
+            make_playable,
+            playable_root,
+            chdman,
+            discard_redundant_bin_cue,
             workspace_root,
             consume,
             dry_run,
@@ -61,8 +65,11 @@ pub(crate) fn run_archive(
             new_physical_copy,
             redumper,
             workspace_root,
+            playable_root,
             None,
-            None,
+            make_playable,
+            chdman,
+            discard_redundant_bin_cue,
             consume,
             dry_run,
             yes,
@@ -91,6 +98,9 @@ pub(crate) fn run_archive(
             workspace_root,
             Some(playable_root),
             media_root,
+            false,
+            None,
+            false,
             false,
             dry_run,
             yes,
@@ -399,6 +409,9 @@ fn run_import(
     workspace_root: Option<PathBuf>,
     playable_root: Option<PathBuf>,
     media_root: Option<PathBuf>,
+    make_playable: bool,
+    chdman_path: Option<PathBuf>,
+    discard_redundant_bin_cue: bool,
     consume: bool,
     dry_run: bool,
     yes: bool,
@@ -422,6 +435,9 @@ fn run_import(
             workspace_root,
             stage_packages_locally: true,
             playable_root: playable_root.clone(),
+            make_playable,
+            chdman_path,
+            discard_redundant_bin_cue,
         },
         context,
         &connection,
@@ -554,6 +570,20 @@ fn run_import(
             },
             item.detail
         );
+        for warning in &item.warnings {
+            log::warn!("{}: {warning}", item.source.display());
+        }
+        if let Some(build) = &item.playable_build {
+            log::info!(
+                "Playable CHD {:?}: {}{}",
+                build.outcome,
+                build.detail,
+                build
+                    .output
+                    .as_ref()
+                    .map_or_else(String::new, |path| format!(" ({})", path.display()))
+            );
+        }
     }
     let mut snapshot =
         scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
@@ -1035,7 +1065,10 @@ fn run_build_queue(
                 dump_id: selected.manifest.dump_id.to_string(),
                 media_id,
                 policy: policy.clone(),
-                playable_platform_id: release.manifest.platform_id.clone(),
+                playable_platform_id: retro_junk_frontend::esde::system_directory(
+                    &release.manifest.platform_id,
+                    Some(&release.manifest.region),
+                ),
                 expected_disc_count: expected_disc_count.max(1),
                 canonical_output_stem,
                 canonical_release_name: canonical_release_name.clone(),
@@ -1803,7 +1836,10 @@ fn run_shared_single_build(
         allow_unverified,
         retain_intermediate,
         options,
-        playable_platform_id: release.manifest.platform_id.clone(),
+        playable_platform_id: retro_junk_frontend::esde::system_directory(
+            &release.manifest.platform_id,
+            Some(&release.manifest.region),
+        ),
         expected_disc_count,
         canonical_output_stem: String::new(),
         canonical_release_name: String::new(),
@@ -2857,8 +2893,10 @@ fn run_reindex(
     workspace_root: Option<PathBuf>,
     db: Option<PathBuf>,
 ) -> Result<(), CliError> {
-    let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&archive_root)
-        .map_err(|error| CliError::other(error.to_string()))?;
+    let cancel = AtomicBool::new(false);
+    let _archive_lock = retro_junk_archive::ArchiveLock::acquire_wait(&archive_root, &cancel)
+        .map_err(|error| CliError::other(error.to_string()))?
+        .ok_or_else(|| CliError::other("archive reindex cancelled"))?;
     let upgraded = retro_junk_archive::upgrade_legacy_regional_physical_platforms(&archive_root)
         .map_err(|error| CliError::other(error.to_string()))?;
     let snapshot =

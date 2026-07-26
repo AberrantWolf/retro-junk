@@ -1,6 +1,9 @@
 /// Errors that can occur during scraping operations.
 #[derive(Debug, thiserror::Error)]
 pub enum ScrapeError {
+    #[error("Scrape cancelled")]
+    Cancelled,
+
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
 

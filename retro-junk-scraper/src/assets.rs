@@ -247,7 +247,9 @@ pub async fn download_game_assets(
         })
         .collect();
 
-    // Run sequentially per game, emitting an event before each download
+    // ScreenScraper defines a thread as one concurrently scraped game, not one
+    // connection per media asset. Game-level workers provide the granted
+    // concurrency while each worker keeps its own media transfers sequential.
     for (at, fut) in handles {
         let _ = request.events.send(ScrapeEvent::GameDownloadingMedia {
             index: request.index,
@@ -256,6 +258,12 @@ pub async fn download_game_assets(
         });
         match fut.await {
             Ok(path) => {
+                log::info!(
+                    "Downloaded {} for {} -> {}",
+                    at,
+                    request.filename,
+                    path.display()
+                );
                 results.insert(at, path);
             }
             Err(e) => {

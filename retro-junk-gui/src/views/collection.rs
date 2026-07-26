@@ -710,6 +710,9 @@ fn start_dump_import_planning(
         workspace_root: Some(profile.workspace_root.clone()),
         stage_packages_locally: profile.network_mode,
         playable_root,
+        make_playable: false,
+        chdman_path: None,
+        discard_redundant_bin_cue: false,
     };
     let handle = std::thread::spawn(move || {
         let result = (|| {
@@ -904,6 +907,8 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 plan,
                 consume,
                 new_physical_copy,
+                make_playable,
+                discard_redundant_bin_cue,
             } => {
                 let promoting_playable = plan.request.playable_root.is_some();
                 ui.heading(if promoting_playable {
@@ -1050,6 +1055,19 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 });
                 ui.add_space(6.0);
                 if !promoting_playable {
+                    ui.checkbox(make_playable, "Create verified playable CHD");
+                    ui.add_enabled_ui(*make_playable, |ui| {
+                        ui.checkbox(
+                            discard_redundant_bin_cue,
+                            "Exclude redundant BIN/CUE from archive after successful CHD creation",
+                        );
+                    });
+                    if *discard_redundant_bin_cue {
+                        ui.colored_label(
+                            egui::Color32::YELLOW,
+                            "This reduces retained representations, but keeps the Redumper raw master.",
+                        );
+                    }
                     ui.checkbox(consume, "Remove source packages after byte-for-byte verification");
                     if *consume {
                         ui.colored_label(egui::Color32::YELLOW, "Source removal occurs only after the archived copy is rehashed successfully.");
@@ -1058,6 +1076,15 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 ui.horizontal(|ui| {
                     if ui.button("Import ready packages").clicked() {
                         let mut selected_plan = plan.clone();
+                        selected_plan.request.make_playable = *make_playable;
+                        selected_plan.request.discard_redundant_bin_cue =
+                            *discard_redundant_bin_cue;
+                        if *make_playable {
+                            if let Some(profile) = app.settings.library.active_profile() {
+                                selected_plan.request.playable_root =
+                                    Some(profile.playable_root.clone());
+                            }
+                        }
                         if *new_physical_copy {
                             selected_plan.request.new_physical_copy = true;
                             for candidate in &mut selected_plan.candidates {
@@ -1104,6 +1131,15 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                                     ui.weak("source removed");
                                 }
                             });
+                            for warning in &candidate.warnings {
+                                ui.colored_label(egui::Color32::YELLOW, warning);
+                            }
+                            if let Some(build) = &candidate.playable_build {
+                                ui.label(format!(
+                                    "Playable CHD: {:?} — {}",
+                                    build.outcome, build.detail
+                                ));
+                            }
                         }
                     });
                 ui.separator();
@@ -1154,7 +1190,7 @@ fn show_import_progress(ui: &mut egui::Ui, app: &RetroJunkApp, op_id: u64) {
                 }
             });
         } else {
-            ui.spinner();
+            ui.weak("Working…");
         }
     }
 }

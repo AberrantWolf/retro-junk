@@ -218,6 +218,22 @@ impl UserInfo {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1)
     }
+
+    #[must_use]
+    pub fn max_requests_per_minute(&self) -> u32 {
+        self.maxrequestspermin
+            .as_ref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(50)
+    }
+
+    #[must_use]
+    pub fn max_download_speed_kbps(&self) -> u32 {
+        self.maxdownloadspeed
+            .as_ref()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0)
+    }
 }
 
 /// Embedded user quota info returned in game lookup responses.

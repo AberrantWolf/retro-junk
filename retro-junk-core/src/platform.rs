@@ -31,6 +31,9 @@ pub enum Platform {
     Dreamcast,
     GameGear,
 
+    // NEC
+    PceCd,
+
     // Sony
     Ps1,
     Ps2,
@@ -63,6 +66,7 @@ const ALL_PLATFORMS: &[Platform] = &[
     Platform::Saturn,
     Platform::Dreamcast,
     Platform::GameGear,
+    Platform::PceCd,
     Platform::Ps1,
     Platform::Ps2,
     Platform::Ps3,
@@ -95,6 +99,7 @@ impl Platform {
             Self::Saturn => "saturn",
             Self::Dreamcast => "dreamcast",
             Self::GameGear => "gamegear",
+            Self::PceCd => "pcecd",
             Self::Ps1 => "ps1",
             Self::Ps2 => "ps2",
             Self::Ps3 => "ps3",
@@ -127,6 +132,7 @@ impl Platform {
             Self::Saturn => "Sega Saturn",
             Self::Dreamcast => "Sega Dreamcast",
             Self::GameGear => "Sega Game Gear",
+            Self::PceCd => "NEC PC Engine CD / TurboGrafx-CD",
             Self::Ps1 => "Sony PlayStation",
             Self::Ps2 => "Sony PlayStation 2",
             Self::Ps3 => "Sony PlayStation 3",
@@ -164,6 +170,7 @@ impl Platform {
             Self::Ps1 | Self::Ps2 | Self::Ps3 | Self::Psp | Self::Vita => "Sony",
 
             Self::Xbox | Self::Xbox360 => "Microsoft",
+            Self::PceCd => "NEC",
         }
     }
 
@@ -199,6 +206,13 @@ impl Platform {
             Self::Saturn => &["saturn", "saturnjp", "sega saturn"],
             Self::Dreamcast => &["dreamcast", "dc"],
             Self::GameGear => &["gamegear", "game gear", "gg"],
+            Self::PceCd => &[
+                "pcecd",
+                "pc engine cd",
+                "pcenginecd",
+                "tg-cd",
+                "turbografx-cd",
+            ],
             Self::Ps1 => &["ps1", "psx", "playstation", "playstation1"],
             Self::Ps2 => &["ps2", "playstation2", "playstation 2"],
             Self::Ps3 => &["ps3", "playstation3", "playstation 3"],

@@ -330,16 +330,12 @@ fn build_chd(
                 let redumper = Redumper::detect(&request.redumper_path)
                     .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
                 let prepared = redumper
-                    .prepare_with_progress(
+                    .prepare_with_phase_progress(
                         &dump.directory.join("raw"),
                         &request.workspace_root,
                         cancelled,
-                        |current, total| {
-                            progress(
-                                "Preparing Redumper files in an isolated workspace",
-                                current,
-                                total,
-                            );
+                        |phase, current, total| {
+                            progress(phase, current, total);
                         },
                     )
                     .map_err(|error| PlayableBuildError::Message(error.to_string()))?;

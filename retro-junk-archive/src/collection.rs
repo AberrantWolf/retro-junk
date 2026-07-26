@@ -465,10 +465,19 @@ fn regional_physical_platform(platform: &str, region: &str) -> Option<&'static s
     match platform.as_str() {
         "nes" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("famicom"),
         "snes" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("super-famicom"),
+        "snes"
+            if matches!(
+                region.as_str(),
+                "usa" | "us" | "canada" | "north america" | "north-america"
+            ) =>
+        {
+            Some("snesna")
+        }
+        "genesis" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("megadrivejp"),
         "genesis"
             if matches!(
                 region.as_str(),
-                "japan" | "jp" | "jpn" | "europe" | "eur" | "australia" | "brazil" | "asia"
+                "europe" | "eur" | "australia" | "brazil" | "asia"
             ) =>
         {
             Some("megadrive")

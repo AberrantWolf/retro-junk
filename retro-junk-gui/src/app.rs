@@ -140,6 +140,9 @@ pub struct UiState {
     /// Reconcile archive bindings after this playable console finishes its
     /// forced post-build content scan.
     pub refresh_archive_after_console_scan: Option<String>,
+    /// Coalesces binding refresh requests while another archive projection
+    /// rebuild is already running.
+    pub archive_refresh_pending: bool,
 }
 
 impl Default for UiState {
@@ -181,6 +184,7 @@ impl Default for UiState {
             collection_selected_release: None,
             dump_import_dialog: None,
             refresh_archive_after_console_scan: None,
+            archive_refresh_pending: false,
         }
     }
 }
@@ -469,13 +473,10 @@ impl RetroJunkApp {
             request_id,
             payload,
         }) {
-            let message = match error {
-                mpsc::TrySendError::Full(_) => {
-                    "The database queue is busy; wait for the current operation and try again"
-                }
-                mpsc::TrySendError::Disconnected(_) => "The database worker is not running",
-            };
-            self.push_error("Library database", message);
+            self.push_error(
+                "Library database",
+                format!("The database worker is not running: {error}"),
+            );
             return None;
         }
         self.store_requests_in_flight.insert(request_id);
@@ -568,6 +569,8 @@ impl RetroJunkApp {
                     entry_count,
                     changes,
                 }) => {
+                    let bindings_may_have_changed =
+                        !changes.affected_entries.is_empty() || !changes.removed_entries.is_empty();
                     self.library_controller.apply_change_set(&changes);
                     self.browser.entry_counts.insert(console_id, entry_count);
                     if let Some(index) = self.browser.find_by_folder(&folder_name) {
@@ -589,6 +592,12 @@ impl RetroJunkApp {
                                 .message_tx
                                 .send(crate::state::AppMessage::StartArchiveRefresh { profile });
                         }
+                    } else if bindings_may_have_changed
+                        && let Some(profile) = self.settings.library.active_profile().cloned()
+                    {
+                        let _ = self
+                            .message_tx
+                            .send(crate::state::AppMessage::StartArchiveRefresh { profile });
                     }
                 }
                 Ok(crate::backend::library_store::LibraryStoreValue::ConsoleSummaries(
@@ -1319,9 +1328,11 @@ impl eframe::App for RetroJunkApp {
             }
         });
 
-        // Schedule repaint while operations are running
+        // Fallback polling for workers which only send channel messages and
+        // cannot wake egui directly. Progress producers request immediate
+        // repaints, so this need not run at animation cadence.
         if self.has_active_operations() {
-            ctx.request_repaint_after(Duration::from_millis(100));
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
         if !self.store_requests_in_flight.is_empty() {
             // The store owns no UI handle, so keep polling until every request

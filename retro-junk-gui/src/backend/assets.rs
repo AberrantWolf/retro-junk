@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use futures::{StreamExt as _, stream};
 use retro_junk_core::Platform;
 use retro_junk_frontend::AssetType;
 use retro_junk_lib::async_util::cancellable;
@@ -460,6 +462,12 @@ fn scrape_media_for_selection(
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             let mut work = work;
+            let _ = tx.send(AppMessage::OperationProgress {
+                op_id,
+                current: 0,
+                total: work.len() as u64,
+            });
+            ctx.request_repaint();
             for item in &mut work {
                 if cancel.load(Ordering::Relaxed) {
                     let _ = tx.send(AppMessage::OperationComplete { op_id });
@@ -484,8 +492,12 @@ fn scrape_media_for_selection(
             };
 
             rt.block_on(async {
+                log::info!(
+                    "Artwork scrape {op_id}: connecting to ScreenScraper for {} item(s)",
+                    work.len()
+                );
                 // Connect to ScreenScraper (cancel-aware — initial handshake can take ~90s if slow)
-                let (client, _max_workers) =
+                let (client, max_workers) =
                     match cancellable(retro_junk_scraper::create_client(None), &cancel).await {
                         None => {
                             let _ = tx.send(AppMessage::OperationComplete { op_id });
@@ -535,154 +547,158 @@ fn scrape_media_for_selection(
 
                 let mut downloaded_for_archive = Vec::new();
                 let mut archive_changed = false;
-                for (file_num, item) in work.iter().enumerate() {
-                    if cancel.load(Ordering::Relaxed) {
-                        break;
-                    }
+                let completed_count = Arc::new(AtomicU64::new(0));
+                let total = work.len() as u64;
+                let fetched = stream::iter(work.iter().enumerate())
+                    .map(|(file_num, item)| {
+                        let client = client.clone();
+                        let selection = selection.clone();
+                        let event_tx = event_tx.clone();
+                        let media_dir = media_dir.clone();
+                        let archive_profile = archive_profile.as_ref();
+                        let cancel = &cancel;
+                        let completed_count = completed_count.clone();
+                        let tx = tx.clone();
+                        let ctx = ctx.clone();
+                        async move {
+                            log::info!(
+                                "Artwork scrape {op_id}: starting {}",
+                                item.entry_name
+                            );
+                            let result = async {
+                                if cancel.load(Ordering::Relaxed) {
+                                    return Err(ScrapeError::Cancelled);
+                                }
+                                let rom_info = retro_junk_scraper::lookup::RomInfo {
+                                serial: item.serial.clone(),
+                                scraper_serial: item.scraper_serial.clone(),
+                                filename: item.filename.clone(),
+                                file_size: item.file_size,
+                                hashes: item.hashes.clone(),
+                                platform: item.platform,
+                                expects_serial: retro_junk_scraper::expects_serial(item.platform),
+                            };
+                                let lookup = retro_junk_scraper::lookup::lookup_game(
+                                    &client, system_id, &rom_info,
+                                )
+                                .await?;
+                                let archived =
+                                    item.archive_release_id.is_some() && archive_profile.is_some();
+                                if archived {
+                                    for (asset_type, source) in &item.archived_assets {
+                                        if let Err(error) = project_asset(
+                                            source,
+                                            &media_dir,
+                                            &item.rom_stem,
+                                            *asset_type,
+                                        ) {
+                                            log::warn!(
+                                                "Could not project archived {asset_type} for {}: {error}",
+                                                item.entry_name
+                                            );
+                                        }
+                                    }
+                                }
+                                let item_selection = if archived && !force_redownload {
+                                    retro_junk_scraper::AssetSelection {
+                                        types: selection
+                                            .types
+                                            .iter()
+                                            .copied()
+                                            .filter(|asset_type| {
+                                                !item.archived_assets.contains_key(asset_type)
+                                            })
+                                            .collect(),
+                                    }
+                                } else {
+                                    selection
+                                };
+                                let download_dir = if archived {
+                                    archive_profile
+                                        .expect("archived scrape has profile")
+                                        .workspace_root
+                                        .join("archive-scrape")
+                                        .join(op_id.to_string())
+                                        .join(file_num.to_string())
+                                } else {
+                                    media_dir
+                                };
+                                let source_urls = retro_junk_scraper::assets::asset_source_urls(
+                                    &lookup.game,
+                                    &item_selection,
+                                    &item.preferred_region,
+                                );
+                                let downloaded =
+                                    retro_junk_scraper::assets::download_game_assets(
+                                        &client,
+                                        &retro_junk_scraper::assets::AssetDownloadRequest {
+                                            game: &lookup.game,
+                                            selection: &item_selection,
+                                            media_dir: &download_dir,
+                                            rom_stem: if archived {
+                                                "original"
+                                            } else {
+                                                &item.rom_stem
+                                            },
+                                            preferred_region: &item.preferred_region,
+                                            force_redownload,
+                                            index: file_num,
+                                            filename: &item.filename,
+                                            events: &event_tx,
+                                        },
+                                    )
+                                    .await?;
+                                Ok((downloaded, source_urls))
+                            }
+                            .await;
+                            let current = completed_count.fetch_add(1, Ordering::Relaxed) + 1;
+                            match &result {
+                                Ok((downloaded, _)) => log::info!(
+                                    "Artwork scrape {op_id}: completed {} ({current}/{total}, {} asset(s))",
+                                    item.entry_name,
+                                    downloaded.len()
+                                ),
+                                Err(error) => log::warn!(
+                                    "Artwork scrape {op_id}: failed {} ({current}/{total}): {error}",
+                                    item.entry_name
+                                ),
+                            }
+                            let _ = tx.send(AppMessage::OperationProgress {
+                                op_id,
+                                current,
+                                total,
+                            });
+                            ctx.request_repaint();
+                            (file_num, result)
+                        }
+                    })
+                    .buffer_unordered(max_workers)
+                    .collect::<Vec<_>>()
+                    .await;
 
-                    let _ = tx.send(AppMessage::OperationProgress {
-                        op_id,
-                        current: file_num as u64,
-                        total: work.len() as u64,
-                    });
-                    ctx.request_repaint();
-
-                    // Build RomInfo from pre-collected data
-                    let rom_info = retro_junk_scraper::lookup::RomInfo {
-                        serial: item.serial.clone(),
-                        scraper_serial: item.scraper_serial.clone(),
-                        filename: item.filename.clone(),
-                        file_size: item.file_size,
-                        hashes: item.hashes.clone(),
-                        platform: item.platform,
-                        expects_serial: retro_junk_scraper::expects_serial(item.platform),
-                    };
-
-                    // Look up the game on ScreenScraper
-                    let lookup_result = match cancellable(
-                        retro_junk_scraper::lookup::lookup_game(&client, system_id, &rom_info),
-                        &cancel,
-                    )
-                    .await
-                    {
-                        None => break,
-                        Some(Ok(result)) => result,
-                        Some(Err(e)) => {
-                            if is_fatal_scrape_error(&e) {
-                                log::error!("Fatal scrape error: {e}");
+                for (file_num, result) in fetched {
+                    let item = &work[file_num];
+                    let (downloaded, source_urls) = match result {
+                        Ok(result) => result,
+                        Err(error) => {
+                            if is_fatal_scrape_error(&error) {
                                 let _ = tx.send(AppMessage::ScrapeFatalError {
-                                    message: e.to_string(),
+                                    message: error.to_string(),
                                     op_id,
                                 });
-                                let _ = tx.send(AppMessage::OperationComplete { op_id });
-                                return;
-                            }
-                            log::warn!("Lookup failed for {}: {}", item.filename, e);
-                            report_scrape_failure(
-                                &tx,
-                                &folder_name,
-                                item,
-                                e.to_string(),
-                                op_id,
-                            );
-                            ctx.request_repaint();
-                            continue;
-                        }
-                    };
-
-                    let archived = item.archive_release_id.is_some() && archive_profile.is_some();
-                    if archived {
-                        for (asset_type, source) in &item.archived_assets {
-                            if let Err(error) =
-                                project_asset(source, &media_dir, &item.rom_stem, *asset_type)
-                            {
-                                log::warn!(
-                                    "Could not project archived {asset_type} for {}: {error}",
-                                    item.entry_name
+                                cancel.store(true, Ordering::Relaxed);
+                            } else if !matches!(error, ScrapeError::Cancelled) {
+                                report_scrape_failure(
+                                    &tx,
+                                    &folder_name,
+                                    item,
+                                    error.to_string(),
+                                    op_id,
                                 );
                             }
-                        }
-                    }
-                    let item_selection = if archived && !force_redownload {
-                        retro_junk_scraper::AssetSelection {
-                            types: selection
-                                .types
-                                .iter()
-                                .copied()
-                                .filter(|asset_type| {
-                                    !item.archived_assets.contains_key(asset_type)
-                                })
-                                .collect(),
-                        }
-                    } else {
-                        selection.clone()
-                    };
-                    let download_dir = if archived {
-                        archive_profile
-                            .as_ref()
-                            .expect("archived scrape has profile")
-                            .workspace_root
-                            .join("archive-scrape")
-                            .join(op_id.to_string())
-                            .join(file_num.to_string())
-                    } else {
-                        media_dir.clone()
-                    };
-                    let source_urls = retro_junk_scraper::assets::asset_source_urls(
-                        &lookup_result.game,
-                        &item_selection,
-                        &item.preferred_region,
-                    );
-
-                    // Download media
-                    let downloaded = match cancellable(
-                        retro_junk_scraper::assets::download_game_assets(
-                            &client,
-                            &retro_junk_scraper::assets::AssetDownloadRequest {
-                                game: &lookup_result.game,
-                                selection: &item_selection,
-                                media_dir: &download_dir,
-                                rom_stem: if archived {
-                                    "original"
-                                } else {
-                                    &item.rom_stem
-                                },
-                                preferred_region: &item.preferred_region,
-                                force_redownload,
-                                index: file_num,
-                                filename: &item.filename,
-                                events: &event_tx,
-                            },
-                        ),
-                        &cancel,
-                    )
-                    .await
-                    {
-                        None => break,
-                        Some(Ok(media)) => media,
-                        Some(Err(e)) => {
-                            if is_fatal_scrape_error(&e) {
-                                log::error!("Fatal scrape error during download: {e}");
-                                let _ = tx.send(AppMessage::ScrapeFatalError {
-                                    message: e.to_string(),
-                                    op_id,
-                                });
-                                let _ = tx.send(AppMessage::OperationComplete { op_id });
-                                return;
-                            }
-                            log::warn!("Media download failed for {}: {}", item.filename, e);
-                            report_scrape_failure(
-                                &tx,
-                                &folder_name,
-                                item,
-                                e.to_string(),
-                                op_id,
-                            );
-                            ctx.request_repaint();
                             continue;
                         }
                     };
-
                     if let Some(release_id) = item.archive_release_id
                         && archive_profile.is_some()
                     {
@@ -709,6 +725,20 @@ fn scrape_media_for_selection(
                 if !downloaded_for_archive.is_empty()
                     && let Some(profile) = archive_profile.as_ref()
                 {
+                    let _ = tx.send(AppMessage::OperationPhase {
+                        op_id,
+                        description: format!(
+                            "Publishing scraped artwork ({} file(s))",
+                            downloaded_for_archive.len()
+                        ),
+                        display: ProgressDisplay::Count,
+                        current: 0,
+                        total: downloaded_for_archive.len() as u64,
+                    });
+                    log::info!(
+                        "Artwork scrape {op_id}: waiting to publish {} archived asset(s)",
+                        downloaded_for_archive.len()
+                    );
                     let asset_names = downloaded_for_archive
                         .iter()
                         .map(|(_, _, asset_type, _, _)| asset_type.to_string())
@@ -733,9 +763,14 @@ fn scrape_media_for_selection(
                         })
                         .collect::<Vec<_>>();
                     let archive_result =
-                        retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                        retro_junk_archive::ArchiveLock::acquire_wait(
+                            &profile.archive_root,
+                            &cancel,
+                        )
                             .map_err(|error| error.to_string())
-                            .and_then(|_archive_lock| {
+                            .and_then(|archive_lock| {
+                                let _archive_lock = archive_lock
+                                    .ok_or_else(|| "archive publication cancelled".to_owned())?;
                                 retro_junk_archive::add_release_files(
                                     &profile.archive_root,
                                     &requests,
@@ -745,6 +780,15 @@ fn scrape_media_for_selection(
                             });
                     match archive_result {
                         Ok(results) => {
+                            let _ = tx.send(AppMessage::OperationProgress {
+                                op_id,
+                                current: downloaded_for_archive.len() as u64,
+                                total: downloaded_for_archive.len() as u64,
+                            });
+                            log::info!(
+                                "Artwork scrape {op_id}: published {} archived asset(s)",
+                                downloaded_for_archive.len()
+                            );
                             archive_changed = results.iter().any(|result| result.added);
                             for (file_num, _, asset_type, path, _) in &downloaded_for_archive {
                                 let item = &work[*file_num];
@@ -1204,9 +1248,11 @@ pub fn regenerate_miximages_for_selection(
                         caption: "",
                     })
                     .collect::<Vec<_>>();
-                match retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                match retro_junk_archive::ArchiveLock::acquire_wait(&profile.archive_root, &cancel)
                     .map_err(|error| error.to_string())
-                    .and_then(|_lock| {
+                    .and_then(|lock| {
+                        let _lock =
+                            lock.ok_or_else(|| "archive publication cancelled".to_owned())?;
                         retro_junk_archive::add_release_files(
                             &profile.archive_root,
                             &requests,

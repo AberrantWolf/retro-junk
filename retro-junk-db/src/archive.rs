@@ -53,6 +53,52 @@ fn same_platform(left: &str, right: &str) -> bool {
     }
 }
 
+/// Follow a playable moved from an internal archive platform directory to the
+/// active frontend's equivalent system directory. Portable build evidence is
+/// historical and remains unchanged; only this rebuildable projection points
+/// at the file's current location.
+fn projected_playable_path(
+    playable_root: &Path,
+    platform_id: &str,
+    region: &str,
+    input_manifest_sha256: &str,
+    evidence: &retro_junk_archive::BuildEvidence,
+) -> (String, retro_junk_archive::RepresentationPresence) {
+    let presence = playable_presence(playable_root, input_manifest_sha256, evidence);
+    if presence != retro_junk_archive::RepresentationPresence::Missing {
+        return (evidence.relative_output_path.clone(), presence);
+    }
+    let historical = Path::new(&evidence.relative_output_path);
+    let mut components = historical.components();
+    let Some(first) = components.next() else {
+        return (evidence.relative_output_path.clone(), presence);
+    };
+    let Some(first) = first.as_os_str().to_str() else {
+        return (evidence.relative_output_path.clone(), presence);
+    };
+    let frontend_directory = retro_junk_frontend::esde::system_directory(platform_id, Some(region));
+    if first.eq_ignore_ascii_case(&frontend_directory) {
+        return (evidence.relative_output_path.clone(), presence);
+    }
+    let mut projected_evidence = evidence.clone();
+    projected_evidence.relative_output_path = Path::new(&frontend_directory)
+        .join(components.as_path())
+        .to_string_lossy()
+        .replace('\\', "/");
+    let projected_presence =
+        playable_presence(playable_root, input_manifest_sha256, &projected_evidence);
+    if projected_presence == retro_junk_archive::RepresentationPresence::Present {
+        log::info!(
+            "Resolved moved playable {} -> {}",
+            evidence.relative_output_path,
+            projected_evidence.relative_output_path
+        );
+        (projected_evidence.relative_output_path, projected_presence)
+    } else {
+        (evidence.relative_output_path.clone(), presence)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArchiveCollectionDetails {
     pub archive_release_id: String,
@@ -724,8 +770,10 @@ pub fn reconcile_archive_snapshot(
                                 )?;
                             }
                         }
-                        let presence = playable_presence(
+                        let (playable_relative_path, presence) = projected_playable_path(
                             playable_root,
+                            &release.manifest.platform_id,
+                            &release.manifest.region,
                             &dump.manifest_sha256,
                             &build.evidence,
                         );
@@ -736,7 +784,7 @@ pub fn reconcile_archive_snapshot(
                                 child_id,
                                 carrier.manifest.carrier_id.to_string(),
                                 format_key(&build.evidence.format),
-                                build.evidence.relative_output_path,
+                                playable_relative_path,
                                 presence.as_str(),
                                 build.evidence.input_manifest_sha256,
                                 build.evidence.output_sha256,
@@ -751,7 +799,7 @@ pub fn reconcile_archive_snapshot(
                              VALUES(?1,?2,?3,?4)",
                             params![
                                 child_id,
-                                build.evidence.relative_output_path,
+                                playable_relative_path,
                                 build.evidence.output_size,
                                 build.evidence.output_sha256,
                             ],

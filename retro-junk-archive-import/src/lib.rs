@@ -53,6 +53,11 @@ pub struct DumpImportRequest {
     /// When set, imported byte-identical files are also recorded as existing
     /// playable representations relative to this root.
     pub playable_root: Option<PathBuf>,
+    /// Build a verified CHD immediately after publishing each preservation master.
+    pub make_playable: bool,
+    pub chdman_path: Option<PathBuf>,
+    /// User authorization to omit only a verified CUE and its referenced tracks.
+    pub discard_redundant_bin_cue: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -82,6 +87,14 @@ pub struct DumpImportCandidate {
     pub verification_tracks: Vec<TrackDigest>,
     pub verification_tool: Option<retro_junk_archive::ToolRecord>,
     pub verification_detail: String,
+    pub warnings: Vec<String>,
+    pub intermediate_source: Option<PlayableIntermediateSource>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayableIntermediateSource {
+    SuppliedCueBin,
+    RedumperSplit,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +128,7 @@ pub enum IdentificationMethod {
     HeaderSerial,
     FolderSerial,
     UserSelection,
+    RedumperLog,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +199,24 @@ pub struct CandidateImportResult {
     pub outcome: CandidateImportOutcome,
     pub source_removed: bool,
     pub detail: String,
+    pub warnings: Vec<String>,
+    pub playable_build: Option<PlayableBuildResult>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlayableBuildResult {
+    pub outcome: PlayableBuildOutcome,
+    pub output: Option<PathBuf>,
+    pub detail: String,
+    pub intermediate_source: Option<PlayableIntermediateSource>,
+    pub authorized_exclusions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayableBuildOutcome {
+    Created,
+    Failed,
+    NotRequested,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,9 +339,9 @@ pub fn plan_import(
         });
         let format = detect_format(&source, &package);
         let carrier_kind = carrier_kind_for_format(&format);
-        let inferred_platform = request
-            .playable_root
-            .as_deref()
+        let inferred_platform = (!request.make_playable)
+            .then(|| request.playable_root.as_deref())
+            .flatten()
             .and_then(|root| infer_playable_platform(root, &source, context));
         let normalized_platform_hint = request.platform_hint.as_deref().map(catalog_platform_hint);
         let effective_platform_hint = normalized_platform_hint
@@ -320,6 +352,7 @@ pub fn plan_import(
             .is_some_and(|console| console.analyzer.chd_extensions().is_empty())
             || effective_platform_hint.is_some_and(is_known_cartridge_catalog_platform);
         if request.playable_root.is_some()
+            && !request.make_playable
             && (!source.is_file()
                 || !matches!(format, RepresentationFormat::Rom)
                 || !is_cartridge_platform)
@@ -340,6 +373,8 @@ pub fn plan_import(
                 verification_tracks: Vec::new(),
                 verification_tool: None,
                 verification_detail: String::new(),
+                warnings: Vec::new(),
+                intermediate_source: None,
             });
             report_analysis_complete((analysis_index + 1) as u64);
             continue;
@@ -359,6 +394,8 @@ pub fn plan_import(
                 verification_tracks: Vec::new(),
                 verification_tool: None,
                 verification_detail: String::new(),
+                warnings: Vec::new(),
+                intermediate_source: None,
             });
             report_analysis_complete((analysis_index + 1) as u64);
             continue;
@@ -368,13 +405,7 @@ pub fn plan_import(
         let header = entrypoint
             .as_deref()
             .and_then(|path| analyze_header(path, context, effective_platform_hint));
-        let ExactCatalogMatch {
-            matches: exact_matches,
-            tracks: verification_tracks,
-            tool: verification_tool,
-            method: exact_method,
-            detail: verification_detail,
-        } = exact_catalog_matches(
+        let exact = match exact_catalog_matches(
             &staged_source,
             &package,
             &format,
@@ -384,12 +415,55 @@ pub fn plan_import(
             catalog,
             cancel,
             &on_phase,
-        )?;
+        ) {
+            Ok(exact) => exact,
+            Err(ImportError::Cancelled) => return Err(ImportError::Cancelled),
+            Err(error) => {
+                candidates.push(DumpImportCandidate {
+                    source,
+                    staged_source,
+                    package,
+                    format,
+                    carrier_kind,
+                    archive_platform_id: effective_platform_hint.unwrap_or_default().to_owned(),
+                    identification: IdentificationResolution::Unresolved,
+                    disposition: ImportDisposition::Invalid {
+                        reason: error.to_string(),
+                    },
+                    selected_match: None,
+                    physical_copy_id: None,
+                    verification_tracks: Vec::new(),
+                    verification_tool: None,
+                    verification_detail: String::new(),
+                    warnings: vec![
+                        "This package could not be analyzed; other packages were still planned"
+                            .to_owned(),
+                    ],
+                    intermediate_source: None,
+                });
+                report_analysis_complete((analysis_index + 1) as u64);
+                continue;
+            }
+        };
+        let ExactCatalogMatch {
+            matches: exact_matches,
+            tracks: verification_tracks,
+            tool: verification_tool,
+            method: exact_method,
+            detail: verification_detail,
+            byte_verified,
+        } = exact;
         let (mut matches, resolution) = if !exact_matches.is_empty() {
             (
                 exact_matches,
-                IdentificationResolution::CatalogVerified {
-                    method: exact_method,
+                if byte_verified {
+                    IdentificationResolution::CatalogVerified {
+                        method: exact_method,
+                    }
+                } else {
+                    IdentificationResolution::Identified {
+                        method: exact_method,
+                    }
                 },
             )
         } else if let Some((_, serial)) = &header {
@@ -425,6 +499,12 @@ pub fn plan_import(
             }
         }
         deduplicate_matches(&mut matches);
+        let catalog_cleanup_recommended =
+            if matches!(resolution, IdentificationResolution::CatalogVerified { .. }) {
+                group_equivalent_release_matches(&mut matches)
+            } else {
+                false
+            };
         let (selected_match, disposition, identification, physical_copy_id, archive_platform_id) =
             match matches.as_slice() {
                 [] => (
@@ -525,6 +605,19 @@ pub fn plan_import(
                     String::new(),
                 ),
             };
+        let intermediate_source = if matches!(format, RepresentationFormat::RedumperRaw)
+            && matches!(
+                identification,
+                IdentificationResolution::CatalogVerified { .. }
+            ) {
+            Some(if verification_tool.is_some() {
+                PlayableIntermediateSource::RedumperSplit
+            } else {
+                PlayableIntermediateSource::SuppliedCueBin
+            })
+        } else {
+            None
+        };
         candidates.push(DumpImportCandidate {
             source,
             staged_source,
@@ -539,6 +632,14 @@ pub fn plan_import(
             verification_tracks,
             verification_tool,
             verification_detail,
+            warnings: catalog_cleanup_recommended
+                .then(|| {
+                    "Equivalent duplicate catalog rows resolved to one release; catalog cleanup recommended"
+                        .to_owned()
+                })
+                .into_iter()
+                .collect(),
+            intermediate_source,
         });
         report_analysis_complete((analysis_index + 1) as u64);
     }
@@ -754,12 +855,31 @@ pub fn execute_import(
                                 &imported.dump,
                                 cancel,
                             )?;
-                        results.push(result(
+                        let mut imported_result = result(
                             &candidate,
                             CandidateImportOutcome::Imported,
                             removed,
                             imported_verification_detail(&candidate.identification),
-                        ));
+                        );
+                        imported_result.playable_build = build_imported_playable(
+                            &plan.request,
+                            &candidate,
+                            selected,
+                            &imported.dump,
+                            cancel,
+                            &on_phase,
+                        );
+                        if imported_result
+                            .playable_build
+                            .as_ref()
+                            .is_some_and(|build| build.outcome == PlayableBuildOutcome::Failed)
+                        {
+                            imported_result.warnings.push(
+                                "archive import succeeded; retry playable CHD creation with `archive build-chd`"
+                                    .to_owned(),
+                            );
+                        }
+                        results.push(imported_result);
                     }
                     Err(error) => results.push(result(
                         &candidate,
@@ -1031,7 +1151,7 @@ pub fn physical_archive_platform(
     let catalog_platform = selected.platform_id.trim().to_ascii_lowercase();
     if !matches!(
         catalog_platform.as_str(),
-        "nes" | "snes" | "genesis" | "pce" | "saturn"
+        "nes" | "snes" | "genesis" | "pce" | "pcecd" | "saturn"
     ) {
         return selected.platform_id.clone();
     }
@@ -1082,6 +1202,7 @@ fn catalog_platform_name(value: &str) -> Option<&'static str> {
         }
         "pce" | "pc engine" | "pc-engine" | "pcengine" | "tg16" | "tg-16" | "turbografx"
         | "turbografx-16" | "turbo grafx 16" => Some("pce"),
+        "pcecd" | "pc engine cd" | "pcenginecd" | "tg-cd" | "turbografx-cd" => Some("pcecd"),
         "saturn" | "saturnjp" | "sega saturn" => Some("saturn"),
         _ => None,
     }
@@ -1095,7 +1216,10 @@ fn named_physical_platform(catalog_platform: &str, value: &str) -> Option<&'stat
             Some("famicom")
         }
         ("snes", "snes" | "super nintendo" | "super nintendo entertainment system") => Some("snes"),
+        ("snes", "snesna") => Some("snesna"),
         ("snes", "sfc" | "super famicom" | "super-famicom") => Some("super-famicom"),
+        ("pcecd", "pcecd" | "pc engine cd" | "pcenginecd") => Some("pcenginecd"),
+        ("pcecd", "tg-cd" | "turbografx-cd") => Some("tg-cd"),
         ("genesis", "genesis" | "sega genesis") => Some("genesis"),
         ("genesis", "md" | "mega drive" | "mega-drive" | "megadrive") => Some("megadrive"),
         ("pce", "pce" | "pc engine" | "pc-engine" | "pcengine") => Some("pce"),
@@ -1114,11 +1238,29 @@ fn regional_physical_platform(catalog_platform: &str, region: &str) -> Option<&'
         "nes" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("famicom"),
         "nes" => Some("nes"),
         "snes" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("super-famicom"),
+        "snes"
+            if matches!(
+                region.as_str(),
+                "usa" | "us" | "canada" | "north america" | "north-america"
+            ) =>
+        {
+            Some("snesna")
+        }
+        "pcecd" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("pcenginecd"),
+        "pcecd"
+            if matches!(
+                region.as_str(),
+                "usa" | "us" | "north america" | "north-america"
+            ) =>
+        {
+            Some("tg-cd")
+        }
         "snes" => Some("snes"),
+        "genesis" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("megadrivejp"),
         "genesis"
             if matches!(
                 region.as_str(),
-                "japan" | "jp" | "jpn" | "europe" | "eur" | "australia" | "brazil" | "asia"
+                "europe" | "eur" | "australia" | "brazil" | "asia"
             ) =>
         {
             Some("megadrive")
@@ -1476,6 +1618,7 @@ struct ExactCatalogMatch {
     tool: Option<retro_junk_archive::ToolRecord>,
     method: IdentificationMethod,
     detail: String,
+    byte_verified: bool,
 }
 
 impl ExactCatalogMatch {
@@ -1486,6 +1629,7 @@ impl ExactCatalogMatch {
             tool: None,
             method: IdentificationMethod::ExactFileHash,
             detail: String::new(),
+            byte_verified: false,
         }
     }
 }
@@ -1502,8 +1646,22 @@ fn exact_catalog_matches(
     cancel: &AtomicBool,
     on_phase: &impl Fn(PlanningProgress),
 ) -> Result<ExactCatalogMatch, ImportError> {
-    if matches!(format, RepresentationFormat::CueBin) {
-        let Some(cue) = analysis_entrypoint(source, package) else {
+    let supplied_cue = source
+        .is_dir()
+        .then(|| {
+            package.files.iter().find_map(|file| {
+                Path::new(&file.relative_path)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("cue"))
+                    .then(|| source.join(&file.relative_path))
+            })
+        })
+        .flatten();
+    if matches!(format, RepresentationFormat::CueBin)
+        || (matches!(format, RepresentationFormat::RedumperRaw) && supplied_cue.is_some())
+    {
+        let Some(cue) = supplied_cue.or_else(|| analysis_entrypoint(source, package)) else {
             return Ok(ExactCatalogMatch::empty());
         };
         validate_cue_references(source, package, &cue)?;
@@ -1539,48 +1697,56 @@ fn exact_catalog_matches(
             .collect::<Vec<_>>();
         let matches = retro_junk_db::match_complete_catalog_media_any_platform(catalog, &tracks)
             .map_err(|error| ImportError::Catalog(error.to_string()))?;
-        return Ok(ExactCatalogMatch {
+        let result = ExactCatalogMatch {
             matches: matches.into_iter().map(CatalogCandidate::from).collect(),
             tracks,
             tool: None,
             method: IdentificationMethod::CompleteTrackSet,
-            detail: "Complete ordered CUE track set matched the catalog".to_owned(),
-        });
+            detail: "Complete ordered supplied CUE track set matched the catalog".to_owned(),
+            byte_verified: true,
+        };
+        if !result.matches.is_empty() || matches!(format, RepresentationFormat::CueBin) {
+            return Ok(result);
+        }
     }
     if matches!(format, RepresentationFormat::RedumperRaw) && source.is_dir() {
+        if let Some(log_match) = redumper_log_catalog_match(source, package, catalog)? {
+            if !request.make_playable {
+                return Ok(log_match);
+            }
+        }
         let executable = request
             .redumper_path
             .as_deref()
             .unwrap_or_else(|| Path::new(""));
-        if let Ok(redumper) = retro_junk_archive::Redumper::detect(executable) {
-            let workspace = request.workspace_root.clone().unwrap_or_else(|| {
-                request
-                    .archive_root
-                    .join(".retro-junk/work/import-identification")
-            });
-            on_phase(PlanningProgress {
-                description: format!("Running Redumper analysis for {}", source.display()),
-                kind: PlanningProgressKind::Indeterminate,
-                current: 0,
-                total: 0,
-            });
-            if let Ok(audit) = redumper.audit(source, &workspace, cancel) {
-                let matches = retro_junk_db::match_complete_catalog_media_any_platform(
-                    catalog,
-                    &audit.tracks,
-                )
+        let redumper = retro_junk_archive::Redumper::detect(executable)
+            .map_err(|error| ImportError::InvalidPackage(error.to_string()))?;
+        let workspace = request.workspace_root.clone().unwrap_or_else(|| {
+            request
+                .archive_root
+                .join(".retro-junk/work/import-identification")
+        });
+        on_phase(PlanningProgress {
+            description: format!("Running Redumper analysis for {}", source.display()),
+            kind: PlanningProgressKind::Indeterminate,
+            current: 0,
+            total: 0,
+        });
+        let audit = redumper
+            .audit(source, &workspace, cancel)
+            .map_err(|error| ImportError::InvalidPackage(error.to_string()))?;
+        let matches =
+            retro_junk_db::match_complete_catalog_media_any_platform(catalog, &audit.tracks)
                 .map_err(|error| ImportError::Catalog(error.to_string()))?;
-                return Ok(ExactCatalogMatch {
-                    matches: matches.into_iter().map(CatalogCandidate::from).collect(),
-                    tracks: audit.tracks,
-                    tool: Some(audit.tool),
-                    method: IdentificationMethod::CompleteTrackSet,
-                    detail:
-                        "Redumper regenerated a complete ordered track set that matched the catalog"
-                            .to_owned(),
-                });
-            }
-        }
+        return Ok(ExactCatalogMatch {
+            matches: matches.into_iter().map(CatalogCandidate::from).collect(),
+            tracks: audit.tracks,
+            tool: Some(audit.tool),
+            method: IdentificationMethod::CompleteTrackSet,
+            detail: "Redumper regenerated a complete ordered track set that matched the catalog"
+                .to_owned(),
+            byte_verified: true,
+        });
     }
     check_cancel(cancel)?;
     let primary = if source.is_file() {
@@ -1612,10 +1778,66 @@ fn exact_catalog_matches(
                 tool: None,
                 method: IdentificationMethod::FormatAwareFileHash,
                 detail: "Format-aware ROM payload hash matched the catalog; archived source bytes were preserved unchanged".to_owned(),
+                byte_verified: true,
             });
         }
     }
     Ok(ExactCatalogMatch::empty())
+}
+
+fn redumper_log_catalog_match(
+    source: &Path,
+    package: &SourcePackageInventory,
+    catalog: &retro_junk_db::Connection,
+) -> Result<Option<ExactCatalogMatch>, ImportError> {
+    let logs = package.files.iter().filter(|file| {
+        Path::new(&file.relative_path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("log"))
+    });
+    for log in logs {
+        let path = source.join(&log.relative_path);
+        let text = std::fs::read_to_string(&path).map_err(|source| ImportError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        if !text
+            .lines()
+            .any(|line| line.trim_start().starts_with("<rom "))
+        {
+            continue;
+        }
+        let records = retro_junk_dat::parse_logiqx_rom_lines(&text).map_err(|error| {
+            ImportError::InvalidPackage(format!("invalid Redumper log: {error}"))
+        })?;
+        let tracks = records
+            .into_iter()
+            .enumerate()
+            .map(|(index, record)| TrackDigest {
+                number: u32::try_from(index + 1).unwrap_or(u32::MAX),
+                size: record.size,
+                crc32: record.crc,
+                md5: record.md5.unwrap_or_default(),
+                sha1: record.sha1.unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        let matches = retro_junk_db::match_complete_catalog_media_any_platform(catalog, &tracks)
+            .map_err(|error| ImportError::Catalog(error.to_string()))?;
+        if !matches.is_empty() {
+            return Ok(Some(ExactCatalogMatch {
+                matches: matches.into_iter().map(CatalogCandidate::from).collect(),
+                tracks,
+                tool: None,
+                method: IdentificationMethod::RedumperLog,
+                detail:
+                    "Redumper log hashes identified the catalog release but did not verify retained bytes"
+                        .to_owned(),
+                byte_verified: false,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 fn stored_catalog_match(
@@ -1633,6 +1855,7 @@ fn stored_catalog_match(
         tool: None,
         method: IdentificationMethod::ExactFileHash,
         detail: "Exact stored-file hash matched the catalog".to_owned(),
+        byte_verified: true,
     }))
 }
 
@@ -1792,6 +2015,9 @@ fn append_playable_adoption(
     manifest: &retro_junk_archive::DumpManifest,
     catalog_verified: bool,
 ) -> Result<(), ImportError> {
+    if request.make_playable {
+        return Ok(());
+    }
     let Some(playable_root) = request.playable_root.as_deref() else {
         return Ok(());
     };
@@ -1920,6 +2146,13 @@ fn deduplicate_matches(matches: &mut Vec<CatalogCandidate>) {
     matches.dedup_by(|a, b| a.media_id == b.media_id);
 }
 
+fn group_equivalent_release_matches(matches: &mut Vec<CatalogCandidate>) -> bool {
+    let before = matches.len();
+    matches.sort_by(|a, b| (&a.release_id, &a.media_id).cmp(&(&b.release_id, &b.media_id)));
+    matches.dedup_by(|a, b| a.release_id == b.release_id);
+    before != matches.len()
+}
+
 fn catalog_candidate_release_key(candidate: &CatalogCandidate) -> String {
     if candidate.work_id.is_empty() {
         return candidate.release_id.clone();
@@ -1936,6 +2169,12 @@ fn catalog_candidate_release_key(candidate: &CatalogCandidate) -> String {
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ps1_playables_use_the_es_de_psx_directory() {
+        assert_eq!(playable_projection_platform("ps1", "Japan"), "psx");
+        assert_eq!(playable_projection_platform("ps1", "USA"), "psx");
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]
@@ -2002,6 +2241,9 @@ mod tests {
                 workspace_root: Some(temp.path().join("work")),
                 stage_packages_locally: true,
                 playable_root: None,
+                make_playable: false,
+                chdman_path: None,
+                discard_redundant_bin_cue: false,
             },
             &retro_junk_lib::AnalysisContext::new(),
             &catalog,
@@ -2171,6 +2413,66 @@ mod tests {
     }
 
     #[test]
+    fn one_invalid_disc_does_not_abort_batch_planning() {
+        let temp = tempfile::tempdir().unwrap();
+        let inbox = temp.path().join("inbox");
+        let bad = inbox.join("bad-disc");
+        let good = inbox.join("good-disc");
+        std::fs::create_dir_all(&bad).unwrap();
+        std::fs::create_dir_all(&good).unwrap();
+        std::fs::write(
+            bad.join("disc.cue"),
+            "FILE \"../outside.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        std::fs::write(good.join("track.bin"), vec![0_u8; 2352]).unwrap();
+        std::fs::write(
+            good.join("disc.cue"),
+            "FILE \"track.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        let archive = temp.path().join("archive");
+        retro_junk_archive::initialize_archive(
+            &archive,
+            &retro_junk_archive::ArchiveRootManifest::new("Batch planning"),
+        )
+        .unwrap();
+
+        let plan = plan_import(
+            DumpImportRequest {
+                source: inbox,
+                archive_root: archive,
+                platform_hint: Some("ps1".to_owned()),
+                owner_id: "default".to_owned(),
+                new_physical_copy: false,
+                redumper_path: None,
+                workspace_root: Some(temp.path().join("work")),
+                stage_packages_locally: true,
+                playable_root: None,
+                make_playable: false,
+                chdman_path: None,
+                discard_redundant_bin_cue: false,
+            },
+            &retro_junk_lib::create_default_context(),
+            &retro_junk_db::open_memory().unwrap(),
+            &AtomicBool::new(false),
+            |_, _| {},
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(plan.candidates.len(), 2);
+        assert!(plan.candidates.iter().any(|candidate| {
+            candidate.source.ends_with("bad-disc")
+                && matches!(candidate.disposition, ImportDisposition::Invalid { .. })
+        }));
+        assert!(plan.candidates.iter().any(|candidate| {
+            candidate.source.ends_with("good-disc")
+                && !matches!(candidate.disposition, ImportDisposition::Invalid { .. })
+        }));
+    }
+
+    #[test]
     fn a_directory_of_loose_roms_is_discovered_as_separate_packages() {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("one.nes"), b"one").unwrap();
@@ -2205,6 +2507,9 @@ mod tests {
                 workspace_root: Some(workspace.clone()),
                 stage_packages_locally: false,
                 playable_root: None,
+                make_playable: false,
+                chdman_path: None,
+                discard_redundant_bin_cue: false,
             },
             &retro_junk_lib::AnalysisContext::new(),
             &retro_junk_db::open_memory().unwrap(),
@@ -2230,6 +2535,9 @@ mod tests {
             workspace_root: None,
             stage_packages_locally: true,
             playable_root: Some(PathBuf::from("/roms")),
+            make_playable: false,
+            chdman_path: None,
+            discard_redundant_bin_cue: false,
         };
         let mut selected = CatalogCandidate {
             media_id: "media".to_owned(),
@@ -2274,8 +2582,17 @@ mod tests {
             ),
             "super-famicom"
         );
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.sfc"), &selected),
+            "snesna"
+        );
 
         selected.platform_id = "genesis".to_owned();
+        selected.region = "Japan".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.md"), &selected),
+            "megadrivejp"
+        );
         selected.region = "Europe".to_owned();
         assert_eq!(
             physical_archive_platform(&request, Path::new("/roms/game.md"), &selected),
@@ -2318,6 +2635,18 @@ mod tests {
         assert_eq!(
             physical_archive_platform(&request, Path::new("/roms/saturnjp/game.chd"), &selected),
             "saturnjp"
+        );
+
+        selected.platform_id = "pcecd".to_owned();
+        selected.region = "Japan".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.chd"), &selected),
+            "pcenginecd"
+        );
+        selected.region = "USA".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.chd"), &selected),
+            "tg-cd"
         );
 
         let mut explicit_nes = request;
@@ -2394,6 +2723,9 @@ mod tests {
                 workspace_root: Some(temp.path().join("work")),
                 stage_packages_locally: true,
                 playable_root: Some(playable.clone()),
+                make_playable: false,
+                chdman_path: None,
+                discard_redundant_bin_cue: false,
             },
             &context,
             &catalog,
@@ -2453,6 +2785,9 @@ mod tests {
                 workspace_root: Some(temp.path().join("workspace")),
                 stage_packages_locally: true,
                 playable_root: None,
+                make_playable: false,
+                chdman_path: None,
+                discard_redundant_bin_cue: false,
             },
             &retro_junk_lib::create_default_context(),
             &catalog,
@@ -2509,6 +2844,9 @@ mod tests {
                 workspace_root: Some(temp.path().join("workspace")),
                 stage_packages_locally: true,
                 playable_root: None,
+                make_playable: false,
+                chdman_path: None,
+                discard_redundant_bin_cue: false,
             },
             &retro_junk_lib::create_default_context(),
             &retro_junk_db::open_memory().unwrap(),
@@ -2658,7 +2996,104 @@ fn result(
         outcome,
         source_removed,
         detail: detail.to_owned(),
+        warnings: candidate.warnings.clone(),
+        playable_build: None,
     }
+}
+
+fn build_imported_playable(
+    request: &DumpImportRequest,
+    candidate: &DumpImportCandidate,
+    selected: &CatalogCandidate,
+    manifest: &retro_junk_archive::DumpManifest,
+    cancel: &AtomicBool,
+    on_phase: &impl Fn(PlanningProgress),
+) -> Option<PlayableBuildResult> {
+    if !request.make_playable {
+        return None;
+    }
+    let Some(playable_root) = request.playable_root.as_ref() else {
+        return Some(PlayableBuildResult {
+            outcome: PlayableBuildOutcome::Failed,
+            output: None,
+            detail: "--playable-root is required when playable creation is requested".to_owned(),
+            intermediate_source: candidate.intermediate_source,
+            authorized_exclusions: Vec::new(),
+        });
+    };
+    on_phase(PlanningProgress {
+        description: format!(
+            "Creating verified playable CHD for {}",
+            candidate.source.display()
+        ),
+        kind: PlanningProgressKind::Indeterminate,
+        current: 0,
+        total: 0,
+    });
+    let workspace_root = request
+        .workspace_root
+        .clone()
+        .unwrap_or_else(retro_junk_io::default_transient_workspace);
+    let build = retro_junk_lib::playable_build::build_playable(
+        &retro_junk_lib::playable_build::PlayableBuildRequest {
+            archive_root: request.archive_root.clone(),
+            playable_root: playable_root.clone(),
+            workspace_root,
+            dump_id: manifest.dump_id.to_string(),
+            format: RepresentationFormat::Chd,
+            chdman_path: request.chdman_path.clone().unwrap_or_default(),
+            redumper_path: request.redumper_path.clone().unwrap_or_default(),
+            dolphin_tool_path: PathBuf::new(),
+            allow_unverified: false,
+            retain_intermediate: false,
+            options: BTreeMap::new(),
+            playable_platform_id: playable_projection_platform(
+                &candidate.archive_platform_id,
+                &selected.region,
+            ),
+            expected_disc_count: selected.sequence_number.max(1),
+            canonical_output_stem: selected.title.clone(),
+            canonical_release_name: selected.title.clone(),
+        },
+        &|description, current, total| {
+            on_phase(PlanningProgress {
+                description: description.to_owned(),
+                kind: if total == 0 {
+                    PlanningProgressKind::Indeterminate
+                } else {
+                    PlanningProgressKind::Bytes
+                },
+                current,
+                total,
+            });
+        },
+        cancel,
+    );
+    match build {
+        Ok(outcome) => Some(PlayableBuildResult {
+            outcome: PlayableBuildOutcome::Created,
+            output: Some(outcome.output),
+            detail: if request.discard_redundant_bin_cue {
+                "verified CHD created; BIN/CUE exclusion was authorized but no files were removed because safe archive rewriting is unavailable"
+                    .to_owned()
+            } else {
+                "verified CHD created".to_owned()
+            },
+            intermediate_source: candidate.intermediate_source,
+            authorized_exclusions: Vec::new(),
+        }),
+        Err(error) => Some(PlayableBuildResult {
+            outcome: PlayableBuildOutcome::Failed,
+            output: None,
+            detail: error.to_string(),
+            intermediate_source: candidate.intermediate_source,
+            authorized_exclusions: Vec::new(),
+        }),
+    }
+}
+
+fn playable_projection_platform(archive_platform: &str, region: &str) -> String {
+    retro_junk_frontend::esde::system_directory(archive_platform, Some(region))
 }
 
 fn imported_verification_detail(identification: &IdentificationResolution) -> &'static str {

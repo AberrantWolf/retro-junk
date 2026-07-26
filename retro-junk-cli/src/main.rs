@@ -242,6 +242,48 @@ fn run(
 #[allow(clippy::too_many_lines)]
 fn run_catalog(action: CatalogAction, quiet: bool, ctx: &AnalysisContext) -> Result<(), CliError> {
     match action {
+        CatalogAction::Deduplicate {
+            platform,
+            apply,
+            json,
+            db,
+        } => {
+            let path = db.unwrap_or_else(retro_junk_lib::settings::catalog_database_path);
+            let connection = retro_junk_db::open_database(&path)
+                .map_err(|error| CliError::database(error.to_string()))?;
+            let report = if apply {
+                retro_junk_db::deduplicate_catalog(&connection, platform.as_deref())
+            } else {
+                retro_junk_db::analyze_catalog_duplicates(&connection, platform.as_deref())
+            }
+            .map_err(|error| CliError::database(error.to_string()))?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report)
+                        .map_err(|error| CliError::other(error.to_string()))?
+                );
+            } else {
+                log::info!(
+                    "{} exact duplicate group(s), {} affected reference(s), {} suspected non-identical group(s){}",
+                    report.exact_groups.len(),
+                    report.affected_references,
+                    report.suspected_groups,
+                    if report.applied {
+                        " merged"
+                    } else {
+                        " (dry run)"
+                    }
+                );
+                for group in report.exact_groups {
+                    log::info!(
+                        "{} <- {}",
+                        group.canonical_media_id,
+                        group.duplicate_media_ids.join(", ")
+                    );
+                }
+            }
+        }
         CatalogAction::Import {
             systems,
             catalog_dir,

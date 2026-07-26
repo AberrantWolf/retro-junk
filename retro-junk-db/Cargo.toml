@@ -4,13 +4,16 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 retro-junk-catalog = { workspace = true }
 retro-junk-archive = { workspace = true }
 retro-junk-core = { workspace = true }
+retro-junk-frontend = { workspace = true }
 rusqlite = { version = "0.32", features = ["bundled"] }
 thiserror = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+log = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

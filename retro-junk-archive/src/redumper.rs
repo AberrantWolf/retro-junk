@@ -211,6 +211,21 @@ impl Redumper {
         cancel: &AtomicBool,
         mut progress: impl FnMut(u64, u64),
     ) -> Result<RedumperWorkspace, RedumperError> {
+        self.prepare_with_phase_progress(
+            raw_directory,
+            workspace_root,
+            cancel,
+            |_, current, total| progress(current, total),
+        )
+    }
+
+    pub fn prepare_with_phase_progress(
+        &self,
+        raw_directory: &Path,
+        workspace_root: &Path,
+        cancel: &AtomicBool,
+        mut progress: impl FnMut(&str, u64, u64),
+    ) -> Result<RedumperWorkspace, RedumperError> {
         let image_name = find_image_name(raw_directory)?;
         let plan = retro_junk_io::plan_package(raw_directory)
             .map_err(|error| RedumperError::InvalidOutput(error.to_string()))?;
@@ -219,16 +234,18 @@ impl Redumper {
         let operation_workspace =
             workspace_root.join(format!("redumper-audit-{}", uuid::Uuid::now_v7()));
         let guard = WorkspaceGuard(operation_workspace.clone());
-        progress(0, total);
+        progress("Copying Redumper source files", 0, total);
         let package =
             retro_junk_io::stage_planned_package(&plan, &operation_workspace, cancel, |bytes| {
                 completed = completed.saturating_add(bytes);
-                progress(completed, total);
+                progress("Copying Redumper source files", completed, total);
             })
             .map_err(|error| RedumperError::InvalidOutput(error.to_string()))?;
         let workspace = package.local_source.clone();
 
+        progress("Running Redumper split", 0, 0);
         let split = run_phase(&self.path, "split", &workspace, &image_name, true, cancel)?;
+        progress("Running Redumper hash", 0, 0);
         let hash = run_phase(&self.path, "hash", &workspace, &image_name, false, cancel)?;
         let mut log = format!("{split}\n{hash}");
         for entry in sorted_files(&workspace)? {

@@ -1,9 +1,15 @@
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::app::RetroJunkApp;
 use crate::state::{AppMessage, BackgroundOperation, OperationKind, ProgressDisplay};
+
+/// Playable builds have a long parallelizable preparation phase, but currently
+/// also publish archive evidence, frontend metadata, and a database projection.
+/// Keep whole jobs FIFO-ish and exclusive until those commit phases are split
+/// from conversion.
+static PLAYABLE_BUILD_QUEUE: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub fn start(
     app: &mut RetroJunkApp,
@@ -33,13 +39,13 @@ pub fn start(
     app.operations.push(BackgroundOperation::new(
         op_id,
         if release.needs_playable {
-            format!("Making {release_label} playable")
+            format!("Queued playable build for {release_label}")
         } else {
-            format!("Verifying archive for {release_label}")
+            format!("Queued archive verification for {release_label}")
         },
         Arc::clone(&cancel),
         OperationKind::Other,
-        release_label,
+        "archive".to_owned(),
         ProgressDisplay::Count,
     ));
     let sender = app.message_tx.clone();
@@ -53,6 +59,20 @@ pub fn start(
     let metadata_dir_setting = app.settings.general.metadata_dir.clone();
     let handle = std::thread::spawn(move || {
         let result = (|| {
+            let _queue_turn = PLAYABLE_BUILD_QUEUE
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return Err("Playable build was cancelled while queued".to_owned());
+            }
+            let _ = sender.send(AppMessage::OperationPhase {
+                op_id,
+                description: format!("Starting playable build for {release_label}"),
+                display: ProgressDisplay::Count,
+                current: 0,
+                total: 0,
+            });
             let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
                 .map_err(|error| error.to_string())?;
             let connection =

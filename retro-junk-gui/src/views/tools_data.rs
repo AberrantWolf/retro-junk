@@ -19,6 +19,8 @@ enum Action {
     SsEnrich,
     FetchCache(CacheKind),
     ClearCache(CacheKind),
+    AnalyzeDuplicates,
+    ApplyDuplicates,
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -39,7 +41,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
         if busy {
             ui.horizontal(|ui| {
-                ui.spinner();
+                ui.weak("Working");
                 ui.label("Operation running — watch the activity bar and log panel for progress.");
             });
             ui.add_space(8.0);
@@ -50,6 +52,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         show_gdb_card(ui, app, busy, &mut action);
         ui.add_space(8.0);
         show_ss_card(ui, app, busy, &mut action);
+        ui.add_space(8.0);
+        show_deduplicate_card(ui, app, busy, &mut action);
         ui.add_space(8.0);
         show_cache_card(ui, app, busy, &mut action);
     });
@@ -73,7 +77,74 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             }
             Action::FetchCache(kind) => catalog_ops::run_cache_fetch(app, &ctx, kind),
             Action::ClearCache(kind) => catalog_ops::run_cache_clear(app, &ctx, kind),
+            Action::AnalyzeDuplicates => run_duplicate_cleanup(app, false),
+            Action::ApplyDuplicates => run_duplicate_cleanup(app, true),
         }
+    }
+}
+
+fn show_deduplicate_card(
+    ui: &mut egui::Ui,
+    app: &RetroJunkApp,
+    busy: bool,
+    action: &mut Option<Action>,
+) {
+    card(ui, "Repair duplicate catalog records", |ui| {
+        ui.label(
+            "Analyze exact media duplicates and every catalog/archive/library reference. Analysis never changes data.",
+        );
+        if ui
+            .add_enabled(!busy, egui::Button::new("Analyze duplicates"))
+            .clicked()
+        {
+            *action = Some(Action::AnalyzeDuplicates);
+        }
+        if let Some(report) = &app.ui_state.tools_state.data.deduplication_report {
+            ui.label(format!(
+                "{} exact group(s), {} affected reference(s), {} suspected non-identical group(s)",
+                report.exact_groups.len(),
+                report.affected_references,
+                report.suspected_groups
+            ));
+            for group in report.exact_groups.iter().take(8) {
+                ui.weak(format!(
+                    "{} ← {}",
+                    group.canonical_media_id,
+                    group.duplicate_media_ids.join(", ")
+                ));
+            }
+            if !report.exact_groups.is_empty()
+                && ui
+                    .add_enabled(!busy, egui::Button::new("Confirm and apply exact cleanup"))
+                    .clicked()
+            {
+                *action = Some(Action::ApplyDuplicates);
+            }
+        }
+    });
+}
+
+fn run_duplicate_cleanup(app: &mut RetroJunkApp, apply: bool) {
+    let Some(path) = app.db_path.clone() else {
+        app.push_error(
+            "Catalog cleanup",
+            "Catalog database is unavailable".to_owned(),
+        );
+        return;
+    };
+    let result = retro_junk_db::open_database(&path)
+        .map_err(|error| error.to_string())
+        .and_then(|connection| {
+            if apply {
+                retro_junk_db::deduplicate_catalog(&connection, None)
+            } else {
+                retro_junk_db::analyze_catalog_duplicates(&connection, None)
+            }
+            .map_err(|error| error.to_string())
+        });
+    match result {
+        Ok(report) => app.ui_state.tools_state.data.deduplication_report = Some(report),
+        Err(error) => app.push_error("Catalog cleanup", error),
     }
 }
 

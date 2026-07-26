@@ -39,6 +39,7 @@ pub fn screenscraper_system_id(platform: Platform) -> Option<u32> {
         // Microsoft
         Platform::Xbox => Some(32),
         Platform::Xbox360 => Some(33),
+        Platform::PceCd => None,
     }
 }
 

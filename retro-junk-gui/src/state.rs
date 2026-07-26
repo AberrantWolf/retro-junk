@@ -648,6 +648,8 @@ pub enum DumpImportDialogState {
         plan: retro_junk_archive_import::DumpImportPlan,
         consume: bool,
         new_physical_copy: bool,
+        make_playable: bool,
+        discard_redundant_bin_cue: bool,
     },
     Importing {
         op_id: u64,
@@ -1637,7 +1639,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 .iter()
                 .any(|operation| operation.scope == "archive");
             if is_current && !archive_busy && app.catalog_db.is_some() {
+                app.ui_state.archive_refresh_pending = false;
                 crate::backend::archive::start_archive_operation(app, &profile, false);
+            } else if is_current && archive_busy {
+                app.ui_state.archive_refresh_pending = true;
             }
         }
 
@@ -1654,6 +1659,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     refresh_library_availability(app, ctx);
                 }
                 Err(error) => app.push_error("Archive operation", error),
+            }
+            if app.ui_state.archive_refresh_pending
+                && let Some(profile) = app.settings.library.active_profile().cloned()
+            {
+                app.ui_state.archive_refresh_pending = false;
+                let _ = app
+                    .message_tx
+                    .send(AppMessage::StartArchiveRefresh { profile });
             }
         }
         AppMessage::CollectionSummariesReady { profile_id, result } => {
@@ -1715,9 +1728,17 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             if let Some(handle) = app.op_threads.remove(&op_id) {
                 let _ = handle.join();
             }
+            let more_archive_work = app
+                .operations
+                .iter()
+                .any(|operation| operation.scope == "archive");
             match result {
                 Ok(Some(output)) => {
                     log::info!("Built playable copy {}", output.display());
+                    if more_archive_work {
+                        log::info!("Deferring library refresh until queued archive work completes");
+                        return;
+                    }
                     app.ui_state.collection_profile_id = None;
                     app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
                     refresh_library_availability(app, ctx);
@@ -1742,11 +1763,23 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
                 Ok(None) => {
                     log::info!("Catalog-verified archived release");
+                    if more_archive_work {
+                        log::info!("Deferring library refresh until queued archive work completes");
+                        return;
+                    }
                     app.ui_state.collection_profile_id = None;
                     app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
                     refresh_library_availability(app, ctx);
                 }
-                Err(error) => app.push_error("Archive action", error),
+                Err(error) => {
+                    if !more_archive_work {
+                        app.ui_state.collection_profile_id = None;
+                        app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
+                        refresh_library_availability(app, ctx);
+                        let _ = app.message_tx.send(AppMessage::StartFolderScan);
+                    }
+                    app.push_error("Archive action", error);
+                }
             }
         }
         AppMessage::AssetProjectionComplete { op_id, result } => {
@@ -1779,6 +1812,8 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         plan,
                         consume: false,
                         new_physical_copy: false,
+                        make_playable: false,
+                        discard_redundant_bin_cue: false,
                     });
                 }
                 Err(error) => {
@@ -1871,29 +1906,34 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 .consoles
                 .iter()
                 .filter(|console| {
-                    app.browser.entry_count(console) > 0
-                        || std::fs::read_dir(&console.folder_path)
-                            .is_ok_and(|mut entries| entries.next().is_some())
+                    std::fs::read_dir(&console.folder_path)
+                        .is_ok_and(|mut entries| entries.next().is_some())
                 })
                 .map(|console| {
-                    crate::backend::scan::projection_alias_key(
-                        console.platform,
-                        &console.folder_name,
+                    (
+                        crate::backend::scan::projection_alias_key(
+                            console.platform,
+                            &console.folder_name,
+                        ),
+                        console.folder_path.clone(),
                     )
                 })
-                .collect::<std::collections::HashSet<_>>();
+                .collect::<Vec<_>>();
             let stale_aliases = app
                 .browser
                 .consoles
                 .iter()
                 .filter(|console| {
-                    app.browser.entry_count(console) == 0
-                        && populated_aliases.contains(&crate::backend::scan::projection_alias_key(
-                            console.platform,
-                            &console.folder_name,
-                        ))
-                        && std::fs::read_dir(&console.folder_path)
-                            .is_ok_and(|mut entries| entries.next().is_none())
+                    let alias = crate::backend::scan::projection_alias_key(
+                        console.platform,
+                        &console.folder_name,
+                    );
+                    let folder_is_empty_or_missing = std::fs::read_dir(&console.folder_path)
+                        .map_or(true, |mut entries| entries.next().is_none());
+                    folder_is_empty_or_missing
+                        && populated_aliases.iter().any(|(populated_alias, path)| {
+                            *populated_alias == alias && *path != console.folder_path
+                        })
                 })
                 .filter_map(|console| console.id)
                 .collect::<Vec<_>>();
@@ -1906,9 +1946,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     app.browser.console_statuses.remove(&id);
                     app.browser.stale_consoles.remove(&id);
                     app.submit_store(
-                        crate::backend::library_store::LibraryStoreRequest::DeleteConsoleIfEmpty(
-                            id,
-                        ),
+                        crate::backend::library_store::LibraryStoreRequest::DeleteConsole(id),
                         ctx,
                     );
                     if app.ui_state.selected_console == Some(id) {
@@ -2629,6 +2667,7 @@ pub struct DataToolsState {
     pub gdb_cache_entries: Vec<retro_junk_dat::gdb_cache::GdbCacheEntry>,
     /// Set true to reload the cache listings on next frame.
     pub needs_cache_refresh: bool,
+    pub deduplication_report: Option<retro_junk_db::CatalogDeduplicationReport>,
 }
 
 impl Default for DataToolsState {
@@ -2646,6 +2685,7 @@ impl Default for DataToolsState {
             dat_cache_entries: Vec::new(),
             gdb_cache_entries: Vec::new(),
             needs_cache_refresh: true,
+            deduplication_report: None,
         }
     }
 }

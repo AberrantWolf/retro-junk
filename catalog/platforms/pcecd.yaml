@@ -1,0 +1,18 @@
+id: pcecd
+display_name: "NEC PC Engine CD / TurboGrafx-CD"
+short_name: PCECD
+manufacturer: NEC
+generation: 4
+media_type: disc
+release_year: 1988
+core_platform: PceCd
+regions:
+  - region: japan
+    release_date: "1988-12-04"
+  - region: usa
+    release_date: "1989-11-01"
+relationships:
+  - platform: pce
+    type: addon
+  - platform: tg16
+    type: addon

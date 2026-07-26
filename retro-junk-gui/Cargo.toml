@@ -42,6 +42,7 @@ sha2.workspace = true
 chrono.workspace = true
 retro-junk-scraper.workspace = true
 tokio.workspace = true
+futures.workspace = true
 env_logger.workspace = true
 
 [dev-dependencies]

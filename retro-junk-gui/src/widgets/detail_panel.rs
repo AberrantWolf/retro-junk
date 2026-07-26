@@ -645,6 +645,10 @@ fn show_multi_selection(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
     ui.add_space(10.0);
     let details_ready = app.selected_entry_details_loaded();
+    let archive_busy = app
+        .operations
+        .iter()
+        .any(|operation| operation.scope == "archive");
     let all_releases_scrapeable = selected_releases
         .iter()
         .all(|release| release.scrape_identity.is_some());
@@ -652,8 +656,13 @@ fn show_multi_selection(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         && (!app.ui_state.selected_entries.is_empty() || !selected_releases.is_empty())
         && all_releases_scrapeable;
     let scrape = ui
-        .add_enabled(can_scrape, egui::Button::new("Scrape only missing artwork"))
-        .on_disabled_hover_text(if details_ready {
+        .add_enabled(
+            can_scrape && !archive_busy,
+            egui::Button::new("Scrape only missing artwork"),
+        )
+        .on_disabled_hover_text(if archive_busy {
+            "Archive work is queued or running"
+        } else if details_ready {
             "One or more archived releases has no reliable scraper identity"
         } else {
             "Loading the complete selection…"
@@ -666,7 +675,7 @@ fn show_multi_selection(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         let has_playable_entries = !app.ui_state.selected_entries.is_empty();
         if ui
             .add_enabled(
-                details_ready && has_playable_entries,
+                details_ready && has_playable_entries && !archive_busy,
                 egui::Button::new("Calculate missing hashes"),
             )
             .clicked()
@@ -675,7 +684,7 @@ fn show_multi_selection(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
         if ui
             .add_enabled(
-                details_ready && has_playable_entries,
+                details_ready && has_playable_entries && !archive_busy,
                 egui::Button::new("Rescan"),
             )
             .clicked()
@@ -709,10 +718,12 @@ fn show_multi_selection(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             "Make selected playable"
         };
         let button = ui
-            .add_enabled(all_ready, egui::Button::new(label))
-            .on_disabled_hover_text(
-                "Every selected archive must be complete and have a preferred playable format",
-            );
+            .add_enabled(all_ready && !archive_busy, egui::Button::new(label))
+            .on_disabled_hover_text(if archive_busy {
+                "Archive work is queued or running"
+            } else {
+                "Every selected archive must be complete and have a preferred playable format"
+            });
         if button.clicked() {
             for action in archive_actions {
                 let format = action
@@ -955,7 +966,11 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             let label = archive_action_label(action, needs_verification);
             let ready =
                 action.buildable && (!action.needs_playable || action.preferred_format.is_some());
-            let button = ui.add_enabled(ready, egui::Button::new(label));
+            let archive_busy = app
+                .operations
+                .iter()
+                .any(|operation| operation.scope == "archive");
+            let button = ui.add_enabled(ready && !archive_busy, egui::Button::new(label));
             let button = if action.needs_playable && action.preferred_format.is_none() {
                 button.on_disabled_hover_text(
                     "Choose a preferred playable format for this console first",
@@ -965,6 +980,8 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     "Archive is incomplete: {}/{} expected discs are present",
                     action.archived_disc_count, action.expected_disc_count
                 ))
+            } else if archive_busy {
+                button.on_disabled_hover_text("Archive work is queued or running")
             } else if !action.buildable {
                 button.on_disabled_hover_text(
                     "One or more archived discs has no supported in-app conversion path",

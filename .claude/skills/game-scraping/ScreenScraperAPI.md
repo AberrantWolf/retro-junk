@@ -284,11 +284,15 @@ if they differ.
 ## Rate Limiting Best Practices
 
 1. Call `ssuserInfos.php` at startup to learn your limits.
-2. Track `requeststoday` and `requestskotoday` against daily maximums.
-3. Implement a request queue with delays to stay under `maxrequestspermin`.
-4. Cache responses aggressively — game metadata rarely changes.
-5. Authenticated users get significantly higher limits than anonymous users.
-6. Financial contributors (Bronze+) get additional threads and higher quotas.
+2. Treat `maxthreads` as concurrent games being scraped, not as a separate
+   connection allowance for every media file belonging to a game.
+3. Pace API request starts globally from `maxrequestspermin`; do not impose a
+   hard-coded per-worker delay that is more restrictive than the live quota.
+4. Keep aggregate media transfer throughput within `maxdownloadspeed`.
+5. Track `requeststoday` and `requestskotoday` against daily maximums.
+6. Cache responses aggressively — game metadata rarely changes.
+7. Authenticated users get significantly higher limits than anonymous users.
+8. Financial contributors (Bronze+) get additional threads and higher quotas.
 
 ## Error Handling
 

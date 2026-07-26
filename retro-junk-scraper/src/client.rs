@@ -11,7 +11,7 @@ use crate::types::{JeuInfosResponse, UserInfo, UserInfoResponse, UserQuota};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 const BASE_URL: &str = "https://api.screenscraper.fr/api2";
-const MIN_REQUEST_INTERVAL: Duration = Duration::from_millis(1200);
+const FALLBACK_REQUEST_INTERVAL: Duration = Duration::from_millis(1200);
 
 /// Hard timeout for API requests (covers connect + headers + body read).
 const API_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,6 +37,12 @@ pub struct ScreenScraperClient {
     http: reqwest::Client,
     creds: Credentials,
     quota: Mutex<Option<UserQuota>>,
+    /// Global start-time gate derived from ScreenScraper's per-minute quota.
+    /// The API's thread allowance controls in-flight concurrency separately.
+    next_api_request: Mutex<tokio::time::Instant>,
+    request_interval_ms: AtomicU64,
+    next_download_byte: Mutex<tokio::time::Instant>,
+    download_bytes_per_second: AtomicU64,
     /// Monotonic request counter for correlating log lines.
     request_counter: AtomicU64,
 }
@@ -60,10 +66,16 @@ impl ScreenScraperClient {
             http,
             creds,
             quota: Mutex::new(None),
+            next_api_request: Mutex::new(tokio::time::Instant::now()),
+            request_interval_ms: AtomicU64::new(FALLBACK_REQUEST_INTERVAL.as_millis() as u64),
+            next_download_byte: Mutex::new(tokio::time::Instant::now()),
+            download_bytes_per_second: AtomicU64::new(0),
             request_counter: AtomicU64::new(0),
         };
 
         let user_info = client.get_user_info().await?;
+        client.set_request_rate(user_info.max_requests_per_minute());
+        client.set_download_rate(user_info.max_download_speed_kbps());
 
         Ok((client, user_info))
     }
@@ -171,8 +183,17 @@ impl ScreenScraperClient {
     /// to prevent hangs when `ScreenScraper` stalls mid-transfer.
     pub async fn download_media(&self, url: &str) -> Result<Vec<u8>, ScrapeError> {
         tokio::time::timeout(MEDIA_TIMEOUT, async {
-            let resp = self.http.get(url).send().await?.error_for_status()?;
-            Ok::<_, reqwest::Error>(resp.bytes().await?.to_vec())
+            let mut resp = self.http.get(url).send().await?.error_for_status()?;
+            let mut bytes = Vec::with_capacity(
+                resp.content_length()
+                    .and_then(|length| usize::try_from(length).ok())
+                    .unwrap_or_default(),
+            );
+            while let Some(chunk) = resp.chunk().await? {
+                self.wait_for_download_bytes(chunk.len()).await;
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok::<_, reqwest::Error>(bytes)
         })
         .await
         .map_err(|_| {
@@ -285,6 +306,7 @@ impl ScreenScraperClient {
 
         for attempt in 0..=MAX_RETRIES {
             backoff_before_retry(req_id, endpoint, attempt).await;
+            self.wait_for_request_slot().await;
 
             let attempt_start = tokio::time::Instant::now();
             let wall_start = SystemTime::now();
@@ -293,10 +315,6 @@ impl ScreenScraperClient {
 
             let attempt_elapsed = attempt_start.elapsed();
             warn_on_clock_drift(req_id, endpoint, attempt_elapsed, wall_start);
-
-            // Rate limit: sleep after each request so this worker doesn't
-            // fire another request too quickly.
-            tokio::time::sleep(MIN_REQUEST_INTERVAL).await;
 
             match result {
                 Ok(Ok(text)) => {
@@ -368,6 +386,51 @@ impl ScreenScraperClient {
         Err(last_error.unwrap_or_else(|| ScrapeError::Api("All retries exhausted".to_string())))
     }
 
+    fn set_request_rate(&self, requests_per_minute: u32) {
+        let requests_per_minute = requests_per_minute.max(1);
+        let interval_ms = (60_000_u64 / u64::from(requests_per_minute)).max(1);
+        self.request_interval_ms
+            .store(interval_ms, AtomicOrdering::Relaxed);
+        log::info!("ScreenScraper API pacing: up to {requests_per_minute} request(s)/minute");
+    }
+
+    async fn wait_for_request_slot(&self) {
+        let mut next = self.next_api_request.lock().await;
+        let now = tokio::time::Instant::now();
+        if *next > now {
+            tokio::time::sleep_until(*next).await;
+        }
+        let interval =
+            Duration::from_millis(self.request_interval_ms.load(AtomicOrdering::Relaxed));
+        *next = tokio::time::Instant::now() + interval;
+    }
+
+    fn set_download_rate(&self, kilobytes_per_second: u32) {
+        self.download_bytes_per_second.store(
+            u64::from(kilobytes_per_second).saturating_mul(1024),
+            AtomicOrdering::Relaxed,
+        );
+        log::info!("ScreenScraper media pacing: up to {kilobytes_per_second} KB/s aggregate");
+    }
+
+    async fn wait_for_download_bytes(&self, byte_count: usize) {
+        let bytes_per_second = self.download_bytes_per_second.load(AtomicOrdering::Relaxed);
+        if bytes_per_second == 0 || byte_count == 0 {
+            return;
+        }
+        let mut next = self.next_download_byte.lock().await;
+        let now = tokio::time::Instant::now();
+        if *next > now {
+            tokio::time::sleep_until(*next).await;
+        }
+        let nanos = (byte_count as u128)
+            .saturating_mul(1_000_000_000)
+            .checked_div(u128::from(bytes_per_second))
+            .unwrap_or_default()
+            .min(u128::from(u64::MAX)) as u64;
+        *next = tokio::time::Instant::now() + Duration::from_nanos(nanos);
+    }
+
     fn base_params(&self) -> HashMap<&str, String> {
         let mut params = HashMap::new();
         params.insert("devid", self.creds.dev_id.clone());
@@ -411,8 +474,9 @@ fn is_retryable(e: &ScrapeError) -> bool {
 /// Load credentials and create a connected `ScreenScraper` client.
 ///
 /// Returns the client and the maximum number of worker threads to use,
-/// computed from the server-granted thread limit, the optional user override,
-/// and the number of available CPU cores.
+/// computed from the server-granted thread limit and the optional user
+/// override. Scraping is network-bound, so CPU parallelism is not a useful
+/// additional cap.
 pub async fn create_client(
     threads: Option<usize>,
 ) -> Result<(std::sync::Arc<ScreenScraperClient>, usize), ScrapeError> {
@@ -422,10 +486,10 @@ pub async fn create_client(
     let (client, user_info) = ScreenScraperClient::new(creds).await?;
 
     let ss_max = user_info.max_threads() as usize;
-    let cpu_max = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let max_workers = threads
-        .map_or_else(|| ss_max.min(cpu_max), |t| t.min(ss_max))
+        .map_or(ss_max, |requested| requested.min(ss_max))
         .max(1);
+    log::info!("ScreenScraper concurrency: using {max_workers} of {ss_max} granted thread(s)");
 
     // Seed the quota tracker with data from the initial user info response
     // so callers can read it immediately without waiting for a lookup.

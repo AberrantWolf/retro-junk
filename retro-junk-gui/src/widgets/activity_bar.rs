@@ -22,7 +22,11 @@ fn format_progress(op: &BackgroundOperation) -> String {
 pub fn show(ui: &mut egui::Ui, operations: &mut [BackgroundOperation]) {
     for op in operations.iter() {
         ui.horizontal(|ui| {
-            ui.spinner();
+            // Long-running operations can last for hours. An egui Spinner
+            // requests animation frames continuously, forcing the entire
+            // immediate-mode window to redraw at display cadence even when
+            // progress is unchanged.
+            ui.weak("Working");
             ui.label(&op.description);
 
             if op.progress_total > 0 {

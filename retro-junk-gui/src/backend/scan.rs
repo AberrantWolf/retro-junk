@@ -162,7 +162,8 @@ fn add_archive_only_console_folders(
         }) {
             continue;
         }
-        let path = playable_root.join(&platform_id);
+        let projection_folder = retro_junk_frontend::esde::system_directory(&platform_id, None);
+        let path = playable_root.join(&projection_folder);
         if let Err(error) = std::fs::create_dir_all(&path) {
             log::warn!(
                 "Could not create playable projection folder {}: {error}",
@@ -172,7 +173,7 @@ fn add_archive_only_console_folders(
         }
         matches.push(retro_junk_lib::ConsoleFolder {
             path,
-            folder_name: platform_id,
+            folder_name: projection_folder,
             platform: registered.metadata.platform,
         });
     }

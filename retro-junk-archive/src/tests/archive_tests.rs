@@ -29,6 +29,26 @@ fn archive_lock_is_exclusive_and_released_on_drop() {
 }
 
 #[test]
+fn archive_lock_waits_for_the_current_writer() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    initialize_archive(&root, &ArchiveRootManifest::new("Wait test")).unwrap();
+    let held = crate::ArchiveLock::acquire(&root).unwrap();
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let worker_root = root.clone();
+    let worker_cancel = cancel.clone();
+    let waiter = std::thread::spawn(move || {
+        crate::ArchiveLock::acquire_wait(&worker_root, &worker_cancel)
+            .unwrap()
+            .is_some()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(!waiter.is_finished());
+    drop(held);
+    assert!(waiter.join().unwrap());
+}
+
+#[test]
 fn low_level_ingest_rejects_multiple_redumper_images() {
     let temp = tempfile::tempdir().unwrap();
     let archive = temp.path().join("archive");
@@ -487,9 +507,26 @@ echo '<rom name="disc (Track 01).bin" size="5" crc="AABBCCDD" md5="0011" sha1="1
     assert_eq!(audit.tracks[0].sha1, "11223344");
     assert!(!raw.join("disc.cue").exists());
     assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
+    let mut phases = Vec::new();
     let prepared = redumper
-        .prepare(&raw, &work, &AtomicBool::new(false))
+        .prepare_with_phase_progress(
+            &raw,
+            &work,
+            &AtomicBool::new(false),
+            |phase, current, total| phases.push((phase.to_owned(), current, total)),
+        )
         .unwrap();
+    assert!(
+        phases
+            .iter()
+            .any(|(phase, _, total)| { phase == "Copying Redumper source files" && *total > 0 })
+    );
+    assert!(phases.iter().any(|(phase, current, total)| {
+        phase == "Running Redumper split" && *current == 0 && *total == 0
+    }));
+    assert!(phases.iter().any(|(phase, current, total)| {
+        phase == "Running Redumper hash" && *current == 0 && *total == 0
+    }));
     let retained = temp.path().join("intermediate");
     let files = prepared
         .retain_intermediate(&retained, &AtomicBool::new(false))

@@ -4,6 +4,78 @@ use std::path::Path;
 
 use crate::{AssetType, Frontend, FrontendError, ScrapedGame};
 
+/// Return the ES-DE system directory for an archive/catalog platform identity.
+///
+/// Archive identities are intentionally frontend-neutral (`ps1`, for example);
+/// they must not leak into a playable projection when the selected frontend
+/// requires a different system name (`psx` in ES-DE).
+#[must_use]
+pub fn system_directory(platform_id: &str, region: Option<&str>) -> String {
+    let platform = platform_id.trim().to_ascii_lowercase();
+    let region = region.unwrap_or_default().trim().to_ascii_lowercase();
+    let japan = matches!(region.as_str(), "japan" | "jp" | "jpn");
+    let north_america = matches!(
+        region.as_str(),
+        "usa" | "us" | "canada" | "north america" | "north-america"
+    );
+    match platform.as_str() {
+        "ps1" | "psx" => "psx".to_owned(),
+        "gamecube" | "gcn" | "ngc" => "gc".to_owned(),
+        "3ds" => "n3ds".to_owned(),
+        "super-famicom" | "super famicom" => "sfc".to_owned(),
+        "snes" if north_america => "snesna".to_owned(),
+        "pce" if north_america => "tg16".to_owned(),
+        "pce" => "pcengine".to_owned(),
+        "pcecd" if north_america => "tg-cd".to_owned(),
+        "pcecd" => "pcenginecd".to_owned(),
+        "genesis" if japan => "megadrivejp".to_owned(),
+        "genesis" if !north_america && !region.is_empty() => "megadrive".to_owned(),
+        "segacd" if japan => "megacdjp".to_owned(),
+        "segacd" if !north_america && !region.is_empty() => "megacd".to_owned(),
+        "32x" | "sega32x" if north_america => "sega32xna".to_owned(),
+        "32x" => "sega32x".to_owned(),
+        _ => platform,
+    }
+}
+
+#[cfg(test)]
+mod system_directory_tests {
+    use super::system_directory;
+
+    #[test]
+    fn maps_internal_playstation_name_to_es_de_system() {
+        assert_eq!(system_directory("ps1", None), "psx");
+        assert_eq!(system_directory("psx", None), "psx");
+    }
+
+    #[test]
+    fn maps_pc_engine_cd_by_es_de_region_system() {
+        assert_eq!(system_directory("pcecd", Some("Japan")), "pcenginecd");
+        assert_eq!(system_directory("pcecd", Some("USA")), "tg-cd");
+    }
+
+    #[test]
+    fn maps_regional_es_de_systems_without_collapsing_them() {
+        assert_eq!(system_directory("snes", Some("Europe")), "snes");
+        assert_eq!(system_directory("snes", Some("USA")), "snesna");
+        assert_eq!(system_directory("snesna", Some("USA")), "snesna");
+        assert_eq!(system_directory("super-famicom", Some("Japan")), "sfc");
+        assert_eq!(system_directory("pce", Some("Japan")), "pcengine");
+        assert_eq!(system_directory("pce", Some("USA")), "tg16");
+        assert_eq!(system_directory("genesis", Some("USA")), "genesis");
+        assert_eq!(system_directory("genesis", Some("Europe")), "megadrive");
+        assert_eq!(system_directory("genesis", Some("Japan")), "megadrivejp");
+        assert_eq!(system_directory("saturn", Some("Japan")), "saturn");
+    }
+
+    #[test]
+    fn preserves_distinct_game_boy_systems() {
+        assert_eq!(system_directory("gb", None), "gb");
+        assert_eq!(system_directory("gbc", None), "gbc");
+        assert_eq!(system_directory("sgb", None), "sgb");
+    }
+}
+
 /// ES-DE (`EmulationStation` Desktop Edition) frontend.
 #[derive(Default)]
 pub struct EsDeFrontend;

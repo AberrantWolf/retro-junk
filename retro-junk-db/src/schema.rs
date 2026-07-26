@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 20;
+pub const CURRENT_VERSION: i32 = 21;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -600,7 +600,10 @@ pub fn configure_connection(conn: &Connection, wal: bool) -> Result<(), SchemaEr
     if wal {
         conn.execute_batch("PRAGMA journal_mode=WAL;")?;
     }
-    conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    // Writers are serialized in-process, but archive/catalog maintenance may
+    // use another connection. Wait for that transaction instead of discarding
+    // completed background work after an arbitrary five seconds.
+    conn.execute_batch("PRAGMA foreign_keys=ON; PRAGMA busy_timeout=60000;")?;
     Ok(())
 }
 
@@ -1001,6 +1004,18 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                          CREATE INDEX IF NOT EXISTS idx_archive_releases_work
                          ON archive_releases(catalog_work_id, platform_id, region);",
                     )?;
+                }
+            }
+            20 => {
+                // Losslessly collapse only media rows with complete, identical
+                // release identity and byte/track evidence.
+                let has_catalog: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='media')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_catalog {
+                    crate::deduplicate::deduplicate_catalog(conn, None)?;
                 }
             }
             14 => {

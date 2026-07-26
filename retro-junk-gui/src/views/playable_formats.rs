@@ -9,7 +9,7 @@ pub(super) fn supported(platform: Platform) -> Vec<RepresentationFormat> {
     use RepresentationFormat as Format;
 
     match platform {
-        Platform::Ps1 | Platform::SegaCd | Platform::Saturn => {
+        Platform::Ps1 | Platform::SegaCd | Platform::Saturn | Platform::PceCd => {
             vec![Format::Chd, Format::CueBin]
         }
         Platform::Ps2 => vec![Format::Chd, Format::Iso, Format::CueBin],

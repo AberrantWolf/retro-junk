@@ -338,6 +338,22 @@ pub(crate) enum ArchiveAction {
         #[arg(long)]
         redumper: Option<PathBuf>,
 
+        /// Create a round-trip verified playable CHD after import
+        #[arg(long, requires = "playable_root")]
+        make_playable: bool,
+
+        /// Root directory for automatically created playable CHDs
+        #[arg(long, requires = "make_playable")]
+        playable_root: Option<PathBuf>,
+
+        /// Path to chdman
+        #[arg(long)]
+        chdman: Option<PathBuf>,
+
+        /// Exclude the supplied CUE and referenced BIN tracks after CHD verification
+        #[arg(long, requires = "make_playable")]
+        discard_redundant_bin_cue: bool,
+
         /// Disposable workspace used for Redumper identification
         #[arg(long)]
         workspace_root: Option<PathBuf>,
@@ -859,6 +875,25 @@ pub(crate) enum SettingsAction {
 
 #[derive(Subcommand)]
 pub(crate) enum CatalogAction {
+    /// Analyze or losslessly merge exact duplicate catalog media rows
+    Deduplicate {
+        /// Restrict cleanup to one catalog platform
+        #[arg(long)]
+        platform: Option<String>,
+
+        /// Apply the reported exact merges (analysis is the default)
+        #[arg(long)]
+        apply: bool,
+
+        /// Print a machine-readable JSON summary
+        #[arg(long)]
+        json: bool,
+
+        /// Path to the catalog database file
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+
     /// Import DAT files into the catalog database
     #[command(
         after_help = "Examples:\n  retro-junk catalog import            Import all systems\n  retro-junk catalog import nes,snes   Import specific systems"

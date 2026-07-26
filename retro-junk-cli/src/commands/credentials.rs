@@ -323,6 +323,11 @@ pub(crate) fn run_credentials_test(quiet: bool) -> Result<(), CliError> {
                     user_info.max_requests_per_day(),
                 );
                 log::info!("  Max threads:    {}", user_info.max_threads());
+                log::info!("  Requests/minute: {}", user_info.max_requests_per_minute());
+                log::info!(
+                    "  Download limit:  {} KB/s",
+                    user_info.max_download_speed_kbps()
+                );
             }
             Err(e) => {
                 pb.finish_and_clear();
