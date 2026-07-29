@@ -6,6 +6,8 @@ Rust workspace for analyzing retro game ROM files and disc images. Identifies fo
 
 - The correct location for documenting file formats is: `.claude/skills/retro-archive/formats/`
 - The correct location for documenting game system and archival information is: `.claude/skills/retro-archive/consoles/`
+- `UX_ROADMAP.md` (top level) is the long-term plan for the automation/daemon/UX work atop the v0.4 archive architecture.
+- `TODO.md` (top level) is the catalog/scraper/analyzer backlog and code-health audits.
 
 ## Build & Test
 
