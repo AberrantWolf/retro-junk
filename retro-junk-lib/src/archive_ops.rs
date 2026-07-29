@@ -151,7 +151,7 @@ pub fn verify_archive_integrity(
         }
         append_evidence(
             dump,
-            VerificationEvidence {
+            &VerificationEvidence {
                 schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
                 verification_id: VerificationId::new(),
                 representation_id: dump.manifest.representation_id,
@@ -318,7 +318,7 @@ pub fn identify_archived_carriers(
                 };
                 append_evidence(
                     dump,
-                    VerificationEvidence {
+                    &VerificationEvidence {
                         schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
                         verification_id: VerificationId::new(),
                         representation_id: dump.manifest.representation_id,
@@ -355,7 +355,7 @@ pub fn identify_archived_carriers(
                 );
                 append_evidence(
                     dump,
-                    VerificationEvidence {
+                    &VerificationEvidence {
                         schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
                         verification_id: VerificationId::new(),
                         representation_id: dump.manifest.representation_id,
@@ -467,7 +467,7 @@ pub fn verify_catalog_files(
         let unique = matches.len() == 1;
         append_evidence(
             dump,
-            VerificationEvidence {
+            &VerificationEvidence {
                 schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
                 verification_id: VerificationId::new(),
                 representation_id: dump.manifest.representation_id,
@@ -532,6 +532,9 @@ pub struct ReleaseBuildOutcome {
 /// Verification failure stops the release before any new derivative is
 /// published. The caller owns the archive lock and the projection reconcile
 /// (feed `outcome.snapshot` to `reconcile_archive_snapshot`).
+// One release's pipeline — prerequisites, builds, playlist, projections —
+// reads as a single unit; the matrix invariant it implements is release-wide.
+#[allow(clippy::too_many_lines)]
 pub fn build_release_playable(
     request: &ReleaseBuildRequest<'_>,
     conn: &retro_junk_db::Connection,
@@ -868,7 +871,7 @@ fn append_reproduction_evidence(
 ) -> Result<(), ArchiveOpsError> {
     append_evidence(
         dump,
-        VerificationEvidence {
+        &VerificationEvidence {
             schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
             verification_id: VerificationId::new(),
             representation_id: dump.manifest.representation_id,
@@ -897,13 +900,13 @@ fn append_reproduction_evidence(
 
 fn append_evidence(
     dump: &IndexedDump,
-    evidence: VerificationEvidence,
+    evidence: &VerificationEvidence,
 ) -> Result<(), ArchiveOpsError> {
     let evidence_directory = dump.directory.join("evidence");
     std::fs::create_dir_all(&evidence_directory)?;
     write_json_new(
         &evidence_directory.join(format!("verification-{}.json", evidence.verification_id)),
-        &evidence,
+        evidence,
     )
     .map_err(ArchiveOpsError::msg)
 }

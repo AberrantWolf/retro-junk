@@ -290,6 +290,23 @@ pub enum RepresentationFormat {
     Other(String),
 }
 
+impl std::str::FromStr for RepresentationFormat {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "redumper" | "redumper-raw" | "redumper_raw" => Ok(Self::RedumperRaw),
+            "rom" => Ok(Self::Rom),
+            "cue-bin" | "cue_bin" | "bin-cue" => Ok(Self::CueBin),
+            "iso" => Ok(Self::Iso),
+            "chd" => Ok(Self::Chd),
+            "rvz" => Ok(Self::Rvz),
+            other if !other.is_empty() => Ok(Self::Other(other.to_owned())),
+            _ => Err("representation format cannot be empty".to_owned()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapturedFeature {

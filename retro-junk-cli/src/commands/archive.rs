@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
 use retro_junk_archive::{
-    ArchiveRootManifest, BuildEvidence, BuildId, NewCarrierDump, Redumper, RepresentationFormat,
+    ArchiveRootManifest, BuildEvidence, BuildId, NewCarrierDump, RepresentationFormat,
     RepresentationId, VerificationKind, VerificationOutcome, ingest_new_carrier_dump,
-    initialize_archive, scan_archive, sha256_file, slugify, write_json_new, write_toml_atomic,
+    initialize_archive, scan_archive, slugify, write_json_new, write_toml_atomic,
 };
 
 use crate::CliError;
@@ -319,22 +319,39 @@ pub(crate) fn run_archive(
             no_update_gamelists,
             dry_run,
             limit,
-        } => run_build_queue(
-            ctx,
-            archive_root,
-            playable_root,
-            workspace_root,
-            chdman,
-            redumper,
-            dolphin_tool,
-            db,
-            media_root,
-            metadata_root,
-            no_project_assets,
-            no_update_gamelists,
-            dry_run,
-            limit,
-        ),
+        } => {
+            // The queue is the shared convergence path now: derive, then
+            // execute through the one executor. --dry-run keeps its
+            // non-zero-on-blocked contract.
+            let mut only = vec![
+                "verify-catalog".to_owned(),
+                "audit-redumper".to_owned(),
+                "build".to_owned(),
+            ];
+            if !no_project_assets {
+                only.push("project".to_owned());
+            }
+            if !no_update_gamelists {
+                only.push("gamelist".to_owned());
+            }
+            crate::commands::sync::run_sync(crate::cli_types::SyncArgs {
+                profile: None,
+                archive_root: Some(archive_root),
+                playable_root: Some(playable_root),
+                workspace_root,
+                platform: None,
+                release: None,
+                only,
+                dry_run,
+                limit,
+                chdman,
+                redumper,
+                dolphin_tool,
+                media_root,
+                metadata_root,
+                db,
+            })
+        }
         ArchiveAction::ProjectFrontendFiles {
             archive_root,
             media_root,
@@ -369,11 +386,14 @@ pub(crate) fn run_archive(
 
 fn archive_mutation_root(action: &ArchiveAction) -> Option<&std::path::Path> {
     match action {
+        // Build routes through the shared executor, which takes the archive
+        // lock per action rather than for the whole invocation.
         ArchiveAction::Init { .. }
         | ArchiveAction::Import { .. }
         | ArchiveAction::ImportPlayable { .. }
         | ArchiveAction::Status { .. }
         | ArchiveAction::Reindex { .. }
+        | ArchiveAction::Build { .. }
         | ArchiveAction::ProjectFrontendFiles { .. } => None,
         ArchiveAction::Ingest { archive_root, .. }
         | ArchiveAction::AddReleaseFile { archive_root, .. }
@@ -386,7 +406,6 @@ fn archive_mutation_root(action: &ArchiveAction) -> Option<&std::path::Path> {
         | ArchiveAction::Mirror { archive_root, .. }
         | ArchiveAction::Policy { archive_root, .. }
         | ArchiveAction::PolicyDefault { archive_root, .. }
-        | ArchiveAction::Build { archive_root, .. }
         | ArchiveAction::GenerateMiximages { archive_root, .. }
         | ArchiveAction::AdoptPlayable { archive_root, .. }
         | ArchiveAction::Recover { archive_root } => Some(archive_root),
@@ -854,435 +873,6 @@ fn import_identification_label(
         }
         IdentificationResolution::Ambiguous => "catalog identity ambiguous",
         IdentificationResolution::Unresolved => "catalog identity unresolved",
-    }
-}
-
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-fn run_build_queue(
-    _ctx: &retro_junk_lib::AnalysisContext,
-    archive_root: PathBuf,
-    playable_root: PathBuf,
-    workspace_root: Option<PathBuf>,
-    chdman: Option<PathBuf>,
-    redumper: Option<PathBuf>,
-    dolphin_tool: Option<PathBuf>,
-    db: Option<PathBuf>,
-    media_root: Option<PathBuf>,
-    metadata_root: Option<PathBuf>,
-    no_project_assets: bool,
-    no_update_gamelists: bool,
-    dry_run: bool,
-    limit: Option<usize>,
-) -> Result<(), CliError> {
-    #[derive(Clone)]
-    struct Pending {
-        release_id: String,
-        label: String,
-        dump_id: String,
-        media_id: String,
-        policy: retro_junk_archive::DesiredPlayablePolicy,
-        playable_platform_id: String,
-        expected_disc_count: u32,
-        canonical_output_stem: String,
-        canonical_release_name: String,
-        needs_build: bool,
-    }
-
-    let snapshot =
-        scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
-    let database_path = db.unwrap_or_else(retro_junk_lib::settings::catalog_database_path);
-    let connection = retro_junk_db::open_database(&database_path)
-        .map_err(|error| CliError::database(error.to_string()))?;
-    let workspace_root =
-        workspace_root.unwrap_or_else(|| archive_root.join(".retro-junk").join("work"));
-    let mut pending = Vec::new();
-    let mut planning_failures = Vec::new();
-    let mut desired = 0_usize;
-    let mut satisfied = 0_usize;
-    for release in &snapshot.releases {
-        let catalog_release_id = &release.manifest.catalog_binding.catalog_release_id;
-        let catalog_work_id = &release.manifest.catalog_binding.catalog_work_id;
-        let catalog_media = if !catalog_release_id.is_empty() {
-            retro_junk_db::media_for_release(&connection, catalog_release_id)
-                .map_err(|error| CliError::database(error.to_string()))?
-        } else if !catalog_work_id.is_empty() {
-            retro_junk_db::media_for_work_scope(
-                &connection,
-                catalog_work_id,
-                &release.manifest.platform_id,
-                &release.manifest.region,
-            )
-            .map_err(|error| CliError::database(error.to_string()))?
-        } else {
-            Vec::new()
-        };
-        let expected_disc_count = if catalog_media.iter().any(|media| media.disc_number > 0) {
-            catalog_media
-                .iter()
-                .filter(|media| media.disc_number > 0)
-                .map(|media| media.disc_number)
-                .collect::<std::collections::BTreeSet<_>>()
-                .len() as u32
-        } else {
-            u32::from(!catalog_media.is_empty())
-        };
-        let expected_ids = catalog_media
-            .iter()
-            .map(|media| media.id.as_str())
-            .collect::<std::collections::BTreeSet<_>>();
-        let selected_copy = release.physical_copies.iter().max_by_key(|copy| {
-            let present = copy
-                .carriers
-                .iter()
-                .filter(|carrier| {
-                    expected_ids.is_empty()
-                        || expected_ids
-                            .contains(carrier.manifest.catalog_binding.catalog_media_id.as_str())
-                })
-                .filter(|carrier| !carrier.dumps.is_empty())
-                .count();
-            let verified = copy
-                .carriers
-                .iter()
-                .flat_map(|carrier| &carrier.dumps)
-                .filter(|dump| retro_junk_archive::dump_catalog_verified(dump))
-                .count();
-            (present, verified)
-        });
-        let Some(selected_copy) = selected_copy else {
-            planning_failures.push(format!(
-                "{} (no physical copy with preservation dumps)",
-                release.manifest.title
-            ));
-            continue;
-        };
-        let archived_disc_count = selected_copy
-            .carriers
-            .iter()
-            .filter(|carrier| {
-                expected_ids.is_empty()
-                    || expected_ids
-                        .contains(carrier.manifest.catalog_binding.catalog_media_id.as_str())
-            })
-            .filter(|carrier| !carrier.dumps.is_empty())
-            .filter_map(|carrier| {
-                let media_id = &carrier.manifest.catalog_binding.catalog_media_id;
-                catalog_media
-                    .iter()
-                    .find(|media| &media.id == media_id)
-                    .map(|media| {
-                        if media.disc_number > 0 {
-                            format!("disc:{}", media.disc_number)
-                        } else {
-                            format!("media:{media_id}")
-                        }
-                    })
-            })
-            .collect::<std::collections::BTreeSet<_>>()
-            .len() as u32;
-        if expected_disc_count > 0 && archived_disc_count < expected_disc_count {
-            planning_failures.push(format!(
-                "{} (archive has {archived_disc_count}/{expected_disc_count} expected discs in its best physical copy)",
-                release.manifest.title
-            ));
-            continue;
-        }
-        let dat_names = catalog_media
-            .iter()
-            .map(|media| media.dat_name.as_str())
-            .collect::<Vec<_>>();
-        let canonical_release_name = retro_junk_core::disc::derive_base_game_name(&dat_names);
-        for medium in &selected_copy.carriers {
-            let Some(policy) = medium.manifest.playable_policy.as_ref().or_else(|| {
-                snapshot
-                    .manifest
-                    .platform_defaults
-                    .iter()
-                    .find(|default| {
-                        same_platform_id(&default.platform_id, &release.manifest.platform_id)
-                    })
-                    .map(|default| &default.policy)
-            }) else {
-                continue;
-            };
-            desired += 1;
-            let Some(selected) = medium.dumps.iter().max_by(|a, b| {
-                a.manifest
-                    .captured_at
-                    .cmp(&b.manifest.captured_at)
-                    .then_with(|| a.manifest.dump_id.cmp(&b.manifest.dump_id))
-            }) else {
-                planning_failures.push(format!(
-                    "{} (no preservation dump)",
-                    medium.manifest.carrier_id
-                ));
-                continue;
-            };
-            let is_satisfied = selected.builds.iter().any(|build| {
-                build.evidence.format == policy.format
-                    && retro_junk_archive::playable_presence(
-                        &playable_root,
-                        &selected.manifest_sha256,
-                        &build.evidence,
-                    ) == retro_junk_archive::RepresentationPresence::Present
-            });
-            if is_satisfied {
-                satisfied += 1;
-                if retro_junk_archive::dump_catalog_verified(selected) {
-                    continue;
-                }
-            }
-            let media_id = medium.manifest.catalog_binding.catalog_media_id.clone();
-            let canonical_source = catalog_media
-                .iter()
-                .find(|media| media.id == media_id)
-                .map(|media| {
-                    if media.rom_name.trim().is_empty() {
-                        media.dat_name.as_str()
-                    } else {
-                        media.rom_name.as_str()
-                    }
-                })
-                .unwrap_or_default();
-            let canonical_output_stem = std::path::Path::new(canonical_source)
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .unwrap_or(canonical_source)
-                .to_owned();
-            pending.push(Pending {
-                release_id: release.manifest.archive_release_id.to_string(),
-                label: format!(
-                    "{}{}",
-                    release.manifest.title,
-                    if medium.manifest.sequence_number > 0 {
-                        format!(" (Disc {})", medium.manifest.sequence_number)
-                    } else {
-                        String::new()
-                    }
-                ),
-                dump_id: selected.manifest.dump_id.to_string(),
-                media_id,
-                policy: policy.clone(),
-                playable_platform_id: retro_junk_frontend::esde::system_directory(
-                    &release.manifest.platform_id,
-                    Some(&release.manifest.region),
-                ),
-                expected_disc_count: expected_disc_count.max(1),
-                canonical_output_stem,
-                canonical_release_name: canonical_release_name.clone(),
-                needs_build: !is_satisfied,
-            });
-        }
-    }
-    let pending_total = pending.len();
-    log::info!("Playable queue: {desired} desired, {satisfied} satisfied, {pending_total} pending");
-    if dry_run {
-        for item in pending.iter().take(limit.unwrap_or(usize::MAX)) {
-            log::info!(
-                "pending {}: {} {:?} from dump {}",
-                item.label,
-                if item.needs_build {
-                    "verify/build"
-                } else {
-                    "verify"
-                },
-                item.policy.format,
-                item.dump_id
-            );
-        }
-        for failure in &planning_failures {
-            log::error!("pending policy cannot be built: {failure}");
-        }
-        return if planning_failures.is_empty() {
-            Ok(())
-        } else {
-            Err(CliError::other(format!(
-                "{} pending policy item(s) cannot be planned",
-                planning_failures.len()
-            )))
-        };
-    }
-    let mut built = 0_usize;
-    let mut built_release_ids = std::collections::BTreeSet::new();
-    let mut failed = planning_failures;
-    let mut failed_releases = std::collections::BTreeSet::new();
-    let selected_release_ids = pending
-        .iter()
-        .take(limit.unwrap_or(usize::MAX))
-        .map(|item| item.release_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let verification_items = pending
-        .iter()
-        .filter(|item| selected_release_ids.contains(item.release_id.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    let selected = pending
-        .into_iter()
-        .take(limit.unwrap_or(usize::MAX))
-        .collect::<Vec<_>>();
-    // Verify a whole release before publishing any of its missing playable
-    // discs. This prevents a partially converted multi-disc set when a later
-    // archive carrier does not match its catalog medium.
-    for release_id in verification_items
-        .iter()
-        .map(|item| item.release_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>()
-    {
-        for item in verification_items
-            .iter()
-            .filter(|item| item.release_id == release_id)
-        {
-            if (item.policy.allow_unverified && item.needs_build) || item.media_id.is_empty() {
-                continue;
-            }
-            let snapshot =
-                scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
-            let already_verified = snapshot
-                .releases
-                .iter()
-                .flat_map(|release| &release.physical_copies)
-                .flat_map(|copy| &copy.carriers)
-                .flat_map(|carrier| &carrier.dumps)
-                .find(|dump| dump.manifest.dump_id.to_string() == item.dump_id)
-                .is_some_and(retro_junk_archive::dump_catalog_verified);
-            if already_verified {
-                continue;
-            }
-            let media = retro_junk_db::get_media_by_id(&connection, &item.media_id)
-                .map_err(|error| CliError::database(error.to_string()))?
-                .ok_or_else(|| {
-                    CliError::database(format!("catalog medium {} is missing", item.media_id))
-                })?;
-            let mut tracks = retro_junk_db::find_media_tracks(&connection, &item.media_id)
-                .map_err(|error| CliError::database(error.to_string()))?
-                .into_iter()
-                .map(|track| retro_junk_archive::TrackDigest {
-                    number: u32::try_from(track.track_number).unwrap_or(0),
-                    size: u64::try_from(track.file_size).unwrap_or(0),
-                    crc32: track.crc32,
-                    md5: track.md5,
-                    sha1: track.sha1,
-                })
-                .collect::<Vec<_>>();
-            if tracks.is_empty() && media.file_size > 0 {
-                tracks.push(retro_junk_archive::TrackDigest {
-                    number: 1,
-                    size: u64::try_from(media.file_size).unwrap_or(0),
-                    crc32: media.crc32,
-                    md5: media.md5,
-                    sha1: media.sha1,
-                });
-            }
-            if let Err(error) = retro_junk_lib::playable_build::verify_dump_against_catalog(
-                &retro_junk_lib::playable_build::CatalogVerificationRequest {
-                    archive_root: archive_root.clone(),
-                    workspace_root: workspace_root.clone(),
-                    dump_id: item.dump_id.clone(),
-                    redumper_path: redumper.clone().unwrap_or_default(),
-                    expected_tracks: tracks,
-                    catalog: retro_junk_archive::CatalogEvidence {
-                        source: media.dat_source,
-                        system: item.playable_platform_id.clone(),
-                        version: String::new(),
-                        game: media.dat_name,
-                        complete_track_set: true,
-                    },
-                },
-                &|phase, current, total| {
-                    if total > 0 {
-                        log::info!("{phase}: {current}/{total}");
-                    } else {
-                        log::info!("{phase}");
-                    }
-                },
-                &AtomicBool::new(false),
-            ) {
-                failed.push(format!("{}: {error}", item.label));
-                failed_releases.insert(item.release_id.clone());
-            }
-        }
-    }
-    for item in selected {
-        if failed_releases.contains(&item.release_id) || !item.needs_build {
-            continue;
-        }
-        let request = retro_junk_lib::playable_build::PlayableBuildRequest {
-            archive_root: archive_root.clone(),
-            playable_root: playable_root.clone(),
-            workspace_root: workspace_root.clone(),
-            dump_id: item.dump_id.clone(),
-            format: item.policy.format.clone(),
-            chdman_path: chdman.clone().unwrap_or_default(),
-            redumper_path: redumper.clone().unwrap_or_default(),
-            dolphin_tool_path: dolphin_tool.clone().unwrap_or_default(),
-            allow_unverified: item.policy.allow_unverified,
-            retain_intermediate: item.policy.retain_canonical_intermediate,
-            options: item.policy.options.clone(),
-            playable_platform_id: item.playable_platform_id,
-            expected_disc_count: item.expected_disc_count,
-            canonical_output_stem: item.canonical_output_stem,
-            canonical_release_name: item.canonical_release_name,
-        };
-        let result = retro_junk_lib::playable_build::build_playable(
-            &request,
-            &|phase, current, total| {
-                if total > 0 {
-                    log::info!("{}: {phase} ({current}/{total})", item.label);
-                } else {
-                    log::info!("{}: {phase}", item.label);
-                }
-            },
-            &AtomicBool::new(false),
-        )
-        .map(|outcome| {
-            log::info!("Built and verified {}", outcome.output.display());
-        })
-        .map_err(|error| CliError::other(error.to_string()));
-        match result {
-            Ok(()) => {
-                built += 1;
-                built_release_ids.insert(item.release_id);
-            }
-            Err(error) => {
-                log::error!("{}: {error}", item.label);
-                failed.push(item.label);
-            }
-        }
-    }
-    log::info!("Built {built} playable representation(s)");
-    let media_root =
-        media_root.unwrap_or_else(|| retro_junk_lib::util::default_media_dir(&playable_root));
-    if !no_project_assets {
-        run_project_assets(archive_root.clone(), media_root.clone())?;
-    }
-    if !no_update_gamelists && !built_release_ids.is_empty() {
-        let metadata_root = metadata_root
-            .unwrap_or_else(|| retro_junk_lib::util::default_metadata_dir(&playable_root));
-        let snapshot =
-            scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
-        for release in snapshot.releases.iter().filter(|release| {
-            built_release_ids.contains(&release.manifest.archive_release_id.to_string())
-        }) {
-            if let Some(path) = retro_junk_lib::archive_assets::sync_esde_gamelist_for_release(
-                release,
-                &playable_root,
-                &metadata_root,
-                &media_root,
-            )
-            .map_err(|error| CliError::other(error.to_string()))?
-            {
-                log::info!("Updated {}", path.display());
-            }
-        }
-    }
-    if failed.is_empty() {
-        Ok(())
-    } else {
-        Err(CliError::other(format!(
-            "{} queued build(s) failed: {}",
-            failed.len(),
-            failed.join(", ")
-        )))
     }
 }
 
@@ -1849,112 +1439,6 @@ fn run_shared_single_build(
     Ok(())
 }
 
-#[allow(dead_code)]
-fn run_mirror(
-    archive_root: PathBuf,
-    playable_root: PathBuf,
-    dump_id: &str,
-) -> Result<(), CliError> {
-    let snapshot =
-        scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
-    let selected = snapshot.releases.iter().find_map(|release| {
-        release.physical_copies.iter().find_map(|item| {
-            item.carriers.iter().find_map(|medium| {
-                medium
-                    .dumps
-                    .iter()
-                    .find(|dump| dump.manifest.dump_id.to_string() == dump_id)
-                    .map(|dump| (release, medium, dump))
-            })
-        })
-    });
-    let Some((release, medium, dump)) = selected else {
-        return Err(CliError::other(format!(
-            "archive dump {dump_id} was not found"
-        )));
-    };
-    let [file] = dump.manifest.files.as_slice() else {
-        return Err(CliError::other(
-            "direct mirroring requires a preservation master containing exactly one file",
-        ));
-    };
-    let source = dump.directory.join("raw").join(&file.path);
-    let extension = source
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or("rom");
-    let output_directory = playable_root.join(slugify(&release.manifest.platform_id));
-    std::fs::create_dir_all(&output_directory)?;
-    let output = output_directory.join(format!(
-        "{}.{}",
-        playable_output_stem(release, medium),
-        extension
-    ));
-    if output.exists() {
-        return Err(CliError::other(format!(
-            "playable output already exists: {}",
-            output.display()
-        )));
-    }
-    let build_id = BuildId::new();
-    let temporary = output_directory.join(format!(".{build_id}.mirror.tmp"));
-    std::fs::copy(&source, &temporary)?;
-    let cancelled = AtomicBool::new(false);
-    let (output_size, output_sha256) =
-        sha256_file(&temporary, &cancelled).map_err(|error| CliError::other(error.to_string()))?;
-    if output_size != file.size || output_sha256 != file.sha256 {
-        let _ = std::fs::remove_file(&temporary);
-        return Err(CliError::other(
-            "mirrored bytes did not match the preservation manifest",
-        ));
-    }
-    std::fs::rename(&temporary, &output)?;
-    let catalog_verified = dump.verifications.iter().any(|verification| {
-        verification.evidence.input_manifest_sha256 == dump.manifest_sha256
-            && verification.evidence.kind == VerificationKind::Catalog
-            && verification.evidence.outcome == VerificationOutcome::Verified
-    });
-    let evidence = BuildEvidence {
-        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
-        build_id,
-        parent_representation_id: dump.manifest.representation_id,
-        child_representation_id: RepresentationId::new(),
-        performed_at: chrono::Utc::now().to_rfc3339(),
-        input_manifest_sha256: dump.manifest_sha256.clone(),
-        recipe_version: 1,
-        format: dump.manifest.format.clone(),
-        relative_output_path: output
-            .strip_prefix(&playable_root)
-            .unwrap_or(&output)
-            .to_string_lossy()
-            .replace('\\', "/"),
-        output_sha256,
-        output_size,
-        catalog_verified,
-        round_trip_verified: true,
-        tool: None,
-        omitted_features: Vec::new(),
-        canonical_intermediate: None,
-    };
-    let evidence_directory = dump.directory.join("evidence");
-    std::fs::create_dir_all(&evidence_directory)?;
-    if let Err(error) = write_json_new(
-        &evidence_directory.join(format!("build-{build_id}.json")),
-        &evidence,
-    ) {
-        let _ = std::fs::remove_file(&output);
-        return Err(CliError::other(error.to_string()));
-    }
-    log::info!("Mirrored and byte-verified {}", output.display());
-    Ok(())
-}
-
-/// Persist an exact carrier match without pretending that every carrier in the
-/// owned copy belongs to the same mastering-specific catalog release.
-///
-/// The release remains exactly bound while every identified carrier agrees.
-/// As soon as a carrier resolves to another catalog release for the same work,
-/// the parent keeps only the work identity and the exact IDs remain on carriers.
 fn run_catalog_verify(
     ctx: &retro_junk_lib::AnalysisContext,
     archive_root: PathBuf,
@@ -2037,188 +1521,12 @@ fn run_redumper_audit(
     }
 }
 
-fn log_progress(phase: &str, current: u64, total: u64) {
+pub(crate) fn log_progress(phase: &str, current: u64, total: u64) {
     if total > 0 {
         log::info!("{phase}: {current}/{total}");
     } else {
         log::info!("{phase}");
     }
-}
-
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
-#[allow(dead_code)]
-fn run_build_rvz(
-    archive_root: PathBuf,
-    playable_root: PathBuf,
-    dump_id: &str,
-    workspace_root: Option<PathBuf>,
-    dolphin_tool_path: Option<PathBuf>,
-    allow_unverified: bool,
-    options: &std::collections::BTreeMap<String, String>,
-) -> Result<(), CliError> {
-    let snapshot =
-        scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
-    let selected = snapshot.releases.iter().find_map(|release| {
-        release.physical_copies.iter().find_map(|item| {
-            item.carriers.iter().find_map(|medium| {
-                medium
-                    .dumps
-                    .iter()
-                    .find(|dump| dump.manifest.dump_id.to_string() == dump_id)
-                    .map(|dump| (release, medium, dump))
-            })
-        })
-    });
-    let Some((release, medium, dump)) = selected else {
-        return Err(CliError::other(format!(
-            "archive dump {dump_id} was not found"
-        )));
-    };
-    if dump.manifest.format != RepresentationFormat::Iso || dump.manifest.files.len() != 1 {
-        return Err(CliError::other(
-            "RVZ builds require a single-file ISO preservation master",
-        ));
-    }
-    let catalog_verified = dump.verifications.iter().any(|verification| {
-        verification.evidence.input_manifest_sha256 == dump.manifest_sha256
-            && verification.evidence.kind == VerificationKind::Catalog
-            && verification.evidence.outcome == VerificationOutcome::Verified
-    });
-    if !catalog_verified && !allow_unverified {
-        return Err(CliError::other(
-            "dump has no current catalog verification; verify it first or allow unverified builds",
-        ));
-    }
-    let dolphin_tool = dolphin_tool_path.unwrap_or_else(|| PathBuf::from("DolphinTool"));
-    let help = std::process::Command::new(&dolphin_tool)
-        .arg("--help")
-        .output()
-        .map_err(|error| CliError::external_tool(error.to_string()))?;
-    let banner = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&help.stdout),
-        String::from_utf8_lossy(&help.stderr)
-    );
-    if !help.status.success()
-        || (!banner.to_ascii_lowercase().contains("dolphin")
-            && !banner.to_ascii_lowercase().contains("convert"))
-    {
-        return Err(CliError::external_tool(
-            "DolphinTool did not provide a recognized help response",
-        ));
-    }
-    let output_directory = playable_root.join(slugify(&release.manifest.platform_id));
-    std::fs::create_dir_all(&output_directory)?;
-    let output = output_directory.join(format!("{}.rvz", playable_output_stem(release, medium)));
-    if output.exists() {
-        return Err(CliError::other(format!(
-            "playable output already exists: {}",
-            output.display()
-        )));
-    }
-    let build_id = BuildId::new();
-    let temporary_output = output_directory.join(format!(".{build_id}.rvz.tmp"));
-    let workspace_root = workspace_root.unwrap_or_else(|| archive_root.join(".retro-junk/work"));
-    let workspace = workspace_root.join(format!("rvz-build-{build_id}"));
-    std::fs::create_dir_all(&workspace)?;
-    let round_trip = workspace.join("round-trip.iso");
-    let input = dump
-        .directory
-        .join("raw")
-        .join(&dump.manifest.files[0].path);
-    let block_size = options.get("block_size").map_or("131072", String::as_str);
-    let compression = options.get("compression").map_or("zstd", String::as_str);
-    let level = options.get("compression_level").map_or("5", String::as_str);
-    let convert = std::process::Command::new(&dolphin_tool)
-        .args(["convert", "-i"])
-        .arg(&input)
-        .arg("-o")
-        .arg(&temporary_output)
-        .args([
-            "-f",
-            "rvz",
-            "-b",
-            block_size,
-            "-c",
-            compression,
-            "-l",
-            level,
-        ])
-        .output()
-        .map_err(|error| CliError::external_tool(error.to_string()))?;
-    if !convert.status.success() {
-        let _ = std::fs::remove_file(&temporary_output);
-        let _ = std::fs::remove_dir_all(&workspace);
-        return Err(CliError::external_tool(format!(
-            "DolphinTool RVZ conversion failed: {}",
-            String::from_utf8_lossy(&convert.stderr)
-        )));
-    }
-    let extract = std::process::Command::new(&dolphin_tool)
-        .args(["convert", "-i"])
-        .arg(&temporary_output)
-        .arg("-o")
-        .arg(&round_trip)
-        .args(["-f", "iso"])
-        .output()
-        .map_err(|error| CliError::external_tool(error.to_string()))?;
-    let cancelled = AtomicBool::new(false);
-    let verified = if extract.status.success() {
-        let (_, original_sha256) =
-            sha256_file(&input, &cancelled).map_err(|error| CliError::other(error.to_string()))?;
-        let (_, round_trip_sha256) = sha256_file(&round_trip, &cancelled)
-            .map_err(|error| CliError::other(error.to_string()))?;
-        original_sha256 == round_trip_sha256
-    } else {
-        false
-    };
-    let _ = std::fs::remove_dir_all(&workspace);
-    if !verified {
-        let _ = std::fs::remove_file(&temporary_output);
-        return Err(CliError::other(
-            "RVZ round-trip ISO did not match the preservation master",
-        ));
-    }
-    let (output_size, output_sha256) = sha256_file(&temporary_output, &cancelled)
-        .map_err(|error| CliError::other(error.to_string()))?;
-    std::fs::rename(&temporary_output, &output)?;
-    let evidence = BuildEvidence {
-        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
-        build_id,
-        parent_representation_id: dump.manifest.representation_id,
-        child_representation_id: RepresentationId::new(),
-        performed_at: chrono::Utc::now().to_rfc3339(),
-        input_manifest_sha256: dump.manifest_sha256.clone(),
-        recipe_version: 1,
-        format: RepresentationFormat::Rvz,
-        relative_output_path: output
-            .strip_prefix(&playable_root)
-            .unwrap_or(&output)
-            .to_string_lossy()
-            .replace('\\', "/"),
-        output_sha256,
-        output_size,
-        catalog_verified,
-        round_trip_verified: true,
-        tool: Some(retro_junk_archive::ToolRecord {
-            name: "DolphinTool".to_owned(),
-            version: banner.lines().next().unwrap_or_default().trim().to_owned(),
-            build: String::new(),
-        }),
-        omitted_features: Vec::new(),
-        canonical_intermediate: None,
-    };
-    let evidence_directory = dump.directory.join("evidence");
-    std::fs::create_dir_all(&evidence_directory)?;
-    if let Err(error) = write_json_new(
-        &evidence_directory.join(format!("build-{build_id}.json")),
-        &evidence,
-    ) {
-        let _ = std::fs::remove_file(&output);
-        return Err(CliError::other(error.to_string()));
-    }
-    log::info!("Built and round-trip verified {}", output.display());
-    Ok(())
 }
 
 fn playable_output_stem(
@@ -2257,193 +1565,6 @@ fn same_platform_id(left: &str, right: &str) -> bool {
         )
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(dead_code)]
-fn run_build_chd(
-    ctx: &retro_junk_lib::AnalysisContext,
-    archive_root: PathBuf,
-    playable_root: PathBuf,
-    dump_id: &str,
-    workspace_root: Option<PathBuf>,
-    chdman_path: Option<PathBuf>,
-    redumper_path: Option<PathBuf>,
-    allow_unverified: bool,
-    retain_intermediate: bool,
-) -> Result<(), CliError> {
-    let snapshot =
-        scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
-    let selected = snapshot.releases.iter().find_map(|release| {
-        release.physical_copies.iter().find_map(|item| {
-            item.carriers.iter().find_map(|medium| {
-                medium
-                    .dumps
-                    .iter()
-                    .find(|dump| dump.manifest.dump_id.to_string() == dump_id)
-                    .map(|dump| (release, medium, dump))
-            })
-        })
-    });
-    let Some((release, medium, dump)) = selected else {
-        return Err(CliError::other(format!(
-            "archive dump {dump_id} was not found"
-        )));
-    };
-    let catalog_verified = dump.verifications.iter().any(|verification| {
-        verification.evidence.input_manifest_sha256 == dump.manifest_sha256
-            && verification.evidence.kind == VerificationKind::Catalog
-            && verification.evidence.outcome == VerificationOutcome::Verified
-    });
-    if !catalog_verified && !allow_unverified {
-        return Err(CliError::other(
-            "dump has no current complete-track catalog verification; audit it first or pass --allow-unverified",
-        ));
-    }
-
-    let analyzer = ctx
-        .get_by_short_name(&release.manifest.platform_id)
-        .ok_or_else(|| CliError::unknown_system(release.manifest.platform_id.clone()))?;
-    let workspace_root =
-        workspace_root.unwrap_or_else(|| archive_root.join(".retro-junk").join("work"));
-    let cancelled = AtomicBool::new(false);
-    let mut redumper_workspace = None;
-    let input = match dump.manifest.format {
-        RepresentationFormat::RedumperRaw => {
-            let redumper = Redumper::detect(
-                redumper_path
-                    .as_deref()
-                    .unwrap_or_else(|| std::path::Path::new("")),
-            )
-            .map_err(|error| CliError::external_tool(error.to_string()))?;
-            let prepared = redumper
-                .prepare(&dump.directory.join("raw"), &workspace_root, &cancelled)
-                .map_err(|error| CliError::other(error.to_string()))?;
-            let entrypoint = prepared.entrypoint.clone();
-            redumper_workspace = Some(prepared);
-            entrypoint
-        }
-        RepresentationFormat::CueBin => find_input(&dump.directory.join("raw"), &["cue"])?,
-        RepresentationFormat::Iso => find_input(&dump.directory.join("raw"), &["iso"])?,
-        _ => {
-            return Err(CliError::other(format!(
-                "{:?} cannot be converted to CHD by this workflow",
-                dump.manifest.format
-            )));
-        }
-    };
-
-    let mut job = retro_junk_lib::chd_convert::plan_compression(&input, analyzer.analyzer.as_ref())
-        .map_err(|error| CliError::other(error.to_string()))?;
-    let output_directory = playable_root.join(slugify(&release.manifest.platform_id));
-    std::fs::create_dir_all(&output_directory)?;
-    job.output = output_directory.join(format!("{}.chd", playable_output_stem(release, medium)));
-    if job.output.exists() {
-        return Err(CliError::other(format!(
-            "playable output already exists: {}",
-            job.output.display()
-        )));
-    }
-    let chdman = retro_junk_lib::chd_convert::Chdman::detect(
-        chdman_path
-            .as_deref()
-            .unwrap_or_else(|| std::path::Path::new("")),
-    )
-    .map_err(|error| CliError::external_tool(error.to_string()))?;
-    let outcome =
-        retro_junk_lib::chd_convert::compress_to_chd(&chdman, &job, &|_, _| {}, &cancelled)
-            .map_err(|error| CliError::other(error.to_string()))?;
-    if !outcome.is_verified() {
-        return Err(CliError::other(
-            "CHD round-trip verification failed; temporary output was discarded",
-        ));
-    }
-    let (output_size, output_sha256) = sha256_file(&outcome.output, &cancelled)
-        .map_err(|error| CliError::other(error.to_string()))?;
-    let child_representation_id = RepresentationId::new();
-    let build_id = BuildId::new();
-    let retained_path = dump
-        .directory
-        .join("intermediates")
-        .join(build_id.to_string());
-    let canonical_intermediate = if retain_intermediate {
-        if let Some(workspace) = redumper_workspace.as_ref() {
-            let files = match workspace.retain_intermediate(&retained_path, &cancelled) {
-                Ok(files) => files,
-                Err(error) => {
-                    let _ = std::fs::remove_file(&outcome.output);
-                    return Err(CliError::other(error.to_string()));
-                }
-            };
-            let format = if workspace
-                .entrypoint
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value.eq_ignore_ascii_case("iso"))
-            {
-                RepresentationFormat::Iso
-            } else {
-                RepresentationFormat::CueBin
-            };
-            Some(retro_junk_archive::CanonicalIntermediateEvidence {
-                representation_id: RepresentationId::new(),
-                format,
-                relative_path: format!("intermediates/{build_id}"),
-                files,
-            })
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let relative_output_path = outcome
-        .output
-        .strip_prefix(&playable_root)
-        .unwrap_or(&outcome.output)
-        .to_string_lossy()
-        .replace('\\', "/");
-    let evidence = BuildEvidence {
-        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
-        build_id,
-        parent_representation_id: dump.manifest.representation_id,
-        child_representation_id,
-        performed_at: chrono::Utc::now().to_rfc3339(),
-        input_manifest_sha256: dump.manifest_sha256.clone(),
-        recipe_version: 1,
-        format: RepresentationFormat::Chd,
-        relative_output_path,
-        output_sha256,
-        output_size,
-        catalog_verified,
-        round_trip_verified: true,
-        tool: Some(retro_junk_archive::ToolRecord {
-            name: "chdman".to_owned(),
-            version: chdman.version,
-            build: String::new(),
-        }),
-        omitted_features: dump.manifest.captured_features.clone(),
-        canonical_intermediate,
-    };
-    let evidence_directory = dump.directory.join("evidence");
-    std::fs::create_dir_all(&evidence_directory)?;
-    if let Err(error) = write_json_new(
-        &evidence_directory.join(format!("build-{build_id}.json")),
-        &evidence,
-    ) {
-        let _ = std::fs::remove_file(&outcome.output);
-        if retained_path.exists() {
-            let _ = std::fs::remove_dir_all(&retained_path);
-        }
-        return Err(CliError::other(error.to_string()));
-    }
-    drop(redumper_workspace);
-    log::info!("Built and round-trip verified {}", outcome.output.display());
-    if !catalog_verified {
-        log::warn!("Playable CHD was explicitly built without catalog verification");
-    }
-    Ok(())
-}
-
-#[allow(dead_code)]
 fn find_input(directory: &std::path::Path, extensions: &[&str]) -> Result<PathBuf, CliError> {
     let mut paths = std::fs::read_dir(directory)?
         .filter_map(Result::ok)
@@ -2619,16 +1740,7 @@ fn run_reindex(
 }
 
 fn parse_format(value: &str) -> Result<RepresentationFormat, CliError> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "redumper" | "redumper-raw" | "redumper_raw" => Ok(RepresentationFormat::RedumperRaw),
-        "rom" => Ok(RepresentationFormat::Rom),
-        "cue-bin" | "cue_bin" | "bin-cue" => Ok(RepresentationFormat::CueBin),
-        "iso" => Ok(RepresentationFormat::Iso),
-        "chd" => Ok(RepresentationFormat::Chd),
-        "rvz" => Ok(RepresentationFormat::Rvz),
-        other if !other.is_empty() => Ok(RepresentationFormat::Other(other.to_owned())),
-        _ => Err(CliError::other("representation format cannot be empty")),
-    }
+    value.parse().map_err(CliError::other)
 }
 
 fn carrier_kind_for_format(format: &RepresentationFormat) -> retro_junk_archive::CarrierKind {
@@ -2733,17 +1845,21 @@ cp "$input" "$output"
         permissions.set_mode(0o755);
         std::fs::set_permissions(&tool, permissions).unwrap();
         let playable = temp.path().join("playable");
-        run_build_rvz(
+        run_shared_single_build(
             archive.clone(),
             playable.clone(),
             &ingested.dump.dump_id.to_string(),
             None,
+            None,
+            None,
             Some(tool),
+            RepresentationFormat::Rvz,
             true,
-            &std::collections::BTreeMap::new(),
+            false,
+            std::collections::BTreeMap::new(),
         )
         .unwrap();
-        assert!(playable.join("gc/game-usa-disc-1.rvz").is_file());
+        assert!(playable.join("gc/game-usa.rvz").is_file());
         assert_eq!(
             retro_junk_archive::scan_archive(&archive).unwrap().releases[0].physical_copies[0]
                 .carriers[0]

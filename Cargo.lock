@@ -4416,6 +4416,7 @@ dependencies = [
  "retro-junk-scraper",
  "retro-junk-sega",
  "retro-junk-sony",
+ "retro-junk-work",
  "serde",
  "serde_json",
  "strip-ansi-escapes",
@@ -4661,6 +4662,27 @@ dependencies = [
  "retro-junk-core",
  "retro-junk-disc",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "retro-junk-work"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "log",
+ "retro-junk-archive",
+ "retro-junk-archive-import",
+ "retro-junk-core",
+ "retro-junk-db",
+ "retro-junk-frontend",
+ "retro-junk-io",
+ "retro-junk-lib",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
 ]
 
 [[package]]

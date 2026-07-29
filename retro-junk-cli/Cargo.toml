@@ -9,6 +9,7 @@ name = "retro-junk"
 path = "src/main.rs"
 
 [dependencies]
+retro-junk-work = { workspace = true }
 serde_json = { workspace = true }
 retro-junk-lib.workspace = true
 retro-junk-core.workspace = true

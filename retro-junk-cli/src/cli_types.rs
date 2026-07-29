@@ -237,6 +237,75 @@ pub(crate) struct ScrapeArgs {
     pub archive_root: Option<PathBuf>,
 }
 
+/// Run every pending convergence action: verify, build, project, gamelist.
+#[derive(clap::Args)]
+pub(crate) struct SyncArgs {
+    /// Collection profile id or display name (default: the active profile)
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Archive root (with --playable-root, overrides profile resolution)
+    #[arg(long)]
+    pub archive_root: Option<PathBuf>,
+    /// Playable library root
+    #[arg(long)]
+    pub playable_root: Option<PathBuf>,
+    /// Scratch workspace root
+    #[arg(long)]
+    pub workspace_root: Option<PathBuf>,
+    /// Restrict to one archive platform id
+    #[arg(long)]
+    pub platform: Option<String>,
+    /// Restrict to one archive release id
+    #[arg(long)]
+    pub release: Option<String>,
+    /// Restrict to specific action kinds
+    /// (verify-integrity, verify-catalog, audit-redumper, build, project, gamelist)
+    #[arg(long, value_delimiter = ',')]
+    pub only: Vec<String>,
+    /// Print the derived plan without executing; non-zero exit when
+    /// anything is blocked
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Execute at most this many actions
+    #[arg(long)]
+    pub limit: Option<usize>,
+    /// Path to chdman for CHD builds
+    #[arg(long)]
+    pub chdman: Option<PathBuf>,
+    /// Path to redumper for raw-master reproduction
+    #[arg(long)]
+    pub redumper: Option<PathBuf>,
+    /// Path to DolphinTool for RVZ builds
+    #[arg(long)]
+    pub dolphin_tool: Option<PathBuf>,
+    /// Frontend media root (default: the playable root's sibling media dir)
+    #[arg(long)]
+    pub media_root: Option<PathBuf>,
+    /// Frontend metadata root (default: the playable root's sibling metadata dir)
+    #[arg(long)]
+    pub metadata_root: Option<PathBuf>,
+    /// Catalog database path
+    #[arg(long)]
+    pub db: Option<PathBuf>,
+}
+
+/// Summarize convergence state, daemon liveness, and open suggestions.
+#[derive(clap::Args)]
+pub(crate) struct StatusArgs {
+    /// Collection profile id or display name (default: the active profile)
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Archive root (with --playable-root, overrides profile resolution)
+    #[arg(long)]
+    pub archive_root: Option<PathBuf>,
+    /// Playable library root
+    #[arg(long)]
+    pub playable_root: Option<PathBuf>,
+    /// Catalog database path
+    #[arg(long)]
+    pub db: Option<PathBuf>,
+}
+
 #[derive(Subcommand)]
 pub(crate) enum Commands {
     /// Manage preservation masters and their playable derivatives
@@ -244,6 +313,12 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         action: ArchiveAction,
     },
+
+    /// Run pending convergence actions (verify, build, project, gamelist)
+    Sync(SyncArgs),
+
+    /// Show convergence counts, daemon liveness, and open suggestions
+    Status(StatusArgs),
 
     /// Analyze games in a library directory structure
     Analyze(AnalyzeArgs),

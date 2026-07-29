@@ -343,10 +343,9 @@ fn scope_release_filters_to_one_release_including_its_dumps() {
             .all(|action| action.target.id() == dump_a || action.target.id() == release_a)
     );
     assert!(
-        actions
-            .iter()
-            .any(|action| action.target.id() == dump_a
-                && action.kind == ActionKind::VerifyIntegrity)
+        actions.iter().any(
+            |action| action.target.id() == dump_a && action.kind == ActionKind::VerifyIntegrity
+        )
     );
 }
 
