@@ -242,15 +242,23 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
         .root_path
         .as_ref()
         .and_then(|rp| {
-            state::asset_dir_for_console(rp, &folder_name, &app.settings.general.assets_dir)
+            retro_junk_lib::util::asset_dir_for_console(
+                rp,
+                &folder_name,
+                &app.settings.general.assets_dir,
+            )
         })
         .filter(|d| d.is_dir());
     let gamelist_path = app
         .root_path
         .as_ref()
         .map(|rp| {
-            state::metadata_dir_for_console(rp, &folder_name, &app.settings.general.metadata_dir)
-                .join("gamelist.xml")
+            retro_junk_lib::util::metadata_dir_for_console(
+                rp,
+                &folder_name,
+                &app.settings.general.metadata_dir,
+            )
+            .join("gamelist.xml")
         })
         .filter(|p| p.is_file());
 

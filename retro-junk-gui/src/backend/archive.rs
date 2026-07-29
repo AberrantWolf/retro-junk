@@ -177,7 +177,7 @@ pub(crate) fn start_catalog_identification_operation(
                                             .catalog_binding
                                             .catalog_media_id
                                             .is_empty()
-                                            || !has_current_catalog_evidence(dump))
+                                            || !retro_junk_archive::dump_catalog_verified(dump))
                                 })
                                 .map(|dump| (release, carrier, dump))
                         })
@@ -283,14 +283,6 @@ pub(crate) fn start_catalog_identification_operation(
         let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
     });
     app.op_threads.insert(op_id, handle);
-}
-
-fn has_current_catalog_evidence(dump: &retro_junk_archive::IndexedDump) -> bool {
-    dump.verifications.iter().any(|verification| {
-        verification.evidence.input_manifest_sha256 == dump.manifest_sha256
-            && verification.evidence.kind == retro_junk_archive::VerificationKind::Catalog
-            && verification.evidence.outcome == retro_junk_archive::VerificationOutcome::Verified
-    })
 }
 
 fn append_catalog_evidence(

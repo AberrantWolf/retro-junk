@@ -5,6 +5,7 @@
 
 pub mod assets;
 pub mod collection;
+pub mod evidence;
 pub mod index;
 pub mod ingest;
 pub mod layout;
@@ -15,6 +16,7 @@ pub mod profile;
 pub mod redumper;
 pub mod verify;
 
+pub use evidence::{dump_catalog_verified, dump_has_current_evidence};
 pub use index::{
     ArchiveIndexSnapshot, IndexedBuild, IndexedCarrier, IndexedDump, IndexedPhysicalCopy,
     IndexedPhysicalCopyFile, IndexedRelease, IndexedReleaseFile, IndexedVerification, scan_archive,
@@ -36,6 +38,9 @@ pub use verify::{IntegrityFailure, IntegrityReport, sha256_file, verify_dump_int
 /// Current portable archive-manifest schema.
 pub const MANIFEST_SCHEMA_VERSION: u32 = 2;
 
+#[cfg(test)]
+#[path = "tests/evidence_tests.rs"]
+mod evidence_tests;
 #[cfg(test)]
 #[path = "tests/archive_tests.rs"]
 mod tests;

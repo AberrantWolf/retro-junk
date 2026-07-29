@@ -648,27 +648,19 @@ pub fn reconcile_archive_snapshot(
                     let format = format_key(&dump.manifest.format);
                     let relative_dump = relative(&snapshot.root, &dump.directory);
                     let master_presence = preservation_presence(&dump.directory, &dump.manifest);
-                    let current_verification = |kind| {
-                        dump.verifications.iter().any(|verification| {
-                            verification.evidence.kind == kind
-                                && verification.evidence.outcome
-                                    == retro_junk_archive::VerificationOutcome::Verified
-                                && verification.evidence.input_manifest_sha256
-                                    == dump.manifest_sha256
-                        })
+                    let integrity_state = if retro_junk_archive::dump_has_current_evidence(
+                        dump,
+                        retro_junk_archive::VerificationKind::Integrity,
+                    ) {
+                        "verified"
+                    } else {
+                        "unknown"
                     };
-                    let integrity_state =
-                        if current_verification(retro_junk_archive::VerificationKind::Integrity) {
-                            "verified"
-                        } else {
-                            "unknown"
-                        };
-                    let catalog_state =
-                        if current_verification(retro_junk_archive::VerificationKind::Catalog) {
-                            "verified"
-                        } else {
-                            "not_attempted"
-                        };
+                    let catalog_state = if retro_junk_archive::dump_catalog_verified(dump) {
+                        "verified"
+                    } else {
+                        "not_attempted"
+                    };
                     tx.execute(
                         "INSERT INTO dump_events(id,carrier_id,representation_id,format,captured_at,manifest_path,manifest_sha256,integrity_state,catalog_state)
                          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -696,7 +688,7 @@ pub fn reconcile_archive_snapshot(
                             relative_dump,
                             master_presence.as_str(),
                             dump.manifest_sha256,
-                            current_verification(retro_junk_archive::VerificationKind::Catalog),
+                            retro_junk_archive::dump_catalog_verified(dump),
                         ],
                     )?;
                     for file in &dump.manifest.files {

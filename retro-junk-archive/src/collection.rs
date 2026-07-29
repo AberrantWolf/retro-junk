@@ -730,6 +730,9 @@ pub fn ingest_new_carrier_dump(
     let request = IngestRequest {
         plan,
         manifest: dump,
+        // Preserved pre-policy behavior; Step 5 of the automation work
+        // threads `AutomationPolicy::verify_published_bytes` through here.
+        verify_published_bytes: true,
     };
     match execute_ingest(request, cancel, on_progress) {
         Ok(dump) => Ok(IngestedCarrierDump {

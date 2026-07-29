@@ -104,10 +104,14 @@ fn do_generate(
     cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<String, String> {
     let rom_dir = root_path.join(folder_name);
-    let media_dir = state::asset_dir_for_console(root_path, folder_name, media_dir_setting)
-        .ok_or_else(|| "Could not determine media directory".to_string())?;
-    let metadata_dir =
-        state::metadata_dir_for_console(root_path, folder_name, metadata_dir_setting);
+    let media_dir =
+        retro_junk_lib::util::asset_dir_for_console(root_path, folder_name, media_dir_setting)
+            .ok_or_else(|| "Could not determine media directory".to_string())?;
+    let metadata_dir = retro_junk_lib::util::metadata_dir_for_console(
+        root_path,
+        folder_name,
+        metadata_dir_setting,
+    );
 
     let games: Vec<ScrapedGame> = entries
         .iter()

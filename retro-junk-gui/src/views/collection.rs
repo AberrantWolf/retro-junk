@@ -1370,7 +1370,11 @@ fn start_archive_ingest(
                 total,
             });
             let dump = retro_junk_archive::execute_ingest(
-                retro_junk_archive::IngestRequest { plan, manifest },
+                retro_junk_archive::IngestRequest {
+                    plan,
+                    manifest,
+                    verify_published_bytes: true,
+                },
                 &cancel,
                 |progress| {
                     let _ = sender.send(AppMessage::OperationProgress {

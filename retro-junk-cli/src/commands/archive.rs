@@ -947,7 +947,7 @@ fn run_build_queue(
                 .carriers
                 .iter()
                 .flat_map(|carrier| &carrier.dumps)
-                .filter(|dump| dump_catalog_verified(dump))
+                .filter(|dump| retro_junk_archive::dump_catalog_verified(dump))
                 .count();
             (present, verified)
         });
@@ -1030,7 +1030,7 @@ fn run_build_queue(
             });
             if is_satisfied {
                 satisfied += 1;
-                if dump_catalog_verified(selected) {
+                if retro_junk_archive::dump_catalog_verified(selected) {
                     continue;
                 }
             }
@@ -1146,7 +1146,7 @@ fn run_build_queue(
                 .flat_map(|copy| &copy.carriers)
                 .flat_map(|carrier| &carrier.dumps)
                 .find(|dump| dump.manifest.dump_id.to_string() == item.dump_id)
-                .is_some_and(dump_catalog_verified);
+                .is_some_and(retro_junk_archive::dump_catalog_verified);
             if already_verified {
                 continue;
             }
@@ -1286,19 +1286,6 @@ fn run_build_queue(
             failed.join(", ")
         )))
     }
-}
-
-fn dump_catalog_verified(dump: &retro_junk_archive::IndexedDump) -> bool {
-    dump.verifications.iter().any(|verification| {
-        verification.evidence.input_manifest_sha256 == dump.manifest_sha256
-            && verification.evidence.kind == VerificationKind::Catalog
-            && verification.evidence.outcome == VerificationOutcome::Verified
-            && verification
-                .evidence
-                .catalog
-                .as_ref()
-                .is_some_and(|catalog| catalog.complete_track_set)
-    })
 }
 
 fn desired_policy(

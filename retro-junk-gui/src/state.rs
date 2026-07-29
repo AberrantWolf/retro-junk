@@ -194,46 +194,6 @@ pub enum ScanStatus {
     Scanned,
 }
 
-/// Derive the media directory for a console from the root path, folder name, and user setting.
-///
-/// If `setting` is empty, uses the legacy `{root}-media` sibling convention.
-/// Otherwise, the setting is treated as a path (absolute or relative to `root_path`).
-pub fn asset_dir_for_console(
-    root_path: &Path,
-    folder_name: &str,
-    setting: &str,
-) -> Option<PathBuf> {
-    if setting.is_empty() {
-        // Legacy default: {root}-media sibling
-        let parent = root_path.parent()?;
-        let root_name = root_path.file_name()?.to_str()?;
-        Some(parent.join(format!("{root_name}-media")).join(folder_name))
-    } else {
-        Some(resolve_dir(root_path, setting).join(folder_name))
-    }
-}
-
-/// Derive the metadata directory for a console from the root path, folder name, and user setting.
-///
-/// The setting is treated as a path (absolute or relative to `root_path`).
-/// Default setting `"."` places metadata inline with ROMs (ES-DE legacy mode).
-pub fn metadata_dir_for_console(root_path: &Path, folder_name: &str, setting: &str) -> PathBuf {
-    resolve_dir(root_path, setting).join(folder_name)
-}
-
-/// Resolve a directory setting to an absolute path.
-///
-/// - Absolute paths are used as-is.
-/// - Relative paths are resolved from `root_path`.
-fn resolve_dir(root_path: &Path, setting: &str) -> PathBuf {
-    let p = Path::new(setting);
-    if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        root_path.join(p)
-    }
-}
-
 /// Subdirectory name for a media type (matches ES-DE layout).
 fn asset_subdir(mt: AssetType) -> &'static str {
     match mt {

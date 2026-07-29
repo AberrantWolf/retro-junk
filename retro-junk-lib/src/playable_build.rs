@@ -81,7 +81,7 @@ pub fn verify_dump_against_catalog(
         .ok_or_else(|| {
             PlayableBuildError::Message(format!("archive dump {} was not found", request.dump_id))
         })?;
-    if catalog_verified(dump) {
+    if retro_junk_archive::dump_catalog_verified(dump) {
         return Ok(false);
     }
     if request.expected_tracks.is_empty() {
@@ -301,7 +301,7 @@ fn build_chd(
     progress: &dyn Fn(&str, u64, u64),
     cancelled: &AtomicBool,
 ) -> Result<PlayableBuildOutcome, PlayableBuildError> {
-    let catalog_verified = catalog_verified(dump);
+    let catalog_verified = retro_junk_archive::dump_catalog_verified(dump);
     if !catalog_verified && !request.allow_unverified {
         return Err(PlayableBuildError::Message(
             "The current dump has no complete-track catalog verification. Verify it first, or enable unverified builds for this policy.".to_owned(),
@@ -497,7 +497,7 @@ fn build_rvz(
             "RVZ builds require a single-file ISO preservation master".to_owned(),
         ));
     }
-    let catalog_verified = catalog_verified(dump);
+    let catalog_verified = retro_junk_archive::dump_catalog_verified(dump);
     if !catalog_verified && !request.allow_unverified {
         return Err(PlayableBuildError::Message(
             "The current dump has no catalog verification. Verify it first, or enable unverified builds for this policy.".to_owned(),
@@ -817,7 +817,7 @@ fn mirror(
         relative_output_path: relative(&request.playable_root, &output),
         output_sha256,
         output_size,
-        catalog_verified: catalog_verified(dump),
+        catalog_verified: retro_junk_archive::dump_catalog_verified(dump),
         round_trip_verified: true,
         tool: None,
         omitted_features: Vec::<CapturedFeature>::new(),
@@ -845,19 +845,6 @@ fn write_evidence(
         return Err(PlayableBuildError::Message(error.to_string()));
     }
     Ok(())
-}
-
-fn catalog_verified(dump: &IndexedDump) -> bool {
-    dump.verifications.iter().any(|verification| {
-        verification.evidence.input_manifest_sha256 == dump.manifest_sha256
-            && verification.evidence.kind == VerificationKind::Catalog
-            && verification.evidence.outcome == VerificationOutcome::Verified
-            && verification
-                .evidence
-                .catalog
-                .as_ref()
-                .is_some_and(|catalog| catalog.complete_track_set)
-    })
 }
 
 fn find_input(directory: &Path, extensions: &[&str]) -> Result<PathBuf, PlayableBuildError> {
@@ -1364,7 +1351,7 @@ echo '<rom name="disc (Track 01).bin" size="5" crc="AABBCCDD" md5="0011" sha1="1
         );
         let snapshot = scan_archive(&archive).unwrap();
         let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
-        assert!(catalog_verified(dump));
+        assert!(retro_junk_archive::dump_catalog_verified(dump));
         assert!(prepared_cache_directory(&workspace, &dump.manifest_sha256).is_dir());
         assert!(
             !verify_dump_against_catalog(&request, &|_, _, _| {}, &AtomicBool::new(false)).unwrap()

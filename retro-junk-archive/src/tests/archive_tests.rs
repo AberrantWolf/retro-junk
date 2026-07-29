@@ -306,7 +306,11 @@ fn ingest_copies_hashes_publishes_and_verifies() {
     let plan = plan_ingest(&source, &destination).unwrap();
     let manifest = DumpManifest::new(CarrierId::new(), RepresentationFormat::RedumperRaw);
     let result = execute_ingest(
-        IngestRequest { plan, manifest },
+        IngestRequest {
+            plan,
+            manifest,
+            verify_published_bytes: true,
+        },
         &AtomicBool::new(false),
         |_| {},
     )
@@ -357,7 +361,11 @@ fn ingest_rejects_bytes_that_differ_from_precomputed_staging_digests() {
     let manifest = DumpManifest::new(CarrierId::new(), RepresentationFormat::Rom);
     assert!(matches!(
         execute_ingest(
-            IngestRequest { plan, manifest },
+            IngestRequest {
+                plan,
+                manifest,
+                verify_published_bytes: true,
+            },
             &AtomicBool::new(false),
             |_| {},
         ),

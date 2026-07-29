@@ -28,9 +28,11 @@ pub fn load_assets_for_entry(
     media_dir_setting: String,
 ) {
     std::thread::spawn(move || {
-        let Some(media_dir) =
-            state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting)
-        else {
+        let Some(media_dir) = retro_junk_lib::util::asset_dir_for_console(
+            &root_path,
+            &folder_name,
+            &media_dir_setting,
+        ) else {
             let _ = tx.send(AppMessage::AssetsLoaded {
                 folder_name,
                 entry_id,
@@ -63,7 +65,11 @@ pub fn load_asset_statuses_for_page(
     media_dir_setting: String,
 ) {
     std::thread::spawn(move || {
-        let media_dir = state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting);
+        let media_dir = retro_junk_lib::util::asset_dir_for_console(
+            &root_path,
+            &folder_name,
+            &media_dir_setting,
+        );
         let statuses = entries
             .into_iter()
             .map(|(entry_id, display_name)| {
@@ -210,7 +216,7 @@ pub fn restore_archived_media_for_release(
         app.push_error("Restore archived media", "No active collection profile");
         return;
     };
-    let Some(media_directory) = state::asset_dir_for_console(
+    let Some(media_directory) = retro_junk_lib::util::asset_dir_for_console(
         &profile.playable_root,
         &folder_name,
         &app.settings.general.assets_dir,
@@ -526,7 +532,7 @@ fn scrape_media_for_selection(
                 };
 
                 let Some(media_dir) =
-                    state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting)
+                    retro_junk_lib::util::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting)
                 else {
                     log::error!("Cannot determine media directory for {folder_name}");
                     let _ = tx.send(AppMessage::ScrapeFatalError {
@@ -998,7 +1004,7 @@ pub fn adopt_playable_artwork(
         else {
             continue;
         };
-        let Some(media_dir) = state::asset_dir_for_console(
+        let Some(media_dir) = retro_junk_lib::util::asset_dir_for_console(
             &profile.playable_root,
             &candidate.folder_name,
             media_dir_setting,
@@ -1147,9 +1153,11 @@ pub fn regenerate_miximages_for_selection(
         folder_name.clone(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
-            let Some(media_dir) =
-                state::asset_dir_for_console(&root_path, &folder_name, &media_dir_setting)
-            else {
+            let Some(media_dir) = retro_junk_lib::util::asset_dir_for_console(
+                &root_path,
+                &folder_name,
+                &media_dir_setting,
+            ) else {
                 log::error!("Cannot determine media directory for {folder_name}");
                 let _ = tx.send(AppMessage::OperationComplete { op_id });
                 return;

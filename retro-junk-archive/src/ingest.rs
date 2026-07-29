@@ -51,6 +51,15 @@ pub struct PlannedFile {
 pub struct IngestRequest {
     pub plan: IngestPlan,
     pub manifest: DumpManifest,
+    /// Re-read and hash every published file after the copy pass.
+    ///
+    /// The copy pass already digests the source stream and compares it with
+    /// the planned digests, so this second full read mostly guards against
+    /// storage lying about completed writes. On network mounts it doubles
+    /// the transfer per package; automation policy exposes it as
+    /// `verify_published_bytes` (default off), with the daemon's background
+    /// integrity verification supplying the deferred read-back instead.
+    pub verify_published_bytes: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -228,9 +237,11 @@ fn ingest_into_staging(
         {
             return Err(IngestError::CopyMismatch(planned.relative_path.clone()));
         }
-        let (target_size, target_sha256) = hash_file(&target, cancel)?;
-        if target_size != source_hashes.size || target_sha256 != source_hashes.sha256 {
-            return Err(IngestError::CopyMismatch(planned.relative_path.clone()));
+        if request.verify_published_bytes {
+            let (target_size, target_sha256) = hash_file(&target, cancel)?;
+            if target_size != source_hashes.size || target_sha256 != source_hashes.sha256 {
+                return Err(IngestError::CopyMismatch(planned.relative_path.clone()));
+            }
         }
         archived.push(ArchivedFile {
             path: planned.relative_path.clone(),

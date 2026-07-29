@@ -51,7 +51,7 @@ pub fn start(
     let sender = app.message_tx.clone();
     let chdman = PathBuf::from(app.settings.general.chdman_path.trim());
     let processing_workspace_root = profile.processing_workspace_root();
-    let media_directory = crate::state::asset_dir_for_console(
+    let media_directory = retro_junk_lib::util::asset_dir_for_console(
         &profile.playable_root,
         &playable_platform_id,
         &app.settings.general.assets_dir,
@@ -331,8 +331,11 @@ fn upsert_esde_entry(
     };
     let media_directory = media_directory.unwrap_or(&rom_dir);
     let assets = crate::state::collect_existing_assets(media_directory, &stem);
-    let metadata_directory =
-        crate::state::metadata_dir_for_console(playable_root, platform_id, metadata_dir_setting);
+    let metadata_directory = retro_junk_lib::util::metadata_dir_for_console(
+        playable_root,
+        platform_id,
+        metadata_dir_setting,
+    );
     retro_junk_frontend::esde::upsert_game_metadata(
         &retro_junk_frontend::ScrapedGame {
             rom_stem: stem,

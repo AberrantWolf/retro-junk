@@ -1,5 +1,9 @@
 //! Network-friendly local staging and single-pass content hashing.
 
+pub mod mount;
+
+pub use mount::{RemoteMountKind, remote_mount_kind};
+
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};

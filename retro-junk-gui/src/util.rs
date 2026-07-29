@@ -1,18 +1,14 @@
 use std::path::Path;
 
 /// If `path` lives under a userspace FUSE-based network mount (GVFS, KIO-FUSE),
-/// return a short label naming the kind. These mounts stall or return wrong
-/// data under heavy random-access I/O (CHD/ISO seeking), so we warn before
-/// using one as a library root.
+/// return a short label naming the kind, for the warning prompt shown before
+/// adopting such a mount as a library root. Ordinary kernel network mounts
+/// (NFS/SMB) are fine as roots and don't warn. Detection is shared with the
+/// filesystem watcher via [`retro_junk_io::remote_mount_kind`].
 pub fn fragile_mount_kind(path: &Path) -> Option<&'static str> {
-    let s = path.to_string_lossy();
-    if s.contains("/gvfs/") {
-        Some("GVFS")
-    } else if s.contains("/kio-fuse-") || s.contains("/kio-fuse/") {
-        Some("KIO-FUSE")
-    } else {
-        None
-    }
+    retro_junk_io::remote_mount_kind(path)
+        .filter(|kind| kind.is_fragile())
+        .map(retro_junk_io::RemoteMountKind::label)
 }
 
 /// Copy `text` to the clipboard and close the enclosing menu.
