@@ -20,6 +20,26 @@ pub struct CollectionProfile {
     pub network_mode: bool,
     #[serde(default)]
     pub platform_defaults: Vec<PlatformPlayableDefault>,
+    /// Watched drop folders: new dump packages appearing here are
+    /// pre-processed (hashed + identified) by the daemon and imported or
+    /// suggested per automation policy.
+    #[serde(default)]
+    pub incoming_roots: Vec<PathBuf>,
+    /// Filesystem-notification backend for the daemon's watchers.
+    #[serde(default)]
+    pub watch_backend: WatchBackend,
+}
+
+/// How the daemon watches this profile's roots. Native notification is
+/// unreliable on network filesystems; `Auto` falls back to polling there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WatchBackend {
+    #[default]
+    Auto,
+    Native,
+    Poll,
+    Off,
 }
 
 const fn default_network_mode() -> bool {
@@ -60,6 +80,8 @@ impl CollectionProfile {
             playable_root: playable_root.to_path_buf(),
             network_mode: true,
             platform_defaults: Vec::new(),
+            incoming_roots: Vec::new(),
+            watch_backend: WatchBackend::default(),
         }
     }
 }

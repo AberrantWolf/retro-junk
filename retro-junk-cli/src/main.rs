@@ -181,6 +181,8 @@ fn run(
         Commands::Archive { action } => commands::archive::run_archive(action, ctx)?,
         Commands::Sync(args) => commands::sync::run_sync(args)?,
         Commands::Status(args) => commands::sync::run_status(args)?,
+        Commands::Daemon { action } => commands::daemon::run_daemon(action)?,
+        Commands::Suggestions { action } => commands::suggestions::run_suggestions(action)?,
         Commands::Analyze(args) => {
             commands::analyze::run_analyze(ctx, &args, &library_path)?;
         }

@@ -61,6 +61,17 @@ pub enum RunMode {
     Daemon,
 }
 
+/// When the projection stage (assets + gamelists) runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionPass {
+    /// Run projections every time (explicit runs, deep rescans).
+    Always,
+    /// Run projections only when this run completed earlier work — the
+    /// steady-state daemon gate that keeps idle ticks from re-statting the
+    /// frontend tree and rewriting gamelists.
+    OnlyAfterMutation,
+}
+
 /// Run every currently derivable action in scope through the executor,
 /// stage by stage with a re-derivation between stages.
 ///
@@ -74,6 +85,7 @@ pub fn run_once(
     policy: &AutomationPolicy,
     scope: &Scope,
     mode: RunMode,
+    projections: ProjectionPass,
     only: Option<&[ActionKind]>,
     limit: Option<usize>,
     progress: &dyn Fn(&str, u64, u64),
@@ -84,8 +96,17 @@ pub fn run_once(
     let mut conn = retro_junk_db::open_database(&ctx.db_path)
         .map_err(|error| WorkError::Message(error.to_string()))?;
     let mut stage_mutated = false;
+    let mut any_completed = false;
     for stage in STAGES {
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        let is_projection_stage = stage.contains(&ActionKind::ProjectAssets);
+        if is_projection_stage
+            && projections == ProjectionPass::OnlyAfterMutation
+            && !any_completed
+        {
+            // Nothing changed this run: existing projections are current.
             break;
         }
         // Re-derive at each stage boundary so verification results unlock
@@ -146,6 +167,7 @@ pub fn run_once(
             let outcome = execute_action(ctx, &action, progress, cancelled)?;
             if matches!(outcome, ActionOutcome::Completed) {
                 stage_mutated = true;
+                any_completed = true;
             } else if let ActionOutcome::Blocked(reason) = &outcome {
                 log::warn!("{}: {}", action.label, reason);
                 stats.failed += 1;

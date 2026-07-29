@@ -16,6 +16,7 @@ retro-junk-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
+notify = { workspace = true }
 dirs = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }

@@ -1985,6 +1985,27 @@ fn regional_archive_platform(value: &str) -> Option<&'static str> {
 }
 
 #[allow(clippy::too_many_lines)]
+/// The library console whose folder contains `path` under `root_path`, for
+/// watcher events that must invalidate the right console projection.
+pub fn console_for_path(
+    conn: &Connection,
+    root_path: &str,
+    path: &str,
+) -> Result<Option<LibraryConsoleId>, LibraryError> {
+    let id: Option<u64> = conn
+        .query_row(
+            "SELECT lc.id FROM library_consoles lc
+             JOIN library_roots lr ON lr.id=lc.root_id
+             WHERE lr.root_path=?1
+               AND (?2 = lc.folder_path OR ?2 LIKE lc.folder_path || '/%')
+             LIMIT 1",
+            params![root_path, path],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(id.map(LibraryConsoleId))
+}
+
 /// Scope for the playable-gap derivation.
 pub enum GapScope {
     /// One library console (the GUI Library view).

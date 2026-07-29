@@ -31,7 +31,7 @@ pub use manifest::*;
 pub use presence::{
     RepresentationPresence, archived_files_presence, playable_presence, preservation_presence,
 };
-pub use profile::CollectionProfile;
+pub use profile::{CollectionProfile, WatchBackend};
 pub use redumper::{Redumper, RedumperAudit, RedumperError, RedumperWorkspace};
 pub use verify::{IntegrityFailure, IntegrityReport, sha256_file, verify_dump_integrity};
 

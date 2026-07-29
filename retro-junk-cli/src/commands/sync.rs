@@ -44,6 +44,8 @@ pub(crate) fn resolve_target(
             workspace_root,
             network_mode: false,
             platform_defaults: manifest.platform_defaults,
+            incoming_roots: Vec::new(),
+            watch_backend: retro_junk_archive::WatchBackend::default(),
         });
     }
     retro_junk_work::profiles::resolve_profile(profile).ok_or_else(|| {
@@ -174,6 +176,7 @@ pub(crate) fn run_sync(args: SyncArgs) -> Result<(), CliError> {
         &policy,
         &scope,
         RunMode::Explicit,
+        retro_junk_work::ProjectionPass::Always,
         only.as_deref(),
         args.limit,
         &crate::commands::archive::log_progress,

@@ -100,7 +100,7 @@ pub enum WorkError {
 }
 
 impl WorkError {
-    fn msg(error: impl std::fmt::Display) -> Self {
+    pub(crate) fn msg(error: impl std::fmt::Display) -> Self {
         Self::Message(error.to_string())
     }
 }

@@ -320,6 +320,18 @@ pub(crate) enum Commands {
     /// Show convergence counts, daemon liveness, and open suggestions
     Status(StatusArgs),
 
+    /// Run the convergence daemon (foreground; watches incoming + playable roots)
+    Daemon {
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+
+    /// Review and apply proposed-but-unapplied actions
+    Suggestions {
+        #[command(subcommand)]
+        action: SuggestionsAction,
+    },
+
     /// Analyze games in a library directory structure
     Analyze(AnalyzeArgs),
 
@@ -1256,4 +1268,74 @@ pub(crate) struct CatalogLookupArgs {
     /// Path to the catalog database file
     #[arg(long)]
     pub db: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum DaemonAction {
+    /// Start the daemon in the foreground
+    Start {
+        /// Collection profile id or display name (default: the active profile)
+        #[arg(long)]
+        profile: Option<String>,
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// Required: the daemon does not self-daemonize
+        #[arg(long)]
+        foreground: bool,
+        /// Event-wait tick in seconds (default 30)
+        #[arg(long)]
+        tick: Option<u64>,
+        /// Path to chdman for CHD builds
+        #[arg(long)]
+        chdman: Option<PathBuf>,
+        /// Path to redumper for raw-master reproduction
+        #[arg(long)]
+        redumper: Option<PathBuf>,
+        /// Path to DolphinTool for RVZ builds
+        #[arg(long)]
+        dolphin_tool: Option<PathBuf>,
+    },
+    /// Signal the running daemon to stop and wait for a clean exit
+    Stop,
+    /// Report daemon liveness plus the convergence summary
+    Status {
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum SuggestionsAction {
+    /// List open suggestions
+    List {
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Show one suggestion's payload
+    Show {
+        id: i64,
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Apply a suggestion (imports re-validate and execute)
+    Apply {
+        id: i64,
+        /// Collection profile id or display name (default: the active profile)
+        #[arg(long)]
+        profile: Option<String>,
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Dismiss a suggestion without applying it
+    Dismiss {
+        id: i64,
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
 }

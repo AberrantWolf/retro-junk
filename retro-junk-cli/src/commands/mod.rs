@@ -12,4 +12,6 @@ pub(crate) mod scrape;
 pub(crate) mod settings;
 pub(crate) mod systems;
 
+pub mod daemon;
+pub mod suggestions;
 pub mod sync;
