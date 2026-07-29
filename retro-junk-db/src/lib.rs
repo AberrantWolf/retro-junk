@@ -4,6 +4,7 @@
 //! backed by `SQLite` (via rusqlite with bundled feature).
 
 pub mod archive;
+pub mod convergence;
 pub mod deduplicate;
 pub mod library;
 pub mod operations;

@@ -1366,7 +1366,7 @@ pub fn query_entry_list(
     let where_sql =
         format!("console_id=?1 AND display_name LIKE ?2 ESCAPE '\\' COLLATE NOCASE {filter}");
     let counts = entry_counts(conn, q.console_id)?;
-    let (_, archived_playable_gaps, completeness) = query_availability(conn, q.console_id)?;
+    let (archived_playable_gaps, completeness) = query_availability(conn, q.console_id)?;
     let mut archived_releases =
         query_archived_library_releases(conn, q.console_id, &archived_playable_gaps)?;
     let availability_counts = unified_availability_counts(conn, q.console_id, &archived_releases)?;
@@ -1787,7 +1787,7 @@ pub fn load_archived_library_releases_for_console(
     conn: &Connection,
     console_id: LibraryConsoleId,
 ) -> Result<Vec<ArchivedLibraryListItem>, LibraryError> {
-    let (_, actions, _) = query_availability(conn, console_id)?;
+    let (actions, _) = query_availability(conn, console_id)?;
     query_archived_library_releases(conn, console_id, &actions)
 }
 
@@ -1985,288 +1985,108 @@ fn regional_archive_platform(value: &str) -> Option<&'static str> {
 }
 
 #[allow(clippy::too_many_lines)]
+/// Scope for the playable-gap derivation.
+pub enum GapScope {
+    /// One library console (the GUI Library view).
+    Console(LibraryConsoleId),
+    /// Every release in a profile, independent of library consoles (daemon
+    /// derivation). Adopted-playable and playlist detection fall back to
+    /// root-scoped matching; releases whose platform has no scanned console
+    /// simply have no adopted playables to find.
+    Profile { profile_id: String },
+}
+
 fn query_availability(
     conn: &Connection,
     console_id: LibraryConsoleId,
-) -> Result<
-    (
-        LibraryAvailabilityCounts,
-        Vec<ArchivedPlayableGap>,
-        std::collections::HashSet<String>,
-    ),
-    LibraryError,
-> {
-    let (folder_name, platform): (String, String) = conn.query_row(
-        "SELECT folder_name,platform FROM library_consoles WHERE id=?1",
-        [console_id.0],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    let archive_platform = archive_platform_scope(&folder_name, &platform);
-    let mut playable_only = 0;
-    let mut archived_and_playable = 0;
-    let mut incomplete_archive_and_playable = 0;
-    let mut preferred_format_mismatch = 0;
-    let completeness = archive_completeness_for_console(conn, console_id)?;
-    let mut entry_statement = conn.prepare(
-        "SELECT e.entry_key,e.game_entry_json,
-                EXISTS(SELECT 1 FROM library_entry_media_bindings b
-                       JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
-                       JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                       JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                       JOIN archive_profiles ap ON ap.id=ar.profile_id
-                       WHERE b.library_entry_id=e.id
-                         AND ap.playable_root=(SELECT lr.root_path FROM library_roots lr
-                              JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=e.console_id)),
-                (SELECT rep.format FROM library_entry_media_bindings b
-                 JOIN representations rep ON rep.id=b.representation_id
-                 JOIN carriers rc ON rc.id=rep.carrier_id
-                 JOIN physical_copies rpc ON rpc.id=rc.physical_copy_id
-                 JOIN archive_releases rar ON rar.id=rpc.archive_release_id
-                 JOIN archive_profiles rap ON rap.id=rar.profile_id
-                 WHERE b.library_entry_id=e.id AND rep.role='playable'
-                   AND rap.playable_root=(SELECT lr.root_path FROM library_roots lr
-                        JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=e.console_id)
-                 LIMIT 1),
-                (SELECT pp.format FROM library_entry_media_bindings b
-                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
-                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                 JOIN archive_profiles ap ON ap.id=ar.profile_id
-                 JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=c.id
-                 WHERE b.library_entry_id=e.id
-                   AND ap.playable_root=(SELECT lr.root_path FROM library_roots lr
-                        JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=e.console_id)
-                 LIMIT 1),
-                (SELECT ar.id FROM library_entry_media_bindings b
-                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
-                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                 JOIN archive_profiles ap ON ap.id=ar.profile_id
-                 WHERE b.library_entry_id=e.id
-                   AND ap.playable_root=(SELECT lr.root_path FROM library_roots lr
-                        JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=e.console_id)
-                 LIMIT 1)
-         FROM library_entries e WHERE e.console_id=?1",
-    )?;
-    let entries = entry_statement.query_map([console_id.0], |row| {
+) -> Result<(Vec<ArchivedPlayableGap>, std::collections::HashSet<String>), LibraryError> {
+    query_playable_gaps(conn, &GapScope::Console(console_id))
+}
+
+/// One derivation of "archival releases whose preferred playable
+/// representation is absent" shared by the Library view (console scope) and
+/// convergence derivation (profile scope). Returns the gaps plus the set of
+/// archive-complete release ids.
+// One cohesive unit: scope dispatch, the shared row mapping, and the
+// grouping/dedup pass that turns carrier rows into release gaps.
+#[allow(clippy::too_many_lines)]
+pub fn query_playable_gaps(
+    conn: &Connection,
+    scope: &GapScope,
+) -> Result<(Vec<ArchivedPlayableGap>, std::collections::HashSet<String>), LibraryError> {
+    let completeness = match scope {
+        GapScope::Console(console_id) => archive_completeness_for_console(conn, *console_id)?,
+        GapScope::Profile { profile_id } => {
+            let playable_root: String = conn
+                .query_row(
+                    "SELECT playable_root FROM archive_profiles WHERE id=?1",
+                    [profile_id.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or_default();
+            crate::archive::archive_release_completeness(conn, profile_id, &playable_root)
+                .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?
+                .into_iter()
+                .filter_map(|(release_id, (expected, verified))| {
+                    (expected > 0 && expected == verified).then_some(release_id)
+                })
+                .collect()
+        }
+    };
+    let sql = gap_query_sql(scope);
+    let mut statement = conn.prepare(&sql)?;
+    let map_row = |row: &rusqlite::Row<'_>| {
+        let source_format: Option<String> = row.get(7)?;
+        let preferred_format: Option<String> = row.get(8)?;
+        let file_count: u64 = row.get(12)?;
+        let needs_playable = !row.get::<_, bool>(16)? && !row.get::<_, bool>(17)?;
+        let buildable = match (source_format.as_deref(), preferred_format.as_deref()) {
+            (Some("redumper_raw" | "cue_bin" | "iso"), Some("chd"))
+            | (Some("iso"), Some("rvz")) => true,
+            (Some(source), Some(preferred)) if source == preferred && file_count == 1 => true,
+            _ => false,
+        };
         Ok((
             row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, bool>(2)?,
-            row.get::<_, Option<String>>(3)?,
-            row.get::<_, Option<String>>(4)?,
-            row.get::<_, Option<String>>(5)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            preferred_format,
+            row.get::<_, bool>(9)?,
+            row.get::<_, bool>(10)?,
+            u32::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
+            u32::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
+            u32::try_from(row.get::<_, i64>(15)?).unwrap_or(0),
+            row.get::<_, String>(18)?,
+            row.get::<_, bool>(19)?,
+            ArchivedPlayableCarrier {
+                carrier_id: row.get(1)?,
+                dump_id: row.get(2)?,
+                catalog_media_id: row.get(3)?,
+                sequence_number: u32::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
+                source_format,
+                catalog_verified: row.get(11)?,
+                buildable,
+                needs_playable,
+            },
         ))
-    })?;
-    for entry in entries {
-        let (entry_key, game_entry_json, archived, projected, preferred, release_id) = entry?;
-        if !archived {
-            playable_only += 1;
-            continue;
+    };
+    let archived_playable_gaps = match scope {
+        GapScope::Console(console_id) => {
+            let (folder_name, platform): (String, String) = conn.query_row(
+                "SELECT folder_name,platform FROM library_consoles WHERE id=?1",
+                [console_id.0],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let archive_platform = archive_platform_scope(&folder_name, &platform);
+            statement
+                .query_map(params![archive_platform, platform, console_id.0], map_row)?
+                .collect::<Result<Vec<_>, _>>()?
         }
-        let actual = projected.unwrap_or_else(|| playable_format(&entry_key, &game_entry_json));
-        if !release_id
-            .as_ref()
-            .is_some_and(|release_id| completeness.contains(release_id))
-        {
-            incomplete_archive_and_playable += 1;
-        } else if preferred
-            .as_deref()
-            .is_some_and(|preferred| !format_satisfies_policy(&actual, preferred))
-        {
-            preferred_format_mismatch += 1;
-        } else {
-            archived_and_playable += 1;
-        }
-    }
-
-    let mut statement = conn.prepare(
-        "WITH candidate_media AS (
-             SELECT ar.id AS archive_release_id,m.id AS media_id,m.disc_number
-             FROM archive_releases ar
-             JOIN archive_profiles ap ON ap.id=ar.profile_id
-             JOIN media m ON m.release_id=ar.catalog_release_id
-             WHERE ap.playable_root=(SELECT lr.root_path FROM library_roots lr
-                                     JOIN library_consoles lc ON lc.root_id=lr.id
-                                     WHERE lc.id=?3)
-               AND ar.catalog_release_id IS NOT NULL
-             UNION ALL
-             SELECT ar.id,m.id,m.disc_number
-             FROM archive_releases ar
-             JOIN archive_profiles ap ON ap.id=ar.profile_id
-             CROSS JOIN releases r INDEXED BY idx_releases_natural
-             JOIN media m ON m.release_id=r.id
-             WHERE ap.playable_root=(SELECT lr.root_path FROM library_roots lr
-                                     JOIN library_consoles lc ON lc.root_id=lr.id
-                                     WHERE lc.id=?3)
-               AND ar.catalog_release_id IS NULL
-               AND ar.catalog_work_id IS NOT NULL
-               AND r.work_id=ar.catalog_work_id
-               AND lower(r.platform_id)=lower(?2)
-               AND r.region=ar.region
-         ),
-         release_expected AS (
-             SELECT archive_release_id,
-                    CASE WHEN MAX(disc_number)>0
-                         THEN COUNT(DISTINCT CASE WHEN disc_number>0 THEN disc_number END)
-                         ELSE 1 END AS expected_count,
-                    MAX(disc_number)>0 AS numbered
-             FROM candidate_media
-             GROUP BY archive_release_id
-         ),
-         copy_counts AS (
-             SELECT pc2.id AS physical_copy_id,
-                    COUNT(DISTINCT CASE WHEN de2.id IS NOT NULL THEN
-                         CASE WHEN re2.numbered
-                              THEN CASE WHEN scoped.disc_number>0
-                                        THEN scoped.disc_number END
-                              ELSE c2.id END
-                    END) AS present_count,
-                    COUNT(DISTINCT CASE WHEN ve2.id IS NOT NULL THEN
-                         CASE WHEN re2.numbered
-                              THEN CASE WHEN scoped.disc_number>0
-                                        THEN scoped.disc_number END
-                              ELSE c2.id END
-                    END) AS verified_count
-             FROM physical_copies pc2
-             JOIN release_expected re2 ON re2.archive_release_id=pc2.archive_release_id
-             LEFT JOIN carriers c2 ON c2.physical_copy_id=pc2.id
-             LEFT JOIN candidate_media scoped
-               ON scoped.archive_release_id=pc2.archive_release_id
-              AND scoped.media_id=c2.catalog_media_id
-             LEFT JOIN dump_events de2 ON de2.carrier_id=c2.id
-             LEFT JOIN verification_events ve2
-               ON ve2.representation_id=de2.representation_id
-              AND ve2.kind='catalog' AND ve2.outcome='verified'
-              AND ve2.input_manifest_sha256=de2.manifest_sha256
-              AND (ve2.complete_track_set=1 OR NOT EXISTS(
-                   SELECT 1 FROM media_tracks mt
-                   WHERE mt.media_id=c2.catalog_media_id))
-             GROUP BY pc2.id
-         )
-         SELECT ar.id,c.id,
-                (SELECT de.id FROM dump_events de WHERE de.carrier_id=c.id
-                 ORDER BY de.captured_at DESC,de.id DESC LIMIT 1),
-                c.catalog_media_id,ar.title,ar.region,c.sequence_number,
-                (SELECT de.format FROM dump_events de WHERE de.carrier_id=c.id
-                 ORDER BY de.captured_at DESC,de.id DESC LIMIT 1),
-                pp.format,COALESCE(pp.allow_unverified,0),COALESCE(pp.retain_intermediate,0),
-                EXISTS(SELECT 1 FROM dump_events de JOIN verification_events ve
-                       ON ve.representation_id=de.representation_id
-                       WHERE de.carrier_id=c.id AND ve.kind='catalog' AND ve.outcome='verified'
-                         AND ve.input_manifest_sha256=de.manifest_sha256
-                         AND (ve.complete_track_set=1 OR NOT EXISTS(
-                              SELECT 1 FROM media_tracks mt
-                              WHERE mt.media_id=c.catalog_media_id))),
-                (SELECT COUNT(*) FROM representation_files rf
-                 JOIN dump_events de ON de.representation_id=rf.representation_id
-                 WHERE de.id=(SELECT newest.id FROM dump_events newest WHERE newest.carrier_id=c.id
-                              ORDER BY newest.captured_at DESC,newest.id DESC LIMIT 1)),
-                COALESCE(re.expected_count,0),
-                COALESCE(cc.present_count,0),
-                COALESCE(cc.verified_count,0),
-                EXISTS(SELECT 1 FROM representations rep
-                       WHERE rep.carrier_id=c.id AND rep.role='playable'
-                         AND rep.presence_state='present'
-                         AND (pp.format IS NULL OR rep.format=pp.format)),
-                EXISTS(SELECT 1 FROM library_entry_media_bindings b
-                       JOIN library_entries e ON e.id=b.library_entry_id
-                       JOIN library_consoles lc ON lc.id=e.console_id
-                       WHERE b.catalog_media_id=c.catalog_media_id
-                         AND lc.id=?3
-                         AND (pp.format IS NULL
-                              OR (pp.format='rom' AND lower(e.entry_key) NOT LIKE '%.chd'
-                                  AND lower(e.entry_key) NOT LIKE '%.rvz'
-                                  AND lower(e.entry_key) NOT LIKE '%.iso'
-                                  AND lower(e.entry_key) NOT LIKE '%.cue'
-                                  AND lower(e.entry_key) NOT LIKE '%.bin')
-                              OR (pp.format='cue_bin' AND lower(e.entry_key) LIKE '%.cue')
-                              OR (pp.format='cue_bin'
-                                  AND json_valid(e.game_entry_json)
-                                  AND EXISTS(
-                                      SELECT 1 FROM json_each(
-                                          json_extract(e.game_entry_json,'$.MultiDisc.files'))
-                                      WHERE lower(value) LIKE '%.cue'))
-                              OR (pp.format='chd'
-                                  AND json_valid(e.game_entry_json)
-                                  AND EXISTS(
-                                      SELECT 1 FROM json_each(
-                                          json_extract(e.game_entry_json,'$.MultiDisc.files'))
-                                      WHERE lower(value) LIKE '%.chd')
-                                  AND NOT EXISTS(
-                                      SELECT 1 FROM json_each(
-                                          json_extract(e.game_entry_json,'$.MultiDisc.files'))
-                                      WHERE lower(value) NOT LIKE '%.chd'
-                                        AND lower(value) NOT LIKE '%.m3u'))
-                              OR lower(e.entry_key) LIKE '%.' || pp.format)),
-                pc.id,
-                EXISTS(SELECT 1 FROM library_entry_media_bindings playlist_binding
-                       JOIN library_entries playlist_entry
-                         ON playlist_entry.id=playlist_binding.library_entry_id
-                       JOIN media playlist_media
-                         ON playlist_media.id=playlist_binding.catalog_media_id
-                       JOIN releases playlist_release
-                         ON playlist_release.id=playlist_media.release_id
-                       JOIN library_consoles playlist_console
-                         ON playlist_console.id=playlist_entry.console_id
-                       WHERE (playlist_media.release_id=ar.catalog_release_id
-                              OR (ar.catalog_release_id IS NULL
-                                  AND ar.catalog_work_id IS NOT NULL
-                                  AND playlist_release.work_id=ar.catalog_work_id
-                                  AND lower(playlist_release.platform_id)=lower(?2)
-                                  AND playlist_release.region=ar.region))
-                         AND json_extract(
-                             playlist_entry.game_entry_json,'$.MultiDisc') IS NOT NULL
-                         AND playlist_console.id=?3)
-         FROM archive_releases ar
-         JOIN archive_profiles ap ON ap.id=ar.profile_id
-         JOIN physical_copies pc ON pc.archive_release_id=ar.id
-         JOIN carriers c ON c.physical_copy_id=pc.id
-         LEFT JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=c.id
-         LEFT JOIN release_expected re ON re.archive_release_id=ar.id
-         LEFT JOIN copy_counts cc ON cc.physical_copy_id=pc.id
-         WHERE lower(ar.platform_id)=lower(?1)
-           AND ap.playable_root=(SELECT lr.root_path FROM library_roots lr
-                                JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=?3)
-         ORDER BY ar.title COLLATE NOCASE,c.sequence_number,c.id",
-    )?;
-    let archived_playable_gaps = statement
-        .query_map(params![archive_platform, platform, console_id.0], |row| {
-            let source_format: Option<String> = row.get(7)?;
-            let preferred_format: Option<String> = row.get(8)?;
-            let file_count: u64 = row.get(12)?;
-            let needs_playable = !row.get::<_, bool>(16)? && !row.get::<_, bool>(17)?;
-            let buildable = match (source_format.as_deref(), preferred_format.as_deref()) {
-                (Some("redumper_raw" | "cue_bin" | "iso"), Some("chd"))
-                | (Some("iso"), Some("rvz")) => true,
-                (Some(source), Some(preferred)) if source == preferred && file_count == 1 => true,
-                _ => false,
-            };
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                preferred_format,
-                row.get::<_, bool>(9)?,
-                row.get::<_, bool>(10)?,
-                u32::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
-                u32::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
-                u32::try_from(row.get::<_, i64>(15)?).unwrap_or(0),
-                row.get::<_, String>(18)?,
-                row.get::<_, bool>(19)?,
-                ArchivedPlayableCarrier {
-                    carrier_id: row.get(1)?,
-                    dump_id: row.get(2)?,
-                    catalog_media_id: row.get(3)?,
-                    sequence_number: u32::try_from(row.get::<_, i64>(6)?).unwrap_or(0),
-                    source_format,
-                    catalog_verified: row.get(11)?,
-                    buildable,
-                    needs_playable,
-                },
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+        GapScope::Profile { profile_id } => statement
+            .query_map(params![profile_id], map_row)?
+            .collect::<Result<Vec<_>, _>>()?,
+    };
     let mut grouped = Vec::<ArchivedPlayableGap>::new();
     for (
         archive_release_id,
@@ -2345,17 +2165,200 @@ fn query_availability(
             .cmp(&right.title.to_ascii_lowercase())
             .then_with(|| left.archive_release_id.cmp(&right.archive_release_id))
     });
-    let availability_counts = LibraryAvailabilityCounts {
-        playable_only,
-        archived_and_playable,
-        incomplete_archive_and_playable,
-        preferred_format_mismatch,
-        archived_not_playable: grouped
-            .iter()
-            .filter(|release| release.needs_playable || release.needs_playlist)
-            .count() as u64,
+    Ok((grouped, completeness))
+}
+
+/// Build the gap query for a scope. The SQL body is identical; only the
+/// scope filters differ (console-pinned vs profile-wide with root-scoped
+/// library checks).
+// One SQL template; splitting it would scatter the query this function
+// exists to keep whole.
+#[allow(clippy::too_many_lines)]
+fn gap_query_sql(scope: &GapScope) -> String {
+    // Fragments that differ per scope. Console params: ?1 archive platform,
+    // ?2 catalog platform, ?3 console id. Profile params: ?1 profile id.
+    let (
+        candidate_release_filter,
+        candidate_work_filter,
+        work_platform,
+        outer_filter,
+        adopted_scope,
+        playlist_scope,
+        playlist_platform,
+    ) = match scope {
+        GapScope::Console(_) => (
+            "ap.playable_root=(SELECT lr.root_path FROM library_roots lr
+                                     JOIN library_consoles lc ON lc.root_id=lr.id
+                                     WHERE lc.id=?3)",
+            "ap.playable_root=(SELECT lr.root_path FROM library_roots lr
+                                     JOIN library_consoles lc ON lc.root_id=lr.id
+                                     WHERE lc.id=?3)",
+            "lower(r.platform_id)=lower(?2)",
+            "lower(ar.platform_id)=lower(?1)
+           AND ap.playable_root=(SELECT lr.root_path FROM library_roots lr
+                                JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=?3)",
+            "lc.id=?3",
+            "playlist_console.id=?3",
+            "lower(playlist_release.platform_id)=lower(?2)",
+        ),
+        GapScope::Profile { .. } => (
+            "ap.id=?1",
+            "ap.id=?1",
+            "lower(r.platform_id)=lower(ar.platform_id)",
+            "ap.id=?1",
+            "EXISTS(SELECT 1 FROM library_roots lr_scope
+                                WHERE lr_scope.id=lc.root_id
+                                  AND lr_scope.root_path=ap.playable_root)",
+            "EXISTS(SELECT 1 FROM library_roots lr_playlist
+                              WHERE lr_playlist.id=playlist_console.root_id
+                                AND lr_playlist.root_path=ap.playable_root)",
+            "1=1",
+        ),
     };
-    Ok((availability_counts, grouped, completeness))
+    format!(
+        "WITH candidate_media AS (
+             SELECT ar.id AS archive_release_id,m.id AS media_id,m.disc_number
+             FROM archive_releases ar
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             JOIN media m ON m.release_id=ar.catalog_release_id
+             WHERE {candidate_release_filter}
+               AND ar.catalog_release_id IS NOT NULL
+             UNION ALL
+             SELECT ar.id,m.id,m.disc_number
+             FROM archive_releases ar
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             CROSS JOIN releases r INDEXED BY idx_releases_natural
+             JOIN media m ON m.release_id=r.id
+             WHERE {candidate_work_filter}
+               AND ar.catalog_release_id IS NULL
+               AND ar.catalog_work_id IS NOT NULL
+               AND r.work_id=ar.catalog_work_id
+               AND {work_platform}
+               AND r.region=ar.region
+         ),
+         release_expected AS (
+             SELECT archive_release_id,
+                    CASE WHEN MAX(disc_number)>0
+                         THEN COUNT(DISTINCT CASE WHEN disc_number>0 THEN disc_number END)
+                         ELSE 1 END AS expected_count,
+                    MAX(disc_number)>0 AS numbered
+             FROM candidate_media
+             GROUP BY archive_release_id
+         ),
+         copy_counts AS (
+             SELECT pc2.id AS physical_copy_id,
+                    COUNT(DISTINCT CASE WHEN de2.id IS NOT NULL THEN
+                         CASE WHEN re2.numbered
+                              THEN CASE WHEN scoped.disc_number>0
+                                        THEN scoped.disc_number END
+                              ELSE c2.id END
+                    END) AS present_count,
+                    COUNT(DISTINCT CASE WHEN ve2.id IS NOT NULL THEN
+                         CASE WHEN re2.numbered
+                              THEN CASE WHEN scoped.disc_number>0
+                                        THEN scoped.disc_number END
+                              ELSE c2.id END
+                    END) AS verified_count
+             FROM physical_copies pc2
+             JOIN release_expected re2 ON re2.archive_release_id=pc2.archive_release_id
+             LEFT JOIN carriers c2 ON c2.physical_copy_id=pc2.id
+             LEFT JOIN candidate_media scoped
+               ON scoped.archive_release_id=pc2.archive_release_id
+              AND scoped.media_id=c2.catalog_media_id
+             LEFT JOIN dump_events de2 ON de2.carrier_id=c2.id
+             LEFT JOIN verification_events ve2
+               ON ve2.representation_id=de2.representation_id
+              AND ve2.kind='catalog' AND ve2.outcome='verified'
+              AND ve2.input_manifest_sha256=de2.manifest_sha256
+              AND (ve2.complete_track_set=1 OR NOT EXISTS(
+                   SELECT 1 FROM media_tracks mt
+                   WHERE mt.media_id=c2.catalog_media_id))
+             GROUP BY pc2.id
+         )
+         SELECT ar.id,c.id,
+                (SELECT de.id FROM dump_events de WHERE de.carrier_id=c.id
+                 ORDER BY de.captured_at DESC,de.id DESC LIMIT 1),
+                c.catalog_media_id,ar.title,ar.region,c.sequence_number,
+                (SELECT de.format FROM dump_events de WHERE de.carrier_id=c.id
+                 ORDER BY de.captured_at DESC,de.id DESC LIMIT 1),
+                pp.format,COALESCE(pp.allow_unverified,0),COALESCE(pp.retain_intermediate,0),
+                EXISTS(SELECT 1 FROM dump_events de JOIN verification_events ve
+                       ON ve.representation_id=de.representation_id
+                       WHERE de.carrier_id=c.id AND ve.kind='catalog' AND ve.outcome='verified'
+                         AND ve.input_manifest_sha256=de.manifest_sha256
+                         AND (ve.complete_track_set=1 OR NOT EXISTS(
+                              SELECT 1 FROM media_tracks mt
+                              WHERE mt.media_id=c.catalog_media_id))),
+                (SELECT COUNT(*) FROM representation_files rf
+                 JOIN dump_events de ON de.representation_id=rf.representation_id
+                 WHERE de.id=(SELECT newest.id FROM dump_events newest WHERE newest.carrier_id=c.id
+                              ORDER BY newest.captured_at DESC,newest.id DESC LIMIT 1)),
+                COALESCE(re.expected_count,0),
+                COALESCE(cc.present_count,0),
+                COALESCE(cc.verified_count,0),
+                EXISTS(SELECT 1 FROM representations rep
+                       WHERE rep.carrier_id=c.id AND rep.role='playable'
+                         AND rep.presence_state='present'
+                         AND (pp.format IS NULL OR rep.format=pp.format)),
+                EXISTS(SELECT 1 FROM library_entry_media_bindings b
+                       JOIN library_entries e ON e.id=b.library_entry_id
+                       JOIN library_consoles lc ON lc.id=e.console_id
+                       WHERE b.catalog_media_id=c.catalog_media_id
+                         AND {adopted_scope}
+                         AND (pp.format IS NULL
+                              OR (pp.format='rom' AND lower(e.entry_key) NOT LIKE '%.chd'
+                                  AND lower(e.entry_key) NOT LIKE '%.rvz'
+                                  AND lower(e.entry_key) NOT LIKE '%.iso'
+                                  AND lower(e.entry_key) NOT LIKE '%.cue'
+                                  AND lower(e.entry_key) NOT LIKE '%.bin')
+                              OR (pp.format='cue_bin' AND lower(e.entry_key) LIKE '%.cue')
+                              OR (pp.format='cue_bin'
+                                  AND json_valid(e.game_entry_json)
+                                  AND EXISTS(
+                                      SELECT 1 FROM json_each(
+                                          json_extract(e.game_entry_json,'$.MultiDisc.files'))
+                                      WHERE lower(value) LIKE '%.cue'))
+                              OR (pp.format='chd'
+                                  AND json_valid(e.game_entry_json)
+                                  AND EXISTS(
+                                      SELECT 1 FROM json_each(
+                                          json_extract(e.game_entry_json,'$.MultiDisc.files'))
+                                      WHERE lower(value) LIKE '%.chd')
+                                  AND NOT EXISTS(
+                                      SELECT 1 FROM json_each(
+                                          json_extract(e.game_entry_json,'$.MultiDisc.files'))
+                                      WHERE lower(value) NOT LIKE '%.chd'
+                                        AND lower(value) NOT LIKE '%.m3u'))
+                              OR lower(e.entry_key) LIKE '%.' || pp.format)),
+                pc.id,
+                EXISTS(SELECT 1 FROM library_entry_media_bindings playlist_binding
+                       JOIN library_entries playlist_entry
+                         ON playlist_entry.id=playlist_binding.library_entry_id
+                       JOIN media playlist_media
+                         ON playlist_media.id=playlist_binding.catalog_media_id
+                       JOIN releases playlist_release
+                         ON playlist_release.id=playlist_media.release_id
+                       JOIN library_consoles playlist_console
+                         ON playlist_console.id=playlist_entry.console_id
+                       WHERE (playlist_media.release_id=ar.catalog_release_id
+                              OR (ar.catalog_release_id IS NULL
+                                  AND ar.catalog_work_id IS NOT NULL
+                                  AND playlist_release.work_id=ar.catalog_work_id
+                                  AND {playlist_platform}
+                                  AND playlist_release.region=ar.region))
+                         AND json_extract(
+                             playlist_entry.game_entry_json,'$.MultiDisc') IS NOT NULL
+                         AND {playlist_scope})
+         FROM archive_releases ar
+         JOIN archive_profiles ap ON ap.id=ar.profile_id
+         JOIN physical_copies pc ON pc.archive_release_id=ar.id
+         JOIN carriers c ON c.physical_copy_id=pc.id
+         LEFT JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=c.id
+         LEFT JOIN release_expected re ON re.archive_release_id=ar.id
+         LEFT JOIN copy_counts cc ON cc.physical_copy_id=pc.id
+         WHERE {outer_filter}
+         ORDER BY ar.title COLLATE NOCASE,c.sequence_number,c.id"
+    )
 }
 
 fn archive_completeness_for_console(
@@ -2379,17 +2382,6 @@ fn archive_completeness_for_console(
     )
 }
 
-fn format_satisfies_policy(actual: &str, preferred: &str) -> bool {
-    let actual = actual.to_ascii_lowercase().replace('-', "_");
-    let preferred = preferred.to_ascii_lowercase().replace('-', "_");
-    actual == preferred
-        || (preferred == "cue_bin" && matches!(actual.as_str(), "cue" | "bin"))
-        || (preferred == "rom"
-            && !matches!(
-                actual.as_str(),
-                "chd" | "rvz" | "iso" | "cue" | "bin" | "gdi" | "cso" | "dax"
-            ))
-}
 
 fn playable_format(entry_key: &str, game_entry_json: &str) -> String {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(game_entry_json)
