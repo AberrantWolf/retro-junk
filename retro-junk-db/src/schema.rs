@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 21;
+pub const CURRENT_VERSION: i32 = 22;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -447,6 +447,70 @@ const TABLES: &[(&str, &str)] = &[
           manifest_path TEXT NOT NULL,
           manifest_sha256 TEXT NOT NULL)",
     ),
+    // ── Cross-process work coordination (v22) ──────────────────────────────
+    // Claims coordinate; they never record results — evidence and the
+    // projection do. A claim row exists only while an owner works a target.
+    (
+        "work_claims",
+        "(action_kind TEXT NOT NULL,
+          target_kind TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          owner TEXT NOT NULL,
+          since TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (action_kind, target_kind, target_id))",
+    ),
+    // One open error per (action, target); cleared on the next success. The
+    // daemon backs off recently errored targets, explicit runs retry always.
+    (
+        "work_errors",
+        "(action_kind TEXT NOT NULL,
+          target_kind TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+          message TEXT NOT NULL,
+          PRIMARY KEY (action_kind, target_kind, target_id))",
+    ),
+    // Proposed-but-unapplied commands with provenance: import candidates,
+    // binding choices, adoption/rename reviews, verification failures.
+    // resolved_at NULL = open; one open row per (kind, target).
+    (
+        "suggestions",
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL,
+          target_kind TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          confidence REAL NOT NULL DEFAULT 0,
+          provenance TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          resolved_at TEXT,
+          resolution TEXT NOT NULL DEFAULT '')",
+    ),
+    // Watched-incoming-package ledger. Plans are computed once at arrival
+    // (hash + identify) so accepting an import suggestion is instant;
+    // `fingerprint` (size+mtime) invalidates a stale plan when the file
+    // changes underneath it.
+    (
+        "incoming_packages",
+        "(path TEXT PRIMARY KEY,
+          profile_id TEXT NOT NULL DEFAULT '',
+          first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+          fingerprint TEXT NOT NULL DEFAULT '',
+          state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (state IN ('pending','ready','imported','error')),
+          detail TEXT NOT NULL DEFAULT '',
+          plan_json TEXT NOT NULL DEFAULT '')",
+    ),
+    // Singleton daemon/runtime bookkeeping. dirty_tick bumps on every
+    // coordination commit so other processes can poll for changes cheaply.
+    (
+        "runtime_state",
+        "(id INTEGER PRIMARY KEY CHECK (id = 1),
+          daemon_pid INTEGER,
+          daemon_started_at TEXT,
+          daemon_heartbeat_at TEXT,
+          dirty_tick INTEGER NOT NULL DEFAULT 0)",
+    ),
 ];
 
 const INDEXES_SQL: &str = "
@@ -478,6 +542,18 @@ CREATE INDEX IF NOT EXISTS idx_verifications_representation ON verification_even
 CREATE INDEX IF NOT EXISTS idx_library_binding_media ON library_entry_media_bindings(catalog_media_id);
 CREATE INDEX IF NOT EXISTS idx_archive_release_files_release ON archive_release_files(archive_release_id, category, asset_type);
 ";
+
+const WORK_INDEXES_SQL: &str = "
+CREATE UNIQUE INDEX IF NOT EXISTS idx_suggestions_open ON suggestions(kind, target_kind, target_id) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_suggestions_unresolved ON suggestions(resolved_at) WHERE resolved_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_incoming_packages_state ON incoming_packages(state);
+";
+
+/// Ensure the singleton `runtime_state` row exists.
+fn seed_runtime_state(conn: &Connection) -> Result<(), SchemaError> {
+    conn.execute_batch("INSERT OR IGNORE INTO runtime_state(id) VALUES(1);")?;
+    Ok(())
+}
 
 /// Tables rebuilt by the v8 → v9 migration, with the SELECT expressions that
 /// map the old (nullable) layout onto the canonical one in [`TABLES`].
@@ -551,9 +627,11 @@ pub fn create_schema(conn: &Connection) -> Result<(), SchemaError> {
     }
     conn.execute_batch(INDEXES_SQL)?;
     conn.execute_batch(ARCHIVE_INDEXES_SQL)?;
+    conn.execute_batch(WORK_INDEXES_SQL)?;
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_media_serial_key ON media_serial_keys(serial_key);",
     )?;
+    seed_runtime_state(conn)?;
     set_schema_version(conn, CURRENT_VERSION)?;
     Ok(())
 }
@@ -1017,6 +1095,25 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 if has_catalog {
                     crate::deduplicate::deduplicate_catalog(conn, None)?;
                 }
+            }
+            21 => {
+                // Cross-process work coordination: claims, per-target errors,
+                // the suggestions inbox, the incoming-package ledger, and the
+                // runtime singleton. Purely additive.
+                for name in [
+                    "work_claims",
+                    "work_errors",
+                    "suggestions",
+                    "incoming_packages",
+                    "runtime_state",
+                ] {
+                    conn.execute_batch(&format!(
+                        "CREATE TABLE IF NOT EXISTS {name} {};",
+                        table_body(name)?
+                    ))?;
+                }
+                conn.execute_batch(WORK_INDEXES_SQL)?;
+                seed_runtime_state(conn)?;
             }
             14 => {
                 let has_match_state: bool = conn.query_row(

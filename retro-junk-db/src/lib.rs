@@ -9,6 +9,7 @@ pub mod library;
 pub mod operations;
 pub mod queries;
 pub mod schema;
+pub mod work;
 
 pub use archive::{
     ArchiveCollectionDetails, ArchiveReleaseSummary, CompleteCatalogMediaMatch,
