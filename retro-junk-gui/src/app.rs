@@ -237,6 +237,12 @@ pub struct RetroJunkApp {
         Option<(u64, retro_junk_db::LibraryConsoleId, ConsoleDetailsAction)>,
     pending_scan_commits: HashMap<u64, String>,
 
+    /// Set while a startup root restore is waiting for its `RootOpened`
+    /// reply. If that reply carries no projected consoles the root has never
+    /// been scanned, and only then does startup fall back to a filesystem
+    /// walk — a projected root paints straight from the database.
+    pub pending_first_open_scan: bool,
+
     /// `JoinHandle`s for every spawned background-operation thread, keyed by
     /// `op_id`. Joined (and removed) when the operation completes, or all at
     /// once in `on_exit` so the process never dies mid-write (D2).
@@ -288,48 +294,85 @@ impl RetroJunkApp {
     }
 
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let construct_started = std::time::Instant::now();
         let settings = crate::settings::load_settings();
         let target_db_path = retro_junk_lib::settings::catalog_database_path();
-        let location_migration =
-            retro_junk_lib::settings::catalog_database_needs_location_migration().unwrap_or(true);
-        let schema_migration = target_db_path.is_file()
-            && retro_junk_db::database_needs_migration(&target_db_path).unwrap_or(true);
         let mut app = Self::with_parts(&cc.egui_ctx, settings, None, None);
-        app.db_path = Some(target_db_path);
-        if location_migration || schema_migration {
-            app.ui_state.startup_status = Some(if location_migration {
-                "Moving and validating the catalog database…".to_owned()
-            } else {
-                "Migrating the catalog database schema…".to_owned()
-            });
-        }
+        app.db_path = Some(target_db_path.clone());
+        log::info!(
+            "startup: settings + UI construction took {:?}",
+            construct_started.elapsed()
+        );
 
-        // Database preparation, archive reconciliation, and saved-root probes
-        // are independent. Only a true location/schema migration is modal;
-        // routine network-backed verification begins after the current DB is
-        // available and remains a tracked background archive operation.
+        // Every database probe, migration, archive check, and saved-root
+        // probe runs off the UI thread so the first frame paints immediately.
+        // The blocking modal appears only if a real location/schema migration
+        // turns out to be required.
         let tx = app.message_tx.clone();
         let ctx = cc.egui_ctx.clone();
         let analysis_context = app.context.clone();
         let configured_root = app.settings.library.current_root.clone();
         let configured_profile = app.settings.library.active_profile().cloned();
         std::thread::spawn(move || {
+            let thread_started = std::time::Instant::now();
+            let location_migration =
+                retro_junk_lib::settings::catalog_database_needs_location_migration()
+                    .unwrap_or(true);
+            let schema_migration = target_db_path.is_file()
+                && retro_junk_db::database_needs_migration(&target_db_path).unwrap_or(true);
+            if location_migration || schema_migration {
+                let status = if location_migration {
+                    "Moving and validating the catalog database…".to_owned()
+                } else {
+                    "Migrating the catalog database schema…".to_owned()
+                };
+                let _ = tx.send(crate::state::AppMessage::StartupStatus {
+                    status: Some(status),
+                });
+                ctx.request_repaint();
+            }
+
+            let stage = std::time::Instant::now();
             let database = retro_junk_lib::settings::ensure_catalog_database_location()
                 .map_err(|error| error.to_string())
                 .and_then(|path| {
                     retro_junk_db::open_database(&path).map_err(|error| error.to_string())
                 });
             let database_ready = database.is_ok();
-            let _ = tx.send(crate::state::AppMessage::StartupReady { database });
-            ctx.request_repaint();
+            log::info!("startup: catalog database ready in {:?}", stage.elapsed());
 
-            if database_ready
-                && let Some(profile) = configured_profile
+            // Refresh the archive projection at startup only when it has
+            // never been committed. The archive changes only through this
+            // tool and every mutation reconciles, so an indexed profile
+            // paints from the committed projection immediately; deep rescans
+            // stay behind explicit Refresh/reindex.
+            let mut refresh_profile = None;
+            if let (Ok(connection), Some(profile)) = (&database, &configured_profile)
                 && profile
                     .archive_root
                     .join("retro-junk-archive.toml")
                     .is_file()
             {
+                let profile_id = profile.profile_id.to_string();
+                match retro_junk_db::archive_profile_indexed_at(connection, &profile_id) {
+                    Ok(Some(indexed_at)) => {
+                        log::info!(
+                            "startup: archive projection committed at {indexed_at}; \
+                             skipping startup refresh"
+                        );
+                    }
+                    Ok(None) => refresh_profile = Some(profile.clone()),
+                    Err(error) => {
+                        log::warn!("startup: archive projection probe failed: {error}");
+                        refresh_profile = Some(profile.clone());
+                    }
+                }
+            }
+
+            let _ = tx.send(crate::state::AppMessage::StartupReady { database });
+            ctx.request_repaint();
+
+            if let Some(profile) = refresh_profile {
                 let _ = tx.send(crate::state::AppMessage::StartArchiveRefresh { profile });
                 ctx.request_repaint();
             }
@@ -342,6 +385,7 @@ impl RetroJunkApp {
                     fragile_mount_kind = crate::util::fragile_mount_kind(&root);
                     if fragile_mount_kind.is_none()
                         && database_ready
+                        && crate::cache::has_legacy_cache(&root)
                         && let Ok(mut connection) = retro_junk_db::open_database(
                             &retro_junk_lib::settings::catalog_database_path(),
                         )
@@ -362,6 +406,10 @@ impl RetroJunkApp {
                 fragile_mount_kind,
             });
             ctx.request_repaint();
+            log::info!(
+                "startup: background preparation finished in {:?}",
+                thread_started.elapsed()
+            );
         });
 
         app
@@ -421,6 +469,7 @@ impl RetroJunkApp {
             pending_selection_details_request: None,
             pending_console_details_request: None,
             pending_scan_commits: HashMap::new(),
+            pending_first_open_scan: false,
             op_threads: HashMap::new(),
         }
     }
@@ -525,8 +574,15 @@ impl RetroJunkApp {
                     root_id,
                     summaries,
                 }) => {
+                    let unprojected = summaries.is_empty();
                     self.browser.root_id = Some(root_id);
                     self.merge_console_summaries(summaries);
+                    if std::mem::take(&mut self.pending_first_open_scan) && unprojected {
+                        log::info!("startup: root has no committed projection; scanning");
+                        let _ = self
+                            .message_tx
+                            .send(crate::state::AppMessage::StartFolderScan);
+                    }
                     let missing: Vec<_> = self
                         .browser
                         .consoles
@@ -1136,6 +1192,7 @@ impl RetroJunkApp {
         self.pending_selection_details_request = None;
         self.pending_console_details_request = None;
         self.pending_scan_commits.clear();
+        self.pending_first_open_scan = false;
     }
 
     /// Whether a CHD-compression operation (planning or compressing) is

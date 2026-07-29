@@ -175,49 +175,42 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                         row.set_selected(
                             selected_release_id == Some(release.archive_release_id.as_str()),
                         );
-                        let mut response =
-                            row.col(|ui| paint_cell_text(ui, &release.platform_id)).1;
-                        response |= row.col(|ui| paint_cell_text(ui, &display_title)).1;
-                        response |= row
-                            .col(|ui| {
-                                paint_cell_text(
-                                    ui,
-                                    &format!(
-                                        "{} copy / {} carrier",
-                                        release.physical_copy_count, release.carrier_count
-                                    ),
-                                );
-                            })
-                            .1;
-                        response |= row
-                            .col(|ui| {
-                                let text = if release.archive_complete {
-                                    format!(
-                                        "Complete ({}/{})",
-                                        release.verified_disc_count, release.expected_disc_count
-                                    )
-                                } else if release.expected_disc_count > 0 {
-                                    format!(
-                                        "Incomplete ({}/{})",
-                                        release.verified_disc_count, release.expected_disc_count
-                                    )
-                                } else {
-                                    "Unknown (not catalog-bound)".to_owned()
-                                };
-                                paint_cell_text(ui, &text);
-                            })
-                            .1;
-                        response |= row
-                            .col(|ui| {
-                                paint_cell_text(
-                                    ui,
-                                    &format!(
-                                        "{}/{} present",
-                                        release.playable_present_count, release.playable_count
-                                    ),
-                                );
-                            })
-                            .1;
+                        row.col(|ui| paint_cell_text(ui, &release.platform_id));
+                        row.col(|ui| paint_cell_text(ui, &display_title));
+                        row.col(|ui| {
+                            paint_cell_text(
+                                ui,
+                                &format!(
+                                    "{} copy / {} carrier",
+                                    release.physical_copy_count, release.carrier_count
+                                ),
+                            );
+                        });
+                        row.col(|ui| {
+                            let text = if release.archive_complete {
+                                format!(
+                                    "Complete ({}/{})",
+                                    release.verified_disc_count, release.expected_disc_count
+                                )
+                            } else if release.expected_disc_count > 0 {
+                                format!(
+                                    "Incomplete ({}/{})",
+                                    release.verified_disc_count, release.expected_disc_count
+                                )
+                            } else {
+                                "Unknown (not catalog-bound)".to_owned()
+                            };
+                            paint_cell_text(ui, &text);
+                        });
+                        row.col(|ui| {
+                            paint_cell_text(
+                                ui,
+                                &format!(
+                                    "{}/{} present",
+                                    release.playable_present_count, release.playable_count
+                                ),
+                            );
+                        });
                         let desired =
                             if release.desired_playable_count > release.satisfied_playable_count {
                                 "pending"
@@ -226,21 +219,24 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                             } else {
                                 "—"
                             };
-                        response |= row.col(|ui| paint_cell_text(ui, desired)).1;
-                        response |= row
-                            .col(|ui| {
-                                paint_cell_text(
-                                    ui,
-                                    &format!(
-                                        "I {} · Repro {} · Catalog {} · RT {}",
-                                        release.integrity_verified_count,
-                                        release.reproduction_verified_count,
-                                        release.catalog_verified_count,
-                                        release.round_trip_verified_count
-                                    ),
-                                );
-                            })
-                            .1;
+                        row.col(|ui| paint_cell_text(ui, desired));
+                        row.col(|ui| {
+                            paint_cell_text(
+                                ui,
+                                &format!(
+                                    "I {} · Repro {} · Catalog {} · RT {}",
+                                    release.integrity_verified_count,
+                                    release.reproduction_verified_count,
+                                    release.catalog_verified_count,
+                                    release.round_trip_verified_count
+                                ),
+                            );
+                        });
+                        // One whole-row response (the builder sets
+                        // `Sense::click()`) instead of unioning per-cell
+                        // responses: same click behavior, one accessibility
+                        // node spanning the row.
+                        let response = row.response();
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
                                 egui::WidgetType::SelectableLabel,

@@ -439,7 +439,10 @@ fn find_entry_by_file_mut_returns_none_for_unknown_file() {
 #[test]
 fn refresh_multidisc_files_remaps_via_playlist_with_claim_tracking() {
     let dir = tempfile::TempDir::new().unwrap();
-    let folder = dir.path();
+    // Canonicalize so expectations match the resolved paths the refresh
+    // produces (macOS tempdirs live behind the /var → /private/var symlink).
+    let canonical = dir.path().canonicalize().unwrap();
+    let folder = canonical.as_path();
 
     // Two discs, remapped by the playlist to new .chd names.
     std::fs::write(folder.join("D1.chd"), "").unwrap();

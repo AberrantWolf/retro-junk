@@ -965,6 +965,24 @@ fn insert_projected_policy(
     Ok(())
 }
 
+/// When this profile's archive projection was last committed, or `None` if it
+/// has never been reconciled. Lets startup paint the committed projection
+/// immediately instead of rescanning an archive that only changes through the
+/// tool anyway.
+pub fn archive_profile_indexed_at(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<Option<String>, OperationError> {
+    let indexed_at = conn
+        .query_row(
+            "SELECT indexed_at FROM archive_profiles WHERE id=?1",
+            [profile_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(indexed_at)
+}
+
 /// Increment the rebuildable policy projection after the authoritative root
 /// manifest changes. Explicit carrier overrides are left untouched; only
 /// carriers inheriting this platform default are updated.

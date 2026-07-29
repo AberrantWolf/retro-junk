@@ -832,6 +832,12 @@ impl AppMessageSender {
 /// console they target. This is critical because multiple folders can map to
 /// the same platform (e.g., "gb" and "gbc" both map to `Platform::GameBoy`).
 pub enum AppMessage {
+    /// Set or clear the blocking startup modal. Sent by the startup thread
+    /// only when a real location/schema migration is required, so the first
+    /// frame never waits on database probes.
+    StartupStatus {
+        status: Option<String>,
+    },
     StartupReady {
         database: Result<retro_junk_db::Connection, String>,
     },
@@ -1051,7 +1057,8 @@ impl AppMessage {
     pub fn is_root_scoped(&self) -> bool {
         !matches!(
             self,
-            Self::StartupReady { .. }
+            Self::StartupStatus { .. }
+                | Self::StartupReady { .. }
                 | Self::StartupRootReady { .. }
                 | Self::StartArchiveRefresh { .. }
                 | Self::ArchiveOperationComplete { .. }
@@ -1595,14 +1602,24 @@ pub(crate) fn apply_multi_disc_analysis_results(
 
 pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Context) {
     match msg {
+        AppMessage::StartupStatus { status } => {
+            app.ui_state.startup_status = status;
+        }
         AppMessage::StartupReady { database } => {
             app.ui_state.startup_status = None;
             match database {
                 Ok(connection) => {
                     app.catalog_db = Some(connection);
                     if let Some(path) = app.db_path.clone() {
+                        let store_started = std::time::Instant::now();
                         match crate::backend::library_store::LibraryStore::start(path) {
-                            Ok(store) => app.library_store = Some(store),
+                            Ok(store) => {
+                                log::info!(
+                                    "startup: library store ready in {:?}",
+                                    store_started.elapsed()
+                                );
+                                app.library_store = Some(store);
+                            }
                             Err(error) => app.push_error("Library database", error),
                         }
                     }
@@ -1621,10 +1638,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 if let Some(kind) = fragile_mount_kind {
                     app.ui_state.fragile_mount_prompt = Some(FragileMountPrompt { root, kind });
                 } else {
+                    // Paint the committed projection; the filesystem walk runs
+                    // only when this root has never been projected (decided in
+                    // the RootOpened reply). Explicit refresh and rescans keep
+                    // their own StartFolderScan sends.
                     app.root_path = Some(root.clone());
                     app.ui_state.loading_library = true;
+                    app.pending_first_open_scan = true;
                     app.open_browser_root(&root, ctx);
-                    let _ = app.message_tx.send(AppMessage::StartFolderScan);
                 }
             }
         }

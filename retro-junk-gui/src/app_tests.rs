@@ -133,9 +133,15 @@ fn collection_row_opens_resizable_details_with_log_viewer_open() {
         RetroJunkApp::with_parts(&cc.egui_ctx, settings, Some(conn), None)
     });
     harness.state_mut().ui_state.current_view = View::Collection;
-    harness.run();
+    // Table-row responses report a placeholder rect to accessibility on their
+    // first frame; run a second frame so the synthetic click below lands on
+    // the row's real rect.
+    harness.run_steps(2);
     harness.get_by_label("Game (usa)").click();
-    harness.run();
+    // The hermetic harness has no library store, so the details pane keeps
+    // its loading spinner (and repaint requests) alive; step a bounded number
+    // of frames instead of running to quiescence.
+    harness.run_steps(4);
 
     assert_eq!(
         harness
@@ -149,7 +155,7 @@ fn collection_row_opens_resizable_details_with_log_viewer_open() {
     harness.get_by_label("Physical copy and playable policy");
 
     harness.state_mut().ui_state.log_viewer.open = true;
-    harness.run();
+    harness.run_steps(4);
     harness.get_by_label("Physical copy and playable policy");
 }
 

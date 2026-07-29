@@ -339,7 +339,13 @@ fn available_space(path: &Path) -> Result<Option<u64>, StageError> {
     }
     // SAFETY: a successful `statvfs` call initialized the structure.
     let stats = unsafe { stats.assume_init() };
-    Ok(Some(stats.f_bavail.saturating_mul(stats.f_frsize)))
+    // `statvfs` field widths differ per platform (u32 on macOS, u64 on
+    // Linux); `u64::from` widens or is the identity accordingly, so the
+    // conversion is only "useless" on one platform at a time.
+    #[allow(clippy::useless_conversion)]
+    Ok(Some(
+        u64::from(stats.f_bavail).saturating_mul(u64::from(stats.f_frsize)),
+    ))
 }
 
 #[cfg(not(unix))]

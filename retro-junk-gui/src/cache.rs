@@ -230,6 +230,12 @@ fn legacy_cache_path(root: &Path) -> PathBuf {
     legacy_cache_dir().join(format!("{}.json", legacy_cache_key(root)))
 }
 
+/// Whether a legacy JSON cache exists for this root. Lets startup skip the
+/// migration path — including its database connection — with one file probe.
+pub fn has_legacy_cache(root: &Path) -> bool {
+    legacy_cache_path(root).exists()
+}
+
 fn load_library_from_legacy(
     cached: &LegacyLibraryCache,
     context: &AnalysisContext,

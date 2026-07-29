@@ -12,10 +12,11 @@ pub mod schema;
 
 pub use archive::{
     ArchiveCollectionDetails, ArchiveReleaseSummary, CompleteCatalogMediaMatch,
-    bind_library_entries_by_hash, list_archive_release_summaries, load_archive_collection_details,
-    match_catalog_file, match_catalog_file_any_platform, match_catalog_serial_any_platform,
-    match_complete_catalog_media, match_complete_catalog_media_any_platform,
-    reconcile_archive_snapshot, update_projected_platform_policy,
+    archive_profile_indexed_at, bind_library_entries_by_hash, list_archive_release_summaries,
+    load_archive_collection_details, match_catalog_file, match_catalog_file_any_platform,
+    match_catalog_serial_any_platform, match_complete_catalog_media,
+    match_complete_catalog_media_any_platform, reconcile_archive_snapshot,
+    update_projected_platform_policy,
 };
 pub use deduplicate::{
     CatalogDeduplicationReport, DuplicateMediaGroup, analyze_catalog_duplicates,
