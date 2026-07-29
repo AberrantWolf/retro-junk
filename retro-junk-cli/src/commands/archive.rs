@@ -1,31 +1,16 @@
 #![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
 
-use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
 use retro_junk_archive::{
     ArchiveRootManifest, BuildEvidence, BuildId, NewCarrierDump, RepresentationFormat,
-    RepresentationId, VerificationKind, VerificationOutcome, ingest_new_carrier_dump,
-    initialize_archive, scan_archive, slugify, write_json_new, write_toml_atomic,
+    RepresentationId, ingest_new_carrier_dump, initialize_archive, scan_archive, write_json_new,
+    write_toml_atomic,
 };
 
 use crate::CliError;
 use crate::cli_types::ArchiveAction;
-
-#[derive(Debug, serde::Serialize)]
-struct PlayableInbox {
-    generated_at: String,
-    playable_root: String,
-    entries: Vec<PlayableInboxEntry>,
-}
-
-#[derive(Debug, serde::Serialize)]
-struct PlayableInboxEntry {
-    relative_path: String,
-    status: String,
-    detail: String,
-}
 
 pub(crate) fn run_archive(
     action: ArchiveAction,
@@ -1030,7 +1015,7 @@ fn run_adopt_playable(
         .map(|build| build.evidence.relative_output_path.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     let cancelled = AtomicBool::new(false);
-    let mut inbox = Vec::new();
+    let mut suggested = 0_usize;
     let mut adopted = 0_usize;
     for path in files {
         let relative = retro_junk_archive::normalize_relative_path(
@@ -1059,11 +1044,7 @@ fn run_adopt_playable(
             })
             .collect::<Vec<_>>();
         if let [(release, medium, dump)] = masters.as_slice() {
-            let catalog_verified = dump.verifications.iter().any(|verification| {
-                verification.evidence.input_manifest_sha256 == dump.manifest_sha256
-                    && verification.evidence.kind == VerificationKind::Catalog
-                    && verification.evidence.outcome == VerificationOutcome::Verified
-            });
+            let catalog_verified = retro_junk_archive::dump_catalog_verified(dump);
             let build_id = BuildId::new();
             let child_representation_id = RepresentationId::new();
             let evidence = BuildEvidence {
@@ -1104,11 +1085,14 @@ fn run_adopt_playable(
             continue;
         }
         if masters.len() > 1 {
-            inbox.push(PlayableInboxEntry {
-                relative_path: relative,
-                status: "ambiguous_archive_master".to_owned(),
-                detail: format!("bytes match {} archived masters", masters.len()),
-            });
+            suggest_adoption_review(
+                &mut connection,
+                &relative,
+                "ambiguous_archive_master",
+                &format!("bytes match {} archived masters", masters.len()),
+                0.3,
+            )?;
+            suggested += 1;
             continue;
         }
         let platform = std::path::Path::new(&relative)
@@ -1161,23 +1145,14 @@ fn run_adopt_playable(
                 format!("matches {} catalog media", catalog.len()),
             ),
         };
-        inbox.push(PlayableInboxEntry {
-            relative_path: relative,
-            status: status.to_owned(),
-            detail,
-        });
+        let confidence = match status {
+            "catalog_only" => 0.6,
+            "ambiguous_catalog" => 0.3,
+            _ => 0.1,
+        };
+        suggest_adoption_review(&mut connection, &relative, status, &detail, confidence)?;
+        suggested += 1;
     }
-    let state_directory = archive_root.join(".retro-junk");
-    std::fs::create_dir_all(&state_directory)?;
-    retro_junk_archive::write_toml_atomic(
-        &state_directory.join("playable-inbox.toml"),
-        &PlayableInbox {
-            generated_at: chrono::Utc::now().to_rfc3339(),
-            playable_root: playable_root.display().to_string(),
-            entries: inbox,
-        },
-    )
-    .map_err(|error| CliError::other(error.to_string()))?;
     let refreshed =
         scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
     retro_junk_db::reconcile_archive_snapshot(
@@ -1189,9 +1164,37 @@ fn run_adopt_playable(
     .map_err(|error| CliError::database(error.to_string()))?;
     log::info!("Adopted {adopted} byte-identical playable file(s)");
     log::info!(
-        "Wrote unresolved playable inventory to {}",
-        state_directory.join("playable-inbox.toml").display()
+        "Recorded {suggested} unresolved playable file(s) as suggestions          (`retro-junk suggestions list`)"
     );
+    Ok(())
+}
+
+/// One open review row per unresolved playable file; re-running adoption
+/// refreshes rather than piles up.
+fn suggest_adoption_review(
+    connection: &mut retro_junk_db::Connection,
+    relative_path: &str,
+    status: &str,
+    detail: &str,
+    confidence: f64,
+) -> Result<(), CliError> {
+    let payload = serde_json::json!({
+        "relative_path": relative_path,
+        "status": status,
+        "detail": detail,
+    });
+    retro_junk_db::work::open_suggestion(
+        connection,
+        &retro_junk_db::work::NewSuggestion {
+            kind: "adopt_playable",
+            target_kind: "path",
+            target_id: relative_path,
+            payload_json: &payload.to_string(),
+            confidence,
+            provenance: "cli-adopt",
+        },
+    )
+    .map_err(|error| CliError::database(error.to_string()))?;
     Ok(())
 }
 
@@ -1527,65 +1530,6 @@ pub(crate) fn log_progress(phase: &str, current: u64, total: u64) {
     } else {
         log::info!("{phase}");
     }
-}
-
-fn playable_output_stem(
-    release: &retro_junk_archive::IndexedRelease,
-    medium: &retro_junk_archive::IndexedCarrier,
-) -> String {
-    let mut name = release_output_name(release);
-    if medium.manifest.sequence_number > 0 {
-        let _ = write!(name, " (Disc {})", medium.manifest.sequence_number);
-    }
-    slugify(&name)
-}
-
-fn release_output_name(release: &retro_junk_archive::IndexedRelease) -> String {
-    let mut name = release.manifest.title.clone();
-    for value in [
-        &release.manifest.region,
-        &release.manifest.revision,
-        &release.manifest.variant,
-    ] {
-        if !value.is_empty() {
-            let _ = write!(name, " ({value})");
-        }
-    }
-    name
-}
-
-fn same_platform_id(left: &str, right: &str) -> bool {
-    left.eq_ignore_ascii_case(right)
-        || matches!(
-            (
-                left.parse::<retro_junk_core::Platform>(),
-                right.parse::<retro_junk_core::Platform>()
-            ),
-            (Ok(left), Ok(right)) if left == right
-        )
-}
-
-fn find_input(directory: &std::path::Path, extensions: &[&str]) -> Result<PathBuf, CliError> {
-    let mut paths = std::fs::read_dir(directory)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| {
-                    extensions
-                        .iter()
-                        .any(|extension| value.eq_ignore_ascii_case(extension))
-                })
-        })
-        .collect::<Vec<_>>();
-    paths.sort();
-    paths.into_iter().next().ok_or_else(|| {
-        CliError::other(format!(
-            "no supported entrypoint found in {}",
-            directory.display()
-        ))
-    })
 }
 
 fn run_init(archive_root: PathBuf, name: String) -> Result<(), CliError> {

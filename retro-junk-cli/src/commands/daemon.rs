@@ -71,7 +71,11 @@ fn run_start(
     let profile = retro_junk_work::profiles::resolve_profile(profile).ok_or_else(|| {
         CliError::config("no collection profile found; configure one in the GUI or settings.toml")
     })?;
-    if !profile.archive_root.join("retro-junk-archive.toml").is_file() {
+    if !profile
+        .archive_root
+        .join("retro-junk-archive.toml")
+        .is_file()
+    {
         return Err(CliError::config(format!(
             "profile archive root {} is not an initialized archive",
             profile.archive_root.display()
@@ -131,7 +135,9 @@ fn run_stop() -> Result<(), CliError> {
         .arg(pid.to_string())
         .status()?;
     if !status.success() {
-        return Err(CliError::other(format!("could not signal daemon pid {pid}")));
+        return Err(CliError::other(format!(
+            "could not signal daemon pid {pid}"
+        )));
     }
     // The daemon removes its PID file on clean exit.
     for _ in 0..50 {

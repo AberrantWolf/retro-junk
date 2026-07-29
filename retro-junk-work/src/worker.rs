@@ -31,7 +31,7 @@ pub struct RunStats {
 impl RunStats {
     fn absorb(&mut self, outcome: &ActionOutcome) {
         match outcome {
-            ActionOutcome::Completed => self.completed += 1,
+            ActionOutcome::Completed { .. } => self.completed += 1,
             ActionOutcome::ClaimHeld(_) | ActionOutcome::ArchiveBusy => self.skipped_busy += 1,
             ActionOutcome::Blocked(_) => self.blocked += 1,
             ActionOutcome::Cancelled => self.cancelled += 1,
@@ -102,9 +102,7 @@ pub fn run_once(
             break;
         }
         let is_projection_stage = stage.contains(&ActionKind::ProjectAssets);
-        if is_projection_stage
-            && projections == ProjectionPass::OnlyAfterMutation
-            && !any_completed
+        if is_projection_stage && projections == ProjectionPass::OnlyAfterMutation && !any_completed
         {
             // Nothing changed this run: existing projections are current.
             break;
@@ -165,7 +163,7 @@ pub fn run_once(
             }
             executed += 1;
             let outcome = execute_action(ctx, &action, progress, cancelled)?;
-            if matches!(outcome, ActionOutcome::Completed) {
+            if matches!(outcome, ActionOutcome::Completed { .. }) {
                 stage_mutated = true;
                 any_completed = true;
             } else if let ActionOutcome::Blocked(reason) = &outcome {

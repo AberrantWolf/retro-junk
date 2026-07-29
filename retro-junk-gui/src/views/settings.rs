@@ -20,6 +20,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.add_space(16.0);
         show_scraper_section(ui, app);
         ui.add_space(16.0);
+        show_automation_section(ui, app);
+        ui.add_space(16.0);
         show_cache_section(ui, app);
     });
 
@@ -592,4 +594,86 @@ enum RecentAction {
     Open(std::path::PathBuf),
     ClearCache(std::path::PathBuf),
     Remove(usize),
+}
+
+fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    use retro_junk_work::{AutoImportMode, BindConfidence};
+
+    ui.strong("Automation");
+    ui.add_space(4.0);
+    ui.weak(
+        "What the daemon and background runs do unattended. Safe, idempotent          work (verify, build, project) defaults to automatic; imports touch          files you placed, so they default to review.",
+    );
+    ui.add_space(4.0);
+    let policy = app
+        .ui_state
+        .automation_policy
+        .get_or_insert_with(retro_junk_work::AutomationPolicy::load);
+    let mut changed = false;
+    changed |= ui
+        .checkbox(
+            &mut policy.auto_verify,
+            "Verify archive dumps automatically (append-only evidence)",
+        )
+        .changed();
+    changed |= ui
+        .checkbox(
+            &mut policy.auto_build,
+            "Build playable copies, project artwork, and update gamelists automatically",
+        )
+        .changed();
+    ui.horizontal(|ui| {
+        ui.label("Incoming dumps:");
+        changed |= ui
+            .selectable_value(&mut policy.auto_import, AutoImportMode::On, "Import")
+            .changed();
+        changed |= ui
+            .selectable_value(&mut policy.auto_import, AutoImportMode::Suggest, "Suggest")
+            .changed();
+        changed |= ui
+            .selectable_value(&mut policy.auto_import, AutoImportMode::Off, "Track only")
+            .changed();
+    });
+    if policy.auto_import == AutoImportMode::On {
+        ui.horizontal(|ui| {
+            ui.label("Auto-import needs at least:");
+            changed |= ui
+                .selectable_value(
+                    &mut policy.auto_bind_min_confidence,
+                    BindConfidence::ExactHash,
+                    "Exact hash",
+                )
+                .changed();
+            changed |= ui
+                .selectable_value(
+                    &mut policy.auto_bind_min_confidence,
+                    BindConfidence::ExactSerial,
+                    "Header serial",
+                )
+                .changed();
+            changed |= ui
+                .selectable_value(
+                    &mut policy.auto_bind_min_confidence,
+                    BindConfidence::FolderSerial,
+                    "Folder serial",
+                )
+                .changed();
+        });
+    }
+    changed |= ui
+        .checkbox(
+            &mut policy.verify_published_bytes,
+            "Re-read published bytes at import (extra full read; background              verification covers this otherwise)",
+        )
+        .changed();
+    ui.horizontal(|ui| {
+        ui.label("Deep rescan every");
+        changed |= ui
+            .add(egui::DragValue::new(&mut policy.deep_rescan_hours).range(0..=720))
+            .changed();
+        ui.label("hours (0 = off)");
+    });
+    if changed && let Err(error) = policy.save() {
+        app.push_error("Automation settings", error.to_string());
+    }
 }

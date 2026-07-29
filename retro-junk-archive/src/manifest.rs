@@ -290,6 +290,23 @@ pub enum RepresentationFormat {
     Other(String),
 }
 
+impl RepresentationFormat {
+    /// The stable snake_case key used by policy rows and projections;
+    /// inverse of [`FromStr`](std::str::FromStr).
+    #[must_use]
+    pub fn key(&self) -> &str {
+        match self {
+            Self::RedumperRaw => "redumper_raw",
+            Self::Rom => "rom",
+            Self::CueBin => "cue_bin",
+            Self::Iso => "iso",
+            Self::Chd => "chd",
+            Self::Rvz => "rvz",
+            Self::Other(other) => other,
+        }
+    }
+}
+
 impl std::str::FromStr for RepresentationFormat {
     type Err = String;
 

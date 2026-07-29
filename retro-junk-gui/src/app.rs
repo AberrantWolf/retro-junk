@@ -102,6 +102,12 @@ pub struct UiState {
     pub loading_library: bool,
     /// Present while startup database work blocks reliable application use.
     pub startup_status: Option<String>,
+    /// Automation policy being edited in Settings; loaded on first show,
+    /// saved surgically on change.
+    pub automation_policy: Option<retro_junk_work::AutomationPolicy>,
+    /// Open-suggestion count for the status bar; refreshed with the
+    /// archive projection.
+    pub open_suggestion_count: u64,
     /// Transient state for the Tools (catalog) view.
     pub tools_state: ToolsState,
     /// Which panel currently has keyboard focus for arrow-key navigation.
@@ -164,6 +170,8 @@ impl Default for UiState {
             credential_info_popup: None,
             loading_library: false,
             startup_status: None,
+            automation_policy: None,
+            open_suggestion_count: 0,
             tools_state: ToolsState::default(),
             focused_panel: FocusedPanel::default(),
             scroll_to_row: None,
@@ -1422,7 +1430,7 @@ impl eframe::App for RetroJunkApp {
 
         // Bottom panels render in order: status bar (bottommost), log viewer, activity bar.
         // egui stacks bottom panels upward, so the first one rendered sits at the very bottom.
-        if widgets::status_bar::show(ui) {
+        if widgets::status_bar::show(ui, self.ui_state.open_suggestion_count) {
             self.ui_state.log_viewer.open = !self.ui_state.log_viewer.open;
         }
         widgets::log_viewer::show(ui, &mut self.ui_state.log_viewer);

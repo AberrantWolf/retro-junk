@@ -10,7 +10,26 @@ For the catalog/scraper/analyzer technical backlog, see `TODO.md`. For the
 archive/playable-library data model this roadmap builds on, see
 `docs/archive-architecture.md` and `docs/collection-library-state-matrix.md`.
 
-## Status (2026-07-29) — rebooted atop the v0.4 archive architecture
+## Status (2026-07-30) — Phase A landed
+
+Phase A shipped in seven step-commits: startup latency fixes (~15 s → <1 s
+on the network-mounted library by painting from committed projections),
+the evidence-currency/mount-detector/dir-helper consolidations,
+`retro_junk_lib::archive_ops` (one orchestration per destination for CLI,
+GUI, and daemon), schema v22 with the cross-process coordination store
+(claims, errors, suggestions, incoming packages, runtime state),
+`retro_junk_db::convergence` (the one derivation of pending work),
+the `retro-junk-work` crate (automation-first policy, executor, staged
+worker), the watcher + pre-processing incoming pipeline + foreground
+daemon with CLI `sync`/`status`/`daemon`/`suggestions`, and the GUI
+rewired through the shared executor with an `[automation]` Settings
+section plus a status-bar suggestion count. Verified live: with
+`auto_import = on`, a dump dropped into a watched folder becomes an
+archived, integrity- and catalog-verified, canonically-named playable
+with projected gamelist — zero interaction. Next: Phase A.5 (scrape
+consolidation; TODO.md), then Phase B.
+
+## Original context (2026-07-29) — rebooted atop the v0.4 archive architecture
 
 A previous Phase 1 (watcher + worker + policy + daemon CLI) was fully
 implemented against the pre-0.4 schema and is preserved on the

@@ -2,7 +2,7 @@ use crate::log_capture;
 use crate::theme::log_level_color as level_color;
 
 /// Render the status bar. Returns `true` if the user clicked it (toggle log viewer).
-pub fn show(ui: &mut egui::Ui) -> bool {
+pub fn show(ui: &mut egui::Ui, open_suggestions: u64) -> bool {
     let mut clicked = false;
 
     egui::Panel::bottom("status_bar")
@@ -13,6 +13,17 @@ pub fn show(ui: &mut egui::Ui) -> bool {
             let rect = ui.max_rect();
 
             ui.horizontal_centered(|ui| {
+                if open_suggestions > 0 {
+                    ui.label(
+                        egui::RichText::new(format!("{open_suggestions} suggestion(s)"))
+                            .small()
+                            .color(egui::Color32::from_rgb(210, 160, 60)),
+                    )
+                    .on_hover_text(
+                        "Proposed actions awaiting review — see `retro-junk suggestions list`",
+                    );
+                    ui.separator();
+                }
                 if let Some(entry) = log_capture::latest() {
                     let time = entry.timestamp.format("%H:%M:%S").to_string();
                     ui.label(

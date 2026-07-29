@@ -77,7 +77,11 @@ impl ExecContext {
 /// What happened to one action.
 #[derive(Debug)]
 pub enum ActionOutcome {
-    Completed,
+    /// Work ran to completion; `outputs` lists any files a build produced
+    /// (empty for verification/projection actions).
+    Completed {
+        outputs: Vec<PathBuf>,
+    },
     /// Another owner holds a fresh claim — surfaced, not an error.
     ClaimHeld(HeldClaim),
     /// The archive lock was busy and etiquette said don't wait.
@@ -229,7 +233,7 @@ pub fn execute_action(
     drop(archive_lock);
 
     let (outcome, verdict) = match result {
-        Ok(()) => (ActionOutcome::Completed, ClaimOutcome::Success),
+        Ok(outputs) => (ActionOutcome::Completed { outputs }, ClaimOutcome::Success),
         Err(WorkError::Message(message)) if message == "operation cancelled" => {
             (ActionOutcome::Cancelled, ClaimOutcome::Cancelled)
         }
@@ -255,7 +259,7 @@ fn dispatch(
     conn: &mut retro_junk_db::Connection,
     progress: &dyn Fn(&str, u64, u64),
     cancelled: &AtomicBool,
-) -> Result<(), WorkError> {
+) -> Result<Vec<PathBuf>, WorkError> {
     let ops_err = |error: ArchiveOpsError| match error {
         ArchiveOpsError::Cancelled => WorkError::Message("operation cancelled".to_owned()),
         other => WorkError::msg(other),
@@ -278,7 +282,7 @@ fn dispatch(
                 )));
             }
             reconcile_if_per_action(ctx, conn)?;
-            Ok(())
+            Ok(Vec::new())
         }
         ActionKind::VerifyCatalog => {
             let snapshot = scan(ctx)?;
@@ -300,7 +304,7 @@ fn dispatch(
                 }));
             }
             reconcile_if_per_action(ctx, conn)?;
-            Ok(())
+            Ok(Vec::new())
         }
         ActionKind::AuditRedumper => {
             let snapshot = scan(ctx)?;
@@ -328,7 +332,7 @@ fn dispatch(
                 }));
             }
             reconcile_if_per_action(ctx, conn)?;
-            Ok(())
+            Ok(Vec::new())
         }
         ActionKind::BuildPlayable => {
             let gap = action
@@ -370,7 +374,11 @@ fn dispatch(
                 )
                 .map_err(WorkError::msg)?;
             }
-            Ok(())
+            let mut outputs = outcome.built;
+            if let Some(playlist) = outcome.playlist {
+                outputs.push(playlist);
+            }
+            Ok(outputs)
         }
         ActionKind::ProjectAssets => {
             let snapshot = scan(ctx)?;
@@ -383,7 +391,7 @@ fn dispatch(
                 cancelled,
             )
             .map_err(WorkError::msg)?;
-            Ok(())
+            Ok(Vec::new())
         }
         ActionKind::SyncGamelist => {
             let snapshot = scan(ctx)?;
@@ -395,7 +403,7 @@ fn dispatch(
                 &ctx.roots.media_root,
             )
             .map_err(WorkError::msg)?;
-            Ok(())
+            Ok(Vec::new())
         }
         _ => Err(WorkError::Message(format!(
             "no executor for action kind {kind}",

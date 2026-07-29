@@ -4608,6 +4608,7 @@ dependencies = [
  "retro-junk-scraper",
  "retro-junk-sega",
  "retro-junk-sony",
+ "retro-junk-work",
  "rfd",
  "serde",
  "serde_json",

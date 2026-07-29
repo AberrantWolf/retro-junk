@@ -520,3 +520,33 @@ Audit findings from 2026-03-17.
 Audit findings from 2026-02-25. Goal: make `catalog enrich` reliable enough to run hands-off on a server for months.
 
 All 15 items resolved — see commit history for details.
+
+## Phase A follow-ups (automation foundation, 2026-07-30)
+
+- [ ] **Phase A.5: scrape orchestration consolidation** — Extract the duplicated
+  tokio scrape cores (`retro-junk-gui/src/backend/assets.rs` vs
+  `retro-junk-cli/src/commands/scrape.rs`) into one shared implementation in
+  `retro-junk-scraper`, rewrite both callers, then add the `Scrape` convergence
+  action kind and `auto_scrape` policy fields. Deliberately deferred from
+  Phase A: unattended scraping needs quota throttling first.
+- [ ] **Instant-apply imports** — `plan_import` re-hashes on suggestion apply.
+  The incoming pipeline already computed the full inventory digests at arrival;
+  extend `retro-junk-archive-import` to accept precomputed digests so applying
+  a suggestion executes with zero re-reads (matters for large disc dumps over
+  network mounts).
+- [ ] **Per-release incremental reconcile** — `reconcile_archive_snapshot`
+  rebuilds the whole projection; the daemon and executor batch it, but the
+  biggest remaining network win is reconciling only the releases an action
+  touched.
+- [ ] **Miximage staleness derivation** — add a `GenerateMiximage` convergence
+  kind once component staleness (source artwork vs generated image) is modeled.
+- [ ] **`ArchiveLock::acquire_wait` fairness** — daemon+GUI contention is
+  fail-fast/wait polling today; add FIFO fairness if contention proves noisy.
+- [ ] **CLI Ctrl-C for `sync`** — the executor is cancel-safe; wire a real
+  SIGINT handler into `retro-junk sync` (the daemon already has one).
+- [ ] **GUI dirty-tick polling (roadmap B7)** — `runtime_state.dirty_tick`
+  already bumps on every coordination commit; add the 1 Hz GUI poll feeding
+  `LibraryChangeSet` refresh so daemon writes appear without manual refresh.
+- [ ] **Profile editor for `incoming_roots` / `watch_backend`** — the fields
+  exist on `CollectionProfile` (settings.toml-editable); add GUI controls next
+  to the profile root pickers.

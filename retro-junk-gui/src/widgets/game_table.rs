@@ -770,7 +770,7 @@ fn show_archive_context_menu(
             backend::playable_build::start(
                 app,
                 action.clone(),
-                format,
+                &format,
                 app.browser.consoles[console_idx].folder_name.clone(),
                 ctx,
             );
@@ -900,7 +900,7 @@ fn show_multi_row_context_menu(
                             .then_some(retro_junk_archive::RepresentationFormat::Rom)
                     });
                 if let Some(format) = format {
-                    backend::playable_build::start(app, action, format, folder_name.clone(), ctx);
+                    backend::playable_build::start(app, action, &format, folder_name.clone(), ctx);
                 }
             }
             ui.close();

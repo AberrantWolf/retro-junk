@@ -738,7 +738,7 @@ fn show_multi_selection(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     crate::backend::playable_build::start(
                         app,
                         action,
-                        format,
+                        &format,
                         folder_name.clone(),
                         ui.ctx(),
                     );
@@ -1011,7 +1011,7 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             .selected_console_index()
             .map(|index| app.browser.consoles[index].folder_name.clone())
             .unwrap_or_else(|| summary.platform_id.clone());
-        crate::backend::playable_build::start(app, action, format, playable_platform_id, ui.ctx());
+        crate::backend::playable_build::start(app, action, &format, playable_platform_id, ui.ctx());
     }
 }
 

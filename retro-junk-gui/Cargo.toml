@@ -13,6 +13,7 @@ name = "retro_junk_gui"
 path = "src/lib.rs"
 
 [dependencies]
+retro-junk-work = { workspace = true }
 retro-junk-lib.workspace = true
 retro-junk-archive.workspace = true
 retro-junk-archive-import.workspace = true

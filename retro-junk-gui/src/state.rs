@@ -2445,6 +2445,12 @@ fn refresh_library_availability(app: &mut RetroJunkApp, ctx: &egui::Context) {
     if let Some(console_id) = app.ui_state.selected_console {
         app.request_console_page(console_id, ctx);
     }
+    if let Some(connection) = app.catalog_db.as_ref() {
+        app.ui_state.open_suggestion_count =
+            retro_junk_db::work::list_open_suggestions(connection, None)
+                .map(|open| open.len() as u64)
+                .unwrap_or(0);
+    }
 }
 
 fn should_queue_auto_scan(
