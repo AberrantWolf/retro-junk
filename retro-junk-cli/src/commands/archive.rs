@@ -6,10 +6,8 @@ use std::sync::atomic::AtomicBool;
 
 use retro_junk_archive::{
     ArchiveRootManifest, BuildEvidence, BuildId, NewCarrierDump, Redumper, RepresentationFormat,
-    RepresentationId, TrackDigest, TrackVerification, VerificationEvidence, VerificationId,
-    VerificationKind, VerificationOutcome, bind_carrier_to_catalog, ingest_new_carrier_dump,
-    initialize_archive, scan_archive, sha256_file, slugify, verify_dump_integrity, write_json_new,
-    write_toml_atomic,
+    RepresentationId, VerificationKind, VerificationOutcome, ingest_new_carrier_dump,
+    initialize_archive, scan_archive, sha256_file, slugify, write_json_new, write_toml_atomic,
 };
 
 use crate::CliError;
@@ -1957,29 +1955,6 @@ fn run_mirror(
 /// The release remains exactly bound while every identified carrier agrees.
 /// As soon as a carrier resolves to another catalog release for the same work,
 /// the parent keeps only the work identity and the exact IDs remain on carriers.
-fn persist_carrier_catalog_match(
-    release_directory: &std::path::Path,
-    carrier_directory: &std::path::Path,
-    catalog_match: &retro_junk_db::CompleteCatalogMediaMatch,
-    expected_tracks: &[TrackDigest],
-) -> Result<(), CliError> {
-    let release_path = release_directory.join("release.toml");
-    let carrier_path = carrier_directory.join("carrier.toml");
-    let binding = retro_junk_archive::CatalogBinding {
-        catalog_work_id: catalog_match.work_id.clone(),
-        catalog_release_id: catalog_match.release_id.clone(),
-        catalog_media_id: catalog_match.media_id.clone(),
-        source: catalog_match.source.clone(),
-        dat_name: catalog_match.game.clone(),
-        source_version: catalog_match.source_version.clone(),
-        expected_tracks: expected_tracks.to_vec(),
-        ..Default::default()
-    };
-    bind_carrier_to_catalog(&release_path, &carrier_path, &binding)
-        .map_err(|error| CliError::other(error.to_string()))?;
-    Ok(())
-}
-
 fn run_catalog_verify(
     ctx: &retro_junk_lib::AnalysisContext,
     archive_root: PathBuf,
@@ -1995,123 +1970,23 @@ fn run_catalog_verify(
     let connection = retro_junk_db::open_database(&database_path)
         .map_err(|error| CliError::database(error.to_string()))?;
     let cancelled = AtomicBool::new(false);
-    let mut selected = 0_usize;
-    let mut verified = 0_usize;
-    for (release, medium, dump) in snapshot
-        .releases
-        .iter()
-        .flat_map(|release| {
-            release.physical_copies.iter().flat_map(move |item| {
-                item.carriers.iter().flat_map(move |medium| {
-                    medium.dumps.iter().map(move |dump| (release, medium, dump))
-                })
-            })
-        })
-        .filter(|(_, _, dump)| dump_id.is_none_or(|id| dump.manifest.dump_id.to_string() == id))
-    {
-        let [file] = dump.manifest.files.as_slice() else {
-            if dump_id.is_some() {
-                return Err(CliError::other(
-                    "general catalog verification requires a single-file dump; use the Redumper audit for raw multi-track discs",
-                ));
-            }
-            continue;
-        };
-        selected += 1;
-        let input_path = dump.directory.join("raw").join(&file.path);
-        let raw = retro_junk_archive::hash_file_digests(&input_path, &cancelled)
-            .map_err(|error| CliError::other(error.to_string()))?;
-        let actual = if let Some(console) = ctx.get_by_short_name(&release.manifest.platform_id) {
-            let mut input = std::fs::File::open(&input_path)?;
-            let hashes = retro_junk_lib::hasher::compute_all_hashes(
-                &mut input,
-                console.analyzer.as_ref(),
-                Some(&input_path),
-            )
-            .map_err(|error| CliError::other(error.to_string()))?;
-            retro_junk_archive::FileDigests {
-                size: hashes.data_size,
-                crc32: hashes.crc32,
-                md5: hashes.md5.unwrap_or_default(),
-                sha1: hashes.sha1.unwrap_or_default(),
-                sha256: raw.sha256,
-            }
-        } else {
-            raw
-        };
-        let matches =
-            retro_junk_db::match_catalog_file(&connection, &release.manifest.platform_id, &actual)
-                .map_err(|error| CliError::database(error.to_string()))?;
-        let (outcome, catalog, detail) = match matches.as_slice() {
-            [catalog_match] => {
-                verified += 1;
-                persist_carrier_catalog_match(
-                    &release.directory,
-                    &medium.directory,
-                    catalog_match,
-                    &[],
-                )?;
-                (
-                    VerificationOutcome::Verified,
-                    Some(retro_junk_archive::CatalogEvidence {
-                        source: catalog_match.source.clone(),
-                        system: release.manifest.platform_id.clone(),
-                        version: catalog_match.source_version.clone(),
-                        game: catalog_match.game.clone(),
-                        complete_track_set: true,
-                    }),
-                    format!(
-                        "File hashes matched catalog media {}",
-                        catalog_match.media_id
-                    ),
-                )
-            }
-            [] => (
-                VerificationOutcome::Unmatched,
-                None,
-                "No catalog file matched size and available CRC32/MD5/SHA-1 hashes".to_owned(),
-            ),
-            _ => (
-                VerificationOutcome::Ambiguous,
-                None,
-                format!("File hashes matched {} catalog media", matches.len()),
-            ),
-        };
-        let verification_id = VerificationId::new();
-        let evidence = VerificationEvidence {
-            schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
-            verification_id,
-            representation_id: dump.manifest.representation_id,
-            performed_at: chrono::Utc::now().to_rfc3339(),
-            input_manifest_sha256: dump.manifest_sha256.clone(),
-            kind: VerificationKind::Catalog,
-            outcome,
-            tool: None,
-            catalog,
-            tracks: vec![TrackVerification {
-                number: 1,
-                size: actual.size,
-                expected_sha1: matches
-                    .first()
-                    .map_or_else(String::new, |_| actual.sha1.clone()),
-                actual_sha1: actual.sha1,
-                matched: matches.len() == 1,
-            }],
-            detail,
-        };
-        let evidence_directory = dump.directory.join("evidence");
-        std::fs::create_dir_all(&evidence_directory)?;
-        write_json_new(
-            &evidence_directory.join(format!("verification-{verification_id}.json")),
-            &evidence,
-        )
-        .map_err(|error| CliError::other(error.to_string()))?;
-        log::info!("{}: {:?}", dump.manifest.dump_id, evidence.outcome);
-    }
-    if selected == 0 {
+    let report = retro_junk_lib::archive_ops::verify_catalog_files(
+        &snapshot,
+        &connection,
+        ctx,
+        dump_id,
+        &log_progress,
+        &cancelled,
+    )
+    .map_err(|error| CliError::other(error.to_string()))?;
+    if report.selected == 0 {
         return Err(CliError::other("no matching single-file dumps found"));
     }
-    log::info!("Catalog verified {verified} of {selected} single-file dump(s)");
+    log::info!(
+        "Catalog verified {} of {} single-file dump(s)",
+        report.identified,
+        report.selected
+    );
     Ok(())
 }
 
@@ -2124,12 +1999,6 @@ fn run_redumper_audit(
 ) -> Result<(), CliError> {
     let snapshot =
         scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
-    let redumper = Redumper::detect(
-        redumper_path
-            .as_deref()
-            .unwrap_or_else(|| std::path::Path::new("")),
-    )
-    .map_err(|error| CliError::external_tool(error.to_string()))?;
     let workspace_root =
         workspace_root.unwrap_or_else(|| archive_root.join(".retro-junk").join("work"));
     let database_path = match db {
@@ -2139,159 +2008,40 @@ fn run_redumper_audit(
     let connection = retro_junk_db::open_database(&database_path)
         .map_err(|error| CliError::database(error.to_string()))?;
     let cancelled = AtomicBool::new(false);
-    let mut selected = 0_usize;
-    let mut failed = 0_usize;
-    for (release, medium, dump) in snapshot
-        .releases
-        .iter()
-        .flat_map(|release| {
-            release.physical_copies.iter().flat_map(move |item| {
-                item.carriers.iter().flat_map(move |medium| {
-                    medium.dumps.iter().map(move |dump| (release, medium, dump))
-                })
-            })
-        })
-        .filter(|(_, _, dump)| dump.manifest.format == RepresentationFormat::RedumperRaw)
-        .filter(|(_, _, dump)| dump_id.is_none_or(|id| dump.manifest.dump_id.to_string() == id))
-    {
-        selected += 1;
-        let verification_id = VerificationId::new();
-        let audit = redumper.audit(&dump.directory.join("raw"), &workspace_root, &cancelled);
-        let (reproduced, outcome, tool, catalog, tracks, detail) = match audit {
-            Ok(audit) => {
-                let matches = retro_junk_db::match_complete_catalog_media(
-                    &connection,
-                    &release.manifest.platform_id,
-                    &audit.tracks,
-                )
-                .map_err(|error| CliError::database(error.to_string()))?;
-                let is_unique_match = matches.len() == 1;
-                let tracks = audit
-                    .tracks
-                    .iter()
-                    .map(|track| TrackVerification {
-                        number: track.number,
-                        size: track.size,
-                        expected_sha1: if is_unique_match {
-                            track.sha1.clone()
-                        } else {
-                            String::new()
-                        },
-                        actual_sha1: track.sha1.clone(),
-                        matched: is_unique_match,
-                    })
-                    .collect();
-                let (outcome, catalog, detail) = match matches.as_slice() {
-                    [catalog_match] => {
-                        persist_carrier_catalog_match(
-                            &release.directory,
-                            &medium.directory,
-                            catalog_match,
-                            &audit.tracks,
-                        )?;
-                        (
-                            VerificationOutcome::Verified,
-                            Some(retro_junk_archive::CatalogEvidence {
-                                source: catalog_match.source.clone(),
-                                system: release.manifest.platform_id.clone(),
-                                version: catalog_match.source_version.clone(),
-                                game: catalog_match.game.clone(),
-                                complete_track_set: true,
-                            }),
-                            format!("Complete track set matched catalog media {}", catalog_match.media_id),
-                        )
-                    }
-                    [] => (
-                        VerificationOutcome::Unmatched,
-                        None,
-                        "Raw master reproduced a track set, but no complete catalog match was found".to_owned(),
-                    ),
-                    _ => (
-                        VerificationOutcome::Ambiguous,
-                        None,
-                        format!("Raw master reproduced a track set matching {} catalog media", matches.len()),
-                    ),
-                };
-                (true, outcome, Some(audit.tool), catalog, tracks, detail)
-            }
-            Err(error) => {
-                failed += 1;
-                (
-                    false,
-                    VerificationOutcome::Failed,
-                    None,
-                    None,
-                    Vec::new(),
-                    error.to_string(),
-                )
-            }
-        };
-        let evidence_dir = dump.directory.join("evidence");
-        std::fs::create_dir_all(&evidence_dir)?;
-        if reproduced {
-            let reproduction_id = VerificationId::new();
-            let reproduction = VerificationEvidence {
-                schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
-                verification_id: reproduction_id,
-                representation_id: dump.manifest.representation_id,
-                performed_at: chrono::Utc::now().to_rfc3339(),
-                input_manifest_sha256: dump.manifest_sha256.clone(),
-                kind: VerificationKind::Reproduction,
-                outcome: VerificationOutcome::Verified,
-                tool: tool.clone(),
-                catalog: None,
-                tracks: tracks
-                    .iter()
-                    .cloned()
-                    .map(|mut track| {
-                        track.expected_sha1.clear();
-                        track.matched = false;
-                        track
-                    })
-                    .collect(),
-                detail: "Redumper regenerated and hashed a complete track set from the raw master"
-                    .to_owned(),
-            };
-            write_json_new(
-                &evidence_dir.join(format!("verification-{reproduction_id}.json")),
-                &reproduction,
-            )
-            .map_err(|error| CliError::other(error.to_string()))?;
-        }
-        let evidence = VerificationEvidence {
-            schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
-            verification_id,
-            representation_id: dump.manifest.representation_id,
-            performed_at: chrono::Utc::now().to_rfc3339(),
-            input_manifest_sha256: dump.manifest_sha256.clone(),
-            kind: if reproduced {
-                VerificationKind::Catalog
-            } else {
-                VerificationKind::Reproduction
-            },
-            outcome,
-            tool,
-            catalog,
-            tracks,
-            detail,
-        };
-        write_json_new(
-            &evidence_dir.join(format!("verification-{verification_id}.json")),
-            &evidence,
-        )
-        .map_err(|error| CliError::other(error.to_string()))?;
-        log::info!("{}: {:?}", dump.manifest.dump_id, evidence.outcome);
-    }
-    if selected == 0 {
+    let report = retro_junk_lib::archive_ops::identify_archived_carriers(
+        &retro_junk_lib::archive_ops::IdentifyCarriersRequest {
+            snapshot: &snapshot,
+            selection: retro_junk_lib::archive_ops::IdentifySelection::All,
+            only_dump: dump_id,
+            redumper_path: redumper_path
+                .as_deref()
+                .unwrap_or_else(|| std::path::Path::new("")),
+            workspace_root: &workspace_root,
+        },
+        &connection,
+        &log_progress,
+        &cancelled,
+    )
+    .map_err(|error| CliError::other(error.to_string()))?;
+    if report.selected == 0 {
         return Err(CliError::other("no matching Redumper raw dumps found"));
     }
-    if failed > 0 {
+    if report.failed > 0 {
         Err(CliError::other(format!(
-            "{failed} of {selected} Redumper audit(s) failed; evidence was recorded"
+            "{} of {} Redumper audit(s) failed; evidence was recorded",
+            report.failed, report.selected
         )))
     } else {
-        log::info!("Audited {selected} Redumper raw dump(s)");
+        log::info!("Audited {} Redumper raw dump(s)", report.selected);
         Ok(())
+    }
+}
+
+fn log_progress(phase: &str, current: u64, total: u64) {
+    if total > 0 {
+        log::info!("{phase}: {current}/{total}");
+    } else {
+        log::info!("{phase}");
     }
 }
 
@@ -2804,70 +2554,22 @@ fn run_verify(archive_root: PathBuf) -> Result<(), CliError> {
     let snapshot =
         scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
     let cancelled = AtomicBool::new(false);
-    let mut checked = 0_usize;
-    let mut failed = 0_usize;
-    for dump in snapshot
-        .releases
-        .iter()
-        .flat_map(|release| &release.physical_copies)
-        .flat_map(|item| &item.carriers)
-        .flat_map(|medium| &medium.dumps)
-    {
-        let report = verify_dump_integrity(&dump.directory, &dump.manifest, &cancelled)
-            .map_err(|error| CliError::other(error.to_string()))?;
-        checked += 1;
-        if !report.is_verified() {
-            failed += 1;
-        }
-        let verification_id = VerificationId::new();
-        let evidence = VerificationEvidence {
-            schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
-            verification_id,
-            representation_id: dump.manifest.representation_id,
-            performed_at: chrono::Utc::now().to_rfc3339(),
-            input_manifest_sha256: dump.manifest_sha256.clone(),
-            kind: VerificationKind::Integrity,
-            outcome: if report.is_verified() {
-                VerificationOutcome::Verified
-            } else {
-                VerificationOutcome::Failed
-            },
-            tool: None,
-            catalog: None,
-            tracks: Vec::new(),
-            detail: if report.is_verified() {
-                format!(
-                    "SHA-256 verified {} stored file(s), {} byte(s)",
-                    report.checked_files, report.checked_bytes
-                )
-            } else {
-                report
-                    .failures
-                    .iter()
-                    .map(|failure| format!("{}: {}", failure.path, failure.reason))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            },
-        };
-        let evidence_dir = dump.directory.join("evidence");
-        std::fs::create_dir_all(&evidence_dir)?;
-        write_json_new(
-            &evidence_dir.join(format!("verification-{verification_id}.json")),
-            &evidence,
-        )
-        .map_err(|error| CliError::other(error.to_string()))?;
-        log::info!(
-            "{}: {}",
-            dump.manifest.dump_id,
-            if report.is_verified() {
-                "verified"
-            } else {
-                "FAILED"
-            }
-        );
+    let report = retro_junk_lib::archive_ops::verify_archive_integrity(
+        &snapshot,
+        None,
+        &log_progress,
+        &cancelled,
+    )
+    .map_err(|error| CliError::other(error.to_string()))?;
+    for (dump_id, reason) in &report.failures {
+        log::error!("{dump_id}: {reason}");
     }
-    log::info!("Checked {checked} dump(s); {failed} failed");
-    if failed > 0 {
+    log::info!(
+        "Checked {} dump(s); {} failed",
+        report.checked,
+        report.failed
+    );
+    if report.failed > 0 {
         Err(CliError::other("archive integrity verification failed"))
     } else {
         Ok(())

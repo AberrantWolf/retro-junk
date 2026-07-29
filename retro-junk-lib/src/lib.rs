@@ -4,6 +4,7 @@ pub use retro_junk_core::*;
 
 // Modules that still live in retro-junk-lib:
 pub mod archive_assets;
+pub mod archive_ops;
 pub mod async_util;
 pub mod catalog_match;
 pub mod chd_convert;

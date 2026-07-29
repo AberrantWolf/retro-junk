@@ -12,11 +12,11 @@ pub mod schema;
 
 pub use archive::{
     ArchiveCollectionDetails, ArchiveReleaseSummary, CompleteCatalogMediaMatch,
-    archive_profile_indexed_at, bind_library_entries_by_hash, list_archive_release_summaries,
-    load_archive_collection_details, match_catalog_file, match_catalog_file_any_platform,
-    match_catalog_serial_any_platform, match_complete_catalog_media,
-    match_complete_catalog_media_any_platform, reconcile_archive_snapshot,
-    update_projected_platform_policy,
+    archive_profile_indexed_at, bind_library_entries_by_hash, existing_playable_disc_paths,
+    list_archive_release_summaries, load_archive_collection_details, match_catalog_file,
+    match_catalog_file_any_platform, match_catalog_serial_any_platform,
+    match_complete_catalog_media, match_complete_catalog_media_any_platform,
+    reconcile_archive_snapshot, update_projected_platform_policy,
 };
 pub use deduplicate::{
     CatalogDeduplicationReport, DuplicateMediaGroup, analyze_catalog_duplicates,
@@ -74,5 +74,6 @@ pub use queries::{
     search_releases_filtered, search_releases_paged, search_works, search_works_for_platform,
     works_for_platform,
 };
+pub use retro_junk_catalog::types::Media;
 pub use rusqlite::Connection;
 pub use schema::{configure_connection, database_needs_migration, open_database, open_memory};

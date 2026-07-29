@@ -9,7 +9,7 @@ use retro_junk_lib::scanner::GameEntry;
 
 use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
-use crate::state::{self, AppMessage, OperationKind, ProgressDisplay, RenameOutcome, RenameResult};
+use crate::state::{AppMessage, OperationKind, ProgressDisplay, RenameOutcome, RenameResult};
 
 /// A single-file rename job. Target is resolved on the background thread.
 struct RenameJob {

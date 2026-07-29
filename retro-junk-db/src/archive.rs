@@ -957,6 +957,73 @@ fn insert_projected_policy(
     Ok(())
 }
 
+/// Ordered on-disk paths of the already-built playable discs for a release,
+/// for playlist-only builds. Fails unless the set is complete and ordered —
+/// a playlist over a partial set would claim completeness the files can't
+/// back.
+pub fn existing_playable_disc_paths(
+    conn: &Connection,
+    archive_release_id: &str,
+    playable_root: &std::path::Path,
+    expected_disc_count: u32,
+) -> Result<Vec<std::path::PathBuf>, OperationError> {
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT m.disc_number,e.game_entry_json,lc.folder_path
+         FROM archive_releases ar
+         JOIN physical_copies pc ON pc.archive_release_id=ar.id
+         JOIN carriers c ON c.physical_copy_id=pc.id
+         JOIN media m ON m.id=c.catalog_media_id AND m.disc_number>0
+         JOIN library_entries e ON e.dat_game_name=m.dat_name
+         JOIN library_consoles lc ON lc.id=e.console_id
+         JOIN library_roots lr ON lr.id=lc.root_id
+         WHERE ar.id=?1 AND lr.root_path=?2
+         ORDER BY m.disc_number",
+    )?;
+    let rows = statement
+        .query_map(
+            (archive_release_id, playable_root.to_string_lossy().as_ref()),
+            |row| {
+                Ok((
+                    row.get::<_, u32>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut paths = Vec::new();
+    for (index, (disc_number, json, folder)) in rows.into_iter().enumerate() {
+        if disc_number != u32::try_from(index + 1).unwrap_or(u32::MAX) {
+            return Err(OperationError::InvalidData(
+                "existing playable discs are not a complete ordered set".to_owned(),
+            ));
+        }
+        let value: serde_json::Value = serde_json::from_str(&json)
+            .map_err(|error| OperationError::InvalidData(error.to_string()))?;
+        let path = value
+            .get("SingleFile")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                OperationError::InvalidData(
+                    "an existing disc is not a single-file playable entry".to_owned(),
+                )
+            })?;
+        let path = std::path::PathBuf::from(path);
+        paths.push(if path.is_absolute() {
+            path
+        } else {
+            std::path::PathBuf::from(folder).join(path)
+        });
+    }
+    if paths.len() != expected_disc_count as usize {
+        return Err(OperationError::InvalidData(format!(
+            "found {} of {expected_disc_count} existing playable discs",
+            paths.len()
+        )));
+    }
+    Ok(paths)
+}
+
 /// When this profile's archive projection was last committed, or `None` if it
 /// has never been reconciled. Lets startup paint the committed projection
 /// immediately instead of rescanning an archive that only changes through the
