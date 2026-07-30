@@ -42,7 +42,7 @@ enum Backing {
 
 impl ArchiveLock {
     pub fn acquire(root: &Path) -> Result<Self, ArchiveLockError> {
-        if !root.join("retro-junk-archive.toml").is_file() {
+        if !crate::layout::root_manifest_path(root).is_file() {
             return Err(ArchiveLockError::Uninitialized(root.display().to_string()));
         }
         let state = root.join(".retro-junk");

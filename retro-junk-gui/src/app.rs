@@ -356,10 +356,7 @@ impl RetroJunkApp {
             // stay behind explicit Refresh/reindex.
             let mut refresh_profile = None;
             if let (Ok(connection), Some(profile)) = (&database, &configured_profile)
-                && profile
-                    .archive_root
-                    .join("retro-junk-archive.toml")
-                    .is_file()
+                && retro_junk_archive::root_manifest_path(&profile.archive_root).is_file()
             {
                 let profile_id = profile.profile_id.to_string();
                 match retro_junk_db::archive_profile_indexed_at(connection, &profile_id) {

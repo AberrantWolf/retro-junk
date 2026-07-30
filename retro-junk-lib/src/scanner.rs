@@ -182,11 +182,17 @@ pub fn extension_set(extensions: &[&str]) -> HashSet<String> {
     extensions.iter().map(|e| e.to_lowercase()).collect()
 }
 
-/// Check if a path has an extension in the allowed set.
+/// Check if a path is collection content with an extension in the allowed set.
+///
+/// `AppleDouble` sidecars keep the extension of the file they shadow, so the
+/// noise test has to run alongside the extension test or a library copied onto
+/// exFAT/SMB scans one phantom entry per real game.
 fn has_matching_extension<S: BuildHasher>(path: &Path, extensions: &HashSet<String, S>) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| extensions.contains(&e.to_lowercase()))
+    !retro_junk_io::is_noise_path(path)
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| extensions.contains(&e.to_lowercase()))
 }
 
 /// Collect disc files for a `.m3u` directory.

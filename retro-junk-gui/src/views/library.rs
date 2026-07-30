@@ -295,7 +295,7 @@ fn set_preferred_playable_format(
                 })
                 .map(|default| &default.policy);
             let (_, manifest_sha256) = retro_junk_archive::sha256_file(
-                &profile.archive_root.join("retro-junk-archive.toml"),
+                &retro_junk_archive::root_manifest_path(&profile.archive_root),
                 &std::sync::atomic::AtomicBool::new(false),
             )
             .map_err(|error| error.to_string())?;

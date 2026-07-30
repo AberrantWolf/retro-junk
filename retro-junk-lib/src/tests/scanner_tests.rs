@@ -52,3 +52,35 @@ fn playlist_claims_top_level_discs_as_one_logical_game() {
     assert_eq!(entries[0].display_name(), "Game.m3u");
     assert_eq!(entries[0].all_files().len(), 2);
 }
+
+/// Copying a library onto exFAT or an SMB share leaves macOS AppleDouble
+/// sidecars beside every file. They carry the shadowed file's extension, so
+/// scanning must reject them by name or each real game gains a phantom twin.
+#[test]
+fn apple_double_sidecars_do_not_scan_as_games() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Chrono Trigger.sfc"), "").unwrap();
+    fs::write(dir.path().join("._Chrono Trigger.sfc"), "").unwrap();
+    fs::write(dir.path().join(".DS_Store"), "").unwrap();
+
+    let extensions = extension_set(&["sfc"]);
+    let entries = scan_game_entries(dir.path(), &extensions).unwrap();
+
+    assert_eq!(entries.len(), 1, "expected one entry, got {entries:?}");
+    assert_eq!(entries[0].display_name(), "Chrono Trigger.sfc");
+}
+
+/// A sidecar shadowing a `.cue` must not claim the cue's stem, or the real
+/// `.bin` would be deduped away against a file that holds no track data.
+#[test]
+fn apple_double_sidecar_of_a_cue_does_not_capture_its_stem() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("._Game.cue"), "").unwrap();
+    fs::write(dir.path().join("Game.bin"), "").unwrap();
+
+    let extensions = extension_set(&["cue", "bin"]);
+    let entries = scan_game_entries(dir.path(), &extensions).unwrap();
+
+    assert_eq!(entries.len(), 1, "expected one entry, got {entries:?}");
+    assert_eq!(entries[0].display_name(), "Game.bin");
+}

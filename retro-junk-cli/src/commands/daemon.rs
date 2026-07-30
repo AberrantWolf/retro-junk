@@ -71,11 +71,7 @@ fn run_start(
     let profile = retro_junk_work::profiles::resolve_profile(profile).ok_or_else(|| {
         CliError::config("no collection profile found; configure one in the GUI or settings.toml")
     })?;
-    if !profile
-        .archive_root
-        .join("retro-junk-archive.toml")
-        .is_file()
-    {
+    if !retro_junk_archive::root_manifest_path(&profile.archive_root).is_file() {
         return Err(CliError::config(format!(
             "profile archive root {} is not an initialized archive",
             profile.archive_root.display()

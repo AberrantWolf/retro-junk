@@ -254,7 +254,7 @@ pub fn set_platform_playable_default(
     platform_id: &str,
     policy: Option<crate::DesiredPlayablePolicy>,
 ) -> Result<ArchiveRootManifest, CollectionError> {
-    let path = root.join("retro-junk-archive.toml");
+    let path = crate::layout::root_manifest_path(root);
     if !path.is_file() {
         return Err(CollectionError::NotInitialized(root.display().to_string()));
     }
@@ -283,7 +283,7 @@ pub fn initialize_archive(
     root: &Path,
     manifest: &ArchiveRootManifest,
 ) -> Result<(), CollectionError> {
-    let root_manifest = root.join("retro-junk-archive.toml");
+    let root_manifest = crate::layout::root_manifest_path(root);
     if root_manifest.is_file() {
         let existing: ArchiveRootManifest = match read_toml(&root_manifest) {
             Ok(existing) => existing,
@@ -338,7 +338,7 @@ pub fn initialize_archive(
 /// the physical platform. Directory renames remain on the same archive
 /// filesystem; dump payloads are never recopied.
 pub fn upgrade_legacy_regional_physical_platforms(root: &Path) -> Result<usize, CollectionError> {
-    let root_manifest_path = root.join("retro-junk-archive.toml");
+    let root_manifest_path = crate::layout::root_manifest_path(root);
     let mut root_manifest: ArchiveRootManifest = read_toml(&root_manifest_path)?;
     if root_manifest
         .applied_migrations
@@ -500,7 +500,7 @@ fn empty_prototype_archive(root: &Path) -> Result<bool, CollectionError> {
             source,
         })?;
         let name = entry.file_name();
-        if name != "retro-junk-archive.toml" && name != ".retro-junk" {
+        if name != crate::layout::ROOT_MANIFEST_FILE && name != ".retro-junk" {
             return Ok(false);
         }
     }
@@ -521,7 +521,7 @@ pub fn ingest_new_carrier_dump(
     if matches!(spec.format, RepresentationFormat::RedumperRaw) {
         validate_redumper_package(source)?;
     }
-    let root_manifest = archive_root.join("retro-junk-archive.toml");
+    let root_manifest = crate::layout::root_manifest_path(archive_root);
     if !root_manifest.is_file() {
         return Err(CollectionError::NotInitialized(
             archive_root.display().to_string(),

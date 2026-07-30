@@ -1072,13 +1072,20 @@ fn run_adopt_playable(
                 &evidence,
             )
             .map_err(|error| CliError::other(error.to_string()))?;
+            let carrier_id = medium.manifest.carrier_id.to_string();
             retro_junk_db::bind_library_entries_by_hash(
                 &connection,
                 &release.manifest.platform_id,
                 &digests,
-                &medium.manifest.catalog_binding.catalog_media_id,
-                None,
-                "archive_adoption",
+                &retro_junk_db::LibraryEntryBinding {
+                    // The adopted file is byte-identical to this carrier's
+                    // master, so it belongs to the carrier whether or not the
+                    // carrier is catalog-bound.
+                    carrier_id: Some(&carrier_id),
+                    catalog_media_id: &medium.manifest.catalog_binding.catalog_media_id,
+                    representation_id: None,
+                    match_method: "archive_adoption",
+                },
             )
             .map_err(|error| CliError::database(error.to_string()))?;
             adopted += 1;
@@ -1126,9 +1133,13 @@ fn run_adopt_playable(
                     &connection,
                     platform,
                     &catalog_digests,
-                    &matched.media_id,
-                    None,
-                    "catalog_adoption",
+                    &retro_junk_db::LibraryEntryBinding {
+                        // Catalog identity only: nothing in the archive holds
+                        // this file, which is exactly what the report says.
+                        catalog_media_id: &matched.media_id,
+                        match_method: "catalog_adoption",
+                        ..Default::default()
+                    },
                 )
                 .map_err(|error| CliError::database(error.to_string()))?;
                 (
@@ -1292,7 +1303,7 @@ fn run_default_policy(
     retain_intermediate: bool,
     allow_unverified: bool,
 ) -> Result<(), CliError> {
-    let path = archive_root.join("retro-junk-archive.toml");
+    let path = retro_junk_archive::root_manifest_path(&archive_root);
     let mut manifest: ArchiveRootManifest =
         retro_junk_archive::read_toml(&path).map_err(|error| CliError::other(error.to_string()))?;
     manifest

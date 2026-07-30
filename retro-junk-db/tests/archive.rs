@@ -107,21 +107,23 @@ fn flat_file_matching_requires_size_and_every_available_catalog_digest() {
             &conn,
             "nes",
             &actual,
-            "media-flat",
-            None,
-            "archive_adoption",
+            &retro_junk_db::LibraryEntryBinding {
+                catalog_media_id: "media-flat",
+                match_method: "archive_adoption",
+                ..Default::default()
+            },
         )
         .unwrap(),
         1
     );
-    let binding: (String, Option<String>) = conn
+    let binding: (Option<String>, String, Option<String>) = conn
         .query_row(
-            "SELECT catalog_media_id,representation_id FROM library_entry_media_bindings",
+            "SELECT carrier_id,catalog_media_id,representation_id FROM library_entry_media_bindings",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
-    assert_eq!(binding, ("media-flat".to_owned(), None));
+    assert_eq!(binding, (None, "media-flat".to_owned(), None));
     actual.md5 = "different".to_owned();
     assert!(
         match_catalog_file(&conn, "nes", &actual)
@@ -952,6 +954,273 @@ fn archive_evidence_names_library_rows_without_any_catalog() {
     );
 }
 
+/// A playable file the archive built belongs to the carrier that produced it,
+/// even when no catalog medium can be resolved for that carrier — an unbound
+/// archive, a platform whose DAT was never imported, or a carrier manifest
+/// naming a catalog id a later import has re-slugged.
+///
+/// Keying this on the catalog medium listed the very same file twice: once
+/// inside the archived release and again as an unarchived "playable only" row.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn an_archived_playable_is_one_row_when_its_carrier_has_no_catalog_medium() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Bound Game",
+        "Bound Game (USA)",
+        "nes/Bound Game.nes",
+        "nes/Bound Game.nes",
+    );
+
+    let mut conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
+        [playable_root.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Nes','nes','/playable/nes','fp','ready')", []).unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status,data_size)
+         VALUES(1,1,'file:Bound Game.nes','Bound Game.nes','{}','unrecognized',10)",
+        [],
+    )
+    .unwrap();
+    // A second, genuinely unarchived file must stay its own row.
+    conn.execute(
+        "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status,data_size)
+         VALUES(2,1,'file:Loose Game.nes','Loose Game.nes','{}','unrecognized',7)",
+        [],
+    )
+    .unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let unresolved_carriers: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM carriers WHERE catalog_media_id IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        unresolved_carriers, 1,
+        "the test must prove the carrier has no catalog medium"
+    );
+    let binding: (Option<String>, Option<String>, String) = conn
+        .query_row(
+            "SELECT carrier_id,catalog_media_id,match_method
+             FROM library_entry_media_bindings WHERE library_entry_id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(binding.1, None);
+    assert_eq!(binding.2, "archive_output_path");
+    assert!(binding.0.is_some(), "the playable must belong to a carrier");
+
+    let page = retro_junk_db::query_entry_list(
+        &conn,
+        &retro_junk_db::LibraryEntryListQuery {
+            console_id: retro_junk_db::LibraryConsoleId(1),
+            search: String::new(),
+            filter: retro_junk_db::LibraryEntryFilter::All,
+            sort: retro_junk_db::LibraryEntrySortField::DisplayName,
+            direction: retro_junk_db::SortDirection::Ascending,
+            offset: 0,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert_eq!(page.archived_releases.len(), 1);
+    assert_eq!(
+        page.archived_releases[0]
+            .playable_library_entries
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>(),
+        vec![retro_junk_db::LibraryEntryId(1)],
+        "the archived release owns the playable file it built"
+    );
+    assert_eq!(
+        page.rows.iter().map(|row| row.id).collect::<Vec<_>>(),
+        vec![retro_junk_db::LibraryEntryId(2)],
+        "only the unarchived file remains a playable-only row"
+    );
+    assert_eq!(page.availability_counts.playable_only, 1);
+    assert_eq!(page.logical_count, 2);
+
+    // The console's own count agrees with the listing: one archived release
+    // plus one unarchived file, not one release plus two loose files.
+    let console_entry_count =
+        retro_junk_db::list_console_summaries(&conn, retro_junk_db::LibraryRootId(1))
+            .unwrap()
+            .into_iter()
+            .find(|summary| summary.id == retro_junk_db::LibraryConsoleId(1))
+            .map(|summary| summary.entry_count);
+    assert_eq!(console_entry_count, Some(2));
+}
+
+/// A multi-disc library row is one entry standing for a directory of disc
+/// images, so every archived disc built into that directory belongs to it.
+/// Matching the playlist directory against a disc's file name never did.
+#[test]
+#[allow(clippy::too_many_lines)]
+fn a_multi_disc_row_owns_every_archived_disc_in_its_playlist_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+
+    let mut physical_copy_id = None;
+    for disc in 1..=2_u32 {
+        let source = temp.path().join(format!("disc-{disc}.iso"));
+        std::fs::write(&source, format!("disc {disc}").as_bytes()).unwrap();
+        let ingested = retro_junk_archive::ingest_new_carrier_dump(
+            &root,
+            &source,
+            retro_junk_archive::NewCarrierDump {
+                platform_id: "psx".to_owned(),
+                title: "Set Game".to_owned(),
+                region: "usa".to_owned(),
+                revision: String::new(),
+                variant: String::new(),
+                owner_id: "default".to_owned(),
+                physical_copy_label: String::new(),
+                serial: String::new(),
+                sequence_number: disc,
+                carrier_label: String::new(),
+                carrier_kind: retro_junk_archive::CarrierKind::OpticalDisc,
+                format: retro_junk_archive::RepresentationFormat::Iso,
+                catalog_binding: retro_junk_archive::CatalogBinding::default(),
+                source_package: retro_junk_archive::SourcePackageRecord::default(),
+                expected_files: Vec::new(),
+                physical_copy_id,
+            },
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        physical_copy_id = Some(ingested.physical_copy.physical_copy_id);
+
+        // Each disc builds into the playlist directory the library scans as
+        // one multi-disc entry.
+        let relative = format!("psx/Set Game (USA).m3u/Set Game (USA) (Disc {disc}).chd");
+        let output = playable_root.join(&relative);
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(&output, b"chd").unwrap();
+        let build = retro_junk_archive::BuildEvidence {
+            schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+            build_id: retro_junk_archive::BuildId::new(),
+            parent_representation_id: ingested.dump.representation_id,
+            child_representation_id: retro_junk_archive::RepresentationId::new(),
+            performed_at: "2026-07-30T00:00:00Z".to_owned(),
+            input_manifest_sha256: retro_junk_archive::scan_archive(&root)
+                .unwrap()
+                .releases
+                .iter()
+                .flat_map(|release| &release.physical_copies)
+                .flat_map(|copy| &copy.carriers)
+                .flat_map(|carrier| &carrier.dumps)
+                .find(|dump| dump.manifest.dump_id == ingested.dump.dump_id)
+                .map(|dump| dump.manifest_sha256.clone())
+                .unwrap(),
+            recipe_version: 1,
+            format: retro_junk_archive::RepresentationFormat::Chd,
+            relative_output_path: relative,
+            output_sha256: String::new(),
+            output_size: 3,
+            catalog_verified: false,
+            round_trip_verified: true,
+            tool: None,
+            omitted_features: Vec::new(),
+            canonical_intermediate: None,
+        };
+        let evidence_dir = ingested.dump_directory.join("evidence");
+        std::fs::create_dir_all(&evidence_dir).unwrap();
+        std::fs::write(
+            evidence_dir.join(format!("build-{}.json", build.build_id)),
+            serde_json::to_vec_pretty(&build).unwrap(),
+        )
+        .unwrap();
+    }
+
+    let mut conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
+        [playable_root.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Ps1','psx','/playable/psx','fp','ready')", []).unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status)
+         VALUES(1,1,'set:Set Game (USA).m3u','Set Game (USA).m3u',
+                '{\"MultiDisc\":{\"name\":\"Set Game (USA).m3u\",\"files\":[\"Set Game (USA).m3u/Set Game (USA) (Disc 1).chd\",\"Set Game (USA).m3u/Set Game (USA) (Disc 2).chd\"]}}',
+                'matched')",
+        [],
+    )
+    .unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let bound_carriers: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM library_entry_media_bindings
+             WHERE library_entry_id=1 AND carrier_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(bound_carriers, 2, "both archived discs belong to the set");
+
+    let page = retro_junk_db::query_entry_list(
+        &conn,
+        &retro_junk_db::LibraryEntryListQuery {
+            console_id: retro_junk_db::LibraryConsoleId(1),
+            search: String::new(),
+            filter: retro_junk_db::LibraryEntryFilter::All,
+            sort: retro_junk_db::LibraryEntrySortField::DisplayName,
+            direction: retro_junk_db::SortDirection::Ascending,
+            offset: 0,
+            limit: 10,
+        },
+    )
+    .unwrap();
+    assert!(
+        page.rows.is_empty(),
+        "the set is not also an unarchived row"
+    );
+    assert_eq!(page.availability_counts.playable_only, 0);
+    assert_eq!(page.logical_count, 1);
+}
+
 /// A catalog verdict is a live comparison of the bytes on disk; recorded
 /// evidence must never overwrite it, and user tags stay untouched.
 #[test]
@@ -1377,4 +1646,130 @@ fn hashes_are_not_adopted_when_the_catalog_does_not_confirm_them() {
             "archive_evidence".to_owned()
         )
     );
+}
+
+/// Append a second build record for a playable that was rebuilt in place —
+/// a newer chdman or a changed recipe writes different bytes to the same path.
+fn append_rebuild_evidence(
+    root: &std::path::Path,
+    title: &str,
+    relative_output_path: &str,
+    performed_at: &str,
+) -> retro_junk_archive::BuildId {
+    let snapshot = retro_junk_archive::scan_archive(root).unwrap();
+    let dump = snapshot
+        .releases
+        .iter()
+        .find(|release| release.manifest.title == title)
+        .map(|release| &release.physical_copies[0].carriers[0].dumps[0])
+        .unwrap();
+    let build = retro_junk_archive::BuildEvidence {
+        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+        build_id: retro_junk_archive::BuildId::new(),
+        parent_representation_id: dump.manifest.representation_id,
+        child_representation_id: retro_junk_archive::RepresentationId::new(),
+        performed_at: performed_at.to_owned(),
+        input_manifest_sha256: dump.manifest_sha256.clone(),
+        recipe_version: 1,
+        format: retro_junk_archive::RepresentationFormat::Rom,
+        relative_output_path: relative_output_path.to_owned(),
+        // A rebuild that produced different bytes at the same path.
+        output_sha256: "rebuilt".to_owned(),
+        output_size: title.len() as u64,
+        catalog_verified: true,
+        round_trip_verified: false,
+        tool: None,
+        omitted_features: Vec::new(),
+        canonical_intermediate: None,
+    };
+    std::fs::write(
+        dump.directory
+            .join("evidence")
+            .join(format!("build-{}.json", build.build_id)),
+        serde_json::to_vec_pretty(&build).unwrap(),
+    )
+    .unwrap();
+    build.build_id
+}
+
+/// Build evidence is append-only, so rebuilding a playable derivative leaves
+/// two records naming one output path. A representation row is the *current*
+/// state of a file and the table admits one row per path, so projecting every
+/// historical record aborted the entire reindex — one rebuilt game made the
+/// whole archive unprojectable. The newest record wins and the rest stay in
+/// the archive as history.
+#[test]
+fn a_rebuilt_playable_projects_its_newest_build_instead_of_failing_the_reindex() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Rebuilt Game",
+        "Rebuilt Game (USA)",
+        "nes/Rebuilt Game.nes",
+        "nes/Rebuilt Game.nes",
+    );
+    let newest = append_rebuild_evidence(
+        &root,
+        "Rebuilt Game",
+        "nes/Rebuilt Game.nes",
+        "2026-07-30T00:00:00Z",
+    );
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    let mut conn = open_memory().unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .expect("a rebuilt playable must not abort the projection");
+
+    let (rows, content): (u32, String) = conn
+        .query_row(
+            "SELECT COUNT(*), COALESCE(MAX(content_sha256),'') FROM representations
+             WHERE location_role='playable' AND relative_path='nes/Rebuilt Game.nes'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(rows, 1, "one file has one current representation");
+    assert_eq!(content, "rebuilt", "the newest build is the current one");
+
+    // The superseded build is not projected, so its lineage row is absent too;
+    // both records remain in the archive's append-only evidence directory.
+    let derivations: u32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM derivations WHERE id=?1",
+            [newest.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(derivations, 1);
+
+    // Reindexing again is stable rather than accumulating.
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+    let rows: u32 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM representations WHERE location_role='playable'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 1);
 }

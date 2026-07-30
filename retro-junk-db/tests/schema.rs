@@ -66,6 +66,92 @@ fn v20_adds_work_identity_to_archive_releases() {
     assert!(index_exists);
 }
 
+/// Upgrading re-keys playable bindings on the archived carrier and re-derives
+/// them in place, so a database written before the fix stops listing an
+/// archived release's own playable file a second time as "playable only".
+#[test]
+fn v25_rebinds_archived_playables_to_their_carrier() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("v24.db");
+    let connection = rusqlite::Connection::open(&db_path).unwrap();
+    create_schema(&connection).unwrap();
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             INSERT INTO library_roots(id,root_path) VALUES(1,'/playable');
+             INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,
+                                          fingerprint_hash,scan_state)
+             VALUES(1,1,'Nes','nes','/playable/nes','fp','ready');
+             INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json)
+             VALUES(1,1,'file:Game.nes','Game.nes','{}'),
+                   (2,1,'file:Other.nes','Other.nes','{}');
+             INSERT INTO works(id,canonical_name) VALUES('w','Game');
+             INSERT INTO platforms(id,display_name,short_name,manufacturer,media_type)
+             VALUES('nes','NES','NES','Nintendo','cartridge');
+             INSERT INTO releases(id,work_id,platform_id,region,title)
+             VALUES('r','w','nes','usa','Game');
+             INSERT INTO media(id,release_id,dat_source) VALUES('m','r','no-intro');
+             INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,
+                                          archive_root,playable_root)
+             VALUES('p','Collection','retro-junk-archive.toml','sha','/archive','/playable');
+             INSERT INTO archive_releases(id,profile_id,platform_id,title,manifest_path,
+                                          manifest_sha256)
+             VALUES('ar','p','nes','Game','release.toml','sha');
+             -- The carrier deliberately has no catalog medium, as an unbound or
+             -- stale-bound archive does.
+             INSERT INTO physical_copies(id,archive_release_id,copy_number,manifest_path,
+                                         manifest_sha256)
+             VALUES('pc','ar',1,'physical-copy.toml','sha');
+             INSERT INTO carriers(id,physical_copy_id,manifest_path,manifest_sha256)
+             VALUES('c','pc','carrier.toml','sha');
+             INSERT INTO representations(id,carrier_id,role,format,location_role,relative_path,
+                                         presence_state)
+             VALUES('rep','c','playable','rom','playable','nes/Game.nes','present');
+             -- Rebuild the pre-v25 binding table and its single legacy row.
+             DROP TABLE library_entry_media_bindings;
+             CREATE TABLE library_entry_media_bindings(
+                 library_entry_id INTEGER NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+                 catalog_media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+                 representation_id TEXT REFERENCES representations(id) ON DELETE SET NULL,
+                 match_method TEXT NOT NULL DEFAULT '',
+                 PRIMARY KEY(library_entry_id, catalog_media_id));
+             INSERT INTO library_entry_media_bindings(
+                 library_entry_id,catalog_media_id,representation_id,match_method)
+             VALUES(2,'m',NULL,'catalog_adoption');
+             DELETE FROM schema_version;
+             INSERT INTO schema_version(version) VALUES(24);
+             PRAGMA foreign_keys=ON;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let connection = open_database(&db_path).unwrap();
+    // The archived carrier now owns the playable file its evidence points at,
+    // with no catalog medium involved.
+    let derived: (String, Option<String>, String) = connection
+        .query_row(
+            "SELECT carrier_id,catalog_media_id,match_method
+             FROM library_entry_media_bindings WHERE library_entry_id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        derived,
+        ("c".to_owned(), None, "archive_output_path".to_owned())
+    );
+    // A binding no archive rule derives is carried across untouched.
+    let adopted: (Option<String>, String) = connection
+        .query_row(
+            "SELECT carrier_id,catalog_media_id
+             FROM library_entry_media_bindings WHERE library_entry_id=2",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(adopted, (None, "m".to_owned()));
+}
+
 #[test]
 fn migration_probe_is_read_only_and_distinguishes_current_legacy_and_missing_databases() {
     let dir = tempfile::tempdir().unwrap();

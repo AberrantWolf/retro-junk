@@ -325,7 +325,7 @@ impl Drop for WorkspaceGuard {
     }
 }
 
-fn find_image_name(directory: &Path) -> Result<String, RedumperError> {
+pub(crate) fn find_image_name(directory: &Path) -> Result<String, RedumperError> {
     for path in sorted_files(directory)? {
         let extension = path
             .extension()
@@ -345,6 +345,12 @@ fn find_image_name(directory: &Path) -> Result<String, RedumperError> {
     ))
 }
 
+/// Enumerate the real files of a directory in a stable order.
+///
+/// Host-filesystem sidecars are excluded because every caller here treats a
+/// file's extension as its type: `._disc.scram` sorts ahead of `disc.scram` and
+/// would name the image `._disc`, `._disc.log` is not UTF-8, and `._disc.bin`
+/// would be retained as a track.
 fn sorted_files(directory: &Path) -> Result<Vec<PathBuf>, RedumperError> {
     let mut entries = std::fs::read_dir(directory)
         .map_err(|source| RedumperError::Io {
@@ -360,7 +366,7 @@ fn sorted_files(directory: &Path) -> Result<Vec<PathBuf>, RedumperError> {
     Ok(entries
         .into_iter()
         .map(|entry| entry.path())
-        .filter(|path| path.is_file())
+        .filter(|path| path.is_file() && !retro_junk_io::is_noise_path(path))
         .collect())
 }
 

@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use sha2::{Digest, Sha256};
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -533,11 +535,30 @@ versioned!(
 );
 
 pub fn read_toml<T: DeserializeOwned + VersionedManifest>(path: &Path) -> Result<T, ManifestError> {
-    let contents = std::fs::read_to_string(path).map_err(|source| ManifestError::Io {
+    Ok(read_toml_with_digest(path)?.0)
+}
+
+/// Parse a manifest and digest the exact bytes it was parsed from, in one
+/// read.
+///
+/// Indexing needs both for every manifest in the archive. Reading the file
+/// twice doubled the round trips of a whole-archive scan, which is the entire
+/// cost on a network share.
+pub fn read_toml_with_digest<T: DeserializeOwned + VersionedManifest>(
+    path: &Path,
+) -> Result<(T, String), ManifestError> {
+    let bytes = std::fs::read(path).map_err(|source| ManifestError::Io {
         path: path.display().to_string(),
         source,
     })?;
-    let manifest: T = toml::from_str(&contents).map_err(|source| ManifestError::TomlDecode {
+    let contents = std::str::from_utf8(&bytes).map_err(|_| ManifestError::Io {
+        path: path.display().to_string(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "manifest is not valid UTF-8",
+        ),
+    })?;
+    let manifest: T = toml::from_str(contents).map_err(|source| ManifestError::TomlDecode {
         path: path.display().to_string(),
         source,
     })?;
@@ -547,7 +568,7 @@ pub fn read_toml<T: DeserializeOwned + VersionedManifest>(path: &Path) -> Result
             supported: MANIFEST_SCHEMA_VERSION,
         });
     }
-    Ok(manifest)
+    Ok((manifest, format!("{:x}", Sha256::digest(&bytes))))
 }
 
 pub fn write_toml_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), ManifestError> {
@@ -612,15 +633,66 @@ pub fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<(), Manife
     sync_directory(path.parent().unwrap_or_else(|| Path::new(".")))
 }
 
+/// Flush a directory entry so a published rename survives a crash.
+///
+/// This is a durability *hint*: not every filesystem can flush a directory,
+/// and one that cannot has already done everything it is going to do by the
+/// time the rename returns. macOS smbfs, for one, fails every directory
+/// `fsync` with `ENOTSUP` (verified empirically 2026-07-30 against an SMB
+/// share), so treating that as a write failure made an entire class of network
+/// archive unwritable. A filesystem that *can* flush still must, so genuine
+/// I/O failures (`ENOSPC`, `EIO`) stay errors.
+#[cfg(unix)]
 pub(crate) fn sync_directory(directory: &Path) -> Result<(), ManifestError> {
     let handle = std::fs::File::open(directory).map_err(|source| ManifestError::Io {
         path: directory.display().to_string(),
         source,
     })?;
-    handle.sync_all().map_err(|source| ManifestError::Io {
-        path: directory.display().to_string(),
-        source,
-    })
+    match handle.sync_all() {
+        Ok(()) => Ok(()),
+        Err(error) if directory_sync_unsupported(&error) => {
+            log::debug!(
+                "{} cannot flush directory entries ({error}); relying on the rename itself",
+                directory.display()
+            );
+            Ok(())
+        }
+        Err(source) => Err(ManifestError::Io {
+            path: directory.display().to_string(),
+            source,
+        }),
+    }
+}
+
+/// Windows has no directory handle to flush; a completed rename is all the
+/// ordering guarantee available.
+#[cfg(not(unix))]
+pub(crate) fn sync_directory(_directory: &Path) -> Result<(), ManifestError> {
+    Ok(())
+}
+
+/// Whether an `fsync` error means "this filesystem cannot flush a directory",
+/// rather than "the write did not land".
+///
+/// Refusal takes several shapes across network filesystems: `ENOTSUP` /
+/// `EOPNOTSUPP` (macOS smbfs), `EINVAL` (several Linux network filesystems),
+/// `EBADF` / `EISDIR` where a directory handle is not syncable at all, and
+/// `EPERM` / `EACCES` where the server refuses to flush a handle it did not
+/// open for writing.
+#[cfg(unix)]
+pub(crate) fn directory_sync_unsupported(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(
+            libc::ENOTSUP
+                | libc::EOPNOTSUPP
+                | libc::EINVAL
+                | libc::EBADF
+                | libc::EISDIR
+                | libc::EPERM
+                | libc::EACCES
+        )
+    )
 }
 
 pub fn read_verification_json(path: &Path) -> Result<VerificationEvidence, ManifestError> {

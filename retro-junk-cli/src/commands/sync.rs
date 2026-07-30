@@ -28,25 +28,20 @@ pub(crate) fn resolve_target(
     workspace_root: Option<PathBuf>,
 ) -> Result<retro_junk_archive::CollectionProfile, CliError> {
     if let Some(archive_root) = archive_root {
-        let manifest_path = archive_root.join("retro-junk-archive.toml");
-        let manifest: retro_junk_archive::ArchiveRootManifest =
-            retro_junk_archive::read_toml(&manifest_path)
+        // Fail loudly on an uninitialized root: explicit roots are a direct
+        // instruction, so silently minting an identity would be wrong here.
+        let _: retro_junk_archive::ArchiveRootManifest =
+            retro_junk_archive::read_toml(&retro_junk_archive::root_manifest_path(&archive_root))
                 .map_err(|error| CliError::other(error.to_string()))?;
         let playable_root = playable_root
             .ok_or_else(|| CliError::config("--playable-root is required with --archive-root"))?;
         let workspace_root =
             workspace_root.unwrap_or_else(|| archive_root.join(".retro-junk").join("work"));
-        return Ok(retro_junk_archive::CollectionProfile {
-            profile_id: manifest.profile_id,
-            display_name: manifest.display_name,
-            archive_root,
-            playable_root,
-            workspace_root,
-            network_mode: false,
-            platform_defaults: manifest.platform_defaults,
-            incoming_roots: Vec::new(),
-            watch_backend: retro_junk_archive::WatchBackend::default(),
-        });
+        let mut target =
+            retro_junk_archive::CollectionProfile::for_roots(archive_root, playable_root);
+        target.workspace_root = workspace_root;
+        target.network_mode = false;
+        return Ok(target);
     }
     retro_junk_work::profiles::resolve_profile(profile).ok_or_else(|| {
         CliError::config(

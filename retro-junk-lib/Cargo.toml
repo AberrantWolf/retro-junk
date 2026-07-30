@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 retro-junk-core.workspace = true
+retro-junk-io.workspace = true
 retro-junk-dat.workspace = true
 retro-junk-db.workspace = true
 retro-junk-archive.workspace = true

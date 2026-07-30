@@ -117,7 +117,11 @@ fn collect_raw_files(
         })?;
         if file_type.is_dir() {
             collect_raw_files(root, &path, output, cancel)?;
-        } else {
+        } else if !retro_junk_io::is_noise_path(&path) {
+            // A sidecar the host filesystem wrote beside a dump file is not
+            // dump content. Counting it would report every mirror of the
+            // archive on exFAT or SMB as an integrity failure, and would bake
+            // host metadata into the manifest on ingest.
             let relative = path.strip_prefix(root).unwrap_or(&path);
             let normalized = crate::normalize_relative_path(relative)?;
             output.push(normalized);

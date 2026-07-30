@@ -113,7 +113,52 @@ fn migrate_legacy_profile(mut settings: AppSettings) -> AppSettings {
             profile.workspace_root = retro_junk_io::default_profile_workspace(profile.profile_id.0);
         }
     }
+    adopt_archive_identities(&mut settings.library);
     settings
+}
+
+/// Re-key every profile onto the identity of the archive it points at, then
+/// collapse profiles that resolved to the same archive.
+///
+/// Settings written before profiles adopted archive identity can hold an id
+/// the archive never knew, which makes its indexed releases invisible. Two
+/// entries for one archive on different mounts are the same collection, and
+/// the projection stores one root pair per identity, so the most recently
+/// selected mount wins and the stale duplicate is dropped.
+fn adopt_archive_identities(library: &mut LibrarySettings) {
+    let previous_current = library.current_profile;
+    let mut current = previous_current;
+    for profile in &mut library.profiles {
+        let was_current = Some(profile.profile_id) == previous_current;
+        if profile.adopt_archive_identity() && was_current {
+            current = Some(profile.profile_id);
+        }
+    }
+    library.current_profile = current;
+
+    let selected_root = library.current_root.clone();
+    let mut kept: Vec<retro_junk_archive::CollectionProfile> = Vec::new();
+    for profile in std::mem::take(&mut library.profiles) {
+        let selected = selected_root
+            .as_deref()
+            .is_some_and(|root| root == profile.playable_root);
+        match kept
+            .iter_mut()
+            .find(|existing| existing.profile_id == profile.profile_id)
+        {
+            Some(existing) if selected => *existing = profile,
+            Some(_) => {}
+            None => kept.push(profile),
+        }
+    }
+    library.profiles = kept;
+
+    if library
+        .current_profile
+        .is_some_and(|id| !library.profiles.iter().any(|p| p.profile_id == id))
+    {
+        library.current_profile = library.profiles.first().map(|p| p.profile_id);
+    }
 }
 
 impl LibrarySettings {
@@ -132,23 +177,30 @@ impl LibrarySettings {
             .find(|profile| profile.profile_id == id)
     }
 
+    /// Select (creating if needed) the profile for a playable root.
+    ///
+    /// A candidate is built first so its archive identity is known: opening a
+    /// copy of an already-configured archive at a new mount must re-point the
+    /// existing profile rather than add a second one under a fresh id, which
+    /// would leave the copy's indexed releases unreachable.
     pub fn ensure_profile_for_root(
         &mut self,
         playable_root: &std::path::Path,
     ) -> retro_junk_archive::ArchiveProfileId {
-        if let Some(profile) = self
-            .profiles
-            .iter()
-            .find(|profile| profile.playable_root == playable_root)
-        {
-            self.current_profile = Some(profile.profile_id);
-            self.current_root = Some(playable_root.to_path_buf());
-            return profile.profile_id;
-        }
-        let profile =
+        let candidate =
             retro_junk_archive::CollectionProfile::from_legacy_playable_root(playable_root);
-        let id = profile.profile_id;
-        self.profiles.push(profile);
+        let existing = self.profiles.iter_mut().find(|profile| {
+            profile.playable_root == playable_root || profile.profile_id == candidate.profile_id
+        });
+        let id = if let Some(profile) = existing {
+            profile.archive_root = candidate.archive_root;
+            profile.playable_root = candidate.playable_root;
+            profile.profile_id
+        } else {
+            let id = candidate.profile_id;
+            self.profiles.push(candidate);
+            id
+        };
         self.current_profile = Some(id);
         self.current_root = Some(playable_root.to_path_buf());
         id
@@ -210,6 +262,145 @@ mod tests {
             settings.library.profiles[0].workspace_root,
             PathBuf::from("/fast-scratch/retro-junk")
         );
+    }
+
+    /// Initialize a collection at `<root>/archive` and return its identity.
+    fn init_collection(root: &std::path::Path, name: &str) -> retro_junk_archive::ArchiveProfileId {
+        std::fs::create_dir_all(root.join("roms")).unwrap();
+        let manifest = retro_junk_archive::ArchiveRootManifest::new(name);
+        retro_junk_archive::initialize_archive(&root.join("archive"), &manifest).unwrap();
+        manifest.profile_id
+    }
+
+    fn settings_for(
+        profiles: Vec<retro_junk_archive::CollectionProfile>,
+        current: retro_junk_archive::ArchiveProfileId,
+        current_root: PathBuf,
+    ) -> AppSettings {
+        AppSettings {
+            library: LibrarySettings {
+                current_profile: Some(current),
+                profiles,
+                current_root: Some(current_root),
+                recent_roots: Vec::new(),
+            },
+            general: GeneralSettings::default(),
+        }
+    }
+
+    #[test]
+    fn a_profile_whose_id_drifted_from_its_archive_is_repaired_on_load() {
+        let temp = tempfile::tempdir().unwrap();
+        let archived = init_collection(temp.path(), "Collection");
+        let mut profile = retro_junk_archive::CollectionProfile::for_roots(
+            temp.path().join("archive"),
+            temp.path().join("roms"),
+        );
+        let stale = retro_junk_archive::ArchiveProfileId::new();
+        profile.profile_id = stale;
+        let settings =
+            migrate_legacy_profile(settings_for(vec![profile], stale, temp.path().join("roms")));
+
+        assert_eq!(settings.library.profiles[0].profile_id, archived);
+        // The selection has to follow the rekey, or nothing is active.
+        assert_eq!(settings.library.current_profile, Some(archived));
+    }
+
+    #[test]
+    fn duplicate_profiles_for_one_archive_collapse_onto_the_selected_mount() {
+        let network = tempfile::tempdir().unwrap();
+        let archived = init_collection(network.path(), "Collection");
+        // The same collection rsynced to a second drive keeps its manifest.
+        let local = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(local.path().join("archive")).unwrap();
+        std::fs::create_dir_all(local.path().join("roms")).unwrap();
+        std::fs::copy(
+            retro_junk_archive::root_manifest_path(&network.path().join("archive")),
+            retro_junk_archive::root_manifest_path(&local.path().join("archive")),
+        )
+        .unwrap();
+
+        let network_profile = retro_junk_archive::CollectionProfile::for_roots(
+            network.path().join("archive"),
+            network.path().join("roms"),
+        );
+        let mut local_profile = retro_junk_archive::CollectionProfile::for_roots(
+            local.path().join("archive"),
+            local.path().join("roms"),
+        );
+        // A second entry added before identity adoption carried a fresh id.
+        let stale = retro_junk_archive::ArchiveProfileId::new();
+        local_profile.profile_id = stale;
+
+        let settings = migrate_legacy_profile(settings_for(
+            vec![network_profile, local_profile],
+            stale,
+            local.path().join("roms"),
+        ));
+
+        // One archive identity, and the projection tracks one root pair, so
+        // the mount that is actually selected must be the surviving one.
+        assert_eq!(settings.library.profiles.len(), 1);
+        assert_eq!(settings.library.profiles[0].profile_id, archived);
+        assert_eq!(
+            settings.library.profiles[0].playable_root,
+            local.path().join("roms")
+        );
+        assert_eq!(settings.library.current_profile, Some(archived));
+    }
+
+    #[test]
+    fn opening_a_copied_archive_repoints_the_existing_profile() {
+        let network = tempfile::tempdir().unwrap();
+        let archived = init_collection(network.path(), "Collection");
+        let local = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(local.path().join("archive")).unwrap();
+        std::fs::create_dir_all(local.path().join("roms")).unwrap();
+        std::fs::copy(
+            retro_junk_archive::root_manifest_path(&network.path().join("archive")),
+            retro_junk_archive::root_manifest_path(&local.path().join("archive")),
+        )
+        .unwrap();
+        let mut library = LibrarySettings {
+            current_profile: Some(archived),
+            profiles: vec![retro_junk_archive::CollectionProfile::for_roots(
+                network.path().join("archive"),
+                network.path().join("roms"),
+            )],
+            current_root: Some(network.path().join("roms")),
+            recent_roots: Vec::new(),
+        };
+
+        let id = library.ensure_profile_for_root(&local.path().join("roms"));
+
+        assert_eq!(id, archived);
+        assert_eq!(library.profiles.len(), 1);
+        assert_eq!(
+            library.profiles[0].archive_root,
+            local.path().join("archive")
+        );
+    }
+
+    #[test]
+    fn distinct_archives_keep_distinct_profiles() {
+        let first = tempfile::tempdir().unwrap();
+        let first_id = init_collection(first.path(), "First");
+        let second = tempfile::tempdir().unwrap();
+        let second_id = init_collection(second.path(), "Second");
+        let mut library = LibrarySettings {
+            current_profile: Some(first_id),
+            profiles: vec![retro_junk_archive::CollectionProfile::for_roots(
+                first.path().join("archive"),
+                first.path().join("roms"),
+            )],
+            current_root: Some(first.path().join("roms")),
+            recent_roots: Vec::new(),
+        };
+
+        let id = library.ensure_profile_for_root(&second.path().join("roms"));
+
+        assert_eq!(id, second_id);
+        assert_eq!(library.profiles.len(), 2);
     }
 
     #[test]

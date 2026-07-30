@@ -132,7 +132,10 @@ fn collect_files(
         }
         if metadata.is_dir() {
             collect_files(root, &path, output)?;
-        } else if metadata.is_file() {
+        } else if metadata.is_file() && !retro_junk_io::is_noise_path(&path) {
+            // Host-filesystem sidecars beside a dump are not part of it; a
+            // package staged from exFAT or SMB must archive the same bytes as
+            // one staged from APFS.
             let relative = path
                 .strip_prefix(root)
                 .map_err(|_| IngestError::InvalidSource(path.display().to_string()))?;
@@ -183,7 +186,15 @@ pub fn execute_ingest(
                 path: destination.display().to_string(),
                 source,
             })?;
-            crate::manifest::sync_directory(parent)?;
+            // The rename published the dump. Flushing the parent directory
+            // only makes that durable sooner, so a filesystem that refuses it
+            // must not turn a committed package into a rolled-back import.
+            if let Err(error) = crate::manifest::sync_directory(parent) {
+                log::warn!(
+                    "published {} but could not flush its parent directory: {error}",
+                    destination.display()
+                );
+            }
             Ok(request.manifest)
         }
         Err(error) => {

@@ -8,6 +8,16 @@ pub enum LayoutError {
     UnsafeRelativePath,
 }
 
+/// File name of the archive root manifest, which carries the archive's
+/// portable identity.
+pub const ROOT_MANIFEST_FILE: &str = "retro-junk-archive.toml";
+
+/// Path of the root manifest for an archive root.
+#[must_use]
+pub fn root_manifest_path(archive_root: &Path) -> PathBuf {
+    archive_root.join(ROOT_MANIFEST_FILE)
+}
+
 #[derive(Debug, Clone)]
 pub struct ArchiveLayout {
     root: PathBuf,
@@ -22,6 +32,11 @@ impl ArchiveLayout {
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    #[must_use]
+    pub fn root_manifest_path(&self) -> PathBuf {
+        root_manifest_path(&self.root)
     }
 
     #[must_use]

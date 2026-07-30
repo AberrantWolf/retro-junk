@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 24;
+pub const CURRENT_VERSION: i32 = 25;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -406,13 +406,19 @@ const TABLES: &[(&str, &str)] = &[
           options_json TEXT NOT NULL DEFAULT '{}',
           PRIMARY KEY(scope_type, scope_id))",
     ),
+    // A playable file belongs to the archived carrier whose evidence produced
+    // it, whether or not that carrier could be tied to a catalog medium. Keying
+    // this on `catalog_media_id` alone made every unbound or stale-bound
+    // carrier's own playable look like a separate, unarchived file.
     (
         "library_entry_media_bindings",
-        "(library_entry_id INTEGER NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
-          catalog_media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+        "(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          library_entry_id INTEGER NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+          carrier_id TEXT REFERENCES carriers(id) ON DELETE CASCADE,
+          catalog_media_id TEXT REFERENCES media(id) ON DELETE CASCADE,
           representation_id TEXT REFERENCES representations(id) ON DELETE SET NULL,
           match_method TEXT NOT NULL DEFAULT '',
-          PRIMARY KEY(library_entry_id, catalog_media_id))",
+          CHECK(carrier_id IS NOT NULL OR catalog_media_id IS NOT NULL))",
     ),
     (
         "catalog_source_snapshots",
@@ -545,6 +551,9 @@ CREATE INDEX IF NOT EXISTS idx_dump_events_media ON dump_events(carrier_id);
 CREATE INDEX IF NOT EXISTS idx_representations_media ON representations(carrier_id, role);
 CREATE INDEX IF NOT EXISTS idx_verifications_representation ON verification_events(representation_id, performed_at);
 CREATE INDEX IF NOT EXISTS idx_library_binding_media ON library_entry_media_bindings(catalog_media_id);
+CREATE INDEX IF NOT EXISTS idx_library_binding_entry ON library_entry_media_bindings(library_entry_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_library_binding_carrier ON library_entry_media_bindings(library_entry_id, carrier_id) WHERE carrier_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_library_binding_catalog_only ON library_entry_media_bindings(library_entry_id, catalog_media_id) WHERE carrier_id IS NULL;
 CREATE INDEX IF NOT EXISTS idx_archive_release_files_release ON archive_release_files(archive_release_id, category, asset_type);
 ";
 
@@ -1180,6 +1189,61 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                     "library_entries",
                     &[("hash_source", "TEXT NOT NULL DEFAULT ''")],
                 )?;
+            }
+            24 => {
+                // A playable file belongs to the archived carrier whose build
+                // evidence produced it. Keying that on the carrier's catalog
+                // medium meant an archive that is unbound — or bound to a
+                // catalog id an import has since re-slugged — could not own its
+                // own playable, so the Library listed the very same file twice:
+                // once inside the archived release and once as an unarchived
+                // "playable only" row.
+                let has_bindings: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table'
+                                   AND name='library_entry_media_bindings')
+                         AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='table'
+                                    AND name='carriers')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_bindings
+                    && conn
+                        .prepare("SELECT carrier_id FROM library_entry_media_bindings LIMIT 0")
+                        .is_err()
+                {
+                    let body = table_body("library_entry_media_bindings")?;
+                    conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN;")?;
+                    let result = (|| -> Result<(), SchemaError> {
+                        conn.execute_batch(&format!(
+                            "CREATE TABLE library_entry_media_bindings_new {body};
+                             INSERT OR IGNORE INTO library_entry_media_bindings_new(
+                                 library_entry_id,carrier_id,catalog_media_id,
+                                 representation_id,match_method)
+                             SELECT old.library_entry_id,
+                                    (SELECT c.id FROM representations rep
+                                     JOIN carriers c ON c.id=rep.carrier_id
+                                     WHERE rep.id=old.representation_id),
+                                    old.catalog_media_id,old.representation_id,old.match_method
+                             FROM library_entry_media_bindings old;
+                             DROP TABLE library_entry_media_bindings;
+                             ALTER TABLE library_entry_media_bindings_new
+                                 RENAME TO library_entry_media_bindings;"
+                        ))?;
+                        conn.execute_batch(ARCHIVE_INDEXES_SQL)?;
+                        conn.execute_batch("COMMIT;")?;
+                        Ok(())
+                    })();
+                    if result.is_err() {
+                        let _ = conn.execute_batch("ROLLBACK;");
+                    }
+                    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+                    result?;
+                    // Re-derive the archive-owned bindings from the committed
+                    // projection, so an upgraded database is correct without
+                    // waiting for the next archive rescan.
+                    crate::archive::rebuild_library_entry_bindings(conn)
+                        .map_err(|error| SchemaError::LibraryMigration(error.to_string()))?;
+                }
             }
             14 => {
                 let has_match_state: bool = conn.query_row(

@@ -2,6 +2,69 @@
 
 ## 0.4.0
 
+- Fixed a copy of an archive being invisible on the machine that copied it.
+  Archive identity is recorded in the portable root manifest, but a profile
+  created for an existing archive minted a *fresh* id instead of adopting it,
+  while the rebuildable SQLite projection is keyed on the manifest's id. So
+  pointing a new profile at an rsynced collection reindexed 241 releases and
+  then reported "No archived releases are indexed yet", because the UI queried
+  an id the reconciler never wrote. Profiles now take their identity from the
+  archive they point at, existing profiles whose id has drifted re-adopt it on
+  load (CLI, daemon, and GUI alike, so no config surgery is needed), and
+  opening the same archive at a second mount re-points the profile it already
+  has rather than adding a rival one.
+- Fixed one rebuilt playable making the whole archive unprojectable. Build
+  evidence is append-only, so rebuilding a derivative in place (a newer
+  chdman, a changed recipe) leaves two records naming the same output path —
+  but a representation row is the *current* state of one file, and the
+  projection admits one row per path, so reindexing aborted with `UNIQUE
+  constraint failed: representations.location_role, representations.relative_path`
+  and left no archive index at all. The newest build for each output is now
+  projected, superseded records are logged rather than silently dropped, and
+  every record stays in the archive as history.
+- Stopped macOS AppleDouble sidecars from being treated as collection content.
+  Copying a library onto exFAT, FAT, or SMB leaves a `._<name>` file beside
+  every file carrying extended attributes, and those sidecars keep the
+  extension they shadow — so each real game scanned as a phantom twin, and
+  inside a preservation dump each one read as a file the manifest never
+  recorded, reporting a healthy mirror as an integrity failure. Library
+  scanning, archive verification, and ingest now share one rule for host
+  filesystem metadata (`._*`, `.DS_Store`, `Thumbs.db`, `desktop.ini`).
+- Fixed no playable being buildable from a Redumper raw master held on exFAT
+  or SMB. The same `._` sidecars reached two paths the rule had not been
+  applied to: staging copied them into the scratch workspace, and the split
+  step names the image after the first `.scram`/`.scrap`/`.sdram`/`.sbram` it
+  finds — `._disc.scram` sorts ahead of `disc.scram`, so redumper was pointed
+  at a 4 KiB resource fork, read garbage track geometry out of `._disc.toc`,
+  and failed with `error: unable to establish base LBA`. Every PS1 disc
+  archived as a raw master was affected, and neither the dump nor the redumper
+  version was ever at fault. Package staging and Redumper file discovery now
+  go through the same host-metadata rule, so image-name discovery, log
+  collection, and intermediate retention all see only dump content.
+
+- Fixed every archive write failing on an SMB share. macOS smbfs answers each
+  directory `fsync` with `ENOTSUP` (verified empirically), and the atomic
+  manifest write treated that as a failed write — so an import published its
+  package, then rolled the whole release back, leaving no trace but a touched
+  directory. Flushing a directory is now a durability hint: refusal by the
+  filesystem is accepted, genuine I/O failures (`ENOSPC`, `EIO`) still fail,
+  and a completed publish is never rolled back because the hint failed.
+- Made whole-archive indexing about 6× faster over a network share (241
+  releases: 15.3 s → 2.5 s warm, 23.8 s → 5.1 s cold). Scanning read every
+  manifest twice — once to parse, once to digest — and walked releases one at
+  a time, so the cost was almost entirely round-trip latency. It now reads
+  each manifest once and scans releases concurrently.
+
+- Fixed the Library listing the same playable file twice — once inside its
+  archived release and again as an unarchived "playable only" row. A playable
+  belongs to the archived carrier whose build evidence produced it, but the
+  binding was keyed on that carrier's *catalog medium*, so an archive that is
+  unbound, on a platform whose DAT was never imported, or bound to a catalog id
+  a later import re-slugged could not own its own playable. Bindings are now
+  keyed on the carrier (schema v25, re-derived in place on upgrade), and a
+  multi-disc row now owns every archived disc image inside the directory it
+  stands for instead of only an exact file-name match.
+
 - Stopped re-reading files for hashes the archive already recorded. Dump
   manifests carry CRC32/MD5/SHA-1 beside SHA-256 for every archived file, but
   the projection kept only SHA-256; it now carries all four, and a library row

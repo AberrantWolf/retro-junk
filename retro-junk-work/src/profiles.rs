@@ -64,22 +64,29 @@ pub fn resolve_profile(selector: Option<&str>) -> Option<CollectionProfile> {
 #[must_use]
 pub fn resolve_profile_from(path: &Path, selector: Option<&str>) -> Option<CollectionProfile> {
     let section = read(path).library;
-    if let Some(wanted) = selector {
-        return section.profiles.into_iter().find(|profile| {
+    // Selection happens on the ids as written, then the winner re-adopts the
+    // identity of the archive it points at. Settings authored before profiles
+    // took their identity from the archive can hold an id the archive never
+    // knew, and the projection is keyed on the archive's id — the CLI and
+    // daemon must not have to wait for the GUI to rewrite the file.
+    let mut profiles = section.profiles;
+    let selected = match selector {
+        Some(wanted) => profiles.iter().position(|profile| {
             profile.profile_id.to_string() == wanted
                 || profile.display_name.eq_ignore_ascii_case(wanted)
-        });
-    }
-    if let Some(current) = &section.current_profile
-        && let Some(profile) = section
-            .profiles
-            .iter()
-            .find(|profile| profile.profile_id == *current)
-    {
-        return Some(profile.clone());
-    }
-    let mut profiles = section.profiles;
-    (profiles.len() == 1).then(|| profiles.remove(0))
+        }),
+        None => section
+            .current_profile
+            .and_then(|current| {
+                profiles
+                    .iter()
+                    .position(|profile| profile.profile_id == current)
+            })
+            .or_else(|| (profiles.len() == 1).then_some(0)),
+    };
+    let mut resolved = profiles.remove(selected?);
+    resolved.adopt_archive_identity();
+    Some(resolved)
 }
 
 fn read(path: &Path) -> SettingsDoc {
@@ -88,3 +95,7 @@ fn read(path: &Path) -> SettingsDoc {
         .and_then(|contents| toml::from_str(&contents).ok())
         .unwrap_or_default()
 }
+
+#[cfg(test)]
+#[path = "tests/profiles_tests.rs"]
+mod tests;

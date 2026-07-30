@@ -1372,15 +1372,12 @@ pub fn list_console_summaries(
             .filter(|release| platform_ids_match(&release.platform_id, &archive_platform))
             .count() as u64;
         let unbound_count: u64 = conn.query_row(
-            "SELECT COUNT(*) FROM library_entries e WHERE e.console_id=?1
-             AND NOT EXISTS(
-                 SELECT 1 FROM library_entry_media_bindings b
-                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
-                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                 WHERE b.library_entry_id=e.id AND ar.profile_id=?2
-             )",
-            params![summary.id.0, profile_id],
+            &format!(
+                "SELECT COUNT(*) FROM library_entries e
+                 WHERE e.console_id=?1 AND NOT {}",
+                crate::archive::library_entry_is_archived("e")
+            ),
+            params![summary.id.0],
             |row| row.get(0),
         )?;
         summary.entry_count = unbound_count.saturating_add(archive_count);
@@ -1459,36 +1456,14 @@ pub fn query_entry_list(
                 })
         });
     }
-    let unbound_clause = "AND NOT EXISTS(
-             SELECT 1 FROM library_entry_media_bindings list_binding
-             JOIN carriers list_carrier
-               ON list_carrier.catalog_media_id=list_binding.catalog_media_id
-             JOIN physical_copies list_copy
-               ON list_copy.id=list_carrier.physical_copy_id
-             JOIN archive_releases list_release
-               ON list_release.id=list_copy.archive_release_id
-             JOIN archive_profiles list_profile
-               ON list_profile.id=list_release.profile_id
-             JOIN library_consoles list_console
-               ON list_console.id=library_entries.console_id
-             JOIN library_roots list_root
-               ON list_root.id=list_console.root_id
-             WHERE list_binding.library_entry_id=library_entries.id
-               AND list_profile.playable_root=list_root.root_path
-         )";
+    let unbound_clause = format!(
+        "AND NOT {}",
+        crate::archive::library_entry_is_archived("library_entries")
+    );
     let unbound_total: u64 = conn.query_row(
         &format!(
-            "SELECT COUNT(*) FROM library_entries e WHERE {where_sql}
-             AND NOT EXISTS(
-                 SELECT 1 FROM library_entry_media_bindings b
-                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
-                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                 JOIN archive_profiles ap ON ap.id=ar.profile_id
-                 JOIN library_consoles lc ON lc.id=e.console_id
-                 JOIN library_roots lr ON lr.id=lc.root_id
-                 WHERE b.library_entry_id=e.id AND ap.playable_root=lr.root_path
-             )"
+            "SELECT COUNT(*) FROM library_entries e WHERE {where_sql} AND NOT {}",
+            crate::archive::library_entry_is_archived("e")
         ),
         params![q.console_id.0, pattern],
         |row| row.get(0),
@@ -1551,49 +1526,24 @@ pub fn query_entry_list(
                 cue_compat_issues_json IS NOT NULL AND cue_compat_issues_json <> '[]',
                 revision,source_revision,identification_json,hash_warnings_json,
                 disc_identifications_json,entry_key,game_entry_json,
-                EXISTS(SELECT 1 FROM library_entry_media_bindings b
-                       JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
-                       JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                       JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                       JOIN archive_profiles ap ON ap.id=ar.profile_id
-                       WHERE b.library_entry_id=library_entries.id
-                         AND ap.playable_root=(SELECT lr.root_path FROM library_consoles lc
-                              JOIN library_roots lr ON lr.id=lc.root_id
-                              WHERE lc.id=library_entries.console_id)),
-                (SELECT rep.format FROM library_entry_media_bindings b
-                 JOIN representations rep ON rep.id=b.representation_id
-                 JOIN carriers rc ON rc.id=rep.carrier_id
-                 JOIN physical_copies rpc ON rpc.id=rc.physical_copy_id
-                 JOIN archive_releases rar ON rar.id=rpc.archive_release_id
-                 JOIN archive_profiles rap ON rap.id=rar.profile_id
-                 WHERE b.library_entry_id=library_entries.id AND rep.role='playable'
-                   AND rap.playable_root=(SELECT lr.root_path FROM library_consoles lc
-                        JOIN library_roots lr ON lr.id=lc.root_id
-                        WHERE lc.id=library_entries.console_id)
+                {archived_expr},
+                (SELECT rep.format {bound_from}
+                 JOIN representations rep ON rep.id=bound.representation_id
+                 WHERE {bound_where} AND rep.role='playable'
                  ORDER BY rep.id LIMIT 1),
-                (SELECT pp.format FROM library_entry_media_bindings b
-                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
-                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                 JOIN archive_profiles ap ON ap.id=ar.profile_id
-                 JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=c.id
-                 WHERE b.library_entry_id=library_entries.id
-                   AND ap.playable_root=(SELECT lr.root_path FROM library_consoles lc
-                        JOIN library_roots lr ON lr.id=lc.root_id
-                        WHERE lc.id=library_entries.console_id)
-                 ORDER BY c.id LIMIT 1),
-                (SELECT ar.id FROM library_entry_media_bindings b
-                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
-                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                 JOIN archive_profiles ap ON ap.id=ar.profile_id
-                 WHERE b.library_entry_id=library_entries.id
-                   AND ap.playable_root=(SELECT lr.root_path FROM library_consoles lc
-                        JOIN library_roots lr ON lr.id=lc.root_id
-                        WHERE lc.id=library_entries.console_id)
-                 ORDER BY ar.id LIMIT 1)
+                (SELECT pp.format {bound_from}
+                 JOIN playable_policies pp
+                   ON pp.scope_type='carrier' AND pp.scope_id=bound.carrier_id
+                 WHERE {bound_where}
+                 ORDER BY bound.carrier_id LIMIT 1),
+                (SELECT bound.archive_release_id {bound_from}
+                 WHERE {bound_where}
+                 ORDER BY bound.archive_release_id LIMIT 1)
          FROM library_entries WHERE {where_sql} {unbound_clause} {selection_sql}
-         ORDER BY {order} {pagination_sql}"
+         ORDER BY {order} {pagination_sql}",
+        archived_expr = crate::archive::library_entry_is_archived("library_entries"),
+        bound_from = crate::archive::archive_bound_rows_from(),
+        bound_where = crate::archive::archive_bound_rows_where("library_entries"),
     );
     let mut stmt = conn.prepare(&sql)?;
     let map_row = |r: &rusqlite::Row<'_>| {
@@ -1734,17 +1684,11 @@ fn unified_availability_counts(
 ) -> Result<LibraryAvailabilityCounts, LibraryError> {
     let mut counts = LibraryAvailabilityCounts {
         playable_only: conn.query_row(
-            "SELECT COUNT(*) FROM library_entries e WHERE e.console_id=?1
-             AND NOT EXISTS(
-                 SELECT 1 FROM library_entry_media_bindings b
-                 JOIN carriers c ON c.catalog_media_id=b.catalog_media_id
-                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                 JOIN archive_profiles ap ON ap.id=ar.profile_id
-                 JOIN library_consoles lc ON lc.id=e.console_id
-                 JOIN library_roots lr ON lr.id=lc.root_id
-                 WHERE b.library_entry_id=e.id AND ap.playable_root=lr.root_path
-             )",
+            &format!(
+                "SELECT COUNT(*) FROM library_entries e
+                 WHERE e.console_id=?1 AND NOT {}",
+                crate::archive::library_entry_is_archived("e")
+            ),
             [console_id.0],
             |row| row.get(0),
         )?,
@@ -1898,7 +1842,7 @@ fn query_archived_playable_entries(
          FROM archive_releases ar
          JOIN physical_copies pc ON pc.archive_release_id=ar.id
          JOIN carriers c ON c.physical_copy_id=pc.id
-         JOIN library_entry_media_bindings b ON b.catalog_media_id=c.catalog_media_id
+         JOIN library_entry_media_bindings b ON b.carrier_id=c.id
          JOIN library_entries e ON e.id=b.library_entry_id
          WHERE ar.profile_id=?1 AND e.console_id=?2
          ORDER BY ar.id,e.display_name COLLATE NOCASE,e.id",
@@ -2388,7 +2332,7 @@ fn gap_query_sql(scope: &GapScope) -> String {
                 EXISTS(SELECT 1 FROM library_entry_media_bindings b
                        JOIN library_entries e ON e.id=b.library_entry_id
                        JOIN library_consoles lc ON lc.id=e.console_id
-                       WHERE b.catalog_media_id=c.catalog_media_id
+                       WHERE b.carrier_id=c.id
                          AND {adopted_scope}
                          AND (pp.format IS NULL
                               OR (pp.format='rom' AND lower(e.entry_key) NOT LIKE '%.chd'
@@ -2416,7 +2360,20 @@ fn gap_query_sql(scope: &GapScope) -> String {
                                         AND lower(value) NOT LIKE '%.m3u'))
                               OR lower(e.entry_key) LIKE '%.' || pp.format)),
                 pc.id,
-                EXISTS(SELECT 1 FROM library_entry_media_bindings playlist_binding
+                (EXISTS(SELECT 1 FROM library_entry_media_bindings playlist_binding
+                        JOIN library_entries playlist_entry
+                          ON playlist_entry.id=playlist_binding.library_entry_id
+                        JOIN carriers playlist_carrier
+                          ON playlist_carrier.id=playlist_binding.carrier_id
+                        JOIN physical_copies playlist_copy
+                          ON playlist_copy.id=playlist_carrier.physical_copy_id
+                        JOIN library_consoles playlist_console
+                          ON playlist_console.id=playlist_entry.console_id
+                        WHERE playlist_copy.archive_release_id=ar.id
+                          AND json_extract(
+                              playlist_entry.game_entry_json,'$.MultiDisc') IS NOT NULL
+                          AND {playlist_scope})
+                 OR EXISTS(SELECT 1 FROM library_entry_media_bindings playlist_binding
                        JOIN library_entries playlist_entry
                          ON playlist_entry.id=playlist_binding.library_entry_id
                        JOIN media playlist_media
@@ -2433,7 +2390,7 @@ fn gap_query_sql(scope: &GapScope) -> String {
                                   AND playlist_release.region=ar.region))
                          AND json_extract(
                              playlist_entry.game_entry_json,'$.MultiDisc') IS NOT NULL
-                         AND {playlist_scope})
+                         AND {playlist_scope}))
          FROM archive_releases ar
          JOIN archive_profiles ap ON ap.id=ar.profile_id
          JOIN physical_copies pc ON pc.archive_release_id=ar.id

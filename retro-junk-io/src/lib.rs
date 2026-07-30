@@ -1,9 +1,11 @@
 //! Network-friendly local staging and single-pass content hashing.
 
 pub mod mount;
+pub mod noise;
 pub mod process;
 
 pub use mount::{RemoteMountKind, remote_mount_kind};
+pub use noise::{is_noise_file_name, is_noise_path};
 pub use process::process_alive;
 
 use std::fs::{File, OpenOptions};
@@ -493,7 +495,11 @@ fn collect_files(
         let metadata = checked_metadata(&path)?;
         if metadata.is_dir() {
             collect_files(root, &path, output)?;
-        } else if metadata.is_file() {
+        } else if metadata.is_file() && !is_noise_path(&path) {
+            // A sidecar the host filesystem wrote beside a package file is not
+            // package content. Staging it would hand a tool a `._disc.scram`
+            // that shadows the real one, so a package staged from exFAT or SMB
+            // must present the same files as one staged from APFS.
             let relative = path
                 .strip_prefix(root)
                 .map_err(|_| StageError::UnsafePath(path.display().to_string()))?;
@@ -572,6 +578,36 @@ mod tests {
         assert!(lease_directory.exists());
         drop(clone);
         assert!(!lease_directory.exists());
+    }
+
+    #[test]
+    fn staging_leaves_apple_double_sidecars_behind() {
+        // An archive mirrored onto exFAT grows a `._disc.scram` beside the real
+        // one. Staged, it shadows the dump: it sorts first and its stem names
+        // the image, so redumper splits a 4 KiB resource fork instead.
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("raw");
+        std::fs::create_dir(&source).unwrap();
+        std::fs::write(source.join("disc.scram"), b"scrambled sectors").unwrap();
+        std::fs::write(source.join("._disc.scram"), b"\x00\x05\x16\x07resource").unwrap();
+        std::fs::write(source.join(".DS_Store"), b"finder").unwrap();
+        let package = stage_package(
+            &source,
+            &temp.path().join("work"),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            package
+                .files
+                .iter()
+                .map(|file| file.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["disc.scram"]
+        );
+        assert!(!package.local_source.join("._disc.scram").exists());
+        assert_eq!(package.total_bytes, 17);
     }
 
     #[test]

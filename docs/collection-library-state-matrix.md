@@ -73,4 +73,10 @@ containing every expected carrier.
   not only individual carrier filenames.
 - Import and projection are idempotent. Existing identical archive originals
   or frontend projections are current, not errors.
+- A playable file belongs to the archived carrier whose evidence accounts for
+  it, never to a catalog identity. An unbound archive, a platform with no
+  imported DAT, and a carrier whose recorded catalog id a later import
+  re-slugged all still own their playable copies, so the same file is never
+  both "archived" and "playable only". A multi-disc row owns every archived
+  disc image inside the directory it stands for.
 - Preservation masters are never deleted by convergence operations.

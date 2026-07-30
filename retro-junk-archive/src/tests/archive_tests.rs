@@ -841,3 +841,178 @@ fn carrier_binding_replaces_a_single_identity_and_generalizes_a_mixed_parent() {
     );
     assert_eq!(carrier.manifest.catalog_binding.catalog_media_id, "media-c");
 }
+
+/// A network share that refuses to flush a directory (macOS smbfs answers
+/// every directory `fsync` with `ENOTSUP`) must not make the archive
+/// unwritable — but a filesystem that ran out of room still must fail.
+#[test]
+#[cfg(unix)]
+fn a_filesystem_that_cannot_flush_directories_is_not_a_write_failure() {
+    let unsupported = [
+        libc::ENOTSUP,
+        libc::EOPNOTSUPP,
+        libc::EINVAL,
+        libc::EBADF,
+        libc::EISDIR,
+        libc::EPERM,
+        libc::EACCES,
+    ];
+    for code in unsupported {
+        assert!(
+            crate::manifest::directory_sync_unsupported(&std::io::Error::from_raw_os_error(code)),
+            "errno {code} means the directory cannot be flushed, not that the write was lost"
+        );
+    }
+    for code in [libc::ENOSPC, libc::EIO, libc::EDQUOT] {
+        assert!(
+            !crate::manifest::directory_sync_unsupported(&std::io::Error::from_raw_os_error(code)),
+            "errno {code} is a real write failure"
+        );
+    }
+}
+
+/// Indexing reads each manifest once and digests the bytes it parsed. The
+/// recorded digest must still be the digest of the file on disk — evidence
+/// currency compares them.
+#[test]
+fn a_scanned_manifest_digest_matches_the_file_on_disk() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    initialize_archive(&root, &ArchiveRootManifest::new("Digest")).unwrap();
+    let source = temp.path().join("game.gb");
+    std::fs::write(&source, b"game").unwrap();
+    ingest_new_carrier_dump(
+        &root,
+        &source,
+        NewCarrierDump {
+            platform_id: "gb".to_owned(),
+            title: "Game".to_owned(),
+            region: "japan".to_owned(),
+            revision: String::new(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: String::new(),
+            sequence_number: 0,
+            carrier_label: String::new(),
+            carrier_kind: crate::CarrierKind::Cartridge,
+            format: RepresentationFormat::Rom,
+            catalog_binding: crate::CatalogBinding::default(),
+            source_package: crate::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
+            physical_copy_id: None,
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+
+    let snapshot = scan_archive(&root).unwrap();
+    let release = &snapshot.releases[0];
+    let on_disk =
+        |path: &std::path::Path| crate::sha256_file(path, &AtomicBool::new(false)).unwrap().1;
+    assert_eq!(
+        release.manifest_sha256,
+        on_disk(&release.directory.join("release.toml"))
+    );
+    let copy = &release.physical_copies[0];
+    assert_eq!(
+        copy.manifest_sha256,
+        on_disk(&copy.directory.join("physical-copy.toml"))
+    );
+    let carrier = &copy.carriers[0];
+    assert_eq!(
+        carrier.manifest_sha256,
+        on_disk(&carrier.directory.join("carrier.toml"))
+    );
+    let dump = &carrier.dumps[0];
+    assert_eq!(
+        dump.manifest_sha256,
+        on_disk(&dump.directory.join("dump.toml"))
+    );
+    assert_eq!(
+        snapshot.manifest_sha256,
+        on_disk(&root.join("retro-junk-archive.toml"))
+    );
+}
+
+/// An archive mirrored onto exFAT or SMB arrives with an AppleDouble sidecar
+/// beside every dump file. Those are host metadata, not dump content: counting
+/// them would report the whole mirror as corrupt, and ingesting them would
+/// bake this device's filesystem into a preservation manifest.
+#[test]
+fn host_filesystem_sidecars_are_neither_ingested_nor_verified_as_content() {
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    std::fs::write(source.join("disc.scram"), b"preservation bytes").unwrap();
+    std::fs::write(source.join("._disc.scram"), b"apple double").unwrap();
+    std::fs::write(source.join(".DS_Store"), b"finder").unwrap();
+
+    let destination = temp.path().join("archive/dump-1");
+    let plan = plan_ingest(&source, &destination).unwrap();
+    let manifest = DumpManifest::new(CarrierId::new(), RepresentationFormat::RedumperRaw);
+    let persisted = execute_ingest(
+        IngestRequest {
+            plan,
+            manifest,
+            verify_published_bytes: true,
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+
+    assert_eq!(
+        persisted
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["disc.scram"]
+    );
+
+    // Sidecars appearing after ingest, as a copy onto exFAT would create.
+    std::fs::write(destination.join("raw/._disc.scram"), b"apple double").unwrap();
+    std::fs::write(destination.join("raw/.DS_Store"), b"finder").unwrap();
+    let report = verify_dump_integrity(&destination, &persisted, &AtomicBool::new(false)).unwrap();
+
+    assert!(report.is_verified(), "unexpected failures: {report:?}");
+
+    // A genuinely unrecorded content file is still a failure.
+    std::fs::write(destination.join("raw/unrecorded.bin"), b"extra").unwrap();
+    let report = verify_dump_integrity(&destination, &persisted, &AtomicBool::new(false)).unwrap();
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|failure| failure.path == "unrecorded.bin")
+    );
+}
+
+#[test]
+fn image_name_discovery_ignores_apple_double_sidecars() {
+    // `._disc.scram` sorts ahead of `disc.scram` and carries the same
+    // extension, so naming the image from the first match splits a 4 KiB
+    // resource fork and fails with "unable to establish base LBA".
+    let temp = tempfile::tempdir().unwrap();
+    let raw = temp.path().join("raw");
+    std::fs::create_dir(&raw).unwrap();
+    std::fs::write(raw.join("._disc.scram"), b"\x00\x05\x16\x07resource").unwrap();
+    std::fs::write(raw.join("disc.scram"), b"scrambled sectors").unwrap();
+
+    assert_eq!(crate::redumper::find_image_name(&raw).unwrap(), "disc");
+}
+
+#[test]
+fn image_name_discovery_reports_a_raw_set_that_is_only_sidecars() {
+    let temp = tempfile::tempdir().unwrap();
+    let raw = temp.path().join("raw");
+    std::fs::create_dir(&raw).unwrap();
+    std::fs::write(raw.join("._disc.scram"), b"\x00\x05\x16\x07resource").unwrap();
+
+    assert!(matches!(
+        crate::redumper::find_image_name(&raw),
+        Err(crate::RedumperError::MissingRawImage(_))
+    ));
+}

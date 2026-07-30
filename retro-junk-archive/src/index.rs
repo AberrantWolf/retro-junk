@@ -1,11 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
-
 use crate::manifest::{
     ArchiveRootManifest, BuildEvidence, CarrierManifest, DumpManifest, ManifestError,
     PhysicalCopyFileManifest, PhysicalCopyManifest, ReleaseFileManifest, ReleaseManifest,
-    VerificationEvidence, read_build_json, read_toml, read_verification_json,
+    VerificationEvidence, read_build_json, read_toml_with_digest, read_verification_json,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -91,27 +89,25 @@ pub struct IndexedBuild {
 }
 
 pub fn scan_archive(root: &Path) -> Result<ArchiveIndexSnapshot, IndexError> {
-    let root_path = root.join("retro-junk-archive.toml");
+    let root_path = crate::layout::root_manifest_path(root);
     if !root_path.is_file() {
         return Err(IndexError::MissingRootManifest(
             root_path.display().to_string(),
         ));
     }
-    let manifest = read_toml(&root_path)?;
-    let manifest_sha256 = file_sha256(&root_path)?;
-    let mut releases = Vec::new();
+    let (manifest, manifest_sha256) = read_toml_with_digest(&root_path)?;
+    let mut release_directories = Vec::new();
     for platform_dir in child_directories(root)? {
         if platform_dir.file_name().and_then(|v| v.to_str()) == Some(".retro-junk") {
             continue;
         }
         for release_dir in child_directories(&platform_dir)? {
-            let release_manifest_path = release_dir.join("release.toml");
-            if !release_manifest_path.is_file() {
-                continue;
+            if release_dir.join("release.toml").is_file() {
+                release_directories.push(release_dir);
             }
-            releases.push(scan_release(&release_dir, &release_manifest_path)?);
         }
     }
+    let mut releases = scan_releases(release_directories)?;
     releases.sort_by(|a, b| a.directory.cmp(&b.directory));
     Ok(ArchiveIndexSnapshot {
         root: root.to_path_buf(),
@@ -121,9 +117,68 @@ pub fn scan_archive(root: &Path) -> Result<ArchiveIndexSnapshot, IndexError> {
     })
 }
 
+/// Read every release subtree, several at a time.
+///
+/// A whole-archive scan is thousands of small manifest reads, and on a network
+/// share nearly all of that time is round-trip latency rather than transfer or
+/// parse work — so overlapping the reads is what makes it fast. Releases are
+/// independent and read-only here, and the caller sorts the result, so
+/// concurrency changes only the wall clock.
+fn scan_releases(directories: Vec<PathBuf>) -> Result<Vec<IndexedRelease>, IndexError> {
+    if directories.len() < 2 {
+        return directories
+            .into_iter()
+            .map(|directory| {
+                let manifest_path = directory.join("release.toml");
+                scan_release(&directory, &manifest_path)
+            })
+            .collect();
+    }
+    // More workers than cores on purpose: these threads are waiting on the
+    // server, not computing.
+    let workers = directories.len().min(16);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut collected = Vec::with_capacity(directories.len());
+    let mut failure = None;
+    std::thread::scope(|scope| {
+        let directories = &directories;
+        let next = &next;
+        let handles = (0..workers)
+            .map(|_| {
+                scope.spawn(move || {
+                    let mut scanned = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(directory) = directories.get(index) else {
+                            return Ok(scanned);
+                        };
+                        let manifest_path = directory.join("release.toml");
+                        scanned.push(scan_release(directory, &manifest_path)?);
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            match handle.join() {
+                Ok(Ok(scanned)) => collected.extend(scanned),
+                Ok(Err(error)) => failure = failure.take().or(Some(error)),
+                Err(_) => {
+                    failure = failure.take().or(Some(IndexError::Io {
+                        path: "archive scan".to_owned(),
+                        source: std::io::Error::other("archive scan worker panicked"),
+                    }));
+                }
+            }
+        }
+    });
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(collected),
+    }
+}
+
 fn scan_release(directory: &Path, manifest_path: &Path) -> Result<IndexedRelease, IndexError> {
-    let manifest = read_toml(manifest_path)?;
-    let manifest_sha256 = file_sha256(manifest_path)?;
+    let (manifest, manifest_sha256) = read_toml_with_digest(manifest_path)?;
     let mut physical_copies = Vec::new();
     let copies_dir = directory.join("physical-copies");
     if copies_dir.is_dir() {
@@ -158,10 +213,11 @@ fn collect_release_files(
     }
     let manifest_path = directory.join("supporting-file.toml");
     if manifest_path.is_file() {
+        let (manifest, manifest_sha256) = read_toml_with_digest(&manifest_path)?;
         output.push(IndexedReleaseFile {
             directory: directory.to_path_buf(),
-            manifest: read_toml(&manifest_path)?,
-            manifest_sha256: file_sha256(&manifest_path)?,
+            manifest,
+            manifest_sha256,
         });
         return Ok(());
     }
@@ -175,8 +231,7 @@ fn scan_physical_copy(
     directory: &Path,
     manifest_path: &Path,
 ) -> Result<IndexedPhysicalCopy, IndexError> {
-    let manifest = read_toml(manifest_path)?;
-    let manifest_sha256 = file_sha256(manifest_path)?;
+    let (manifest, manifest_sha256) = read_toml_with_digest(manifest_path)?;
     let mut carriers = Vec::new();
     let carriers_dir = directory.join("carriers");
     if carriers_dir.is_dir() {
@@ -211,10 +266,11 @@ fn collect_physical_copy_files(
     }
     let manifest_path = directory.join("supporting-file.toml");
     if manifest_path.is_file() {
+        let (manifest, manifest_sha256) = read_toml_with_digest(&manifest_path)?;
         output.push(IndexedPhysicalCopyFile {
             directory: directory.to_path_buf(),
-            manifest: read_toml(&manifest_path)?,
-            manifest_sha256: file_sha256(&manifest_path)?,
+            manifest,
+            manifest_sha256,
         });
         return Ok(());
     }
@@ -225,20 +281,19 @@ fn collect_physical_copy_files(
 }
 
 fn scan_carrier(directory: &Path, manifest_path: &Path) -> Result<IndexedCarrier, IndexError> {
-    let manifest = read_toml(manifest_path)?;
-    let manifest_sha256 = file_sha256(manifest_path)?;
+    let (manifest, manifest_sha256) = read_toml_with_digest(manifest_path)?;
     let mut dumps = Vec::new();
     let dumps_dir = directory.join("dumps");
     if dumps_dir.is_dir() {
         for child in child_directories(&dumps_dir)? {
             let dump_manifest = child.join("dump.toml");
             if dump_manifest.is_file() {
-                let manifest = read_toml(&dump_manifest)?;
+                let (manifest, manifest_sha256) = read_toml_with_digest(&dump_manifest)?;
                 let (verifications, builds) = scan_evidence(&child)?;
                 dumps.push(IndexedDump {
                     directory: child,
                     manifest,
-                    manifest_sha256: file_sha256(&dump_manifest)?,
+                    manifest_sha256,
                     verifications,
                     builds,
                 });
@@ -308,12 +363,4 @@ fn child_directories(path: &Path) -> Result<Vec<PathBuf>, IndexError> {
         .collect::<Vec<_>>();
     directories.sort();
     Ok(directories)
-}
-
-fn file_sha256(path: &Path) -> Result<String, IndexError> {
-    let bytes = std::fs::read(path).map_err(|source| IndexError::Io {
-        path: path.display().to_string(),
-        source,
-    })?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }

@@ -25,7 +25,9 @@ pub use ingest::{
     FileDigests, IngestError, IngestPlan, IngestProgress, IngestRequest, execute_ingest,
     hash_file_digests, plan_ingest,
 };
-pub use layout::{ArchiveLayout, normalize_relative_path, slugify};
+pub use layout::{
+    ArchiveLayout, ROOT_MANIFEST_FILE, normalize_relative_path, root_manifest_path, slugify,
+};
 pub use lock::{ArchiveLock, ArchiveLockError};
 pub use manifest::*;
 pub use presence::{

@@ -14,7 +14,7 @@ pub mod work;
 
 pub use archive::{
     AdoptableHashes, ArchiveCollectionDetails, ArchiveEvidenceIdentity, ArchiveEvidenceScope,
-    ArchiveReleaseSummary, CompleteCatalogMediaMatch, adopt_archive_hashes,
+    ArchiveReleaseSummary, CompleteCatalogMediaMatch, LibraryEntryBinding, adopt_archive_hashes,
     adoptable_archive_hashes, apply_archive_derivations, apply_archive_evidence_identities,
     archive_evidence_identities, archive_profile_indexed_at, bind_library_entries_by_hash,
     existing_playable_disc_paths, list_archive_release_summaries, load_archive_collection_details,

@@ -191,16 +191,13 @@ fn merge_media(conn: &Connection, canonical: &str, duplicate: &str) -> rusqlite:
         "UPDATE carriers SET catalog_media_id=?1 WHERE catalog_media_id=?2",
         params![canonical, duplicate],
     )?;
+    // OR REPLACE: the canonical medium may already be bound to the same
+    // library row and carrier. Merging keeps one binding rather than dropping
+    // the duplicate's row on the floor.
     conn.execute(
-        "INSERT OR IGNORE INTO library_entry_media_bindings(
-             library_entry_id,catalog_media_id,representation_id,match_method)
-         SELECT library_entry_id,?1,representation_id,match_method
-         FROM library_entry_media_bindings WHERE catalog_media_id=?2",
+        "UPDATE OR REPLACE library_entry_media_bindings
+         SET catalog_media_id=?1 WHERE catalog_media_id=?2",
         params![canonical, duplicate],
-    )?;
-    conn.execute(
-        "DELETE FROM library_entry_media_bindings WHERE catalog_media_id=?1",
-        [duplicate],
     )?;
     conn.execute("DELETE FROM media WHERE id=?1", [duplicate])?;
     Ok(())

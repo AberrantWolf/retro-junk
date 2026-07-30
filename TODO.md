@@ -2,14 +2,18 @@
 
 ## Bugs
 
-- [ ] **Cross-host archive lock on SMB could use share-mode locks.** The archive lock (2026-07-30 rework) uses kernel-enforced OS locks where the filesystem honors them and falls back to the existence+PID+age protocol elsewhere. On macOS smbfs, `flock` silently enforces nothing (verified empirically), so SMB shares always use the fallback — same-host crashes recover instantly via the PID probe, but a *different host's* crashed holder still waits out the 24h age rule. macOS `O_EXLOCK`/`O_SHLOCK` open flags map to SMB share-mode (deny) locks enforced server-side, which would give real cross-host exclusion and server-side crash release; needs `OpenOptionsExt::custom_flags` + libc and a Linux-cifs interop check.
+- [ ] **Cross-host archive lock on SMB could use share-mode locks.** The archive lock (2026-07-30 rework) uses kernel-enforced OS locks where the filesystem honors them and falls back to the existence+PID+age protocol elsewhere. On macOS smbfs, `flock` silently enforces nothing (verified empirically), so SMB shares always use the fallback — same-host crashes recover instantly via the PID probe, but a *different host's* crashed holder still waits out the 24h age rule. macOS `O_EXLOCK`/`O_SHLOCK` open flags map to SMB share-mode (deny) locks enforced server-side, which would give real cross-host exclusion and server-side crash release; needs `OpenOptionsExt::custom_flags` + libc and a Linux-cifs interop check. **This is a live case, not a hypothetical:** the reference archive is written from both an Arch Linux host (cifs) and macOS (smbfs), so the two hosts' locks do not currently exclude each other and a PID probe from the wrong host is meaningless. The PID/host fallback should record the *host* alongside the PID and refuse to reap another host's lock on age alone.
+
+- [ ] **One import re-reads the whole archive several times.** `scan_archive` is now concurrent and single-read (241 releases over SMB: ~2.5 s warm, ~5 s cold), but a single import still pays it repeatedly: `plan_import` scans once, `ingest_new_carrier_dump` scans again *per package* (25 packages = 25 scans), and the GUI scans again — twice if artwork adoption ran — before `reconcile_archive_snapshot`. Measured 2026-07-30: planning a 25-file folder is ~5.7 s of which ~5 s is the one scan; executing it would repeat that per package. Thread one snapshot through the import (planning → ingest → reconcile), invalidating only the release each ingest touched. `ingest_new_carrier_dump` in particular needs release/copy/carrier manifests only, never dumps or evidence — the bulk of the tree.
 
 - [ ] **Schema open path trusts the version stamp.** `open_database` decides "migrated" purely from `schema_version`, so a database whose tables don't match the stamped version (e.g. one written by the pre-rebase divergent branch, which used the same version numbers for a different layout) opens "successfully" and fails later with `no such column` at query time. Add a cheap structural sanity probe on open (e.g. `SELECT scan_state FROM library_consoles LIMIT 0` for a sentinel column per recent version) that produces a clear "incompatible database, delete or restore" error instead. Also note `ensure_catalog_database_location` re-copies the legacy cache DB (`~/Library/Caches/retro-junk/dats/catalog.db`) whenever the target is missing — deleting a bad `catalog.db` silently resurrects an equally old one; the legacy file should probably be renamed once migrated instead of retained under its live name. (Diagnosed 2026-07-30.)
 
 
 - [ ] **Legacy cartridge catalog evidence never claims a complete track set.** Catalog verifications written by the older single-file path record `complete_track_set: false` (verified on a real archive 2026-07-30: 193 of 250 catalog verifications, every no-intro one). `dump_catalog_evidence` requires the flag, so those dumps are not catalog-verified and cannot name their library rows from evidence. Re-running `archive verify-catalog` rewrites them correctly once a catalog is imported, but the archive should either upgrade the flag in place for single-file masters whose recorded hashes still match, or the CLI should report how many dumps carry pre-flag evidence so the re-verify is discoverable.
 
-- [ ] **Carrier catalog bindings do not survive a re-import on another machine.** Media ids are deterministic (`release_id:rom-name-slug`), but they change with the DAT release the id was derived from, so an archive built against one import binds carriers to ids a later or differently-versioned import never creates (verified 2026-07-30: 201 of 248 carriers `unresolved` after a full local import). Everything downstream of `carriers.catalog_media_id` — playable bindings, archive completeness, gaps — silently degrades. Consider rebinding by recorded content hashes during projection when the recorded id is missing, rather than requiring `archive verify-catalog` / `audit-redumper` to rewrite manifests.
+- [ ] **Carrier catalog bindings do not survive a re-import on another machine.** Media ids are deterministic (`release_id:rom-name-slug`), but they change with the DAT release the id was derived from, so an archive built against one import binds carriers to ids a later or differently-versioned import never creates (verified 2026-07-30: 201 of 248 carriers `unresolved` after a full local import). Confirmed cause in the reference archive: those releases were imported from an Arch Linux host against that machine's catalog, and the macOS host later imported DATs whose media-id slugs had gained a format suffix (`…-japan-gb` vs `…-japan`). Cross-machine archives are the normal case here, so a carrier binding must be re-resolvable from recorded evidence rather than assumed portable. Playable bindings no longer depend on this (schema v25 keys them on the carrier itself), but archive completeness and gap derivation still do, so an unresolved carrier cannot be called complete. `archive verify-catalog` / `audit-redumper` rewrite the manifest binding correctly and are already derived as pending work for those dumps; the cheaper option is still to re-resolve during projection from the digests the archive already recorded (`representation_files.crc32/sha1`) when the recorded id is missing.
+
+- [ ] **A renamed playable orphans its build evidence.** Observed 2026-07-30 on the live archive: a PS1 release's playable representation points at `psx/castlevania-symphony-of-the-night-usa.chd` (presence `missing`) while the library holds `Castlevania - Symphony of the Night (USA) (Track 1).chd`, so the archive shows "archived only" beside a playable-only row for the same game. Whatever moved the file (rename/organize, or a build that predates canonical naming) did not append new build evidence, and nothing re-adopts a moved output by content. Either carry playable renames into the archive as new build evidence, or re-adopt by recorded output SHA-256 during projection.
 
 - [ ] **Hash provenance is stored but never shown.** `library_entries.hash_source` records when a row's digests were adopted from archive manifests rather than read on this machine, but nothing surfaces it: the detail panel shows CRC32/SHA-1/MD5 with no indication of where they came from, and there is no "re-read this file to confirm" affordance (the hash action skips rows that already have digests unless the include-cached path is used). Plumb `hash_source` through `LibraryEntryRow`/`LibraryEntry` and label adopted rows.
 
@@ -23,6 +27,33 @@
 - [x] **Move media and data on rename** — Done (2026-07-10): renames execute as per-game filesystem transactions (`retro-junk-lib/src/fs_txn.rs`) that carry scraped media files and gamelist.xml path/asset rewrites (`retro_junk_frontend::esde::plan_gamelist_rewrite`) along with the game files, with preflight collision checks and rollback on failure.
 
 - [ ] **Figure out multi-file WBFS setups** - I don't know what we're meant to do with them or how to treat them
+
+- [ ] **Modded/homebrew marks must survive without the database.** Marking a
+  file homebrew or modded (`CatalogTag`, `create_homebrew_and_tag_entry` /
+  `create_modded_and_tag_entry` in `retro-junk-db/src/library.rs`) writes the
+  tag into `library_entries` plus a synthesized catalog work/media row, so the
+  knowledge lives *only* in `catalog.db`. That database is per-machine and not
+  synced: when the ROM tree is reached over Syncthing or a mounted remote share
+  from a second machine, every unmatched file is unmatched again and has to be
+  re-marked by hand. Since unmatched-by-DAT is exactly the normal state for
+  homebrew and mods, the marks are the one piece of curation that can never be
+  recomputed — and they are the piece least protected today.
+  Design a representation that travels with the files rather than with the
+  database. Options worth weighing:
+  - A sidecar manifest committed next to the ROMs (per-console or per-folder,
+    e.g. `.retro-junk/tags.toml`), keyed by content digest **and** relative path
+    so a rename or a re-hash on the other host still resolves. Syncthing carries
+    it for free; a fresh machine adopts the marks on first scan.
+  - Recording the marks as archive evidence instead, so the archive manifests
+    (already the portable, machine-independent store) are the source of truth
+    and `reconcile_archive_snapshot` re-applies them to a blank library.
+  - Whatever the store, the DB becomes a *cache* of the marks, not their home:
+    scan/import should adopt marks it finds on disk, and marking through the
+    GUI/CLI should write the durable form as well as the row.
+  Note the related portability failure under Bugs — carrier catalog bindings
+  keyed on DAT-derived media ids do not survive a re-import on another machine
+  — so any digest-keyed design here should avoid re-deriving ids from a
+  particular DAT import.
 
 - [ ] **Custom multi-select view** in the game details panel, rather than showing details for the most-recent selection in the list
 

@@ -1,5 +1,6 @@
 //! Rebuildable `SQLite` projection of portable preservation manifests.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use retro_junk_archive::{
@@ -40,13 +41,38 @@ pub struct ArchiveReleaseSummary {
     pub archive_complete: bool,
 }
 
-/// One definition of "this scanned library row *is* the file this playable
-/// representation points at": the projection stores paths relative to the
-/// profile's playable root, and a library entry key is `file:` plus the path
-/// relative to its console folder. Separators are normalized so a projection
-/// written on Windows still matches rows scanned on Unix.
-const PLAYABLE_PATH_IS_LIBRARY_ENTRY: &str = "replace(rep.relative_path,'\\','/')=\
-     replace(lc.folder_name || '/' || substr(le.entry_key,6),'\\','/')";
+/// A playable representation's path, relative to the profile's playable root.
+/// Separators are normalized so a projection written on Windows still matches
+/// rows scanned on Unix.
+const PLAYABLE_PATH: &str = "replace(rep.relative_path,'\\','/')";
+
+/// The same path for a library row: its console folder plus the path its entry
+/// key carries — `file:` for one file, `set:` for the directory a multi-disc
+/// set stands for.
+const LIBRARY_ENTRY_PATH: &str = "replace(lc.folder_name || '/' ||
+     CASE WHEN le.entry_key LIKE 'set:%' THEN substr(le.entry_key,5)
+          ELSE substr(le.entry_key,6) END,'\\','/')";
+
+/// "This scanned library row *is* the file this representation points at."
+///
+/// Exact identity, for the questions that need it: which file the archive's
+/// evidence names, and whose hashes it already knows.
+fn playable_path_is_library_entry() -> String {
+    format!("{PLAYABLE_PATH}={LIBRARY_ENTRY_PATH}")
+}
+
+/// "This scanned library row *holds* the file this representation points at."
+///
+/// A multi-disc row is one library entry standing for a directory of disc
+/// images, so each archived disc inside it belongs to that row. Ownership, not
+/// identity: use this to decide what an archive already accounts for.
+fn playable_path_is_within_library_entry() -> String {
+    format!(
+        "({PLAYABLE_PATH}={LIBRARY_ENTRY_PATH}
+          OR substr({PLAYABLE_PATH},1,length({LIBRARY_ENTRY_PATH})+1)
+             ={LIBRARY_ENTRY_PATH} || '/')"
+    )
+}
 
 /// The join from a playable representation (`rep`) to the library rows that
 /// could hold it: through its carrier's release to the profile whose playable
@@ -59,6 +85,61 @@ const PLAYABLE_REPRESENTATION_TO_LIBRARY_ENTRY_JOIN: &str = "\
          JOIN library_roots lr ON lr.root_path=ap.playable_root
          JOIN library_consoles lc ON lc.root_id=lr.id
          JOIN library_entries le ON le.console_id=lc.id";
+
+/// Every (library row, archived carrier) binding, with the archive release and
+/// profile that own the carrier.
+///
+/// This is the one definition of "this scanned playable file is an archived
+/// carrier's own copy". It deliberately says nothing about the catalog: an
+/// unbound archive still owns the playable its build evidence produced, and a
+/// carrier whose recorded catalog medium has been re-slugged by a later import
+/// must not lose its playable in the meantime.
+const ARCHIVE_BOUND_LIBRARY_ROWS: &str = "\
+     SELECT binding.library_entry_id AS library_entry_id,
+            binding.representation_id AS representation_id,
+            binding_carrier.id AS carrier_id,
+            binding_release.id AS archive_release_id,
+            binding_profile.playable_root AS playable_root
+     FROM library_entry_media_bindings binding
+     JOIN carriers binding_carrier ON binding_carrier.id=binding.carrier_id
+     JOIN physical_copies binding_copy ON binding_copy.id=binding_carrier.physical_copy_id
+     JOIN archive_releases binding_release ON binding_release.id=binding_copy.archive_release_id
+     JOIN archive_profiles binding_profile ON binding_profile.id=binding_release.profile_id";
+
+/// The scanned playable root a library row lives under, for correlating it
+/// with the archive profile that projects into that root.
+fn library_entry_playable_root(entry: &str) -> String {
+    format!(
+        "(SELECT root_scope.root_path FROM library_consoles console_scope
+          JOIN library_roots root_scope ON root_scope.id=console_scope.root_id
+          WHERE console_scope.id={entry}.console_id)"
+    )
+}
+
+/// `FROM (…) bound` over the archived-carrier bindings.
+pub(crate) fn archive_bound_rows_from() -> String {
+    format!("FROM ({ARCHIVE_BOUND_LIBRARY_ROWS}) bound")
+}
+
+/// The predicate restricting `bound` to one library row's own bindings, in the
+/// archive profile that projects into that row's playable root.
+///
+/// `entry` is the alias the caller gave `library_entries`.
+pub(crate) fn archive_bound_rows_where(entry: &str) -> String {
+    format!(
+        "bound.library_entry_id={entry}.id AND bound.playable_root={}",
+        library_entry_playable_root(entry)
+    )
+}
+
+/// Whether a library row is already an archived carrier's own playable copy.
+pub(crate) fn library_entry_is_archived(entry: &str) -> String {
+    format!(
+        "EXISTS(SELECT 1 {} WHERE {})",
+        archive_bound_rows_from(),
+        archive_bound_rows_where(entry)
+    )
+}
 
 /// A library entry the archive's own evidence can name without any catalog.
 ///
@@ -178,6 +259,50 @@ fn projected_playable_path(
     } else {
         (evidence.relative_output_path.clone(), presence)
     }
+}
+
+/// Choose the build evidence that describes each output file's current state.
+///
+/// `evidence/` is append-only, so rebuilding a derivative (a newer chdman, a
+/// changed recipe) leaves several records naming one output path. A
+/// representation is the current state of a file and the projection enforces
+/// one row per path, so projecting every historical record made a legitimately
+/// rebuilt release abort the whole reindex. Builds arrive in time order, so the
+/// last record for a path wins; the superseded ones remain in the archive.
+///
+/// Returns the indices to project, mapped to the path and presence already
+/// resolved for them.
+fn current_builds_by_output(
+    builds: &[retro_junk_archive::IndexedBuild],
+    playable_root: &Path,
+    platform_id: &str,
+    region: &str,
+    input_manifest_sha256: &str,
+) -> HashMap<usize, (String, retro_junk_archive::RepresentationPresence)> {
+    let mut current: HashMap<String, usize> = HashMap::new();
+    let mut projected = Vec::with_capacity(builds.len());
+    for build in builds {
+        projected.push(projected_playable_path(
+            playable_root,
+            platform_id,
+            region,
+            input_manifest_sha256,
+            &build.evidence,
+        ));
+    }
+    for (index, (path, _)) in projected.iter().enumerate() {
+        if let Some(superseded) = current.insert(path.clone(), index) {
+            log::info!(
+                "Superseded build {} for {path}; projecting {}",
+                builds[superseded].evidence.build_id,
+                builds[index].evidence.build_id
+            );
+        }
+    }
+    current
+        .into_values()
+        .map(|index| (index, projected[index].clone()))
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,6 +452,19 @@ fn match_catalog_file_inner(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
+/// What a hash match proves about a library row: the archived carrier it is a
+/// copy of, the catalog medium it matches, or both.
+///
+/// A carrier alone is enough. An archive that no catalog can name still owns
+/// the files its own evidence accounts for.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LibraryEntryBinding<'a> {
+    pub carrier_id: Option<&'a str>,
+    pub catalog_media_id: &'a str,
+    pub representation_id: Option<&'a str>,
+    pub match_method: &'a str,
+}
+
 /// Connect the legacy playable-library projection to catalog/archive identity
 /// using already-computed strong hashes. This does not make the library row
 /// authoritative and is safe to rebuild.
@@ -334,29 +472,30 @@ pub fn bind_library_entries_by_hash(
     conn: &Connection,
     platform_id: &str,
     actual: &retro_junk_archive::FileDigests,
-    catalog_media_id: &str,
-    representation_id: Option<&str>,
-    match_method: &str,
+    binding: &LibraryEntryBinding<'_>,
 ) -> Result<usize, OperationError> {
-    if catalog_media_id.is_empty() {
+    let catalog_media_id =
+        (!binding.catalog_media_id.is_empty()).then_some(binding.catalog_media_id);
+    if catalog_media_id.is_none() && binding.carrier_id.is_none() {
         return Ok(0);
     }
     conn.execute(
-        "INSERT OR REPLACE INTO library_entry_media_bindings(library_entry_id,catalog_media_id,representation_id,match_method)
-         SELECT e.id,?4,?5,?6
+        "INSERT OR REPLACE INTO library_entry_media_bindings(library_entry_id,carrier_id,catalog_media_id,representation_id,match_method)
+         SELECT e.id,?4,?5,?6,?7
          FROM library_entries e JOIN library_consoles c ON c.id=e.console_id
          WHERE (lower(c.folder_name)=lower(?1) OR lower(c.platform)=lower(?1))
            AND e.data_size=?2
            AND ((e.sha1<>'' AND e.sha1=lower(?3))
-                OR (e.md5<>'' AND e.md5=lower(?7))
-                OR (e.crc32<>'' AND e.crc32=lower(?8)))",
+                OR (e.md5<>'' AND e.md5=lower(?8))
+                OR (e.crc32<>'' AND e.crc32=lower(?9)))",
         params![
             platform_id,
             i64::try_from(actual.size).unwrap_or(i64::MAX),
             actual.sha1,
+            binding.carrier_id,
             catalog_media_id,
-            representation_id,
-            match_method,
+            binding.representation_id,
+            binding.match_method,
             actual.md5,
             actual.crc32,
         ],
@@ -814,7 +953,24 @@ pub fn reconcile_archive_snapshot(
                             ],
                         )?;
                     }
-                    for build in &dump.builds {
+                    // Build evidence is append-only history: rebuilding a
+                    // derivative appends a second record for the same output
+                    // path. A representation row is the *current* state of one
+                    // file, so only the newest build per output is projected
+                    // and the superseded records stay in `evidence/`.
+                    let projected_builds = current_builds_by_output(
+                        &dump.builds,
+                        playable_root,
+                        &release.manifest.platform_id,
+                        &release.manifest.region,
+                        &dump.manifest_sha256,
+                    );
+                    for (index, build) in dump.builds.iter().enumerate() {
+                        let Some((playable_relative_path, presence)) =
+                            projected_builds.get(&index).cloned()
+                        else {
+                            continue;
+                        };
                         let child_id = build.evidence.child_representation_id.to_string();
                         if let Some(intermediate) = &build.evidence.canonical_intermediate {
                             let intermediate_directory =
@@ -855,13 +1011,6 @@ pub fn reconcile_archive_snapshot(
                                 )?;
                             }
                         }
-                        let (playable_relative_path, presence) = projected_playable_path(
-                            playable_root,
-                            &release.manifest.platform_id,
-                            &release.manifest.region,
-                            &dump.manifest_sha256,
-                            &build.evidence,
-                        );
                         tx.execute(
                             "INSERT INTO representations(id,carrier_id,dump_id,role,format,location_role,relative_path,presence_state,input_manifest_sha256,content_sha256,content_size,catalog_verified,round_trip_verified,recipe_version)
                              VALUES(?1,?2,NULL,'playable',?3,'playable',?4,?5,?6,?7,?8,?9,?10,?11)",
@@ -907,11 +1056,27 @@ pub fn reconcile_archive_snapshot(
         }
     }
 
-    // Rebuild the bridge between the playable-library projection and archival
-    // carriers from their shared, normalized catalog hashes. In particular,
-    // cartridge library hashes omit format headers (for example iNES), just as
-    // the catalog does; comparing archive-file sizes here would miss them.
-    tx.execute(
+    rebuild_library_entry_bindings(&tx)?;
+    apply_archive_derivations(&tx, ArchiveEvidenceScope::All)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Rebuild the bridge between the playable-library projection and archival
+/// carriers.
+///
+/// Every rule here is derived from committed projection rows, so this is safe
+/// to re-run at any time — after a reindex, or once during a schema migration
+/// that changes what a binding means.
+///
+/// A binding is always to the *carrier*: the archived thing whose evidence
+/// produced (or matches) the scanned file. The carrier's catalog medium rides
+/// along when it has one, but is never what makes the file archived.
+// Three binding rules in one place, deliberately: what makes a scanned file an
+// archived carrier's own copy should be readable end to end.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn rebuild_library_entry_bindings(conn: &Connection) -> Result<(), OperationError> {
+    conn.execute(
         "DELETE FROM library_entry_media_bindings
          WHERE match_method IN (
              'archive_projection',
@@ -922,30 +1087,34 @@ pub fn reconcile_archive_snapshot(
     )?;
     // A playable build is already provenance evidence: its manifest records
     // the exact output path below the profile's playable root. Bind a scanned
-    // library row at that path directly instead of asking CHD (or another
-    // derivative container) to reproduce the preservation dump's raw hashes.
-    tx.execute(
+    // library row that holds that path directly instead of asking CHD (or
+    // another derivative container) to reproduce the preservation dump's raw
+    // hashes. A multi-disc row holds one such output per archived disc.
+    conn.execute(
         &format!(
             "INSERT OR REPLACE INTO library_entry_media_bindings(
-             library_entry_id,catalog_media_id,representation_id,match_method)
-         SELECT DISTINCT le.id,c.catalog_media_id,rep.id,'archive_output_path'
+             library_entry_id,carrier_id,catalog_media_id,representation_id,match_method)
+         SELECT DISTINCT le.id,c.id,c.catalog_media_id,rep.id,'archive_output_path'
          FROM representations rep
          {PLAYABLE_REPRESENTATION_TO_LIBRARY_ENTRY_JOIN}
          WHERE rep.role='playable'
            AND rep.location_role='playable'
            AND rep.presence_state='present'
-           AND c.catalog_media_id IS NOT NULL
-           AND {PLAYABLE_PATH_IS_LIBRARY_ENTRY}"
+           AND {holds_playable}",
+            holds_playable = playable_path_is_within_library_entry()
         ),
         [],
     )?;
-    tx.execute(
+    // Matching on shared, normalized catalog hashes. In particular, cartridge
+    // library hashes omit format headers (for example iNES), just as the
+    // catalog does; comparing archive-file sizes here would miss them.
+    conn.execute(
         &format!(
-            "INSERT OR REPLACE INTO library_entry_media_bindings(library_entry_id,catalog_media_id,representation_id,match_method)
-         SELECT DISTINCT le.id,c.catalog_media_id,
+            "INSERT OR REPLACE INTO library_entry_media_bindings(library_entry_id,carrier_id,catalog_media_id,representation_id,match_method)
+         SELECT DISTINCT le.id,c.id,c.catalog_media_id,
                 (SELECT rep.id FROM representations rep
                  WHERE rep.carrier_id=c.id AND rep.role='playable'
-                   AND {PLAYABLE_PATH_IS_LIBRARY_ENTRY}
+                   AND {holds_playable}
                  ORDER BY rep.id LIMIT 1),
                 'archive_projection'
          FROM carriers c
@@ -960,7 +1129,8 @@ pub fn reconcile_archive_snapshot(
          WHERE c.catalog_media_id IS NOT NULL
            AND ((le.sha1<>'' AND m.sha1<>'' AND le.sha1=m.sha1)
                 OR (le.md5<>'' AND m.md5<>'' AND le.md5=m.md5)
-                OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))"
+                OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))",
+            holds_playable = playable_path_is_within_library_entry()
         ),
         [],
     )?;
@@ -970,7 +1140,7 @@ pub fn reconcile_archive_snapshot(
     // archived carrier in that catalog release. This makes a multi-disc set
     // one archived/playable game without pretending that one matched disc is
     // evidence that the other archive carriers are verified.
-    tx.execute(
+    conn.execute(
         "WITH entry_releases(library_entry_id,release_id) AS (
              SELECT DISTINCT le.id,m.release_id
              FROM library_entries le
@@ -1006,8 +1176,9 @@ pub fn reconcile_archive_snapshot(
                            OR lower(lc.platform)=lower(unique_release.platform_id)))=1
          )
          INSERT OR REPLACE INTO library_entry_media_bindings(
-             library_entry_id,catalog_media_id,representation_id,match_method)
-         SELECT DISTINCT er.library_entry_id,c.catalog_media_id,NULL,'archive_release_projection'
+             library_entry_id,carrier_id,catalog_media_id,representation_id,match_method)
+         SELECT DISTINCT er.library_entry_id,c.id,c.catalog_media_id,NULL,
+                'archive_release_projection'
          FROM entry_releases er
          JOIN media m ON m.release_id=er.release_id
          JOIN carriers c ON c.catalog_media_id=m.id
@@ -1020,8 +1191,6 @@ pub fn reconcile_archive_snapshot(
          WHERE ap.playable_root=lr.root_path",
         [],
     )?;
-    apply_archive_derivations(&tx, ArchiveEvidenceScope::All)?;
-    tx.commit()?;
     Ok(())
 }
 
@@ -1050,8 +1219,9 @@ pub fn archive_evidence_identities(
            AND master.catalog_game<>''
            AND (?1=0 OR lc.id=?1)
            AND (?2=0 OR le.id=?2)
-           AND {PLAYABLE_PATH_IS_LIBRARY_ENTRY}
-         ORDER BY le.id"
+           AND {is_playable}
+         ORDER BY le.id",
+        is_playable = playable_path_is_library_entry()
     ))?;
     let (console_filter, entry_filter) = scope.filters();
     let rows = statement.query_map(params![console_filter, entry_filter], |row| {
@@ -1145,8 +1315,9 @@ pub fn adoptable_archive_hashes(
                 WHERE sibling.representation_id=master.id)=1
            AND (?1=0 OR lc.id=?1)
            AND (?2=0 OR le.id=?2)
-           AND {PLAYABLE_PATH_IS_LIBRARY_ENTRY}
-         ORDER BY le.id"
+           AND {is_playable}
+         ORDER BY le.id",
+        is_playable = playable_path_is_library_entry()
     ))?;
     let (console_filter, entry_filter) = scope.filters();
     let rows = statement.query_map(params![console_filter, entry_filter], |row| {
