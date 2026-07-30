@@ -16,7 +16,7 @@ pub mod profile;
 pub mod redumper;
 pub mod verify;
 
-pub use evidence::{dump_catalog_verified, dump_has_current_evidence};
+pub use evidence::{dump_catalog_evidence, dump_catalog_verified, dump_has_current_evidence};
 pub use index::{
     ArchiveIndexSnapshot, IndexedBuild, IndexedCarrier, IndexedDump, IndexedPhysicalCopy,
     IndexedPhysicalCopyFile, IndexedRelease, IndexedReleaseFile, IndexedVerification, scan_archive,

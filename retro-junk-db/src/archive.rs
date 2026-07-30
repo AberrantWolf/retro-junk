@@ -40,6 +40,76 @@ pub struct ArchiveReleaseSummary {
     pub archive_complete: bool,
 }
 
+/// One definition of "this scanned library row *is* the file this playable
+/// representation points at": the projection stores paths relative to the
+/// profile's playable root, and a library entry key is `file:` plus the path
+/// relative to its console folder. Separators are normalized so a projection
+/// written on Windows still matches rows scanned on Unix.
+const PLAYABLE_PATH_IS_LIBRARY_ENTRY: &str = "replace(rep.relative_path,'\\','/')=\
+     replace(lc.folder_name || '/' || substr(le.entry_key,6),'\\','/')";
+
+/// The join from a playable representation (`rep`) to the library rows that
+/// could hold it: through its carrier's release to the profile whose playable
+/// root is the scanned library root.
+const PLAYABLE_REPRESENTATION_TO_LIBRARY_ENTRY_JOIN: &str = "\
+     JOIN carriers c ON c.id=rep.carrier_id
+         JOIN physical_copies pc ON pc.id=c.physical_copy_id
+         JOIN archive_releases ar ON ar.id=pc.archive_release_id
+         JOIN archive_profiles ap ON ap.id=ar.profile_id
+         JOIN library_roots lr ON lr.root_path=ap.playable_root
+         JOIN library_consoles lc ON lc.root_id=lr.id
+         JOIN library_entries le ON le.console_id=lc.id";
+
+/// A library entry the archive's own evidence can name without any catalog.
+///
+/// The identity is the game name a catalog verification agreed on, recorded in
+/// the archive beside the dump it verified. It reaches a library row only when
+/// the playable build derived from that dump is still present at its recorded
+/// path and size.
+/// Which library rows an evidence derivation covers. Status-writing paths pass
+/// the narrowest scope they own, so a per-entry commit does not re-derive the
+/// whole console.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveEvidenceScope {
+    All,
+    Console(crate::LibraryConsoleId),
+    Entry(crate::LibraryEntryId),
+}
+
+impl ArchiveEvidenceScope {
+    /// `(console_id, entry_id)` filter parameters; zero means "no filter".
+    const fn filters(self) -> (u64, u64) {
+        match self {
+            Self::All => (0, 0),
+            Self::Console(console) => (console.0, 0),
+            Self::Entry(entry) => (0, entry.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveEvidenceIdentity {
+    pub library_entry_id: i64,
+    pub entry_key: String,
+    /// Catalog game name recorded by the dump's catalog verification.
+    pub game_name: String,
+    pub representation_id: String,
+    pub archive_release_id: String,
+}
+
+/// The platform id the catalog keys releases by, for an archive or library
+/// platform name that may be regional (`famicom`, `snesna`, `super-famicom`).
+/// Unknown names pass through so an unrecognized platform simply matches
+/// nothing rather than matching everything.
+fn catalog_platform_id(platform_id: &str) -> String {
+    platform_id
+        .parse::<retro_junk_core::Platform>()
+        .map_or_else(
+            |_| platform_id.to_owned(),
+            |platform| platform.short_name().to_owned(),
+        )
+}
+
 fn same_platform(left: &str, right: &str) -> bool {
     if left.eq_ignore_ascii_case(right) {
         return true;
@@ -69,20 +139,31 @@ fn projected_playable_path(
         return (evidence.relative_output_path.clone(), presence);
     }
     let historical = Path::new(&evidence.relative_output_path);
+    if historical.as_os_str().is_empty() {
+        return (evidence.relative_output_path.clone(), presence);
+    }
+    // Only a leading *directory* names the old location. Evidence written
+    // before outputs were filed under a platform directory records a bare
+    // file name, and consuming that name as the directory to replace would
+    // project the platform directory itself instead of the file inside it.
     let mut components = historical.components();
-    let Some(first) = components.next() else {
-        return (evidence.relative_output_path.clone(), presence);
-    };
-    let Some(first) = first.as_os_str().to_str() else {
-        return (evidence.relative_output_path.clone(), presence);
+    let leading = components.next();
+    let tail = components.as_path();
+    let (leading, tail) = if tail.as_os_str().is_empty() {
+        (None, historical)
+    } else {
+        match leading.and_then(|component| component.as_os_str().to_str()) {
+            Some(directory) => (Some(directory), tail),
+            None => return (evidence.relative_output_path.clone(), presence),
+        }
     };
     let frontend_directory = retro_junk_frontend::esde::system_directory(platform_id, Some(region));
-    if first.eq_ignore_ascii_case(&frontend_directory) {
+    if leading.is_some_and(|directory| directory.eq_ignore_ascii_case(&frontend_directory)) {
         return (evidence.relative_output_path.clone(), presence);
     }
     let mut projected_evidence = evidence.clone();
     projected_evidence.relative_output_path = Path::new(&frontend_directory)
-        .join(components.as_path())
+        .join(tail)
         .to_string_lossy()
         .replace('\\', "/");
     let projected_presence =
@@ -656,11 +737,16 @@ pub fn reconcile_archive_snapshot(
                     } else {
                         "unknown"
                     };
-                    let catalog_state = if retro_junk_archive::dump_catalog_verified(dump) {
+                    // One rule decides "catalog-verified"; the identity the
+                    // catalog agreed on comes from that same evidence rather
+                    // than from a second, drifting predicate.
+                    let catalog_evidence = retro_junk_archive::dump_catalog_evidence(dump);
+                    let catalog_state = if catalog_evidence.is_some() {
                         "verified"
                     } else {
                         "not_attempted"
                     };
+                    let catalog_game = catalog_evidence.map_or("", |catalog| catalog.game.as_str());
                     tx.execute(
                         "INSERT INTO dump_events(id,carrier_id,representation_id,format,captured_at,manifest_path,manifest_sha256,integrity_state,catalog_state)
                          VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
@@ -677,8 +763,8 @@ pub fn reconcile_archive_snapshot(
                         ],
                     )?;
                     tx.execute(
-                        "INSERT INTO representations(id,carrier_id,dump_id,role,format,location_role,relative_path,presence_state,input_manifest_sha256,catalog_verified,round_trip_verified)
-                         VALUES(?1,?2,?3,?4,?5,'archive',?6,?7,?8,?9,0)",
+                        "INSERT INTO representations(id,carrier_id,dump_id,role,format,location_role,relative_path,presence_state,input_manifest_sha256,catalog_verified,catalog_game,round_trip_verified)
+                         VALUES(?1,?2,?3,?4,?5,'archive',?6,?7,?8,?9,?10,0)",
                         params![
                             dump.manifest.representation_id.to_string(),
                             carrier.manifest.carrier_id.to_string(),
@@ -688,18 +774,22 @@ pub fn reconcile_archive_snapshot(
                             relative_dump,
                             master_presence.as_str(),
                             dump.manifest_sha256,
-                            retro_junk_archive::dump_catalog_verified(dump),
+                            catalog_evidence.is_some(),
+                            catalog_game,
                         ],
                     )?;
                     for file in &dump.manifest.files {
                         tx.execute(
-                            "INSERT INTO representation_files(representation_id,relative_path,file_size,sha256)
-                             VALUES(?1,?2,?3,?4)",
+                            "INSERT INTO representation_files(representation_id,relative_path,file_size,sha256,crc32,md5,sha1)
+                             VALUES(?1,?2,?3,?4,?5,?6,?7)",
                             params![
                                 dump.manifest.representation_id.to_string(),
                                 file.path,
                                 file.size,
                                 file.sha256,
+                                file.crc32,
+                                file.md5,
+                                file.sha1,
                             ],
                         )?;
                     }
@@ -751,13 +841,16 @@ pub fn reconcile_archive_snapshot(
                             )?;
                             for file in &intermediate.files {
                                 tx.execute(
-                                    "INSERT INTO representation_files(representation_id,relative_path,file_size,sha256)
-                                     VALUES(?1,?2,?3,?4)",
+                                    "INSERT INTO representation_files(representation_id,relative_path,file_size,sha256,crc32,md5,sha1)
+                                     VALUES(?1,?2,?3,?4,?5,?6,?7)",
                                     params![
                                         intermediate.representation_id.to_string(),
                                         file.path,
                                         file.size,
                                         file.sha256,
+                                        file.crc32,
+                                        file.md5,
+                                        file.sha1,
                                     ],
                                 )?;
                             }
@@ -832,32 +925,27 @@ pub fn reconcile_archive_snapshot(
     // library row at that path directly instead of asking CHD (or another
     // derivative container) to reproduce the preservation dump's raw hashes.
     tx.execute(
-        "INSERT OR REPLACE INTO library_entry_media_bindings(
+        &format!(
+            "INSERT OR REPLACE INTO library_entry_media_bindings(
              library_entry_id,catalog_media_id,representation_id,match_method)
          SELECT DISTINCT le.id,c.catalog_media_id,rep.id,'archive_output_path'
          FROM representations rep
-         JOIN carriers c ON c.id=rep.carrier_id
-         JOIN physical_copies pc ON pc.id=c.physical_copy_id
-         JOIN archive_releases ar ON ar.id=pc.archive_release_id
-         JOIN archive_profiles ap ON ap.id=ar.profile_id
-         JOIN library_roots lr ON lr.root_path=ap.playable_root
-         JOIN library_consoles lc ON lc.root_id=lr.id
-         JOIN library_entries le ON le.console_id=lc.id
+         {PLAYABLE_REPRESENTATION_TO_LIBRARY_ENTRY_JOIN}
          WHERE rep.role='playable'
            AND rep.location_role='playable'
            AND rep.presence_state='present'
            AND c.catalog_media_id IS NOT NULL
-           AND replace(rep.relative_path,'\\','/')=
-               replace(lc.folder_name || '/' || substr(le.entry_key,6),'\\','/')",
+           AND {PLAYABLE_PATH_IS_LIBRARY_ENTRY}"
+        ),
         [],
     )?;
     tx.execute(
-        "INSERT OR REPLACE INTO library_entry_media_bindings(library_entry_id,catalog_media_id,representation_id,match_method)
+        &format!(
+            "INSERT OR REPLACE INTO library_entry_media_bindings(library_entry_id,catalog_media_id,representation_id,match_method)
          SELECT DISTINCT le.id,c.catalog_media_id,
                 (SELECT rep.id FROM representations rep
                  WHERE rep.carrier_id=c.id AND rep.role='playable'
-                   AND replace(rep.relative_path,'\\','/')=
-                       replace(lc.folder_name || '/' || substr(le.entry_key,6),'\\','/')
+                   AND {PLAYABLE_PATH_IS_LIBRARY_ENTRY}
                  ORDER BY rep.id LIMIT 1),
                 'archive_projection'
          FROM carriers c
@@ -872,7 +960,8 @@ pub fn reconcile_archive_snapshot(
          WHERE c.catalog_media_id IS NOT NULL
            AND ((le.sha1<>'' AND m.sha1<>'' AND le.sha1=m.sha1)
                 OR (le.md5<>'' AND m.md5<>'' AND le.md5=m.md5)
-                OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))",
+                OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))"
+        ),
         [],
     )?;
     // Disc containers and M3U sets often cannot expose Redump's raw per-track
@@ -931,8 +1020,242 @@ pub fn reconcile_archive_snapshot(
          WHERE ap.playable_root=lr.root_path",
         [],
     )?;
+    apply_archive_derivations(&tx, ArchiveEvidenceScope::All)?;
     tx.commit()?;
     Ok(())
+}
+
+/// Library rows the archive's own evidence can name, without consulting the
+/// catalog tables at all.
+///
+/// This is what makes an archive portable between machines: the dump's catalog
+/// verification recorded which catalog game it matched, and the build evidence
+/// recorded where that dump's playable output was written. A machine that has
+/// never imported a DAT can still say what the file is.
+///
+pub fn archive_evidence_identities(
+    conn: &Connection,
+    scope: ArchiveEvidenceScope,
+) -> Result<Vec<ArchiveEvidenceIdentity>, OperationError> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT le.id,le.entry_key,master.catalog_game,rep.id,ar.id
+         FROM representations rep
+         {PLAYABLE_REPRESENTATION_TO_LIBRARY_ENTRY_JOIN}
+         JOIN derivations d ON d.child_representation_id=rep.id
+         JOIN representations master ON master.id=d.parent_representation_id
+         WHERE rep.role='playable'
+           AND rep.location_role='playable'
+           AND rep.presence_state='present'
+           AND master.catalog_verified=1
+           AND master.catalog_game<>''
+           AND (?1=0 OR lc.id=?1)
+           AND (?2=0 OR le.id=?2)
+           AND {PLAYABLE_PATH_IS_LIBRARY_ENTRY}
+         ORDER BY le.id"
+    ))?;
+    let (console_filter, entry_filter) = scope.filters();
+    let rows = statement.query_map(params![console_filter, entry_filter], |row| {
+        Ok(ArchiveEvidenceIdentity {
+            library_entry_id: row.get(0)?,
+            entry_key: row.get(1)?,
+            game_name: row.get(2)?,
+            representation_id: row.get(3)?,
+            archive_release_id: row.get(4)?,
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Name library rows the catalog could not, from archive evidence.
+///
+/// Only rows analysis left unidentified are touched: a live catalog hash
+/// comparison is stronger evidence about the bytes on disk than a recorded
+/// verification, so a catalog verdict always wins, and user tags are never
+/// overwritten. Returns the rows this pass named.
+pub fn apply_archive_evidence_identities(
+    conn: &Connection,
+    scope: ArchiveEvidenceScope,
+) -> Result<Vec<crate::LibraryEntryId>, OperationError> {
+    let identities = archive_evidence_identities(conn, scope)?;
+    if identities.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut statement = conn.prepare(
+        "UPDATE library_entries
+         SET status='matched',dat_game_name=?2,dat_match_method='archive_evidence',
+             revision=revision+1
+         WHERE id=?1 AND tag='' AND dat_game_name=''
+           AND status IN ('unknown','unrecognized')",
+    )?;
+    let mut updated = Vec::new();
+    for identity in &identities {
+        if statement.execute(params![identity.library_entry_id, identity.game_name])? > 0 {
+            updated.push(crate::LibraryEntryId(
+                u64::try_from(identity.library_entry_id).unwrap_or_default(),
+            ));
+        }
+    }
+    if !updated.is_empty() {
+        log::info!(
+            "Named {} library row(s) from archive evidence",
+            updated.len()
+        );
+    }
+    Ok(updated)
+}
+
+/// Hashes the archive already computed for a file the library also holds.
+///
+/// A playable representation whose recorded content SHA-256 equals its single
+/// archived master file's is the same bytes under another name, so the master's
+/// digests describe the library file exactly — no second read required.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdoptableHashes {
+    pub library_entry_id: i64,
+    pub platform_id: String,
+    pub digests: retro_junk_archive::FileDigests,
+}
+
+/// Library rows whose hashes are already recorded in the archive.
+///
+/// Restricted to rows with no locally computed hashes, and to playables that
+/// are byte-identical mirrors of a single-file master: a derived container
+/// (CHD, RVZ) shares no bytes with its master, so the master's digests say
+/// nothing about the playable file.
+pub fn adoptable_archive_hashes(
+    conn: &Connection,
+    scope: ArchiveEvidenceScope,
+) -> Result<Vec<AdoptableHashes>, OperationError> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT le.id,ar.platform_id,mf.file_size,mf.crc32,mf.md5,mf.sha1,mf.sha256
+         FROM representations rep
+         {PLAYABLE_REPRESENTATION_TO_LIBRARY_ENTRY_JOIN}
+         JOIN derivations d ON d.child_representation_id=rep.id
+         JOIN representations master ON master.id=d.parent_representation_id
+         JOIN representation_files mf ON mf.representation_id=master.id
+         WHERE rep.role='playable'
+           AND rep.location_role='playable'
+           AND rep.presence_state='present'
+           AND rep.content_sha256<>''
+           AND mf.sha256=rep.content_sha256
+           AND mf.crc32<>'' AND mf.sha1<>''
+           AND le.crc32='' AND le.sha1='' AND le.md5=''
+           AND le.tag=''
+           AND (SELECT COUNT(*) FROM representation_files sibling
+                WHERE sibling.representation_id=master.id)=1
+           AND (?1=0 OR lc.id=?1)
+           AND (?2=0 OR le.id=?2)
+           AND {PLAYABLE_PATH_IS_LIBRARY_ENTRY}
+         ORDER BY le.id"
+    ))?;
+    let (console_filter, entry_filter) = scope.filters();
+    let rows = statement.query_map(params![console_filter, entry_filter], |row| {
+        Ok(AdoptableHashes {
+            library_entry_id: row.get(0)?,
+            platform_id: row.get(1)?,
+            digests: retro_junk_archive::FileDigests {
+                size: row.get::<_, i64>(2)?.try_into().unwrap_or_default(),
+                crc32: row.get(3)?,
+                md5: row.get(4)?,
+                sha1: row.get(5)?,
+                sha256: row.get(6)?,
+            },
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Fill a library row's hash cache from the archive instead of re-reading the
+/// file, and name it from the catalog medium those hashes identify.
+///
+/// Adoption is deliberately conditional on the recorded digests matching
+/// exactly one catalog medium. The archive stores raw file digests while the
+/// library hashes format-aware payloads (an iNES or copier header is skipped),
+/// so recorded digests are only interchangeable with computed ones when the
+/// catalog itself confirms they describe a known dump. Anything ambiguous or
+/// unmatched is left for a real hash pass to read.
+///
+/// Rows filled this way record `hash_source='archive_evidence'`: they are a
+/// cache of what the archive proved, not evidence that the bytes on disk were
+/// read on this machine.
+pub fn adopt_archive_hashes(
+    conn: &Connection,
+    scope: ArchiveEvidenceScope,
+) -> Result<Vec<crate::LibraryEntryId>, OperationError> {
+    let candidates = adoptable_archive_hashes(conn, scope)?;
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut statement = conn.prepare(
+        "UPDATE library_entries
+         SET crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_source='archive_evidence',
+             status='matched',dat_game_name=?6,dat_rom_name=?7,dat_match_method='crc32',
+             ambiguous_candidates_json=NULL,revision=revision+1
+         WHERE id=?1 AND tag='' AND crc32='' AND sha1='' AND md5=''",
+    )?;
+    let mut adopted = Vec::new();
+    for candidate in &candidates {
+        // Archives file releases under regional platform directories
+        // (`super-famicom`); the catalog keys them by canonical platform.
+        let candidates = match_catalog_file(
+            conn,
+            catalog_platform_id(&candidate.platform_id).as_str(),
+            &candidate.digests,
+        )?;
+        let [confirmed] = candidates.as_slice() else {
+            continue;
+        };
+        let (dat_name, rom_name) = catalog_media_names(conn, &confirmed.media_id)?;
+        let updated = statement.execute(params![
+            candidate.library_entry_id,
+            candidate.digests.crc32,
+            candidate.digests.sha1,
+            candidate.digests.md5,
+            i64::try_from(candidate.digests.size).unwrap_or(i64::MAX),
+            dat_name,
+            rom_name,
+        ])?;
+        if updated > 0 {
+            adopted.push(crate::LibraryEntryId(
+                u64::try_from(candidate.library_entry_id).unwrap_or_default(),
+            ));
+        }
+    }
+    if !adopted.is_empty() {
+        log::info!(
+            "Adopted archive hashes for {} library row(s) without re-reading them",
+            adopted.len()
+        );
+    }
+    Ok(adopted)
+}
+
+/// Everything the archive can tell the library without reading a file: the
+/// hashes it already computed, then the identities its evidence established for
+/// whatever the catalog still could not name.
+pub fn apply_archive_derivations(
+    conn: &Connection,
+    scope: ArchiveEvidenceScope,
+) -> Result<Vec<crate::LibraryEntryId>, OperationError> {
+    let mut touched = adopt_archive_hashes(conn, scope)?;
+    for id in apply_archive_evidence_identities(conn, scope)? {
+        if !touched.contains(&id) {
+            touched.push(id);
+        }
+    }
+    Ok(touched)
+}
+
+fn catalog_media_names(
+    conn: &Connection,
+    media_id: &str,
+) -> Result<(String, String), OperationError> {
+    conn.query_row(
+        "SELECT dat_name,rom_name FROM media WHERE id=?1",
+        [media_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .map_err(Into::into)
 }
 
 fn insert_projected_policy(

@@ -1655,6 +1655,7 @@ pub fn format_match_method(method: &MatchMethod) -> &'static str {
         MatchMethod::Serial => "serial",
         MatchMethod::Crc32 => "CRC32",
         MatchMethod::Sha1 => "SHA1",
+        MatchMethod::ArchiveEvidence => "archive evidence",
     }
 }
 

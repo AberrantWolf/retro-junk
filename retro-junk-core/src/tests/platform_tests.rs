@@ -65,3 +65,28 @@ fn short_name_is_first_alias() {
         );
     }
 }
+
+/// Archive and frontend directories spell regional platforms with separators
+/// (`super-famicom`); the catalog keys them by canonical platform. A parse that
+/// only accepted the spaced alias silently split one platform in two.
+#[test]
+fn separator_styles_resolve_to_the_same_platform() {
+    for name in [
+        "super famicom",
+        "super-famicom",
+        "Super_Famicom",
+        "sfc",
+        "snesna",
+    ] {
+        assert_eq!(
+            name.parse::<Platform>().unwrap(),
+            Platform::Snes,
+            "{name} did not resolve to SNES"
+        );
+    }
+    assert_eq!("famicom".parse::<Platform>().unwrap(), Platform::Nes);
+    assert_eq!("gbc".parse::<Platform>().unwrap(), Platform::GameBoy);
+    // Aliases that are themselves hyphenated keep working.
+    assert_eq!("sg-1000".parse::<Platform>().unwrap(), Platform::Sg1000);
+    assert_eq!("tg-cd".parse::<Platform>().unwrap(), Platform::PceCd);
+}

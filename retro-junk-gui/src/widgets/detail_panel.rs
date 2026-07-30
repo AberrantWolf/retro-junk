@@ -517,7 +517,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.label(egui::RichText::new("DAT Match").strong());
             ui.add_space(2.0);
             detail_row(ui, "Game", &dm.game_name);
-            detail_row(ui, "Method", &format!("{:?}", dm.method));
+            detail_row(
+                ui,
+                "Method",
+                retro_junk_lib::rename::format_match_method(&dm.method),
+            );
             if dm.cross_region {
                 let dat_region: &str = if dm.region.is_empty() {
                     "unknown"

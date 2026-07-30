@@ -1,8 +1,30 @@
 # Changelog
 
-## Unreleased
-
 ## 0.4.0
+
+- Stopped re-reading files for hashes the archive already recorded. Dump
+  manifests carry CRC32/MD5/SHA-1 beside SHA-256 for every archived file, but
+  the projection kept only SHA-256; it now carries all four, and a library row
+  holding a byte-identical mirror of a single-file master is filled from that
+  record and named from the catalog medium those digests identify — no second
+  read of the file. Adoption requires the recorded digests to match exactly one
+  catalog medium (the archive stores raw digests while the library hashes
+  format-aware payloads), and such rows record `hash_source='archive_evidence'`
+  so a later local hash pass replaces them with digests actually read here.
+- Made platform names separator-insensitive, so archive and frontend directory
+  spellings (`super-famicom`) resolve to the same platform as the spaced alias
+  instead of failing to parse and splitting one platform in two.
+- Made library identity survive a machine without a catalog: the archive's own
+  catalog verification records which game a dump matched, so a scanned playable
+  file whose build evidence points at a current, catalog-verified dump is now
+  named and shown as verified (match method `archive evidence`) even when no DAT
+  has ever been imported locally. A live catalog hash comparison still wins, and
+  user tags are never overwritten.
+- Fixed playable relocation losing the file name when build evidence recorded a
+  bare output path (written before playable outputs were filed under a platform
+  directory): the projection replaced the *file name* with the platform
+  directory, so present files were projected as missing and never bound to their
+  library rows.
 
 - Made Library archive state release-aware: catalog-analysis bindings now
   connect CHD/M3U entries to preservation carriers, incomplete archives remain

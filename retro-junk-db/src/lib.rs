@@ -13,10 +13,12 @@ pub mod schema;
 pub mod work;
 
 pub use archive::{
-    ArchiveCollectionDetails, ArchiveReleaseSummary, CompleteCatalogMediaMatch,
-    archive_profile_indexed_at, bind_library_entries_by_hash, existing_playable_disc_paths,
-    list_archive_release_summaries, load_archive_collection_details, match_catalog_file,
-    match_catalog_file_any_platform, match_catalog_serial_any_platform,
+    AdoptableHashes, ArchiveCollectionDetails, ArchiveEvidenceIdentity, ArchiveEvidenceScope,
+    ArchiveReleaseSummary, CompleteCatalogMediaMatch, adopt_archive_hashes,
+    adoptable_archive_hashes, apply_archive_derivations, apply_archive_evidence_identities,
+    archive_evidence_identities, archive_profile_indexed_at, bind_library_entries_by_hash,
+    existing_playable_disc_paths, list_archive_release_summaries, load_archive_collection_details,
+    match_catalog_file, match_catalog_file_any_platform, match_catalog_serial_any_platform,
     match_complete_catalog_media, match_complete_catalog_media_any_platform,
     reconcile_archive_snapshot, update_projected_platform_policy,
 };

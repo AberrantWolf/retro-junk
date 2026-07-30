@@ -1270,6 +1270,9 @@ fn apply_catalog_resolution(
         } => {
             entry.status = match info.method {
                 MatchMethod::Serial => EntryStatus::LikelyMatched,
+                // Recorded archive evidence already names a complete,
+                // catalog-verified dump; there is no local track set to judge.
+                MatchMethod::ArchiveEvidence => EntryStatus::Matched,
                 MatchMethod::Crc32 | MatchMethod::Sha1
                     if entry.disc_verification.permits_verified_status() =>
                 {

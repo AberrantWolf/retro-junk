@@ -691,6 +691,7 @@ fn match_method_to_str(m: &MatchMethod) -> &'static str {
         MatchMethod::Serial => "serial",
         MatchMethod::Crc32 => "crc32",
         MatchMethod::Sha1 => "sha1",
+        MatchMethod::ArchiveEvidence => "archive_evidence",
     }
 }
 
@@ -698,6 +699,7 @@ fn str_to_match_method(s: &str) -> MatchMethod {
     match s {
         "serial" => MatchMethod::Serial,
         "sha1" => MatchMethod::Sha1,
+        "archive_evidence" => MatchMethod::ArchiveEvidence,
         // "crc32" and anything else default to CRC32
         _ => MatchMethod::Crc32,
     }

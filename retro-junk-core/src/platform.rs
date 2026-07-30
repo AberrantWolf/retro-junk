@@ -248,20 +248,28 @@ impl std::fmt::Display for PlatformParseError {
 
 impl std::error::Error for PlatformParseError {}
 
+/// Fold a platform name to its comparison form: case- and separator-insensitive
+/// so `Super Famicom`, `super-famicom`, and `super_famicom` are one name.
+fn normalize_platform_name(value: &str) -> String {
+    value.trim().to_lowercase().replace(['-', '_'], " ")
+}
+
 impl std::str::FromStr for Platform {
     type Err = PlatformParseError;
 
     /// Parse a platform from any recognized name (case-insensitive).
     ///
-    /// Matches against `short_name()` and all entries in `aliases()`.
+    /// Matches against `short_name()` and all entries in `aliases()`. Word
+    /// separators are interchangeable, so archive and frontend directory names
+    /// (`super-famicom`) resolve like the spaced aliases they mirror.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let lower = s.to_lowercase();
+        let wanted = normalize_platform_name(s);
         for &platform in ALL_PLATFORMS {
-            if platform.short_name() == lower {
+            if normalize_platform_name(platform.short_name()) == wanted {
                 return Ok(platform);
             }
             for alias in platform.aliases() {
-                if *alias == lower {
+                if normalize_platform_name(alias) == wanted {
                     return Ok(platform);
                 }
             }

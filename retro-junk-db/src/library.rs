@@ -73,6 +73,15 @@ pub enum LibraryError {
     CatalogMutation(String),
 }
 
+impl From<crate::operations::OperationError> for LibraryError {
+    fn from(value: crate::operations::OperationError) -> Self {
+        match value {
+            crate::operations::OperationError::Sqlite(error) => Self::Sqlite(error),
+            other => Self::CatalogMutation(other.to_string()),
+        }
+    }
+}
+
 impl From<LibraryError> for crate::schema::SchemaError {
     fn from(value: LibraryError) -> Self {
         match value {
@@ -916,6 +925,7 @@ pub fn reconcile_console_scan(
     for id in &removed {
         tx.execute("DELETE FROM library_entries WHERE id=?1", [id.0])?;
     }
+    name_from_archive_evidence(&tx, token.console_id, &mut affected, &mut revisions)?;
     if affected.is_empty()
         && removed.is_empty()
         && old_fingerprint == fingerprint_hash
@@ -939,6 +949,48 @@ pub fn reconcile_console_scan(
         console_revision: Some((token.console_id, cr)),
         entry_revisions: revisions,
     })
+}
+
+/// Re-derive one row's archive-evidence name inside the commit that just
+/// rewrote its status. Analysis and hashing both write a verdict computed from
+/// the catalog alone, so without this an evidence-named row would silently fall
+/// back to `unrecognized` until the next archive projection.
+fn restore_archive_evidence_name(
+    tx: &Transaction<'_>,
+    id: LibraryEntryId,
+) -> Result<(), LibraryError> {
+    crate::archive::apply_archive_derivations(tx, crate::archive::ArchiveEvidenceScope::Entry(id))?;
+    Ok(())
+}
+
+/// A scan can only say what the catalog knows. Rows it left unidentified may
+/// still be named by the archive's own evidence, so re-derive that as part of
+/// the same commit rather than waiting for the next archive projection, and
+/// fold the rows it named into the change set the caller reports.
+fn name_from_archive_evidence(
+    tx: &Transaction<'_>,
+    console_id: LibraryConsoleId,
+    affected: &mut Vec<LibraryEntryId>,
+    revisions: &mut Vec<(LibraryEntryId, u64, u64)>,
+) -> Result<(), LibraryError> {
+    for id in crate::archive::apply_archive_derivations(
+        tx,
+        crate::archive::ArchiveEvidenceScope::Console(console_id),
+    )? {
+        let (revision, source_revision): (u64, u64) = tx.query_row(
+            "SELECT revision,source_revision FROM library_entries WHERE id=?1",
+            [id.0],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if let Some(existing) = revisions.iter_mut().find(|(entry, _, _)| *entry == id) {
+            // The pass bumped this row again; report the revision that landed.
+            *existing = (id, revision, source_revision);
+        } else {
+            affected.push(id);
+            revisions.push((id, revision, source_revision));
+        }
+    }
+    Ok(())
 }
 
 fn hash_evidence_differs(current: &LibraryEntryRow, scanned: &LibraryEntryRow) -> bool {
@@ -1100,6 +1152,7 @@ pub fn apply_entry_analysis(
 ) -> Result<LibraryChangeSet, LibraryError> {
     mutate_entry(conn, id, expected_source_revision, |tx| {
         tx.execute("UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_warnings_json=?6,disc_verification=?7,dat_game_name=?8,dat_rom_name=?9,dat_match_method=?10,cover_title=?11,screen_title=?12,identification_json=?13,disc_identifications_json=?14,broken_references_json=?15,ambiguous_candidates_json=?16,cue_compat_issues_json=?17,revision=revision+1 WHERE id=?18",params![a.status,a.crc32,a.sha1,a.md5,a.data_size,a.hash_warnings_json,a.disc_verification,a.dat_game_name,a.dat_rom_name,a.dat_match_method,a.cover_title,a.screen_title,a.identification_json,a.disc_identifications_json,a.broken_references_json,a.ambiguous_candidates_json,a.cue_compat_issues_json,id.0])?;
+        restore_archive_evidence_name(tx, id)?;
         Ok(())
     })
 }
@@ -1146,6 +1199,14 @@ pub fn apply_entry_analysis_batch(
         tx.commit()?;
         return Ok(LibraryChangeSet::default());
     };
+    for id in crate::archive::apply_archive_derivations(
+        &tx,
+        crate::archive::ArchiveEvidenceScope::Console(LibraryConsoleId(console_id)),
+    )? {
+        if !affected.contains(&id) {
+            affected.push(id);
+        }
+    }
     tx.execute(
         "UPDATE library_consoles SET revision=revision+1 WHERE id=?1",
         [console_id],
@@ -1183,8 +1244,10 @@ pub fn apply_entry_hash_update(
     update: &EntryHashUpdate,
 ) -> Result<LibraryChangeSet, LibraryError> {
     mutate_entry(conn, id, expected_source_revision, |tx| {
+        // These digests come from actually reading the file, so the row is no
+        // longer a cache of what the archive recorded.
         tx.execute(
-            "UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_warnings_json=?6,disc_verification=?7,dat_game_name=?8,dat_rom_name=?9,dat_match_method=?10,cover_title=?11,screen_title=?12,disc_identifications_json=?13,ambiguous_candidates_json=?14,revision=revision+1 WHERE id=?15",
+            "UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_warnings_json=?6,disc_verification=?7,dat_game_name=?8,dat_rom_name=?9,dat_match_method=?10,cover_title=?11,screen_title=?12,disc_identifications_json=?13,ambiguous_candidates_json=?14,hash_source='',revision=revision+1 WHERE id=?15",
             params![
                 update.status,
                 update.crc32,
@@ -1203,6 +1266,7 @@ pub fn apply_entry_hash_update(
                 id.0,
             ],
         )?;
+        restore_archive_evidence_name(tx, id)?;
         Ok(())
     })
 }

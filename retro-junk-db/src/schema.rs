@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 22;
+pub const CURRENT_VERSION: i32 = 24;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -273,6 +273,7 @@ const TABLES: &[(&str, &str)] = &[
           broken_references_json TEXT,
           ambiguous_candidates_json TEXT,
           cue_compat_issues_json TEXT,
+          hash_source TEXT NOT NULL DEFAULT '',
           UNIQUE(console_id, entry_key))",
     ),
     (
@@ -355,6 +356,7 @@ const TABLES: &[(&str, &str)] = &[
           content_sha256 TEXT NOT NULL DEFAULT '',
           content_size INTEGER NOT NULL DEFAULT 0,
           catalog_verified BOOLEAN NOT NULL DEFAULT 0,
+          catalog_game TEXT NOT NULL DEFAULT '',
           round_trip_verified BOOLEAN NOT NULL DEFAULT 0,
           recipe_version INTEGER NOT NULL DEFAULT 0,
           UNIQUE(location_role, relative_path))",
@@ -365,6 +367,9 @@ const TABLES: &[(&str, &str)] = &[
           relative_path TEXT NOT NULL,
           file_size INTEGER NOT NULL,
           sha256 TEXT NOT NULL,
+          crc32 TEXT NOT NULL DEFAULT '',
+          md5 TEXT NOT NULL DEFAULT '',
+          sha1 TEXT NOT NULL DEFAULT '',
           PRIMARY KEY(representation_id, relative_path))",
     ),
     (
@@ -749,6 +754,34 @@ fn rebuild_table(
     Ok(())
 }
 
+/// Add columns that a legacy database is missing, skipping the table entirely
+/// when it does not exist yet (partial databases are migrated by later arms).
+fn add_missing_columns(
+    conn: &Connection,
+    table: &str,
+    columns: &[(&str, &str)],
+) -> Result<(), SchemaError> {
+    let has_table: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )?;
+    if !has_table {
+        return Ok(());
+    }
+    for (column, definition) in columns {
+        if conn
+            .prepare(&format!("SELECT {column} FROM {table} LIMIT 0"))
+            .is_err()
+        {
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
+    Ok(())
+}
+
 /// Run migrations from `from_version` up to `CURRENT_VERSION`.
 #[allow(clippy::too_many_lines)]
 fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
@@ -1114,6 +1147,39 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 }
                 conn.execute_batch(WORK_INDEXES_SQL)?;
                 seed_runtime_state(conn)?;
+            }
+            22 => {
+                // Materialize the catalog identity the archive's own evidence
+                // agreed on, so a library entry can be identified from archive
+                // evidence alone on a machine with no catalog imported. The
+                // archive projection is rebuildable: existing rows stay empty
+                // until the next reindex fills them.
+                add_missing_columns(
+                    conn,
+                    "representations",
+                    &[("catalog_game", "TEXT NOT NULL DEFAULT ''")],
+                )?;
+            }
+            23 => {
+                // The dump manifest records CRC32/MD5/SHA-1 beside SHA-256 for
+                // every archived file, but the projection kept only SHA-256, so
+                // the catalog-relevant digests the archive already proved had to
+                // be recomputed by reading every file again. Carry them across,
+                // and record where a library row's hashes came from.
+                add_missing_columns(
+                    conn,
+                    "representation_files",
+                    &[
+                        ("crc32", "TEXT NOT NULL DEFAULT ''"),
+                        ("md5", "TEXT NOT NULL DEFAULT ''"),
+                        ("sha1", "TEXT NOT NULL DEFAULT ''"),
+                    ],
+                )?;
+                add_missing_columns(
+                    conn,
+                    "library_entries",
+                    &[("hash_source", "TEXT NOT NULL DEFAULT ''")],
+                )?;
             }
             14 => {
                 let has_match_state: bool = conn.query_row(

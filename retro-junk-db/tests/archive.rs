@@ -723,3 +723,658 @@ fn saturn_archive_projection_keeps_japan_in_saturnjp() {
         "Japan Game"
     );
 }
+
+/// Ingest one cartridge dump, record the catalog verification the archive
+/// carries beside it, and record a playable build. `recorded_output_path` is
+/// what the build evidence claims; `actual_relative_path` is where the file
+/// really sits below the playable root, so callers can reproduce evidence
+/// written before outputs were filed under a platform directory.
+fn archive_verified_playable(
+    root: &std::path::Path,
+    playable_root: &std::path::Path,
+    source_dir: &std::path::Path,
+    title: &str,
+    catalog_game: &str,
+    recorded_output_path: &str,
+    actual_relative_path: &str,
+) {
+    let source = source_dir.join(format!("{title}.nes"));
+    std::fs::write(&source, title.as_bytes()).unwrap();
+    retro_junk_archive::ingest_new_carrier_dump(
+        root,
+        &source,
+        retro_junk_archive::NewCarrierDump {
+            platform_id: "nes".to_owned(),
+            title: title.to_owned(),
+            region: "usa".to_owned(),
+            revision: String::new(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: String::new(),
+            sequence_number: 0,
+            carrier_label: String::new(),
+            carrier_kind: retro_junk_archive::CarrierKind::Cartridge,
+            format: retro_junk_archive::RepresentationFormat::Rom,
+            // Deliberately unresolvable: this machine has no catalog rows.
+            catalog_binding: retro_junk_archive::CatalogBinding {
+                catalog_release_id: "missing-release".to_owned(),
+                catalog_media_id: "missing-media".to_owned(),
+                source: "no-intro".to_owned(),
+                dat_name: catalog_game.to_owned(),
+                ..Default::default()
+            },
+            source_package: retro_junk_archive::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
+            physical_copy_id: None,
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(root).unwrap();
+    let dump = snapshot
+        .releases
+        .iter()
+        .find(|release| release.manifest.title == title)
+        .map(|release| &release.physical_copies[0].carriers[0].dumps[0])
+        .unwrap();
+    let evidence_dir = dump.directory.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).unwrap();
+
+    let verification = retro_junk_archive::VerificationEvidence {
+        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+        verification_id: retro_junk_archive::VerificationId::new(),
+        representation_id: dump.manifest.representation_id,
+        performed_at: "2026-07-25T00:00:00Z".to_owned(),
+        input_manifest_sha256: dump.manifest_sha256.clone(),
+        kind: retro_junk_archive::VerificationKind::Catalog,
+        outcome: retro_junk_archive::VerificationOutcome::Verified,
+        tool: None,
+        catalog: Some(retro_junk_archive::CatalogEvidence {
+            source: "no-intro".to_owned(),
+            system: "nes".to_owned(),
+            version: "2026.05.02".to_owned(),
+            game: catalog_game.to_owned(),
+            complete_track_set: true,
+        }),
+        tracks: Vec::new(),
+        detail: String::new(),
+    };
+    std::fs::write(
+        evidence_dir.join(format!(
+            "verification-{}.json",
+            verification.verification_id
+        )),
+        serde_json::to_vec_pretty(&verification).unwrap(),
+    )
+    .unwrap();
+
+    let playable_file = playable_root.join(actual_relative_path);
+    std::fs::create_dir_all(playable_file.parent().unwrap()).unwrap();
+    std::fs::write(&playable_file, title.as_bytes()).unwrap();
+    let build = retro_junk_archive::BuildEvidence {
+        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+        build_id: retro_junk_archive::BuildId::new(),
+        parent_representation_id: dump.manifest.representation_id,
+        child_representation_id: retro_junk_archive::RepresentationId::new(),
+        performed_at: "2026-07-25T00:00:00Z".to_owned(),
+        input_manifest_sha256: dump.manifest_sha256.clone(),
+        recipe_version: 1,
+        format: retro_junk_archive::RepresentationFormat::Rom,
+        relative_output_path: recorded_output_path.to_owned(),
+        // A cartridge mirror is the master's bytes under another name.
+        output_sha256: dump.manifest.files[0].sha256.clone(),
+        output_size: title.len() as u64,
+        catalog_verified: true,
+        round_trip_verified: false,
+        tool: None,
+        omitted_features: Vec::new(),
+        canonical_intermediate: None,
+    };
+    std::fs::write(
+        evidence_dir.join(format!("build-{}.json", build.build_id)),
+        serde_json::to_vec_pretty(&build).unwrap(),
+    )
+    .unwrap();
+}
+
+/// The library on a machine that has never imported a DAT: the archive's own
+/// evidence still names the files, including builds recorded before outputs
+/// were filed under a platform directory.
+#[test]
+fn archive_evidence_names_library_rows_without_any_catalog() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Filed Game",
+        "Filed Game (USA)",
+        "nes/Filed Game.nes",
+        "nes/Filed Game.nes",
+    );
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Legacy Game",
+        "Legacy Game (USA)",
+        // Written before playable outputs carried a platform directory.
+        "Legacy Game.nes",
+        "nes/Legacy Game.nes",
+    );
+
+    let mut conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
+        [playable_root.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Nes','nes','/playable/nes','fp','ready')", []).unwrap();
+    for (id, title) in [(1, "Filed Game"), (2, "Legacy Game")] {
+        conn.execute(
+            "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status,data_size)
+             VALUES(?1,1,?2,?3,'{}','unrecognized',?4)",
+            rusqlite::params![
+                id,
+                format!("file:{title}.nes"),
+                format!("{title}.nes"),
+                title.len() as i64,
+            ],
+        )
+        .unwrap();
+    }
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let catalog_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(catalog_rows, 0, "the test must prove evidence stands alone");
+
+    // The legacy build recorded a bare file name; the projection must point at
+    // the file inside the platform directory, not at the directory itself.
+    let legacy: (String, String) = conn
+        .query_row(
+            "SELECT relative_path,presence_state FROM representations
+             WHERE role='playable' AND relative_path LIKE '%Legacy%'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        legacy,
+        ("nes/Legacy Game.nes".to_owned(), "present".to_owned())
+    );
+
+    let mut named: Vec<(i64, String, String, String)> = conn
+        .prepare("SELECT id,status,dat_game_name,dat_match_method FROM library_entries ORDER BY id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    named.sort_by_key(|row| row.0);
+    assert_eq!(
+        named,
+        vec![
+            (
+                1,
+                "matched".to_owned(),
+                "Filed Game (USA)".to_owned(),
+                "archive_evidence".to_owned()
+            ),
+            (
+                2,
+                "matched".to_owned(),
+                "Legacy Game (USA)".to_owned(),
+                "archive_evidence".to_owned()
+            ),
+        ]
+    );
+}
+
+/// A catalog verdict is a live comparison of the bytes on disk; recorded
+/// evidence must never overwrite it, and user tags stay untouched.
+#[test]
+fn archive_evidence_never_overwrites_a_catalog_verdict_or_a_tag() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Named Game",
+        "Named Game (USA)",
+        "nes/Named Game.nes",
+        "nes/Named Game.nes",
+    );
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Tagged Game",
+        "Tagged Game (USA)",
+        "nes/Tagged Game.nes",
+        "nes/Tagged Game.nes",
+    );
+
+    let mut conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
+        [playable_root.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Nes','nes','/playable/nes','fp','ready')", []).unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status,dat_game_name,dat_match_method)
+         VALUES(1,1,'file:Named Game.nes','Named Game.nes','{}','matched','Catalog Name','sha1')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status,tag)
+         VALUES(2,1,'file:Tagged Game.nes','Tagged Game.nes','{}','unrecognized','homebrew')",
+        [],
+    )
+    .unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let catalog_row: (String, String, String) = conn
+        .query_row(
+            "SELECT status,dat_game_name,dat_match_method FROM library_entries WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        catalog_row,
+        (
+            "matched".to_owned(),
+            "Catalog Name".to_owned(),
+            "sha1".to_owned()
+        )
+    );
+    let tagged_row: (String, String, String) = conn
+        .query_row(
+            "SELECT status,tag,dat_game_name FROM library_entries WHERE id=2",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        tagged_row,
+        (
+            "unrecognized".to_owned(),
+            "homebrew".to_owned(),
+            String::new()
+        )
+    );
+}
+
+/// Evidence that no longer describes the dump's current bytes is history, not
+/// a claim: a dump without a current catalog verification names nothing.
+#[test]
+fn stale_or_absent_catalog_evidence_names_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Stale Game",
+        "Stale Game (USA)",
+        "nes/Stale Game.nes",
+        "nes/Stale Game.nes",
+    );
+    // Rewrite the verification against a manifest hash the dump no longer has.
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
+    let verification_path = dump.verifications[0].path.clone();
+    let mut evidence = dump.verifications[0].evidence.clone();
+    evidence.input_manifest_sha256 = "0".repeat(64);
+    std::fs::write(
+        &verification_path,
+        serde_json::to_vec_pretty(&evidence).unwrap(),
+    )
+    .unwrap();
+
+    let mut conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
+        [playable_root.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Nes','nes','/playable/nes','fp','ready')", []).unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status)
+         VALUES(1,1,'file:Stale Game.nes','Stale Game.nes','{}','unrecognized')",
+        [],
+    )
+    .unwrap();
+
+    let stale_snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &stale_snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let row: (String, String) = conn
+        .query_row(
+            "SELECT status,dat_game_name FROM library_entries WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("unrecognized".to_owned(), String::new()));
+}
+
+/// Hashing writes a verdict computed from the catalog alone. On a machine with
+/// no catalog that verdict is "unrecognized", which must not erase the name the
+/// archive's evidence already established.
+#[test]
+fn hashing_without_a_catalog_does_not_erase_an_archive_evidence_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Hashed Game",
+        "Hashed Game (USA)",
+        "nes/Hashed Game.nes",
+        "nes/Hashed Game.nes",
+    );
+
+    let mut conn = open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
+        [playable_root.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Nes','nes','/playable/nes','fp','ready')", []).unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status)
+         VALUES(1,1,'file:Hashed Game.nes','Hashed Game.nes','{}','unrecognized')",
+        [],
+    )
+    .unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    retro_junk_db::apply_entry_hash_update(
+        &mut conn,
+        retro_junk_db::LibraryEntryId(1),
+        0,
+        &retro_junk_db::EntryHashUpdate {
+            status: "unrecognized".to_owned(),
+            crc32: "deadbeef".to_owned(),
+            sha1: "a".repeat(40),
+            md5: "b".repeat(32),
+            data_size: 11,
+            hash_warnings_json: None,
+            disc_verification: "not_applicable".to_owned(),
+            dat_game_name: String::new(),
+            dat_rom_name: String::new(),
+            dat_match_method: String::new(),
+            cover_title: String::new(),
+            screen_title: String::new(),
+            disc_identifications_json: None,
+            ambiguous_candidates_json: None,
+        },
+    )
+    .unwrap();
+
+    let row: (String, String, String, String) = conn
+        .query_row(
+            "SELECT status,dat_game_name,dat_match_method,crc32 FROM library_entries WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            "matched".to_owned(),
+            "Hashed Game (USA)".to_owned(),
+            "archive_evidence".to_owned(),
+            // The freshly computed hashes are still recorded.
+            "deadbeef".to_owned()
+        )
+    );
+}
+
+/// The archive recorded CRC32/MD5/SHA-1 when it ingested the master. A library
+/// row holding the same bytes should be filled from that record, not by reading
+/// the file again over the network.
+#[test]
+fn library_hashes_come_from_the_archive_instead_of_a_second_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Mirrored Game",
+        "Mirrored Game (USA)",
+        "nes/Mirrored Game.nes",
+        "nes/Mirrored Game.nes",
+    );
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    let archived = snapshot.releases[0].physical_copies[0].carriers[0].dumps[0]
+        .manifest
+        .files[0]
+        .clone();
+    assert!(
+        !archived.crc32.is_empty() && !archived.sha1.is_empty() && !archived.md5.is_empty(),
+        "ingest must record every catalog-relevant digest"
+    );
+
+    let mut conn = open_memory().unwrap();
+    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes')", []).unwrap();
+    conn.execute(
+        "INSERT INTO works(id,canonical_name) VALUES('work','Mirrored Game')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('release','work','nes','usa','Mirrored Game')", []).unwrap();
+    conn.execute(
+        "INSERT INTO media(id,release_id,dat_source,dat_name,rom_name,file_size,crc32,sha1,md5)
+         VALUES('media','release','no-intro','Mirrored Game (USA)','Mirrored Game (USA).nes',?1,?2,?3,?4)",
+        rusqlite::params![archived.size, archived.crc32, archived.sha1, archived.md5],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
+        [playable_root.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Nes','nes','/playable/nes','fp','ready')", []).unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status)
+         VALUES(1,1,'file:Mirrored Game.nes','Mirrored Game.nes','{}','unrecognized')",
+        [],
+    )
+    .unwrap();
+
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let row: (String, String, String, i64, String, String, String) = conn
+        .query_row(
+            "SELECT crc32,sha1,md5,data_size,hash_source,status,dat_game_name
+             FROM library_entries WHERE id=1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            archived.crc32.clone(),
+            archived.sha1.clone(),
+            archived.md5.clone(),
+            i64::try_from(archived.size).unwrap(),
+            "archive_evidence".to_owned(),
+            "matched".to_owned(),
+            "Mirrored Game (USA)".to_owned(),
+        )
+    );
+}
+
+/// Recorded digests are raw file hashes; the library hashes format-aware
+/// payloads. Adoption is therefore only safe when the catalog confirms the
+/// recorded digests describe a known dump — otherwise the row must stay empty
+/// so a real hash pass still reads it.
+#[test]
+fn hashes_are_not_adopted_when_the_catalog_does_not_confirm_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Headered Game",
+        "Headered Game (USA)",
+        "nes/Headered Game.nes",
+        "nes/Headered Game.nes",
+    );
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+
+    let mut conn = open_memory().unwrap();
+    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes')", []).unwrap();
+    conn.execute(
+        "INSERT INTO works(id,canonical_name) VALUES('work','Headered Game')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('release','work','nes','usa','Headered Game')", []).unwrap();
+    // The catalog knows only the header-stripped payload, so the archive's raw
+    // digests match nothing.
+    conn.execute(
+        "INSERT INTO media(id,release_id,dat_source,dat_name,file_size,crc32,sha1)
+         VALUES('media','release','no-intro','Headered Game (USA)',999,'ffffffff',?1)",
+        ["f".repeat(40)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
+        [playable_root.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Nes','nes','/playable/nes','fp','ready')", []).unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status)
+         VALUES(1,1,'file:Headered Game.nes','Headered Game.nes','{}','unrecognized')",
+        [],
+    )
+    .unwrap();
+
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let row: (String, String, String, String) = conn
+        .query_row(
+            "SELECT crc32,sha1,hash_source,dat_match_method FROM library_entries WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (
+            String::new(),
+            String::new(),
+            String::new(),
+            // Identity still comes from evidence; only the hash cache is left
+            // for a real read.
+            "archive_evidence".to_owned()
+        )
+    );
+}

@@ -14,6 +14,10 @@ pub enum MatchMethod {
     Crc32,
     /// Matched by SHA1 hash (definitive)
     Sha1,
+    /// Identified from portable archive evidence rather than a live catalog
+    /// comparison: an archived dump recorded which catalog game it verified
+    /// against, and this file is the playable build derived from that dump.
+    ArchiveEvidence,
 }
 
 /// Result of matching a file against the DAT index.
