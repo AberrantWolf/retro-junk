@@ -823,6 +823,10 @@ pub enum AppMessage {
     },
     /// Something resolved or created a reviewable item; reload the inbox.
     InboxChanged,
+    /// Result of a ScreenScraper "Test login" attempt.
+    ScraperLoginTested {
+        result: Result<String, String>,
+    },
     CollectionSummariesReady {
         profile_id: String,
         result: Result<Vec<retro_junk_db::ArchiveReleaseSummary>, String>,
@@ -2479,6 +2483,15 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             app.ui_state.inbox_dirty = true;
         }
 
+        AppMessage::ScraperLoginTested { result } => {
+            if let Some(account) = app.ui_state.scraper_account.as_mut() {
+                account.test = match result {
+                    Ok(summary) => LoginTest::Ok(summary),
+                    Err(error) => LoginTest::Failed(error),
+                };
+            }
+        }
+
         AppMessage::ChdCompressPromptReady { prompt } => {
             app.ui_state.chd_compress_prompt = Some(prompt);
         }
@@ -2734,4 +2747,41 @@ impl Default for DataToolsState {
             deduplication_report: None,
         }
     }
+}
+
+/// ScreenScraper account fields being edited in Settings, plus the state of
+/// the last login test.
+///
+/// The values start from whatever `Credentials::load` resolves, so the
+/// fields show what scraping would actually use — including a value coming
+/// from an environment variable rather than the config file.
+pub struct ScraperAccount {
+    pub user_id: String,
+    pub user_password: String,
+    pub test: LoginTest,
+}
+
+impl ScraperAccount {
+    #[must_use]
+    pub fn load() -> Self {
+        let credentials = retro_junk_scraper::Credentials::load().ok();
+        Self {
+            user_id: credentials
+                .as_ref()
+                .map(|credentials| credentials.user_id.clone())
+                .unwrap_or_default(),
+            user_password: credentials
+                .map(|credentials| credentials.user_password)
+                .unwrap_or_default(),
+            test: LoginTest::Idle,
+        }
+    }
+}
+
+/// Outcome of the most recent "Test login".
+pub enum LoginTest {
+    Idle,
+    Running,
+    Ok(String),
+    Failed(String),
 }

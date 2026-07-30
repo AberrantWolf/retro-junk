@@ -149,3 +149,29 @@ fn chdman_probe_runs_off_the_ui_thread() {
         crate::app::ChdmanProbe::Done { result: Err(_), .. }
     ));
 }
+
+/// Account entry has to reflect what scraping would actually use, not just
+/// what the config file holds: saving from a blank field when the value came
+/// from an environment variable would write an empty account over a working
+/// one.
+#[test]
+fn scraper_account_fields_start_from_resolved_credentials() {
+    let mut harness = settings_harness();
+    harness.run();
+
+    let account = harness
+        .state()
+        .ui_state
+        .scraper_account
+        .as_ref()
+        .expect("rendering the settings view must populate the account fields");
+    let resolved = retro_junk_scraper::Credentials::load().ok();
+    assert_eq!(
+        account.user_id,
+        resolved
+            .as_ref()
+            .map(|credentials| credentials.user_id.clone())
+            .unwrap_or_default()
+    );
+    harness.get_by_label("Test login");
+}

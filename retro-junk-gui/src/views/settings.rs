@@ -418,6 +418,9 @@ fn show_scraper_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.strong("ScreenScraper");
     ui.add_space(4.0);
 
+    show_scraper_account(ui, app);
+    ui.add_space(8.0);
+
     // Config file row
     let config_path = retro_junk_scraper::config_path();
     ui.horizontal(|ui| {
@@ -515,6 +518,144 @@ fn show_scraper_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     if open_info.is_some() {
         app.ui_state.credential_info_popup = open_info;
     }
+}
+
+/// Account entry and login test.
+///
+/// Everything below this in the section explains where credentials *come
+/// from*; this is the part a new user needs: type an account, press a
+/// button, find out whether scraping will work and how much of today's
+/// quota is left. Before it existed, a wrong password only surfaced as an
+/// error toast partway through a scrape run.
+fn show_scraper_account(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    let account = app
+        .ui_state
+        .scraper_account
+        .get_or_insert_with(crate::state::ScraperAccount::load);
+
+    ui.label("ScreenScraper account (optional, but raises your daily quota):");
+    egui::Grid::new("screenscraper_account")
+        .num_columns(2)
+        .spacing([8.0, 4.0])
+        .show(ui, |ui| {
+            ui.label("Username");
+            ui.add(
+                egui::TextEdit::singleline(&mut account.user_id)
+                    .desired_width(220.0)
+                    .hint_text("ScreenScraper username"),
+            );
+            ui.end_row();
+            ui.label("Password");
+            ui.add(
+                egui::TextEdit::singleline(&mut account.user_password)
+                    .desired_width(220.0)
+                    .password(true),
+            );
+            ui.end_row();
+        });
+
+    let mut save_requested = false;
+    let mut test_requested = false;
+    ui.horizontal(|ui| {
+        save_requested = ui
+            .button(crate::widgets::icons::labeled(
+                crate::widgets::icons::VERIFY,
+                "Save",
+            ))
+            .on_hover_text("Writes the account into the ScreenScraper config file")
+            .clicked();
+        let testing = matches!(account.test, crate::state::LoginTest::Running);
+        test_requested = ui
+            .add_enabled(!testing, egui::Button::new("Test login"))
+            .on_hover_text("Calls the ScreenScraper API and reports your quota")
+            .clicked();
+        if testing {
+            ui.spinner();
+        }
+        ui.hyperlink_to("Create a free account", "https://www.screenscraper.fr");
+    });
+
+    match &account.test {
+        // A test in flight is already shown by the spinner above.
+        crate::state::LoginTest::Idle | crate::state::LoginTest::Running => {}
+        crate::state::LoginTest::Ok(summary) => {
+            ui.colored_label(STATUS_OK, summary);
+        }
+        crate::state::LoginTest::Failed(error) => {
+            ui.colored_label(STATUS_ERR, error);
+        }
+    }
+
+    if save_requested {
+        save_scraper_account(app);
+    }
+    if test_requested {
+        test_scraper_login(app, ui.ctx());
+    }
+}
+
+fn save_scraper_account(app: &mut RetroJunkApp) {
+    let Some(account) = app.ui_state.scraper_account.as_ref() else {
+        return;
+    };
+    let (user_id, user_password) = (account.user_id.clone(), account.user_password.clone());
+    // `save_to_file` writes the whole `[screenscraper]` table, so start from
+    // what would be loaded today and change only the account fields.
+    let result = retro_junk_scraper::Credentials::load().and_then(|credentials| {
+        retro_junk_scraper::save_to_file(&retro_junk_scraper::Credentials {
+            user_id,
+            user_password,
+            ..credentials
+        })
+    });
+    match result {
+        Ok(path) => {
+            log::info!("Saved ScreenScraper account to {}", path.display());
+            app.notify("Saved ScreenScraper account");
+            // Provenance changed underneath the cached snapshot.
+            app.ui_state.credential_status = None;
+        }
+        Err(error) => app.push_error("ScreenScraper account", error.to_string()),
+    }
+}
+
+fn test_scraper_login(app: &mut RetroJunkApp, ctx: &egui::Context) {
+    let Some(account) = app.ui_state.scraper_account.as_mut() else {
+        return;
+    };
+    let (user_id, user_password) = (account.user_id.clone(), account.user_password.clone());
+    account.test = crate::state::LoginTest::Running;
+    let sender = app.message_tx.clone();
+    let repaint = ctx.clone();
+    std::thread::spawn(move || {
+        // The unsaved field values are what the user is testing, so they
+        // override whatever the config file currently holds.
+        let result = retro_junk_scraper::Credentials::load()
+            .map(|credentials| retro_junk_scraper::Credentials {
+                user_id,
+                user_password,
+                ..credentials
+            })
+            .and_then(|credentials| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| retro_junk_scraper::ScrapeError::Config(error.to_string()))?
+                    .block_on(retro_junk_scraper::ScreenScraperClient::new(credentials))
+            })
+            .map(|(_, info)| {
+                format!(
+                    "Signed in: {} of {} requests used today, {} threads, {} requests/minute",
+                    info.requests_today(),
+                    info.max_requests_per_day(),
+                    info.max_threads(),
+                    info.max_requests_per_minute(),
+                )
+            })
+            .map_err(|error| error.to_string());
+        let _ = sender.send(crate::state::AppMessage::ScraperLoginTested { result });
+        repaint.request_repaint();
+    });
 }
 
 /// Modal explaining one credential field: what it is for and where to get it.

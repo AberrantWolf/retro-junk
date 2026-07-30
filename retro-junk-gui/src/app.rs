@@ -101,6 +101,8 @@ pub struct UiState {
     pub chdman_probe: ChdmanProbe,
     /// Cached ScreenScraper credential provenance for the Settings view.
     pub credential_status: Option<(std::time::Instant, retro_junk_scraper::CredentialSources)>,
+    /// Account fields and login-test state for Settings; loaded on first show.
+    pub scraper_account: Option<crate::state::ScraperAccount>,
     /// Credential field whose explanation popup is open, if any.
     pub credential_info_popup: Option<&'static retro_junk_scraper::CredentialFieldMeta>,
     /// True while the initial cache load is in flight on startup.
@@ -195,6 +197,7 @@ impl Default for UiState {
             chd_compress_prompt: None,
             chdman_probe: ChdmanProbe::Idle,
             credential_status: None,
+            scraper_account: None,
             credential_info_popup: None,
             loading_library: false,
             startup_status: None,
