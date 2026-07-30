@@ -1,8 +1,10 @@
 //! Network-friendly local staging and single-pass content hashing.
 
 pub mod mount;
+pub mod process;
 
 pub use mount::{RemoteMountKind, remote_mount_kind};
+pub use process::process_alive;
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};

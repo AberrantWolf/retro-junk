@@ -1451,6 +1451,8 @@ mod tests {
             workspace_root: temp.path().join("workspace"),
             network_mode: true,
             platform_defaults: Vec::new(),
+            incoming_roots: Vec::new(),
+            watch_backend: retro_junk_archive::WatchBackend::default(),
         };
         let snapshot = retro_junk_archive::scan_archive(&archive_root).unwrap();
         let cancel = AtomicBool::new(false);

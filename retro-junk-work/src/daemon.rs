@@ -342,19 +342,9 @@ pub fn install_signal_handlers(_cancel: &Arc<AtomicBool>) {
 }
 
 /// Whether a recorded PID refers to a live process (same-host check).
-#[cfg(unix)]
+/// Unknown liveness (non-Unix hosts) reads as "not running" so daemon
+/// commands report honestly rather than claiming a daemon exists.
 #[must_use]
 pub fn process_alive(pid: i32) -> bool {
-    use std::os::raw::c_int;
-    unsafe extern "C" {
-        fn kill(pid: c_int, sig: c_int) -> c_int;
-    }
-    // SAFETY: signal 0 performs error checking only; it sends nothing.
-    unsafe { kill(pid, 0) == 0 }
-}
-
-#[cfg(not(unix))]
-#[must_use]
-pub fn process_alive(_pid: i32) -> bool {
-    false
+    retro_junk_io::process_alive(pid).unwrap_or(false)
 }

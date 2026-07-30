@@ -85,6 +85,8 @@ fn collection_row_opens_resizable_details_with_log_viewer_open() {
         workspace_root: workspace_root.clone(),
         network_mode: true,
         platform_defaults: Vec::new(),
+        incoming_roots: Vec::new(),
+        watch_backend: retro_junk_archive::WatchBackend::default(),
     };
     let mut settings = crate::settings::AppSettings::default();
     settings.library.current_profile = Some(profile.profile_id);

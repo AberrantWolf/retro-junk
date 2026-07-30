@@ -2,6 +2,10 @@
 
 ## Bugs
 
+- [ ] **Cross-host archive lock on SMB could use share-mode locks.** The archive lock (2026-07-30 rework) uses kernel-enforced OS locks where the filesystem honors them and falls back to the existence+PID+age protocol elsewhere. On macOS smbfs, `flock` silently enforces nothing (verified empirically), so SMB shares always use the fallback — same-host crashes recover instantly via the PID probe, but a *different host's* crashed holder still waits out the 24h age rule. macOS `O_EXLOCK`/`O_SHLOCK` open flags map to SMB share-mode (deny) locks enforced server-side, which would give real cross-host exclusion and server-side crash release; needs `OpenOptionsExt::custom_flags` + libc and a Linux-cifs interop check.
+
+- [ ] **Schema open path trusts the version stamp.** `open_database` decides "migrated" purely from `schema_version`, so a database whose tables don't match the stamped version (e.g. one written by the pre-rebase divergent branch, which used the same version numbers for a different layout) opens "successfully" and fails later with `no such column` at query time. Add a cheap structural sanity probe on open (e.g. `SELECT scan_state FROM library_consoles LIMIT 0` for a sentinel column per recent version) that produces a clear "incompatible database, delete or restore" error instead. Also note `ensure_catalog_database_location` re-copies the legacy cache DB (`~/Library/Caches/retro-junk/dats/catalog.db`) whenever the target is missing — deleting a bad `catalog.db` silently resurrects an equally old one; the legacy file should probably be renamed once migrated instead of retained under its live name. (Diagnosed 2026-07-30.)
+
 
 ## Features
 

@@ -28,6 +28,82 @@ fn archive_lock_is_exclusive_and_released_on_drop() {
     crate::ArchiveLock::acquire(&root).unwrap();
 }
 
+/// Regression: a crashed holder's existence-lock (old binaries, or the
+/// no-advisory-lock fallback) used to wedge the archive for 24 hours on
+/// macOS. A demonstrably dead PID must be reclaimed immediately.
+#[cfg(unix)]
+#[test]
+fn archive_lock_reclaims_a_lock_left_by_a_dead_process() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    initialize_archive(&root, &ArchiveRootManifest::new("Dead holder test")).unwrap();
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    let dead_pid = child.id();
+    std::fs::write(
+        root.join(".retro-junk/archive.lock"),
+        format!("pid={dead_pid} started_at=2026-07-29T12:28:08.272960+00:00\n"),
+    )
+    .unwrap();
+    crate::ArchiveLock::acquire(&root).unwrap();
+}
+
+/// A live existence-holder (a process that acquired on a filesystem without
+/// advisory locks, or an older binary) must not have its lock stolen just
+/// because the OS lock on the file is free.
+#[cfg(unix)]
+#[test]
+fn archive_lock_respects_a_live_existence_holder() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    initialize_archive(&root, &ArchiveRootManifest::new("Live holder test")).unwrap();
+    std::fs::write(
+        root.join(".retro-junk/archive.lock"),
+        format!(
+            "pid={} started_at=2026-07-30T00:00:00+00:00\n",
+            std::process::id()
+        ),
+    )
+    .unwrap();
+    assert!(matches!(
+        crate::ArchiveLock::acquire(&root),
+        Err(crate::ArchiveLockError::Busy(_))
+    ));
+}
+
+/// Diagnostics left behind by an OS-mode holder that crashed (its lock was
+/// released by the kernel) must never block a new acquisition.
+#[test]
+fn archive_lock_ignores_crash_leftover_os_diagnostics() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    initialize_archive(&root, &ArchiveRootManifest::new("Leftover test")).unwrap();
+    std::fs::write(
+        root.join(".retro-junk/archive.lock"),
+        "mode=os pid=999999999 started_at=2026-07-29T12:00:00+00:00\n",
+    )
+    .unwrap();
+    crate::ArchiveLock::acquire(&root).unwrap();
+}
+
+/// An empty lock file records no claim, but it may be a legacy acquisition
+/// mid-write: it must only count as stale once old enough to rule that out.
+#[test]
+fn empty_lock_file_is_stale_only_after_the_write_window() {
+    let temp = tempfile::tempdir().unwrap();
+    let lock_path = temp.path().join("archive.lock");
+    std::fs::write(&lock_path, "").unwrap();
+    assert!(!crate::lock::lock_is_stale(&lock_path));
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&lock_path)
+        .unwrap();
+    let backdated = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    file.set_times(std::fs::FileTimes::new().set_modified(backdated))
+        .unwrap();
+    assert!(crate::lock::lock_is_stale(&lock_path));
+}
+
 #[test]
 fn archive_lock_waits_for_the_current_writer() {
     let temp = tempfile::tempdir().unwrap();
