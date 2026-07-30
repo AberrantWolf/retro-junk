@@ -413,7 +413,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.add_space(4.0);
             ui.separator();
             ui.label(
-                egui::RichText::new("\u{26a0} Broken References")
+                egui::RichText::new(crate::widgets::icons::labeled(
+                    crate::widgets::icons::WARNING,
+                    "Broken References",
+                ))
                     .strong()
                     .color(STATUS_WARN_STRONG),
             );
@@ -449,9 +452,12 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.add_space(4.0);
             ui.separator();
             let header = if has_unfixable {
-                "\u{26a0} CUE Sheet Compatibility (requires re-dump)"
+                crate::widgets::icons::labeled(
+                    crate::widgets::icons::WARNING,
+                    "CUE Sheet Compatibility (requires re-dump)",
+                )
             } else {
-                "\u{26a0} CUE Sheet Compatibility"
+                crate::widgets::icons::labeled(crate::widgets::icons::WARNING, "CUE Sheet Compatibility")
             };
             ui.label(
                 egui::RichText::new(header)
@@ -1269,8 +1275,11 @@ fn warning_note(ui: &mut egui::Ui, indent: f32, text: &str) {
     note(
         ui,
         indent,
-        egui::RichText::new(format!("\u{26a0} {text}"))
-            .small()
-            .color(STATUS_WARN),
+        egui::RichText::new(crate::widgets::icons::labeled(
+            crate::widgets::icons::WARNING,
+            text,
+        ))
+        .small()
+        .color(STATUS_WARN),
     );
 }

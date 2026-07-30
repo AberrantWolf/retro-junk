@@ -1,4 +1,11 @@
-//! Font configuration for egui: UI symbol coverage + full CJK fallback.
+//! Font configuration for egui: icons, UI symbol coverage, full CJK fallback.
+//!
+//! # Icons (always installed)
+//!
+//! The Phosphor icon font backs [`crate::widgets::icons`]. It is registered
+//! as a fallback on both families so an icon constant renders inline with
+//! ordinary text without callers switching `FontFamily`. Its glyphs live in
+//! the Private Use Area, so it never shadows a real character.
 //!
 //! # Symbols (always installed)
 //!
@@ -39,6 +46,8 @@ const CJK_FONT_DATA: &[u8] = include_bytes!("../fonts/NotoSansCJKjp-Regular.otf"
 /// Install the app's font stack: egui defaults + Noto symbol and CJK fonts.
 pub fn configure_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
+
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
 
     fonts.font_data.insert(
         "noto_sans_symbols2".to_owned(),

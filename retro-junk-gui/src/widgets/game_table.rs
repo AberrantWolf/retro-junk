@@ -9,6 +9,7 @@ use crate::app::RetroJunkApp;
 use crate::backend;
 use crate::state::{AssetStatus, EntryStatus, FocusedPanel, TagDialog};
 use crate::util;
+use crate::widgets::icons;
 use crate::widgets::keyboard_nav;
 use crate::widgets::status_badge;
 
@@ -493,13 +494,13 @@ fn show_status_cell(ui: &mut egui::Ui, data: &RowData) {
     );
     let mut tip = data.status.tooltip().to_string();
     if data.has_broken_refs {
-        tip.push_str("\n\u{26a0} Broken file references");
+        let _ = write!(tip, "\n{} Broken file references", icons::WARNING);
     }
     if data.has_hash_warnings {
-        tip.push_str("\n\u{26a0} Hash warnings (see detail panel)");
+        let _ = write!(tip, "\n{} Hash warnings (see detail panel)", icons::WARNING);
     }
     if data.has_cue_compat_issues {
-        tip.push_str("\n\u{26a0} Non-standard CUE sheet format");
+        let _ = write!(tip, "\n{} Non-standard CUE sheet format", icons::WARNING);
     }
     match data.asset_status {
         AssetStatus::Unknown => {}
@@ -550,16 +551,22 @@ fn show_row_context_menu(
         ui.label("Loading entry details…");
         return;
     };
-    if ui.button("Rescan").clicked() {
+    if ui.button(icons::labeled(icons::RESCAN, "Rescan")).clicked() {
         backend::scan::rescan_selected_entries(app, console_idx, ctx);
         ui.close();
     }
 
-    if ui.button("Calculate Missing Hashes").clicked() {
+    if ui
+        .button(icons::labeled(icons::HASH, "Calculate Missing Hashes"))
+        .clicked()
+    {
         backend::hash::compute_hashes_for_selection(app, console_idx);
         ui.close();
     }
-    if ui.button("Recalculate Hashes").clicked() {
+    if ui
+        .button(icons::labeled(icons::HASH, "Recalculate Hashes"))
+        .clicked()
+    {
         backend::hash::recompute_hashes_for_selection(app, console_idx);
         ui.close();
     }
@@ -598,23 +605,35 @@ fn show_row_context_menu(
 
         if any_has_media && all_have_all_media {
             // All entries have complete media
-            if ui.button("Re-scrape Media").clicked() {
+            if ui
+                .button(icons::labeled(icons::SCRAPE, "Re-scrape Media"))
+                .clicked()
+            {
                 backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
                 ui.close();
             }
         } else if any_has_media {
             // Some entries have partial media
-            if ui.button("Scrape All Media").clicked() {
+            if ui
+                .button(icons::labeled(icons::SCRAPE, "Scrape All Media"))
+                .clicked()
+            {
                 backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
                 ui.close();
             }
-            if ui.button("Scrape Missing Media").clicked() {
+            if ui
+                .button(icons::labeled(icons::SCRAPE, "Scrape Missing Media"))
+                .clicked()
+            {
                 backend::assets::scrape_missing_media_for_selection(app, console_idx, ctx);
                 ui.close();
             }
         } else {
             // No entry has any media
-            if ui.button("Scrape Media").clicked() {
+            if ui
+                .button(icons::labeled(icons::SCRAPE, "Scrape Media"))
+                .clicked()
+            {
                 backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
                 ui.close();
             }
@@ -627,7 +646,7 @@ fn show_row_context_menu(
             } else {
                 "Generate Miximages"
             };
-            if ui.button(label).clicked() {
+            if ui.button(icons::labeled(icons::MIXIMAGE, label)).clicked() {
                 backend::assets::regenerate_miximages_for_selection(app, console_idx, ctx);
                 ui.close();
             }
@@ -638,7 +657,10 @@ fn show_row_context_menu(
     // evidence. Mutating their names/layout through ordinary library tools
     // would stale that evidence; use the release-level build action instead.
     if data.archive_release_id.is_none() {
-        if ui.button("Auto Rename").clicked() {
+        if ui
+            .button(icons::labeled(icons::RENAME, "Auto Rename"))
+            .clicked()
+        {
             backend::rename::rename_selected_entries(app, console_idx, ctx);
             ui.close();
         }
@@ -651,7 +673,11 @@ fn show_row_context_menu(
                     .entry_by_id(i)
                     .is_some_and(super::super::state::LibraryEntry::has_cue_compat_issues)
             });
-            if has_cue_issues && ui.button("Fix CUE Sheet").clicked() {
+            if has_cue_issues
+                && ui
+                    .button(icons::labeled(icons::FIX_CUE, "Fix CUE Sheet"))
+                    .clicked()
+            {
                 backend::fix_cue::fix_cue_for_selection(app, console_idx, ctx);
                 ui.close();
             }
@@ -663,7 +689,10 @@ fn show_row_context_menu(
         if backend::chd_compress::console_supports_chd(app, console_idx) {
             let busy = app.chd_compress_busy(&app.browser.consoles[console_idx].folder_name);
             let button = ui
-                .add_enabled(!busy, egui::Button::new("Compress to CHD…"))
+                .add_enabled(
+                    !busy,
+                    egui::Button::new(icons::labeled(icons::COMPRESS, "Compress to CHD…")),
+                )
                 .on_disabled_hover_text("A CHD compression is already running for this console");
             if button.clicked() {
                 let selection = app.selected_entry_indices();
@@ -683,14 +712,20 @@ fn show_row_context_menu(
 
     ui.separator();
 
-    if ui.button(util::REVEAL_LABEL).clicked() {
+    if ui
+        .button(icons::labeled(icons::REVEAL, util::REVEAL_LABEL))
+        .clicked()
+    {
         util::reveal_in_file_manager(file_path);
         ui.close();
     }
 
     ui.separator();
 
-    if ui.button("Copy File Path").clicked() {
+    if ui
+        .button(icons::labeled(icons::COPY, "Copy File Path"))
+        .clicked()
+    {
         let paths = collect_selected_field(app, console_idx, |entry| {
             Some(entry.game_entry.analysis_path().display().to_string())
         });
@@ -704,7 +739,10 @@ fn show_row_context_menu(
             .is_some_and(|id| !id.serial_number.is_empty())
     });
     if ui
-        .add_enabled(has_serial, egui::Button::new("Copy Serial"))
+        .add_enabled(
+            has_serial,
+            egui::Button::new(icons::labeled(icons::COPY, "Copy Serial")),
+        )
         .clicked()
     {
         let serials = collect_selected_field(app, console_idx, |entry| {
@@ -724,7 +762,10 @@ fn show_row_context_menu(
             .is_some()
     });
     if ui
-        .add_enabled(has_crc32, egui::Button::new("Copy CRC32"))
+        .add_enabled(
+            has_crc32,
+            egui::Button::new(icons::labeled(icons::COPY, "Copy CRC32")),
+        )
         .clicked()
     {
         let crcs = collect_selected_field(app, console_idx, |entry| {
@@ -741,7 +782,10 @@ fn show_row_context_menu(
                 .is_some()
         });
     if ui
-        .add_enabled(has_dat, egui::Button::new("Copy DAT Name"))
+        .add_enabled(
+            has_dat,
+            egui::Button::new(icons::labeled(icons::COPY, "Copy DAT Name")),
+        )
         .clicked()
     {
         let dat_names = collect_selected_field(app, console_idx, |entry| {
@@ -761,14 +805,17 @@ fn show_archive_context_menu(
     let scrape = ui
         .add_enabled(
             release.scrape_identity.is_some(),
-            egui::Button::new("Scrape Missing Artwork"),
+            egui::Button::new(icons::labeled(icons::SCRAPE, "Scrape Missing Artwork")),
         )
         .on_disabled_hover_text("This release has no reliable catalog scraper identity");
     if scrape.clicked() {
         backend::assets::scrape_missing_artwork_for_selection(app, console_idx, ctx);
         ui.close();
     }
-    if ui.button("Generate Miximage").clicked() {
+    if ui
+        .button(icons::labeled(icons::MIXIMAGE, "Generate Miximage"))
+        .clicked()
+    {
         backend::assets::regenerate_miximages_for_selection(app, console_idx, ctx);
         ui.close();
     }
@@ -793,7 +840,7 @@ fn show_archive_context_menu(
     let restore = ui
         .add_enabled(
             has_frontend_target && !release.archived_assets.is_empty(),
-            egui::Button::new("Restore Archived Media"),
+            egui::Button::new(icons::labeled(icons::SCRAPE, "Restore Archived Media")),
         )
         .on_disabled_hover_text(if release.archived_assets.is_empty() {
             "This release has no archived media"
@@ -816,14 +863,14 @@ fn show_archive_context_menu(
             .carriers
             .iter()
             .any(|carrier| !carrier.catalog_verified);
-        let label = if action.needs_playlist && !action.needs_playable {
-            "Create Multi-disc Playlist"
+        let (icon, label) = if action.needs_playlist && !action.needs_playable {
+            (icons::BUILD_PLAYABLE, "Create Multi-disc Playlist")
         } else if !action.needs_playable {
-            "Verify Archive"
+            (icons::VERIFY, "Verify Archive")
         } else if needs_verification && !action.allow_unverified {
-            "Verify & Make Playable"
+            (icons::VERIFY, "Verify & Make Playable")
         } else {
-            "Make Playable"
+            (icons::BUILD_PLAYABLE, "Make Playable")
         };
         let format = action
             .preferred_format
@@ -835,7 +882,7 @@ fn show_archive_context_menu(
         let build = ui
             .add_enabled(
                 action.buildable && format.is_some(),
-                egui::Button::new(label),
+                egui::Button::new(icons::labeled(icon, label)),
             )
             .on_disabled_hover_text(
                 if action.preferred_format.is_none() && action.needs_playable {
@@ -898,7 +945,7 @@ fn show_multi_row_context_menu(
     if ui
         .add_enabled(
             scrape_ready,
-            egui::Button::new("Scrape Only Missing Artwork"),
+            egui::Button::new(icons::labeled(icons::SCRAPE, "Scrape Only Missing Artwork")),
         )
         .clicked()
     {
@@ -906,7 +953,10 @@ fn show_multi_row_context_menu(
         ui.close();
     }
     if ui
-        .add_enabled(details_ready, egui::Button::new("Generate Miximages"))
+        .add_enabled(
+            details_ready,
+            egui::Button::new(icons::labeled(icons::MIXIMAGE, "Generate Miximages")),
+        )
         .clicked()
     {
         backend::assets::regenerate_miximages_for_selection(app, console_idx, ctx);
@@ -916,21 +966,30 @@ fn show_multi_row_context_menu(
     if !app.ui_state.selected_entries.is_empty() {
         ui.separator();
         if ui
-            .add_enabled(details_ready, egui::Button::new("Rescan"))
+            .add_enabled(
+                details_ready,
+                egui::Button::new(icons::labeled(icons::RESCAN, "Rescan")),
+            )
             .clicked()
         {
             backend::scan::rescan_selected_entries(app, console_idx, ctx);
             ui.close();
         }
         if ui
-            .add_enabled(details_ready, egui::Button::new("Calculate Missing Hashes"))
+            .add_enabled(
+                details_ready,
+                egui::Button::new(icons::labeled(icons::HASH, "Calculate Missing Hashes")),
+            )
             .clicked()
         {
             backend::hash::compute_hashes_for_selection(app, console_idx);
             ui.close();
         }
         if ui
-            .add_enabled(details_ready, egui::Button::new("Recalculate Hashes"))
+            .add_enabled(
+                details_ready,
+                egui::Button::new(icons::labeled(icons::HASH, "Recalculate Hashes")),
+            )
             .clicked()
         {
             backend::hash::recompute_hashes_for_selection(app, console_idx);
@@ -955,15 +1014,15 @@ fn show_multi_row_context_menu(
                 .iter()
                 .any(|carrier| !carrier.catalog_verified)
         });
-        let label = if !needs_playable {
-            "Verify Selected Archives"
+        let (icon, label) = if !needs_playable {
+            (icons::VERIFY, "Verify Selected Archives")
         } else if needs_verification {
-            "Verify & Make Selected Playable"
+            (icons::VERIFY, "Verify & Make Selected Playable")
         } else {
-            "Make Selected Playable"
+            (icons::BUILD_PLAYABLE, "Make Selected Playable")
         };
         if ui
-            .add_enabled(ready, egui::Button::new(label))
+            .add_enabled(ready, egui::Button::new(icons::labeled(icon, label)))
             .on_disabled_hover_text(
                 "Every selected archive must be complete and have a preferred playable format",
             )
@@ -1020,7 +1079,7 @@ fn show_set_region_submenu(ui: &mut egui::Ui, app: &mut RetroJunkApp, console_id
     }
     let recommended = recommended.unwrap_or_default();
 
-    ui.menu_button("Set Region", |ui| {
+    ui.menu_button(icons::labeled(icons::REGION, "Set Region"), |ui| {
         if ui.button("Auto-detect").clicked() {
             let ids: Vec<_> = app.ui_state.selected_entries.iter().copied().collect();
             app.set_entry_regions(ids, None, ui.ctx());
@@ -1483,7 +1542,10 @@ fn show_tag_menu_items(
     match effective {
         EntryStatus::Unrecognized => {
             ui.separator();
-            if ui.button("Mark as Homebrew\u{2026}").clicked() {
+            if ui
+                .button(icons::labeled(icons::TAG, "Mark as Homebrew\u{2026}"))
+                .clicked()
+            {
                 // Pre-fill with cleaned filename
                 let name = entry.game_entry.display_name().to_string();
                 app.ui_state.tag_dialog = TagDialog::Homebrew {
@@ -1493,7 +1555,13 @@ fn show_tag_menu_items(
                 };
                 ui.close();
             }
-            if ui.button("Mark as Modded Version of\u{2026}").clicked() {
+            if ui
+                .button(icons::labeled(
+                    icons::TAG,
+                    "Mark as Modded Version of\u{2026}",
+                ))
+                .clicked()
+            {
                 app.ui_state.tag_dialog = TagDialog::ModSearch {
                     query: String::new(),
                     results: Vec::new(),
@@ -1509,14 +1577,23 @@ fn show_tag_menu_items(
         }
         EntryStatus::Tagged(_) => {
             ui.separator();
-            if ui.button("Remove Tag").clicked() {
+            if ui
+                .button(icons::labeled(icons::TAG, "Remove Tag"))
+                .clicked()
+            {
                 app.set_entry_tags([entry_id], None, ui.ctx());
                 ui.close();
             }
         }
         _ => {
             ui.separator();
-            if ui.button("Mark as Modded Version of\u{2026}").clicked() {
+            if ui
+                .button(icons::labeled(
+                    icons::TAG,
+                    "Mark as Modded Version of\u{2026}",
+                ))
+                .clicked()
+            {
                 app.ui_state.tag_dialog = TagDialog::ModSearch {
                     query: String::new(),
                     results: Vec::new(),

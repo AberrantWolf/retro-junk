@@ -115,8 +115,9 @@ pub fn open_compress_dialog(app: &mut RetroJunkApp, console_idx: usize, entry_in
                             // the confirmation dialog doesn't re-derive
                             // filename strings and byte formatting every frame.
                             let display_line = format!(
-                                "{input_name} ({}) \u{2192} {output_name}",
-                                format_bytes_approx(job.input_bytes)
+                                "{input_name} ({}) {} {output_name}",
+                                format_bytes_approx(job.input_bytes),
+                                crate::widgets::icons::ARROW_RIGHT
                             );
                             ChdCompressItem { job, display_line }
                         })

@@ -47,6 +47,7 @@ futures.workspace = true
 env_logger.workspace = true
 muda = "0.19"
 egui_table = "0.9"
+egui-phosphor = "0.13"
 
 [dev-dependencies]
 egui_kittest = { version = "0.35", features = ["eframe"] }

@@ -90,7 +90,10 @@ impl Toasts {
                         .show(ui, |ui| {
                             ui.set_max_width(340.0);
                             ui.horizontal(|ui| {
-                                ui.colored_label(crate::theme::STATUS_OK, "\u{2713}");
+                                ui.colored_label(
+                                    crate::theme::STATUS_OK,
+                                    crate::widgets::icons::SUCCESS,
+                                );
                                 ui.label(&item.message);
                             });
                         });

@@ -1473,10 +1473,23 @@ impl eframe::App for RetroJunkApp {
                 ui.add_space(4.0);
 
                 let view = &mut self.ui_state.current_view;
-                ui.selectable_value(view, View::Collection, "Collection");
-                ui.selectable_value(view, View::Library, "Library");
-                ui.selectable_value(view, View::Settings, "Settings");
-                ui.selectable_value(view, View::Tools, "Tools");
+                use widgets::icons;
+                ui.selectable_value(
+                    view,
+                    View::Collection,
+                    icons::labeled(icons::COLLECTION, "Collection"),
+                );
+                ui.selectable_value(
+                    view,
+                    View::Library,
+                    icons::labeled(icons::LIBRARY, "Library"),
+                );
+                ui.selectable_value(
+                    view,
+                    View::Settings,
+                    icons::labeled(icons::SETTINGS, "Settings"),
+                );
+                ui.selectable_value(view, View::Tools, icons::labeled(icons::TOOLS, "Tools"));
             });
 
         // Trigger refresh when switching to Tools view
@@ -1720,7 +1733,7 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 .show(ui, |ui| {
                     for job in &plan.jobs {
                         ui.horizontal(|ui| {
-                            ui.colored_label(crate::theme::STATUS_OK, "\u{2192}");
+                            ui.colored_label(crate::theme::STATUS_OK, widgets::icons::ARROW_RIGHT);
                             ui.label(format!(
                                 "{}.m3u ({} discs)",
                                 job.game_name,
@@ -1741,7 +1754,10 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                         for uf in &plan.unmatched {
                             let name = uf.path.file_name().unwrap_or_default().to_string_lossy();
                             ui.horizontal(|ui| {
-                                ui.colored_label(crate::theme::STATUS_WARN, "\u{26A0}");
+                                ui.colored_label(
+                                    crate::theme::STATUS_WARN,
+                                    widgets::icons::WARNING,
+                                );
                                 ui.label(format!("{} \u{2014} {}", name, uf.reason));
                             });
                         }

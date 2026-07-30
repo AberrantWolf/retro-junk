@@ -1,6 +1,7 @@
 use crate::app::RetroJunkApp;
 use crate::backend;
 use crate::widgets;
+use crate::widgets::icons;
 
 fn same_platform(left: &str, right: &str) -> bool {
     if left.eq_ignore_ascii_case(right) {
@@ -34,7 +35,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             ui.add_space(4.0);
 
             // Open folder button at top of tree
-            if ui.button("Open Folder...").clicked() {
+            if ui
+                .button(icons::labeled(icons::OPEN_FOLDER, "Open Folder\u{2026}"))
+                .clicked()
+            {
                 open_folder(app, ctx);
             }
             ui.separator();
@@ -86,7 +90,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         ui.horizontal(|ui| {
             let filter_response = ui.add(
                 egui::TextEdit::singleline(&mut app.ui_state.filter_text)
-                    .hint_text("Filter...")
+                    .hint_text(icons::labeled(icons::FILTER, "Filter"))
                     .id(egui::Id::new("library_filter"))
                     .desired_width(200.0),
             );
@@ -166,7 +170,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             let hash_button = ui
                 .add_enabled(
                     selection_ready,
-                    egui::Button::new("Calculate Missing Hashes"),
+                    egui::Button::new(icons::labeled(icons::HASH, "Calculate Missing Hashes")),
                 )
                 .on_disabled_hover_text(if has_selection {
                     "Loading the selected entry details…"
@@ -188,7 +192,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             } else {
                 "Show Detail"
             };
-            if ui.button(label).clicked() {
+            if ui
+                .button(icons::labeled(icons::DETAIL_PANEL, label))
+                .clicked()
+            {
                 app.ui_state.detail_panel_open = !app.ui_state.detail_panel_open;
             }
         });
@@ -330,7 +337,10 @@ fn show_welcome(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) 
             "The folder should contain subfolders named after consoles (e.g., snes, n64, ps1).",
         );
         ui.add_space(16.0);
-        if ui.button("Open Folder...").clicked() {
+        if ui
+            .button(icons::labeled(icons::OPEN_FOLDER, "Open Folder\u{2026}"))
+            .clicked()
+        {
             open_folder(app, ctx);
         }
 

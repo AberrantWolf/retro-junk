@@ -25,10 +25,11 @@ fn first_launch_shows_sidebar_and_welcome() {
     let mut harness = harness();
     harness.run();
 
-    // Sidebar navigation entries
-    harness.get_by_label("Library");
-    harness.get_by_label("Settings");
-    harness.get_by_label("Tools");
+    // Sidebar navigation entries (icon + label, per `widgets::icons`)
+    use crate::widgets::icons;
+    harness.get_by_label(&icons::labeled(icons::LIBRARY, "Library"));
+    harness.get_by_label(&icons::labeled(icons::SETTINGS, "Settings"));
+    harness.get_by_label(&icons::labeled(icons::TOOLS, "Tools"));
 
     // No library root configured yet, so the welcome screen shows
     harness.get_by_label("retro-junk Library Manager");
@@ -62,7 +63,7 @@ fn sidebar_click_switches_to_settings_view() {
     let mut harness = harness();
     harness.run();
 
-    harness.get_by_label("Settings").click();
+    harness.get_by_label_contains("Settings").click();
     harness.run();
 
     assert_eq!(harness.state().ui_state.current_view, View::Settings);
@@ -415,7 +416,7 @@ fn tools_data_tab_renders_operation_cards() {
     harness.run();
 
     // Navigate to Tools, then the Data tab.
-    harness.get_by_label("Tools").click();
+    harness.get_by_label_contains("Tools").click();
     harness.run();
     harness.get_by_label("Data").click();
     harness.run();

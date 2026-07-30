@@ -5,6 +5,7 @@ pub mod detail_panel;
 pub mod error_dialog;
 pub mod fragile_mount_dialog;
 pub mod game_table;
+pub mod icons;
 pub mod keyboard_nav;
 pub mod log_viewer;
 pub mod modal;
