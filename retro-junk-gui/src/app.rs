@@ -170,6 +170,13 @@ pub struct UiState {
     pub dirty_tick: Option<i64>,
     /// When the tick was last read, throttling the poll to ~1 Hz.
     pub last_dirty_poll: Option<std::time::Instant>,
+    /// Loaded review-inbox contents.
+    pub inbox: crate::backend::inbox::InboxContents,
+    /// True while an inbox load is in flight.
+    pub inbox_loading: bool,
+    /// Set when something changed that the inbox reflects; the view reloads
+    /// on its next render rather than every writer racing to reload it.
+    pub inbox_dirty: bool,
 }
 
 impl Default for UiState {
@@ -220,6 +227,9 @@ impl Default for UiState {
             backlog_loading: false,
             dirty_tick: None,
             last_dirty_poll: None,
+            inbox: crate::backend::inbox::InboxContents::default(),
+            inbox_loading: false,
+            inbox_dirty: true,
         }
     }
 }
@@ -582,6 +592,7 @@ impl RetroJunkApp {
         if let Some(scope) = self.ui_state.backlog_scope.clone() {
             crate::backend::convergence::load_backlog(self, scope, ctx);
         }
+        self.ui_state.inbox_dirty = true;
     }
 
     /// Drain pending native-menu events and dispatch them.
@@ -604,6 +615,8 @@ impl RetroJunkApp {
                 self.ui_state.current_view = View::Collection;
             } else if event.id == ids.view_library {
                 self.ui_state.current_view = View::Library;
+            } else if event.id == ids.view_inbox {
+                self.ui_state.current_view = View::Inbox;
             } else if event.id == ids.view_settings {
                 self.ui_state.current_view = View::Settings;
             } else if event.id == ids.view_tools {
@@ -1547,6 +1560,7 @@ impl eframe::App for RetroJunkApp {
                 ui.separator();
                 ui.add_space(4.0);
 
+                let pending_reviews = self.ui_state.inbox.pending_count();
                 let view = &mut self.ui_state.current_view;
                 ui.selectable_value(
                     view,
@@ -1558,6 +1572,14 @@ impl eframe::App for RetroJunkApp {
                     View::Library,
                     icons::labeled(icons::LIBRARY, "Library"),
                 );
+                // The count sits in the label rather than a separate badge
+                // so a reviewable item is visible without opening the view.
+                let inbox_label = if pending_reviews > 0 {
+                    format!("{}  Inbox ({pending_reviews})", icons::INBOX)
+                } else {
+                    icons::labeled(icons::INBOX, "Inbox")
+                };
+                ui.selectable_value(view, View::Inbox, inbox_label);
                 ui.selectable_value(
                     view,
                     View::Settings,
@@ -1591,6 +1613,7 @@ impl eframe::App for RetroJunkApp {
         util::stable_central_panel(ui, "main_view", |ui| match self.ui_state.current_view {
             View::Collection => views::collection::show(ui, self),
             View::Library => views::library::show(ui, self, ctx),
+            View::Inbox => views::inbox::show(ui, self, ctx),
             View::Settings => views::settings::show(ui, self),
             View::Tools => views::tools::show(ui, self),
         });

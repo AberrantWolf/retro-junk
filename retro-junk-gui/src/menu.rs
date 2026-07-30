@@ -24,6 +24,7 @@ pub struct AppMenuIds {
     pub find: MenuId,
     pub view_collection: MenuId,
     pub view_library: MenuId,
+    pub view_inbox: MenuId,
     pub view_settings: MenuId,
     pub view_tools: MenuId,
     pub toggle_log_viewer: MenuId,
@@ -103,8 +104,9 @@ pub fn build() -> AppMenu {
 
     let view_collection = MenuItem::new("Collection", true, Some(accel(CMD, Code::Digit1)));
     let view_library = MenuItem::new("Library", true, Some(accel(CMD, Code::Digit2)));
-    let view_settings = MenuItem::new("Settings", true, Some(accel(CMD, Code::Digit3)));
-    let view_tools = MenuItem::new("Tools", true, Some(accel(CMD, Code::Digit4)));
+    let view_inbox = MenuItem::new("Inbox", true, Some(accel(CMD, Code::Digit3)));
+    let view_settings = MenuItem::new("Settings", true, Some(accel(CMD, Code::Digit4)));
+    let view_tools = MenuItem::new("Tools", true, Some(accel(CMD, Code::Digit5)));
     let toggle_log_viewer = MenuItem::new(
         "Toggle Log Viewer",
         true,
@@ -115,6 +117,7 @@ pub fn build() -> AppMenu {
         .append_items(&[
             &view_collection,
             &view_library,
+            &view_inbox,
             &view_settings,
             &view_tools,
             &PredefinedMenuItem::separator(),
@@ -151,6 +154,7 @@ pub fn build() -> AppMenu {
         find: find.id().clone(),
         view_collection: view_collection.id().clone(),
         view_library: view_library.id().clone(),
+        view_inbox: view_inbox.id().clone(),
         view_settings: view_settings.id().clone(),
         view_tools: view_tools.id().clone(),
         toggle_log_viewer: toggle_log_viewer.id().clone(),

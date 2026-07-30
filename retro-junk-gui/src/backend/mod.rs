@@ -6,6 +6,7 @@ pub mod convergence;
 pub mod export;
 pub mod fix_cue;
 pub mod hash;
+pub mod inbox;
 pub mod library_store;
 pub mod organize;
 pub mod playable_build;

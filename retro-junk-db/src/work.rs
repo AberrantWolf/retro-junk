@@ -429,6 +429,23 @@ fn set_incoming_state(
     Ok(())
 }
 
+/// Send a package back to `pending` without pretending its bytes changed.
+///
+/// [`observe_incoming_package`] only re-queues on a fingerprint change,
+/// which is right for the watcher and wrong for "the user asked to try
+/// again": the fingerprint is still accurate, the verdict is what should be
+/// discarded.
+pub fn requeue_incoming_package(conn: &mut Connection, path: &str) -> Result<(), OperationError> {
+    let tx = conn.transaction()?;
+    tx.execute(
+        "UPDATE incoming_packages SET state='pending', detail='', plan_json='' WHERE path=?1",
+        params![path],
+    )?;
+    bump_dirty_tick(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
 /// Forget a package (its file left the watched folder).
 pub fn remove_incoming_package(conn: &mut Connection, path: &str) -> Result<(), OperationError> {
     let tx = conn.transaction()?;

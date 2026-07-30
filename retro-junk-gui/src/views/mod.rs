@@ -1,4 +1,5 @@
 pub mod collection;
+pub mod inbox;
 pub mod library;
 mod playable_formats;
 pub mod settings;

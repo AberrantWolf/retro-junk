@@ -51,6 +51,7 @@ pub const COLLECTION: &str = phosphor::ARCHIVE_BOX;
 pub const LIBRARY: &str = phosphor::GAME_CONTROLLER;
 pub const SETTINGS: &str = phosphor::GEAR;
 pub const TOOLS: &str = phosphor::TOOLBOX;
+pub const INBOX: &str = phosphor::TRAY;
 
 /// `"{icon}  {label}"` — the spacing every icon-prefixed button uses.
 #[must_use]

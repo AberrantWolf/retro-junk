@@ -73,6 +73,7 @@ use crate::app::RetroJunkApp;
 pub enum View {
     Library,
     Collection,
+    Inbox,
     Settings,
     Tools,
 }
@@ -816,6 +817,12 @@ pub enum AppMessage {
     BacklogReady {
         result: Result<crate::backend::convergence::Backlog, String>,
     },
+    /// Loaded review-inbox contents.
+    InboxReady {
+        result: Result<crate::backend::inbox::InboxContents, String>,
+    },
+    /// Something resolved or created a reviewable item; reload the inbox.
+    InboxChanged,
     CollectionSummariesReady {
         profile_id: String,
         result: Result<Vec<retro_junk_db::ArchiveReleaseSummary>, String>,
@@ -2455,6 +2462,21 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 // interrupting with a modal.
                 Err(error) => log::warn!("convergence backlog unavailable: {error}"),
             }
+        }
+
+        AppMessage::InboxReady { result } => {
+            app.ui_state.inbox_loading = false;
+            match result {
+                Ok(contents) => {
+                    app.ui_state.open_suggestion_count = contents.items.len() as u64;
+                    app.ui_state.inbox = contents;
+                }
+                Err(error) => log::warn!("inbox unavailable: {error}"),
+            }
+        }
+
+        AppMessage::InboxChanged => {
+            app.ui_state.inbox_dirty = true;
         }
 
         AppMessage::ChdCompressPromptReady { prompt } => {
