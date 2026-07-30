@@ -31,6 +31,16 @@ pub fn daemon_pid_path() -> PathBuf {
         .join("daemon.pid")
 }
 
+/// Where a GUI-launched daemon's output is captured, beside its PID file.
+///
+/// The daemon itself always logs to its own stdout — launchd, systemd, and a
+/// terminal all capture that. Only a GUI launch has nowhere for it to go, so
+/// the GUI redirects into this file and tails it.
+#[must_use]
+pub fn daemon_log_path() -> PathBuf {
+    daemon_pid_path().with_file_name("daemon.log")
+}
+
 /// Write this process's PID; errors are fatal (stop needs the file).
 pub fn write_pid_file() -> std::io::Result<()> {
     let path = daemon_pid_path();

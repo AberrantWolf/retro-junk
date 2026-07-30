@@ -28,9 +28,13 @@ mod widgets;
 pub fn run() -> eframe::Result {
     log_capture::init();
 
-    // Per-user folder for eframe's window-state file, alongside the TOML
-    // settings so everything the app remembers lives in one place.
-    let persistence_path = dirs::config_dir().map(|dir| dir.join("retro-junk"));
+    // eframe's `persistence_path` is the state *file*, not a folder — its
+    // doc comment says otherwise, and pointing it at a directory makes every
+    // launch log "Failed to parse RON: Is a directory" and silently forget
+    // the window geometry. Keep it beside the TOML settings so everything
+    // the app remembers lives in one place.
+    let persistence_path =
+        dirs::config_dir().map(|dir| dir.join("retro-junk").join("window-state.ron"));
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

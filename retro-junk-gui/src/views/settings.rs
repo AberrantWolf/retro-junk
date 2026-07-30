@@ -22,6 +22,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.add_space(16.0);
         show_automation_section(ui, app);
         ui.add_space(16.0);
+        show_daemon_section(ui, app);
+        ui.add_space(16.0);
         show_cache_section(ui, app);
     });
 
@@ -688,6 +690,106 @@ fn show_credential_info_popup(ctx: &egui::Context, app: &mut RetroJunkApp) {
 
     if outcome.inner || outcome.dismissed {
         app.ui_state.credential_info_popup = None;
+    }
+}
+
+/// Daemon status, start/stop, backlog, and the tail of its output.
+///
+/// The daemon stays a CLI subcommand — one install, one config — so this
+/// section launches and signals that binary rather than embedding a second
+/// daemon in the app process. Status comes from the same PID file and
+/// heartbeat `retro-junk daemon status` reads, and the backlog is the same
+/// strip the Library view shows, so no surface here can disagree with
+/// another.
+fn show_daemon_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
+    use crate::backend::daemon::{self, DaemonStatus};
+
+    ui.strong("Convergence daemon");
+    ui.add_space(4.0);
+    ui.weak(
+        "Watches incoming folders and keeps the archive converging in the \
+         background, within the automation policy above. It keeps running \
+         after this window closes.",
+    );
+    ui.add_space(4.0);
+
+    let status = daemon::status(app.catalog_db.as_ref());
+    let mut start_requested = false;
+    let mut stop_requested = false;
+    ui.horizontal(|ui| {
+        match &status {
+            DaemonStatus::NotRunning => {
+                ui.colored_label(egui::Color32::GRAY, "Not running");
+            }
+            DaemonStatus::Stale(pid) => {
+                ui.colored_label(
+                    STATUS_WARN,
+                    format!("Not running (pid {pid} exited without cleaning up)"),
+                );
+            }
+            DaemonStatus::Running { pid, heartbeat } => {
+                ui.colored_label(STATUS_OK, format!("Running (pid {pid})"));
+                match heartbeat {
+                    Some(at) => ui.weak(format!("last heartbeat {at}")),
+                    None => ui.weak("starting up\u{2026}"),
+                };
+            }
+        }
+        let running = matches!(status, DaemonStatus::Running { .. });
+        if running {
+            stop_requested = ui.button("Stop").clicked();
+        } else {
+            start_requested = ui
+                .button(crate::widgets::icons::labeled(
+                    crate::widgets::icons::VERIFY,
+                    "Start",
+                ))
+                .on_hover_text(
+                    "Runs `retro-junk daemon start --foreground` as a background process",
+                )
+                .clicked();
+        }
+    });
+
+    ui.add_space(6.0);
+    // Same widget, same aggregation as the Library view's strip.
+    crate::backend::convergence::ensure_backlog_loaded(app, ui.ctx());
+    if crate::widgets::backlog_strip::show(ui, app)
+        && let Some(scope) = app.ui_state.backlog_scope.clone()
+    {
+        crate::backend::convergence::run_scope(app, scope, ui.ctx());
+    }
+
+    ui.add_space(6.0);
+    let log = daemon::log_tail(12);
+    if log.is_empty() {
+        ui.weak("No daemon output captured yet.");
+    } else {
+        egui::CollapsingHeader::new("Recent daemon output")
+            .default_open(true)
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(160.0)
+                    .id_salt("daemon_log_tail")
+                    .show(ui, |ui| {
+                        for line in &log {
+                            ui.monospace(line);
+                        }
+                    });
+            });
+    }
+
+    if start_requested {
+        match daemon::start() {
+            Ok(()) => app.notify("Daemon starting"),
+            Err(error) => app.push_error("Daemon", error),
+        }
+    }
+    if stop_requested {
+        match daemon::stop() {
+            Ok(pid) => app.notify(format!("Stopped daemon pid {pid}")),
+            Err(error) => app.push_error("Daemon", error),
+        }
     }
 }
 

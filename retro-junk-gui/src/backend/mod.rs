@@ -3,6 +3,7 @@ pub mod assets;
 pub mod catalog_ops;
 pub mod chd_compress;
 pub mod convergence;
+pub mod daemon;
 pub mod export;
 pub mod fix_cue;
 pub mod hash;
