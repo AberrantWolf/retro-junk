@@ -8,6 +8,7 @@ use egui_kittest::kittest::Queryable;
 
 use super::RetroJunkApp;
 use crate::state::View;
+use crate::widgets::icons;
 
 fn harness<'a>() -> Harness<'a, RetroJunkApp> {
     Harness::new_eframe(|cc| {
@@ -26,7 +27,6 @@ fn first_launch_shows_sidebar_and_welcome() {
     harness.run();
 
     // Sidebar navigation entries (icon + label, per `widgets::icons`)
-    use crate::widgets::icons;
     harness.get_by_label(&icons::labeled(icons::LIBRARY, "Library"));
     harness.get_by_label(&icons::labeled(icons::SETTINGS, "Settings"));
     harness.get_by_label(&icons::labeled(icons::TOOLS, "Tools"));

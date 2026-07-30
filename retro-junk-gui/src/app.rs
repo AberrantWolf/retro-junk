@@ -6,6 +6,10 @@ mod tests;
 #[path = "id_stability_tests.rs"]
 mod id_stability_tests;
 
+#[cfg(test)]
+#[path = "dirty_tick_tests.rs"]
+mod dirty_tick_tests;
+
 use std::collections::HashMap;
 use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
@@ -22,6 +26,7 @@ use crate::state::{
 use crate::util;
 use crate::views;
 use crate::widgets;
+use crate::widgets::icons;
 
 /// Which batch-results dialog is open, if any. The three result kinds are
 /// mutually exclusive by construction: at most one dialog at a time.
@@ -159,6 +164,12 @@ pub struct UiState {
     pub backlog_scope: Option<retro_junk_db::convergence::Scope>,
     /// True while a backlog derivation is in flight.
     pub backlog_loading: bool,
+    /// Last observed `runtime_state.dirty_tick`. `None` until the first
+    /// poll, so startup records the current value instead of treating every
+    /// write since the database was created as news.
+    pub dirty_tick: Option<i64>,
+    /// When the tick was last read, throttling the poll to ~1 Hz.
+    pub last_dirty_poll: Option<std::time::Instant>,
 }
 
 impl Default for UiState {
@@ -207,6 +218,8 @@ impl Default for UiState {
             backlog: crate::backend::convergence::Backlog::default(),
             backlog_scope: None,
             backlog_loading: false,
+            dirty_tick: None,
+            last_dirty_poll: None,
         }
     }
 }
@@ -520,6 +533,55 @@ impl RetroJunkApp {
     /// log. Anything the user must act on stays an error-modal entry.
     pub fn notify(&mut self, message: impl Into<String>) {
         self.toasts.success(message);
+    }
+
+    /// Notice writes another process made to the same database.
+    ///
+    /// Every mutating commit in the coordination store bumps
+    /// `runtime_state.dirty_tick`, so one indexed singleton read per second
+    /// is enough to know the daemon or a `retro-junk sync` changed
+    /// something — no second update channel, no notification service, and
+    /// it degrades to "the GUI is a little behind" rather than to
+    /// corruption if a poll is missed.
+    ///
+    /// On a change the projection is re-requested rather than cleared: the
+    /// store replies replace the page atomically, so the table keeps
+    /// showing current rows instead of flashing an empty loading state
+    /// every time the daemon finishes a build.
+    fn poll_dirty_tick(&mut self, ctx: &egui::Context) {
+        const POLL_INTERVAL: Duration = Duration::from_secs(1);
+        if self
+            .ui_state
+            .last_dirty_poll
+            .is_some_and(|at| at.elapsed() < POLL_INTERVAL)
+        {
+            return;
+        }
+        self.ui_state.last_dirty_poll = Some(std::time::Instant::now());
+        ctx.request_repaint_after(POLL_INTERVAL);
+
+        let Some(connection) = self.catalog_db.as_ref() else {
+            return;
+        };
+        let Ok(runtime) = retro_junk_db::work::read_runtime_state(connection) else {
+            return;
+        };
+        let previous = self.ui_state.dirty_tick.replace(runtime.dirty_tick);
+        if previous.is_none_or(|previous| previous == runtime.dirty_tick) {
+            return;
+        }
+        log::debug!(
+            "another process wrote (tick {}); refreshing",
+            runtime.dirty_tick
+        );
+        self.library_controller.invalidate_lists();
+        self.refresh_console_summaries(ctx);
+        if let Some(console_id) = self.ui_state.selected_console {
+            self.request_console_page(console_id, ctx);
+        }
+        if let Some(scope) = self.ui_state.backlog_scope.clone() {
+            crate::backend::convergence::load_backlog(self, scope, ctx);
+        }
     }
 
     /// Drain pending native-menu events and dispatch them.
@@ -1459,6 +1521,9 @@ impl eframe::App for RetroJunkApp {
         // shortcut the app answers to is discoverable in the menu.
         self.process_menu_events(ctx);
 
+        // Pick up work the daemon or a CLI run committed since the last frame.
+        self.poll_dirty_tick(ctx);
+
         // Fallback polling for workers which only send channel messages and
         // cannot wake egui directly. Progress producers request immediate
         // repaints, so this need not run at animation cadence.
@@ -1483,7 +1548,6 @@ impl eframe::App for RetroJunkApp {
                 ui.add_space(4.0);
 
                 let view = &mut self.ui_state.current_view;
-                use widgets::icons;
                 ui.selectable_value(
                     view,
                     View::Collection,
