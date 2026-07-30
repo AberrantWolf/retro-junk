@@ -180,9 +180,7 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                         );
                     });
                     ui.weak("Required because the selected playable entry is one disc image.");
-                    if !disc_number.trim().is_empty()
-                        && parse_disc_number(disc_number).is_none()
-                    {
+                    if !disc_number.trim().is_empty() && parse_disc_number(disc_number).is_none() {
                         ui.colored_label(
                             ui.visuals().error_fg_color,
                             "Enter a positive whole number.",

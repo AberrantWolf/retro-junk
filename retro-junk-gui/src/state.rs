@@ -1638,6 +1638,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             match result {
                 Ok(message) => {
                     log::info!("{message}");
+                    app.notify(message);
                     app.ui_state.collection_profile_id = None;
                     app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
                     refresh_library_availability(app, ctx);
@@ -1719,6 +1720,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             match result {
                 Ok(Some(output)) => {
                     log::info!("Built playable copy {}", output.display());
+                    app.notify(format!(
+                        "Built {}",
+                        output.file_name().unwrap_or_default().to_string_lossy()
+                    ));
                     if more_archive_work {
                         log::info!("Deferring library refresh until queued archive work completes");
                         return;
@@ -1747,6 +1752,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
                 Ok(None) => {
                     log::info!("Catalog-verified archived release");
+                    app.notify("Catalog-verified archived release");
                     if more_archive_work {
                         log::info!("Deferring library refresh until queued archive work completes");
                         return;
@@ -1778,6 +1784,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         report.copied,
                         report.current
                     );
+                    if report.copied > 0 {
+                        app.notify(format!("Restored {} archived media file(s)", report.copied));
+                    }
                     if let Some(console_id) = app.ui_state.selected_console {
                         app.request_console_page(console_id, ctx);
                     }
@@ -2163,6 +2172,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         } => {
             if generated > 0 {
                 log::info!("Generated {generated} miximage(s)");
+                app.notify(format!("Generated {generated} miximage(s)"));
             }
             if !failures.is_empty() {
                 app.push_error("Generate miximage", failures.join("\n"));
@@ -2193,6 +2203,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         } => match result {
             Ok(path) => {
                 log::info!("Exported gamelist.xml for {folder_name}: {path}");
+                app.notify(format!("Exported gamelist.xml for {folder_name}"));
             }
             Err(error) => {
                 log::warn!("Export failed for {folder_name}: {error}");
@@ -2265,6 +2276,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 log::info!(
                     "Organized {folder_name}: created {jobs_executed} folders, moved {files_moved} files",
                 );
+                // Organize is the one batch operation with no results
+                // dialog, so the toast is its only completion surface.
+                app.notify(format!(
+                    "Organized {folder_name}: {jobs_executed} folders, {files_moved} files moved"
+                ));
                 if let Some(target) = rescan_target {
                     crate::backend::scan::restart_console_scan(app, target, ctx);
                 } else {

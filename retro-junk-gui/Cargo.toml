@@ -29,7 +29,7 @@ retro-junk-db.workspace = true
 retro-junk-catalog.workspace = true
 retro-junk-import.workspace = true
 retro-junk-io.workspace = true
-eframe = "0.35"
+eframe = { version = "0.35", features = ["persistence"] }
 egui = "0.35"
 egui_extras = { version = "0.35", features = ["file", "image"] }
 rfd = "0.15"
@@ -45,6 +45,7 @@ retro-junk-scraper.workspace = true
 tokio.workspace = true
 futures.workspace = true
 env_logger.workspace = true
+muda = "0.19"
 
 [dev-dependencies]
 egui_kittest = { version = "0.35", features = ["eframe"] }

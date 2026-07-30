@@ -84,13 +84,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     crate::util::stable_central_panel(ui, "library_center", |ui| {
         // Toolbar
         ui.horizontal(|ui| {
-            let filter_changed = ui
-                .add(
-                    egui::TextEdit::singleline(&mut app.ui_state.filter_text)
-                        .hint_text("Filter...")
-                        .desired_width(200.0),
-                )
-                .changed();
+            let filter_response = ui.add(
+                egui::TextEdit::singleline(&mut app.ui_state.filter_text)
+                    .hint_text("Filter...")
+                    .id(egui::Id::new("library_filter"))
+                    .desired_width(200.0),
+            );
+            if std::mem::take(&mut app.ui_state.pending_filter_focus) {
+                filter_response.request_focus();
+            }
+            let filter_changed = filter_response.changed();
             if filter_changed && let Some(console_id) = app.ui_state.selected_console {
                 app.ui_state.page_offset = 0;
                 app.request_console_page(console_id, ctx);
@@ -360,7 +363,7 @@ fn show_welcome(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) 
     });
 }
 
-fn open_folder(app: &mut RetroJunkApp, ctx: &egui::Context) {
+pub fn open_folder(app: &mut RetroJunkApp, ctx: &egui::Context) {
     if let Some(path) = rfd::FileDialog::new().pick_folder() {
         switch_to_root(app, path, ctx);
     }

@@ -149,6 +149,9 @@ pub struct UiState {
     /// Coalesces binding refresh requests while another archive projection
     /// rebuild is already running.
     pub archive_refresh_pending: bool,
+    /// Set when the menubar's Find command asks for the Library filter
+    /// field; the Library view consumes it on its next render.
+    pub pending_filter_focus: bool,
 }
 
 impl Default for UiState {
@@ -193,6 +196,7 @@ impl Default for UiState {
             dump_import_dialog: None,
             refresh_archive_after_console_scan: None,
             archive_refresh_pending: false,
+            pending_filter_focus: false,
         }
     }
 }
@@ -255,6 +259,19 @@ pub struct RetroJunkApp {
     /// `op_id`. Joined (and removed) when the operation completes, or all at
     /// once in `on_exit` so the process never dies mid-write (D2).
     pub op_threads: HashMap<u64, std::thread::JoinHandle<()>>,
+
+    /// Native menubar. Held for the life of the app so the menu and its
+    /// items are not dropped out from under the OS. `None` in headless
+    /// test instances, which never build one.
+    _app_menu: Option<crate::menu::AppMenu>,
+
+    /// Menu-item identities, copied out of `_app_menu` so dispatch does not
+    /// re-borrow it.
+    menu_ids: Option<crate::menu::AppMenuIds>,
+
+    /// Transient success feedback for background work that has no other
+    /// surface. Failures keep going to the error modal via `push_error`.
+    pub toasts: crate::widgets::toasts::Toasts,
 }
 
 impl RetroJunkApp {
@@ -307,6 +324,13 @@ impl RetroJunkApp {
         let target_db_path = retro_junk_lib::settings::catalog_database_path();
         let mut app = Self::with_parts(&cc.egui_ctx, settings, None, None);
         app.db_path = Some(target_db_path.clone());
+        // Built here rather than in `with_parts` so headless test instances
+        // never touch the platform menubar. eframe has already initialized
+        // the platform UI thread before this closure runs.
+        let app_menu = crate::menu::build();
+        app_menu.install();
+        app.menu_ids = Some(app_menu.ids.clone());
+        app._app_menu = Some(app_menu);
         log::info!(
             "startup: settings + UI construction took {:?}",
             construct_started.elapsed()
@@ -476,6 +500,47 @@ impl RetroJunkApp {
             pending_scan_commits: HashMap::new(),
             pending_first_open_scan: false,
             op_threads: HashMap::new(),
+            _app_menu: None,
+            menu_ids: None,
+            toasts: crate::widgets::toasts::Toasts::default(),
+        }
+    }
+
+    /// Transient success feedback for work whose only other surface is the
+    /// log. Anything the user must act on stays an error-modal entry.
+    pub fn notify(&mut self, message: impl Into<String>) {
+        self.toasts.success(message);
+    }
+
+    /// Drain pending native-menu events and dispatch them.
+    ///
+    /// Predefined items (Quit, Close Window, Cut/Copy/Paste, About, Hide,
+    /// Minimize, Zoom) are handled by the OS — no event arrives for those.
+    fn process_menu_events(&mut self, ctx: &egui::Context) {
+        let Some(ids) = self.menu_ids.clone() else {
+            return;
+        };
+        while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
+            if event.id == ids.open_library {
+                crate::views::library::open_folder(self, ctx);
+            } else if event.id == ids.preferences {
+                self.ui_state.current_view = View::Settings;
+            } else if event.id == ids.find {
+                self.ui_state.current_view = View::Library;
+                self.ui_state.pending_filter_focus = true;
+            } else if event.id == ids.view_collection {
+                self.ui_state.current_view = View::Collection;
+            } else if event.id == ids.view_library {
+                self.ui_state.current_view = View::Library;
+            } else if event.id == ids.view_settings {
+                self.ui_state.current_view = View::Settings;
+            } else if event.id == ids.view_tools {
+                self.ui_state.current_view = View::Tools;
+            } else if event.id == ids.toggle_log_viewer {
+                self.ui_state.log_viewer.open = !self.ui_state.log_viewer.open;
+            } else {
+                log::debug!("unhandled menu event: {:?}", event.id);
+            }
         }
     }
 
@@ -1379,16 +1444,10 @@ impl eframe::App for RetroJunkApp {
         self.process_pending_messages(ctx);
         self.reconcile_detail_assets(ctx);
 
-        // Global view switching: Ctrl+1/2/3
-        ctx.input_mut(|i| {
-            if i.consume_key(egui::Modifiers::CTRL, egui::Key::Num1) {
-                self.ui_state.current_view = View::Library;
-            } else if i.consume_key(egui::Modifiers::CTRL, egui::Key::Num2) {
-                self.ui_state.current_view = View::Settings;
-            } else if i.consume_key(egui::Modifiers::CTRL, egui::Key::Num3) {
-                self.ui_state.current_view = View::Tools;
-            }
-        });
+        // View switching, Find, and the log-viewer toggle arrive as menubar
+        // accelerators rather than ad-hoc `consume_key` calls, so every
+        // shortcut the app answers to is discoverable in the menu.
+        self.process_menu_events(ctx);
 
         // Fallback polling for workers which only send channel messages and
         // cannot wake egui directly. Progress producers request immediate
@@ -1497,6 +1556,9 @@ impl eframe::App for RetroJunkApp {
         // Error dialog
         widgets::startup_dialog::show(ctx, self.ui_state.startup_status.as_deref());
         widgets::error_dialog::show(ctx, &mut self.ui_state.error_list);
+
+        // Toasts render last so they overlay every panel and dialog.
+        self.toasts.show(ctx);
     }
 
     fn on_exit(&mut self) {

@@ -21,7 +21,10 @@ fn escape_dismisses_the_dialog() {
         }
     });
     harness.run();
-    assert!(!dismissed.get(), "the dialog must stay open until dismissed");
+    assert!(
+        !dismissed.get(),
+        "the dialog must stay open until dismissed"
+    );
 
     harness.key_press(egui::Key::Escape);
     harness.run();

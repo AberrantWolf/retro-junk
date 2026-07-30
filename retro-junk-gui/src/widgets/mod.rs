@@ -13,3 +13,4 @@ pub mod startup_dialog;
 pub mod status_badge;
 pub mod status_bar;
 pub mod tag_dialog;
+pub mod toasts;

@@ -14,6 +14,7 @@ mod cache;
 mod fingerprint;
 pub mod fonts;
 pub mod log_capture;
+mod menu;
 mod settings;
 mod state;
 #[cfg(test)]
@@ -26,10 +27,17 @@ mod widgets;
 /// Run the retro-junk GUI application.
 pub fn run() -> eframe::Result {
     log_capture::init();
+
+    // Per-user folder for eframe's window-state file, alongside the TOML
+    // settings so everything the app remembers lives in one place.
+    let persistence_path = dirs::config_dir().map(|dir| dir.join("retro-junk"));
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([800.0, 500.0]),
+        persist_window: true,
+        persistence_path,
         ..Default::default()
     };
 
