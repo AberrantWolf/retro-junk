@@ -812,6 +812,10 @@ pub enum AppMessage {
         op_id: u64,
         result: Result<String, String>,
     },
+    /// Backlog summary + open errors for the current scope (B5/B4).
+    BacklogReady {
+        result: Result<crate::backend::convergence::Backlog, String>,
+    },
     CollectionSummariesReady {
         profile_id: String,
         result: Result<Vec<retro_junk_db::ArchiveReleaseSummary>, String>,
@@ -2436,6 +2440,20 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                     Ok(rows) => *results = rows,
                     Err(error) => app.push_error("Catalog search", error),
                 }
+            }
+        }
+
+        AppMessage::BacklogReady { result } => {
+            app.ui_state.backlog_loading = false;
+            match result {
+                Ok(backlog) => {
+                    app.ui_state.open_suggestion_count = backlog.summary.open_suggestions;
+                    app.ui_state.backlog = backlog;
+                }
+                // A failed derivation is a projection problem, not a user
+                // action: log it and keep the last good backlog rather than
+                // interrupting with a modal.
+                Err(error) => log::warn!("convergence backlog unavailable: {error}"),
             }
         }
 

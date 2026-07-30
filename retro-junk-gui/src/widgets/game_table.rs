@@ -24,6 +24,7 @@ const ROW_HEIGHT: f32 = 20.0;
 enum ColumnKind {
     Status,
     Name,
+    Evidence,
     Availability,
     InternalName,
     Region,
@@ -35,6 +36,7 @@ impl ColumnKind {
         match self {
             Self::Status => "",
             Self::Name => "Name",
+            Self::Evidence => "Evidence",
             Self::Availability => "Availability",
             Self::InternalName => "Internal Name",
             Self::Region => "Region",
@@ -47,6 +49,7 @@ impl ColumnKind {
         match self {
             Self::Status => (30.0, 30.0),
             Self::Name => (280.0, 100.0),
+            Self::Evidence => (70.0, 70.0),
             Self::Availability => (145.0, 90.0),
             Self::InternalName => (140.0, 60.0),
             Self::Region => (80.0, 40.0),
@@ -58,7 +61,7 @@ impl ColumnKind {
         let (initial, minimum) = self.width();
         Column::new(initial)
             .range(minimum..=1200.0)
-            .resizable(self != Self::Status)
+            .resizable(!matches!(self, Self::Status | Self::Evidence))
     }
 }
 
@@ -260,6 +263,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     let mut columns = vec![
         ColumnKind::Status,
         ColumnKind::Name,
+        ColumnKind::Evidence,
         ColumnKind::Availability,
     ];
     if list_columns.internal_name {
@@ -299,10 +303,21 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         columns,
         rows: row_data,
         visible_ids,
+        rerun: None,
     };
     table.show(ui, &mut delegate);
 
+    let rerun = delegate.rerun.take();
     delegate.app.request_selected_entry_details(ctx);
+    if let Some(request) = rerun {
+        crate::backend::convergence::run_release_kind(
+            app,
+            request.archive_release_id,
+            request.kind,
+            request.label,
+            ctx,
+        );
+    }
 }
 
 /// Bridges the derived row projection to `egui_table`'s pull-based
@@ -316,6 +331,9 @@ struct GameTableDelegate<'a> {
     columns: Vec<ColumnKind>,
     rows: Vec<RowData>,
     visible_ids: Vec<retro_junk_db::LibraryEntryId>,
+    /// Set when a badge popover asked to re-run one evidence class. Applied
+    /// after the table finishes, since the popover renders mid-borrow.
+    rerun: Option<crate::widgets::evidence_badges::RerunRequest>,
 }
 
 impl TableDelegate for GameTableDelegate<'_> {
@@ -382,14 +400,21 @@ impl TableDelegate for GameTableDelegate<'_> {
     }
 
     fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &CellInfo) {
-        let (Some(kind), Some(data)) = (
-            self.columns.get(cell.col_nr).copied(),
-            self.rows.get(cell.row_nr as usize),
-        ) else {
+        let Some(kind) = self.columns.get(cell.col_nr).copied() else {
+            return;
+        };
+        // Evidence badges need `&mut self` to record a re-run request, so
+        // they cannot live inside the borrow the match closure takes.
+        if kind == ColumnKind::Evidence {
+            self.show_evidence_cell(ui, cell.row_nr);
+            return;
+        }
+        let Some(data) = self.rows.get(cell.row_nr as usize) else {
             return;
         };
         cell_frame(ui, |ui| match kind {
             ColumnKind::Status => show_status_cell(ui, data),
+            ColumnKind::Evidence => {}
             ColumnKind::Name => paint_cell_text(ui, &data.name),
             ColumnKind::Availability => {
                 paint_cell_text(ui, data.availability.label());
@@ -408,6 +433,36 @@ impl TableDelegate for GameTableDelegate<'_> {
 }
 
 impl GameTableDelegate<'_> {
+    /// Evidence dots for archive-release rows. Playable-only rows have no
+    /// archival evidence to report, so their cell stays empty rather than
+    /// showing five "missing" dots for evidence nobody expects.
+    fn show_evidence_cell(&mut self, ui: &mut egui::Ui, row_nr: u64) {
+        let Some(release_id) = self
+            .rows
+            .get(row_nr as usize)
+            .and_then(|data| data.archive_release_id.clone())
+        else {
+            return;
+        };
+        let request = {
+            let Some(release) = self.app.browser.active_page.as_ref().and_then(|page| {
+                page.archived_releases
+                    .iter()
+                    .find(|release| release.summary.archive_release_id == release_id)
+            }) else {
+                return;
+            };
+            let mut request = None;
+            cell_frame(ui, |ui| {
+                request = crate::widgets::evidence_badges::show(ui, self.app, release);
+            });
+            request
+        };
+        if request.is_some() {
+            self.rerun = request;
+        }
+    }
+
     fn handle_primary_click(&mut self, data: &RowData) {
         let modifiers = self.ctx.input(|i| i.modifiers);
         if let Some(entry_id) = data.entry_id {

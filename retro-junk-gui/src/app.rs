@@ -152,6 +152,13 @@ pub struct UiState {
     /// Set when the menubar's Find command asks for the Library filter
     /// field; the Library view consumes it on its next render.
     pub pending_filter_focus: bool,
+    /// Derived convergence backlog for the scope currently on screen, plus
+    /// the open-error set the per-row badges read.
+    pub backlog: crate::backend::convergence::Backlog,
+    /// Scope the loaded backlog was derived for; a change triggers a reload.
+    pub backlog_scope: Option<retro_junk_db::convergence::Scope>,
+    /// True while a backlog derivation is in flight.
+    pub backlog_loading: bool,
 }
 
 impl Default for UiState {
@@ -197,6 +204,9 @@ impl Default for UiState {
             refresh_archive_after_console_scan: None,
             archive_refresh_pending: false,
             pending_filter_focus: false,
+            backlog: crate::backend::convergence::Backlog::default(),
+            backlog_scope: None,
+            backlog_loading: false,
         }
     }
 }

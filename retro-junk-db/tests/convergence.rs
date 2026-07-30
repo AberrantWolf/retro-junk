@@ -374,3 +374,57 @@ fn summary_counts_pending_blocked_done_and_running() {
     let catalog = summary.per_kind[&ActionKind::VerifyCatalog];
     assert_eq!(catalog.done, 1);
 }
+
+/// A verification failure is recorded against a dump, but every UI that
+/// shows failures shows one row per release. Grouping has to resolve the
+/// dump back through its carrier and physical copy, or the release's badge
+/// silently reports "no errors" while `work_errors` holds one.
+#[test]
+fn dump_errors_group_under_the_release_that_owns_them() {
+    let mut fixture = Fixture::new();
+    fixture.media("m1", 0);
+    let (release, copy) = fixture.release("Game");
+    fixture.bind_release(&release);
+    let (_, dump) =
+        fixture.carrier_with_dump(&copy, Some("m1"), 1, "file_set", "pending", "pending", 1);
+
+    retro_junk_db::work::release_claim(
+        &mut fixture.conn,
+        ActionKind::VerifyIntegrity.as_str(),
+        "dump",
+        &dump,
+        &retro_junk_db::work::ClaimOutcome::Failed {
+            error: "sha256 mismatch on track 2".to_owned(),
+        },
+    )
+    .unwrap();
+
+    let grouped = retro_junk_db::convergence::errors_by_release(&fixture.conn).unwrap();
+    let errors = grouped.get(&release).expect("error grouped under release");
+    assert_eq!(errors.len(), 1);
+    assert_eq!(errors[0].0, ActionKind::VerifyIntegrity);
+    assert_eq!(errors[0].1.message, "sha256 mismatch on track 2");
+}
+
+/// An incoming package that failed pre-processing belongs to no release
+/// yet; it must not be attributed to one.
+#[test]
+fn path_targeted_errors_belong_to_no_release() {
+    let mut fixture = Fixture::new();
+    retro_junk_db::work::release_claim(
+        &mut fixture.conn,
+        ActionKind::VerifyIntegrity.as_str(),
+        "path",
+        "/incoming/mystery.bin",
+        &retro_junk_db::work::ClaimOutcome::Failed {
+            error: "unreadable".to_owned(),
+        },
+    )
+    .unwrap();
+
+    assert!(
+        retro_junk_db::convergence::errors_by_release(&fixture.conn)
+            .unwrap()
+            .is_empty()
+    );
+}

@@ -145,6 +145,39 @@ pub fn held_claim(
     Ok(row)
 }
 
+/// One open failure. Cleared by the next success on the same target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkError {
+    pub action_kind: String,
+    pub target_kind: String,
+    pub target_id: String,
+    pub message: String,
+    pub occurred_at: String,
+}
+
+/// Every open error, newest first.
+///
+/// The GUI reads the whole set once per refresh and indexes it in memory:
+/// a per-row lookup would otherwise be one query per visible badge.
+pub fn list_work_errors(conn: &Connection) -> Result<Vec<WorkError>, OperationError> {
+    let mut statement = conn.prepare(
+        "SELECT action_kind, target_kind, target_id, message, occurred_at
+         FROM work_errors ORDER BY occurred_at DESC",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(WorkError {
+                action_kind: row.get(0)?,
+                target_kind: row.get(1)?,
+                target_id: row.get(2)?,
+                message: row.get(3)?,
+                occurred_at: row.get(4)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Whether the target errored within the last `backoff_hours` for this
 /// action. The daemon consults this; explicit runs don't.
 pub fn has_recent_error(

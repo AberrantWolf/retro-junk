@@ -194,27 +194,66 @@ pub fn derive_convergence(
 }
 
 impl ProposedAction {
-    /// The archive release an action belongs to (direct for release
-    /// targets, resolved through the dump for dump targets).
+    /// The archive release an action belongs to.
     fn release_id(&self, conn: &Connection) -> Option<String> {
-        match &self.target {
-            WorkTarget::Release(id) => Some(id.clone()),
-            WorkTarget::Dump(dump_id) => conn
-                .query_row(
-                    "SELECT ar.id FROM dump_events de
-                     JOIN carriers c ON c.id=de.carrier_id
-                     JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                     JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                     WHERE de.id=?1",
-                    [dump_id.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()
-                .ok()
-                .flatten(),
-            WorkTarget::Path(_) => None,
+        release_for_target(conn, &self.target)
+    }
+}
+
+/// The archive release a work target belongs to: direct for release
+/// targets, resolved through the owning carrier for dump targets, and none
+/// for filesystem paths (incoming packages are not archived yet).
+///
+/// One definition, so derivation's scope filter and the error/claim
+/// surfaces group work the same way.
+#[must_use]
+pub fn release_for_target(conn: &Connection, target: &WorkTarget) -> Option<String> {
+    match target {
+        WorkTarget::Release(id) => Some(id.clone()),
+        WorkTarget::Dump(dump_id) => conn
+            .query_row(
+                "SELECT ar.id FROM dump_events de
+                 JOIN carriers c ON c.id=de.carrier_id
+                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
+                 WHERE de.id=?1",
+                [dump_id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten(),
+        WorkTarget::Path(_) => None,
+    }
+}
+
+/// Every open error, grouped by the archive release it belongs to.
+///
+/// Verification errors are recorded against a dump, but the UI shows one
+/// row per release, so the grouping has to happen somewhere; doing it here
+/// keeps [`release_for_target`] the only place that knows the join.
+pub fn errors_by_release(
+    conn: &Connection,
+) -> Result<BTreeMap<String, Vec<(ActionKind, crate::work::WorkError)>>, LibraryError> {
+    let mut grouped: BTreeMap<String, Vec<_>> = BTreeMap::new();
+    let errors = crate::work::list_work_errors(conn).map_err(|error| match error {
+        crate::operations::OperationError::Sqlite(error) => LibraryError::Sqlite(error),
+        other => LibraryError::InvalidScanState(other.to_string()),
+    })?;
+    for error in errors {
+        let Ok(kind) = error.action_kind.parse::<ActionKind>() else {
+            continue;
+        };
+        let target = match error.target_kind.as_str() {
+            "dump" => WorkTarget::Dump(error.target_id.clone()),
+            "release" => WorkTarget::Release(error.target_id.clone()),
+            _ => WorkTarget::Path(error.target_id.clone()),
+        };
+        if let Some(release_id) = release_for_target(conn, &target) {
+            grouped.entry(release_id).or_default().push((kind, error));
         }
     }
+    Ok(grouped)
 }
 
 fn profiles_in_scope(conn: &Connection, scope: &Scope) -> Result<Vec<String>, LibraryError> {

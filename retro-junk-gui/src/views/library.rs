@@ -85,6 +85,8 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         Some((platform_id, platform, current))
     });
     let mut policy_change = None;
+    let mut converge_requested = false;
+    reconcile_backlog_scope(app, ctx);
     crate::util::stable_central_panel(ui, "library_center", |ui| {
         // Toolbar
         ui.horizontal(|ui| {
@@ -218,6 +220,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
             });
         }
 
+        if app.ui_state.backlog_scope.is_some() {
+            converge_requested = widgets::backlog_strip::show(ui, app);
+        }
+
         // Game table
         if app.ui_state.selected_console.is_some() {
             widgets::game_table::show(ui, app, ctx);
@@ -230,6 +236,46 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     if let Some((platform_id, format)) = policy_change {
         set_preferred_playable_format(app, platform_id, format, ctx);
     }
+    if converge_requested && let Some(scope) = app.ui_state.backlog_scope.clone() {
+        backend::convergence::run_scope(app, scope, ctx);
+    }
+}
+
+/// Keep the loaded backlog pointed at what the user is looking at.
+///
+/// The scope narrows to the selected console's archive platform when the
+/// page carries archived releases to name it; otherwise it stays at the
+/// whole profile. Deriving profile-wide and filtering afterwards would
+/// re-derive on every console change for no benefit — `summarize_convergence`
+/// takes the scope directly.
+fn reconcile_backlog_scope(app: &mut RetroJunkApp, ctx: &egui::Context) {
+    let Some(profile_id) = app
+        .settings
+        .library
+        .active_profile()
+        .map(|profile| profile.profile_id.to_string())
+    else {
+        app.ui_state.backlog_scope = None;
+        return;
+    };
+    let platform_id = app
+        .browser
+        .active_page
+        .as_ref()
+        .and_then(|page| page.archived_releases.first())
+        .map(|release| release.summary.platform_id.clone());
+    let scope = match platform_id {
+        Some(platform_id) => retro_junk_db::convergence::Scope::Platform {
+            profile_id,
+            platform_id,
+        },
+        None => retro_junk_db::convergence::Scope::Profile(profile_id),
+    };
+    if app.ui_state.backlog_scope.as_ref() == Some(&scope) {
+        return;
+    }
+    app.ui_state.backlog_scope = Some(scope.clone());
+    backend::convergence::load_backlog(app, scope, ctx);
 }
 
 fn availability_chip(ui: &mut egui::Ui, count: u64, label: &str) {
