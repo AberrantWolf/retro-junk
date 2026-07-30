@@ -587,6 +587,31 @@ All 15 items resolved — see commit history for details.
   fail-fast/wait polling today; add FIFO fairness if contention proves noisy.
 - [ ] **CLI Ctrl-C for `sync`** — the executor is cancel-safe; wire a real
   SIGINT handler into `retro-junk sync` (the daemon already has one).
+
+## Phase B follow-ups (GUI surfacing, 2026-07-31)
+
+- [ ] **Artwork evidence is presence-only** — the `artwork` badge reads
+  "complete" as soon as one archived asset exists, because artwork is stored
+  as files rather than as evidence records and nothing models the expected
+  asset set per release. Model that (probably alongside the `Scrape`
+  convergence kind in Phase A.5) so the badge can distinguish "one screenshot"
+  from "the full set".
+- [ ] **`adopt_playable` suggestions cannot be applied** — the Inbox offers
+  Apply only for imports, because `retro-junk suggestions apply` only handles
+  imports too. Adoption reviews (byte-identical/ambiguous/unknown playable
+  files) need an executable resolution — bind, rename, or ignore — on both
+  surfaces at once.
+- [ ] **Backlog scope guesses the platform from the first archived release** —
+  a console page with no archived releases falls back to profile-wide scope.
+  Project the archive platform onto the library console row so the scope is
+  read rather than inferred.
+- [ ] **Daemon start has no failure feedback** — `start()` spawns and returns;
+  if the CLI exits immediately (bad profile, uninitialized archive) the only
+  evidence is the captured log. Poll for the PID file appearing and surface
+  the tail on failure.
+- [ ] **`retro-junk daemon status` and the GUI section duplicate their
+  formatting** — both render the same PID/heartbeat/summary facts. Extract the
+  status model into `retro-junk-work` so both callers format one struct.
 - [ ] **GUI dirty-tick polling (roadmap B7)** — `runtime_state.dirty_tick`
   already bumps on every coordination commit; add the 1 Hz GUI poll feeding
   `LibraryChangeSet` refresh so daemon writes appear without manual refresh.

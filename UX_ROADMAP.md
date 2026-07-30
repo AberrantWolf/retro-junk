@@ -10,6 +10,28 @@ For the catalog/scraper/analyzer technical backlog, see `TODO.md`. For the
 archive/playable-library data model this roadmap builds on, see
 `docs/archive-architecture.md` and `docs/collection-library-state-matrix.md`.
 
+## Status (2026-07-31) — Phase B landed
+
+Phase B shipped in ten step-commits. Presentation: one `widgets::modal`
+scaffold behind every dialog (backdrop, focus trap, Escape/backdrop
+dismissal); a `muda` menubar with standard macOS accelerators plus
+eframe window persistence and in-house toasts; the game table on
+`egui_table` with sticky badge/name columns and row interaction on the
+crate's own row `Ui`; Phosphor icons behind a named `widgets::icons`
+vocabulary. Automation surfaced: per-row evidence badges (present ·
+integrity · catalog · playable · artwork) with a re-run popover, the
+backlog strip over the table, a top-level Inbox view with Apply/Dismiss
+routed through the same calls `retro-junk suggestions` makes, a
+`dirty_tick` poller that picks up daemon and CLI writes without a second
+update channel, ScreenScraper account entry with a quota-reporting Test
+login, and daemon start/stop/status/log-tail in Settings.
+
+Two dependency substitutions against the plan: `egui-notify` is still
+built for egui 0.34 and would duplicate egui, so the toast widget is
+~110 lines in-house; `egui_table` 0.9, `egui-phosphor` 0.13, and `muda`
+0.19 went in as planned. Next: Phase A.5 (scrape consolidation;
+TODO.md), then Phase C.
+
 ## Status (2026-07-30) — Phase A landed
 
 Phase A shipped in seven step-commits: startup latency fixes (~15 s → <1 s
@@ -117,7 +139,7 @@ The load-bearing chunk. Everything else is small follow-on work.
 | A6 | Suggestions store | Persist proposed-but-unapplied commands with kind, payload, confidence, provenance, and resolution state. Unifies what today is scattered: `.retro-junk/playable-inbox.toml` triage entries, ambiguous import candidates, policy-blocked auto-actions, and (read-only) catalog `disagreements`. Inbox UI lands in Phase B; CLI can list/apply/dismiss from day one. |
 | A7 | CLI surface | `retro-junk sync [--scope ...] [--only KIND]` = `run_once` and exit. `retro-junk daemon start [--foreground] / stop / status / reload`. `status` prints `summarize_convergence` + heartbeat age. Daemon stays a CLI subcommand (shared install, creds, config). |
 
-## Phase B — GUI modernization and surfacing
+## Phase B — GUI modernization and surfacing (landed 2026-07-31)
 
 ### B-stage 1: presentation polish (independent, cheap, port from reference branch)
 
@@ -131,9 +153,11 @@ landed these on 0.34 and they re-apply nearly mechanically:
   click targets) with row identity by durable entry ID.
 - `egui-phosphor` icon set replacing ad-hoc unicode glyphs.
 
-Crates added: `muda`, `egui-notify`, `egui_table`, `egui-phosphor`.
-Deliberately skipped (evaluated on the reference branch): `egui-modal`
-(stale), `egui_dock`/`egui_tiles`, `egui_flex`/`egui_taffy`, `egui_hotkey`.
+Crates added: `muda`, `egui_table`, `egui-phosphor`.
+Deliberately skipped: `egui-notify` (still built against egui 0.34; it
+would pull a second copy of egui into the binary, so `widgets::toasts`
+is ~110 lines in-house), `egui-modal` (stale), `egui_dock`/`egui_tiles`,
+`egui_flex`/`egui_taffy`, `egui_hotkey`.
 
 ### B-stage 2: automation surfaced in the GUI
 
