@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
-use egui_extras::{Column, TableBuilder};
+use egui_table::{CellInfo, Column, HeaderCellInfo, HeaderRow, Table, TableDelegate};
 use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
@@ -11,6 +11,55 @@ use crate::state::{AssetStatus, EntryStatus, FocusedPanel, TagDialog};
 use crate::util;
 use crate::widgets::keyboard_nav;
 use crate::widgets::status_badge;
+
+/// Height of one data row and of the sticky header row.
+const ROW_HEIGHT: f32 = 20.0;
+
+/// Columns that are always present, followed by the per-analyzer optional
+/// ones. `ColumnKind` is the single description of a column: its header,
+/// its default/minimum width, and the cell it renders. Adding a column
+/// means adding a variant, not touching four parallel lists.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ColumnKind {
+    Status,
+    Name,
+    Availability,
+    InternalName,
+    Region,
+    DatMatch,
+}
+
+impl ColumnKind {
+    fn header(self) -> &'static str {
+        match self {
+            Self::Status => "",
+            Self::Name => "Name",
+            Self::Availability => "Availability",
+            Self::InternalName => "Internal Name",
+            Self::Region => "Region",
+            Self::DatMatch => "DAT Match",
+        }
+    }
+
+    /// `(initial width, minimum width)`; the status column is fixed.
+    fn width(self) -> (f32, f32) {
+        match self {
+            Self::Status => (30.0, 30.0),
+            Self::Name => (280.0, 100.0),
+            Self::Availability => (145.0, 90.0),
+            Self::InternalName => (140.0, 60.0),
+            Self::Region => (80.0, 40.0),
+            Self::DatMatch => (200.0, 80.0),
+        }
+    }
+
+    fn column(self) -> Column {
+        let (initial, minimum) = self.width();
+        Column::new(initial)
+            .range(minimum..=1200.0)
+            .resizable(self != Self::Status)
+    }
+}
 
 /// Render the sortable, filterable game table for the selected console.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
@@ -207,229 +256,260 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     ui.add_space(2.0);
 
-    // Table wrapped in horizontal scroll area
-    let text_height = egui::TextStyle::Body
-        .resolve(ui.style())
-        .size
-        .max(ui.spacing().interact_size.y);
-    // Keep header height in one place so the body height calculation stays in sync.
-    let header_height = 20.0_f32;
+    let mut columns = vec![
+        ColumnKind::Status,
+        ColumnKind::Name,
+        ColumnKind::Availability,
+    ];
+    if list_columns.internal_name {
+        columns.push(ColumnKind::InternalName);
+    }
+    if list_columns.region {
+        columns.push(ColumnKind::Region);
+    }
+    if list_columns.dat_match {
+        columns.push(ColumnKind::DatMatch);
+    }
 
-    egui::ScrollArea::horizontal()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            // Measure available height *inside* the scroll area: egui has already
-            // reduced it by the horizontal scrollbar thickness (when visible), so
-            // we only need to subtract the table header to get the body height.
-            let body_height = (ui.available_height() - header_height).max(0.0);
+    // The column set changes per console, and `egui_table` keys persisted
+    // widths by column index. Salting the table id with the set keeps a
+    // six-column console's widths from being applied to a four-column one.
+    let id_salt = columns
+        .iter()
+        .map(|kind| kind.header())
+        .collect::<Vec<_>>()
+        .join("|");
+    let mut table = Table::new()
+        .id_salt(("game_table", id_salt))
+        .num_rows(row_data.len() as u64)
+        .columns(columns.iter().map(|kind| kind.column()).collect::<Vec<_>>())
+        // Badge and name stay put while the wider identification columns
+        // scroll horizontally.
+        .num_sticky_cols(2)
+        .headers(vec![HeaderRow::new(ROW_HEIGHT)]);
+    if let Some(row) = app.ui_state.scroll_to_row.take() {
+        table = table.scroll_to_row(row as u64, Some(egui::Align::Center));
+    }
 
-            let mut table = TableBuilder::new(ui)
-                .striped(true)
-                .resizable(true)
-                .sense(egui::Sense::click())
-                .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::exact(30.0)) // Status badge + media indicator
-                .column(Column::initial(280.0).at_least(100.0)) // Name
-                .column(Column::initial(145.0).at_least(90.0)); // Availability
-            if list_columns.internal_name {
-                table = table.column(Column::initial(140.0).at_least(60.0));
-            }
-            if list_columns.region {
-                table = table.column(Column::initial(80.0).at_least(40.0));
-            }
-            if list_columns.dat_match {
-                table = table.column(Column::initial(200.0).at_least(80.0));
-            }
-            table = table
-                .min_scrolled_height(0.0)
-                .max_scroll_height(body_height);
+    let mut delegate = GameTableDelegate {
+        app,
+        ctx,
+        console_idx,
+        columns,
+        rows: row_data,
+        visible_ids,
+    };
+    table.show(ui, &mut delegate);
 
-            table
-                .header(header_height, |mut header| {
-                    header.col(|ui| {
-                        ui.strong("");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Name");
-                    });
-                    header.col(|ui| {
-                        ui.strong("Availability");
-                    });
-                    if list_columns.internal_name {
-                        header.col(|ui| {
-                            ui.strong("Internal Name");
-                        });
-                    }
-                    if list_columns.region {
-                        header.col(|ui| {
-                            ui.strong("Region");
-                        });
-                    }
-                    if list_columns.dat_match {
-                        header.col(|ui| {
-                            ui.strong("DAT Match");
-                        });
-                    }
-                })
-                .body(|body| {
-                    body.rows(text_height, row_data.len(), |mut row| {
-                        let row_idx = row.index();
-                        let data = &row_data[row_idx];
-                        let is_selected = data
-                            .entry_id
-                            .is_some_and(|id| app.ui_state.selected_entries.contains(&id))
-                            || data.archive_release_id.as_ref().is_some_and(|id| {
-                                app.ui_state.selected_archive_releases.contains(id)
-                            });
-                        let is_focused = row_is_focused(
-                            data.entry_id,
-                            data.archive_release_id.as_deref(),
-                            app.ui_state.focused_entry,
-                            app.ui_state.focused_archive_release.as_deref(),
-                        );
+    delegate.app.request_selected_entry_details(ctx);
+}
 
-                        // Highlight the entire row
-                        row.set_selected(is_selected || is_focused);
+/// Bridges the derived row projection to `egui_table`'s pull-based
+/// rendering. It owns no logic of its own: every click path here is the
+/// same selection/menu behaviour the table had before, moved from a
+/// unioned per-column response onto the row `Ui` the crate already builds.
+struct GameTableDelegate<'a> {
+    app: &'a mut RetroJunkApp,
+    ctx: &'a egui::Context,
+    console_idx: usize,
+    columns: Vec<ColumnKind>,
+    rows: Vec<RowData>,
+    visible_ids: Vec<retro_junk_db::LibraryEntryId>,
+}
 
-                        // Status badge with tooltip (includes warning triangle and media indicator)
-                        let r1 = row.col(|ui| {
-                            let resp = status_badge::show_with_warning(
-                                ui,
-                                data.status,
-                                data.has_broken_refs,
-                                data.has_hash_warnings,
-                                data.has_cue_compat_issues,
-                                data.asset_status,
-                            );
-                            let mut tip = data.status.tooltip().to_string();
-                            if data.has_broken_refs {
-                                tip.push_str("\n\u{26a0} Broken file references");
-                            }
-                            if data.has_hash_warnings {
-                                tip.push_str("\n\u{26a0} Hash warnings (see detail panel)");
-                            }
-                            if data.has_cue_compat_issues {
-                                tip.push_str("\n\u{26a0} Non-standard CUE sheet format");
-                            }
-                            match data.asset_status {
-                                AssetStatus::Unknown => {}
-                                AssetStatus::None => tip.push_str("\nNo scraped media"),
-                                AssetStatus::Partial { found, total } => {
-                                    let _ = write!(tip, "\nPartial media ({found}/{total})");
-                                }
-                                AssetStatus::Complete => tip.push_str("\nMedia complete"),
-                            }
-                            resp.on_hover_text(tip);
-                        });
-
-                        // Paint text directly in cells so no WidgetRect is created,
-                        // allowing the cell response to handle all click interaction.
-                        let name_response = row.col(|ui| paint_cell_text(ui, &data.name));
-                        let availability_response = row.col(|ui| {
-                            paint_cell_text(ui, data.availability.label());
-                        });
-                        let availability_response = (
-                            availability_response.0,
-                            availability_response
-                                .1
-                                .on_hover_text(data.availability.tooltip()),
-                        );
-
-                        // Scroll-to-row: when keyboard navigation targets this row
-                        if app.ui_state.scroll_to_row == Some(row_idx) {
-                            r1.1.scroll_to_me(Some(egui::Align::Center));
-                        }
-
-                        // Union all column responses for click and context menu
-                        let mut row_resp = r1.1 | name_response.1 | availability_response.1;
-                        if list_columns.internal_name {
-                            row_resp |= row.col(|ui| paint_cell_text(ui, &data.internal_name)).1;
-                        }
-                        if list_columns.region {
-                            row_resp |= row.col(|ui| paint_cell_text(ui, &data.regions)).1;
-                        }
-                        if list_columns.dat_match {
-                            row_resp |= row.col(|ui| paint_cell_text(ui, &data.dat_match)).1;
-                        }
-
-                        // Right-click selection: if right-clicked row isn't selected, select just it
-                        if row_resp.secondary_clicked() {
-                            if let Some(entry_id) = data.entry_id {
-                                if !app.ui_state.selected_entries.contains(&entry_id) {
-                                    app.ui_state.selected_entries.clear();
-                                    app.ui_state.selected_archive_releases.clear();
-                                    app.ui_state.selected_entries.insert(entry_id);
-                                }
-                                app.ui_state.focused_entry = Some(entry_id);
-                                app.ui_state.focused_archive_release = None;
-                                app.request_entry_detail(entry_id, ctx);
-                            } else if let Some(release_id) = data.archive_release_id.as_ref() {
-                                if app.ui_state.selected_archive_releases.contains(release_id) {
-                                    app.ui_state.focused_entry = None;
-                                    app.ui_state.focused_archive_release = Some(release_id.clone());
-                                } else {
-                                    select_archive_release(
-                                        app,
-                                        release_id,
-                                        &data.bound_entry_ids,
-                                        egui::Modifiers::NONE,
-                                        ctx,
-                                    );
-                                }
-                            }
-                        }
-
-                        // Left-click
-                        if row_resp.clicked() {
-                            if let Some(entry_id) = data.entry_id {
-                                let modifiers = ctx.input(|i| i.modifiers);
-                                handle_row_click(app, entry_id, modifiers, &visible_ids);
-                                if !app.ui_state.selected_entries.contains(&entry_id)
-                                    && app.selected_library_row_count() == 1
-                                    && let Some(release_id) = app
-                                        .ui_state
-                                        .selected_archive_releases
-                                        .iter()
-                                        .next()
-                                        .cloned()
-                                {
-                                    app.ui_state.focused_entry = None;
-                                    app.ui_state.focused_archive_release = Some(release_id);
-                                } else {
-                                    app.ui_state.focused_archive_release = None;
-                                    if let Some(focused) = app.ui_state.focused_entry {
-                                        app.request_entry_detail(focused, ctx);
-                                    }
-                                }
-                            } else if let Some(release_id) = data.archive_release_id.as_ref() {
-                                let modifiers = ctx.input(|i| i.modifiers);
-                                select_archive_release(
-                                    app,
-                                    release_id,
-                                    &data.bound_entry_ids,
-                                    modifiers,
-                                    ctx,
-                                );
-                            }
-                            app.ui_state.focused_panel = FocusedPanel::GameTable;
-                        }
-
-                        // Context menu on unioned response
-                        if row_supports_context_menu(
-                            data.entry_id,
-                            data.archive_release_id.as_deref(),
-                        ) {
-                            row_resp.context_menu(|ui| {
-                                show_row_context_menu(ui, app, ctx, console_idx, data);
-                            });
-                        }
-                    });
-                });
+impl TableDelegate for GameTableDelegate<'_> {
+    fn header_cell_ui(&mut self, ui: &mut egui::Ui, cell: &HeaderCellInfo) {
+        let Some(kind) = self.columns.get(cell.col_range.start) else {
+            return;
+        };
+        cell_frame(ui, |ui| {
+            ui.strong(kind.header());
         });
+    }
 
-    // Clear scroll-to-row after rendering
-    app.ui_state.scroll_to_row = None;
-    app.request_selected_entry_details(ctx);
+    fn row_ui(&mut self, ui: &mut egui::Ui, row_nr: u64) {
+        let Some(data) = self.rows.get(row_nr as usize) else {
+            return;
+        };
+        let is_selected = data
+            .entry_id
+            .is_some_and(|id| self.app.ui_state.selected_entries.contains(&id))
+            || data
+                .archive_release_id
+                .as_ref()
+                .is_some_and(|id| self.app.ui_state.selected_archive_releases.contains(id));
+        let is_focused = row_is_focused(
+            data.entry_id,
+            data.archive_release_id.as_deref(),
+            self.app.ui_state.focused_entry,
+            self.app.ui_state.focused_archive_release.as_deref(),
+        );
+
+        if is_selected || is_focused {
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, ui.visuals().selection.bg_fill);
+        } else if row_nr % 2 == 1 {
+            ui.painter()
+                .rect_filled(ui.max_rect(), 0.0, ui.visuals().faint_bg_color);
+        }
+
+        if !row_supports_context_menu(data.entry_id, data.archive_release_id.as_deref()) {
+            return;
+        }
+        // With sticky columns the crate renders each row twice — once for the
+        // frozen columns, once for the scrolling ones. Each row `Ui` is
+        // clipped to its own region, so at most one of the two responses can
+        // contain the pointer and no de-duplication is needed here.
+        let response = ui.response().interact(egui::Sense::click());
+
+        // Both the click handlers and the context menu need `self.app`
+        // mutably, so take an owned copy of the row up front rather than
+        // holding a borrow of `self.rows` across them.
+        let data = data.clone();
+        if response.secondary_clicked() {
+            self.select_for_context_menu(&data);
+        } else if response.clicked() {
+            self.handle_primary_click(&data);
+        }
+
+        let console_idx = self.console_idx;
+        let app = &mut *self.app;
+        let ctx = self.ctx;
+        response.context_menu(|ui| {
+            show_row_context_menu(ui, app, ctx, console_idx, &data);
+        });
+    }
+
+    fn cell_ui(&mut self, ui: &mut egui::Ui, cell: &CellInfo) {
+        let (Some(kind), Some(data)) = (
+            self.columns.get(cell.col_nr).copied(),
+            self.rows.get(cell.row_nr as usize),
+        ) else {
+            return;
+        };
+        cell_frame(ui, |ui| match kind {
+            ColumnKind::Status => show_status_cell(ui, data),
+            ColumnKind::Name => paint_cell_text(ui, &data.name),
+            ColumnKind::Availability => {
+                paint_cell_text(ui, data.availability.label());
+                ui.response()
+                    .on_hover_text_at_pointer(data.availability.tooltip());
+            }
+            ColumnKind::InternalName => paint_cell_text(ui, &data.internal_name),
+            ColumnKind::Region => paint_cell_text(ui, &data.regions),
+            ColumnKind::DatMatch => paint_cell_text(ui, &data.dat_match),
+        });
+    }
+
+    fn default_row_height(&self) -> f32 {
+        ROW_HEIGHT
+    }
+}
+
+impl GameTableDelegate<'_> {
+    fn handle_primary_click(&mut self, data: &RowData) {
+        let modifiers = self.ctx.input(|i| i.modifiers);
+        if let Some(entry_id) = data.entry_id {
+            handle_row_click(self.app, entry_id, modifiers, &self.visible_ids);
+            if !self.app.ui_state.selected_entries.contains(&entry_id)
+                && self.app.selected_library_row_count() == 1
+                && let Some(release_id) = self
+                    .app
+                    .ui_state
+                    .selected_archive_releases
+                    .iter()
+                    .next()
+                    .cloned()
+            {
+                self.app.ui_state.focused_entry = None;
+                self.app.ui_state.focused_archive_release = Some(release_id);
+            } else {
+                self.app.ui_state.focused_archive_release = None;
+                if let Some(focused) = self.app.ui_state.focused_entry {
+                    self.app.request_entry_detail(focused, self.ctx);
+                }
+            }
+        } else if let Some(release_id) = data.archive_release_id.as_ref() {
+            select_archive_release(
+                self.app,
+                release_id,
+                &data.bound_entry_ids,
+                modifiers,
+                self.ctx,
+            );
+        }
+        self.app.ui_state.focused_panel = FocusedPanel::GameTable;
+    }
+
+    /// A right-click on an unselected row selects just that row, so the menu
+    /// always acts on what the user pointed at.
+    fn select_for_context_menu(&mut self, data: &RowData) {
+        if let Some(entry_id) = data.entry_id {
+            if !self.app.ui_state.selected_entries.contains(&entry_id) {
+                self.app.ui_state.selected_entries.clear();
+                self.app.ui_state.selected_archive_releases.clear();
+                self.app.ui_state.selected_entries.insert(entry_id);
+            }
+            self.app.ui_state.focused_entry = Some(entry_id);
+            self.app.ui_state.focused_archive_release = None;
+            self.app.request_entry_detail(entry_id, self.ctx);
+        } else if let Some(release_id) = data.archive_release_id.as_ref() {
+            if self
+                .app
+                .ui_state
+                .selected_archive_releases
+                .contains(release_id)
+            {
+                self.app.ui_state.focused_entry = None;
+                self.app.ui_state.focused_archive_release = Some(release_id.clone());
+            } else {
+                select_archive_release(
+                    self.app,
+                    release_id,
+                    &data.bound_entry_ids,
+                    egui::Modifiers::NONE,
+                    self.ctx,
+                );
+            }
+        }
+    }
+}
+
+/// Uniform horizontal padding inside every header and data cell.
+fn cell_frame<R>(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui) -> R) {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin::symmetric(4, 0))
+        .show(ui, contents);
+}
+
+fn show_status_cell(ui: &mut egui::Ui, data: &RowData) {
+    let response = status_badge::show_with_warning(
+        ui,
+        data.status,
+        data.has_broken_refs,
+        data.has_hash_warnings,
+        data.has_cue_compat_issues,
+        data.asset_status,
+    );
+    let mut tip = data.status.tooltip().to_string();
+    if data.has_broken_refs {
+        tip.push_str("\n\u{26a0} Broken file references");
+    }
+    if data.has_hash_warnings {
+        tip.push_str("\n\u{26a0} Hash warnings (see detail panel)");
+    }
+    if data.has_cue_compat_issues {
+        tip.push_str("\n\u{26a0} Non-standard CUE sheet format");
+    }
+    match data.asset_status {
+        AssetStatus::Unknown => {}
+        AssetStatus::None => tip.push_str("\nNo scraped media"),
+        AssetStatus::Partial { found, total } => {
+            let _ = write!(tip, "\nPartial media ({found}/{total})");
+        }
+        AssetStatus::Complete => tip.push_str("\nMedia complete"),
+    }
+    response.on_hover_text(tip);
 }
 
 /// Render the context menu for a game table row.
@@ -1035,6 +1115,7 @@ fn region_code(region: &str) -> String {
     }
 }
 
+#[derive(Clone)]
 struct RowData {
     entry_id: Option<retro_junk_db::LibraryEntryId>,
     /// Ordinary playable rows grouped under an archival release.
@@ -1480,6 +1561,10 @@ fn paint_cell_text(ui: &mut egui::Ui, text: &str) {
         color,
     );
 }
+
+#[cfg(test)]
+#[path = "game_table_tests.rs"]
+mod interaction_tests;
 
 #[cfg(test)]
 mod tests {
