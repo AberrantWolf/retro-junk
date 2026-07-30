@@ -7,6 +7,7 @@ pub mod fragile_mount_dialog;
 pub mod game_table;
 pub mod keyboard_nav;
 pub mod log_viewer;
+pub mod modal;
 pub mod results_dialog;
 pub mod startup_dialog;
 pub mod status_badge;

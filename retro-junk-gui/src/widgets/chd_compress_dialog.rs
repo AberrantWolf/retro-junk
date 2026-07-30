@@ -17,16 +17,10 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
 
     let mut start = false;
     let mut close = false;
-    let mut open = true;
-    {
+    let dismissed = {
         let prompt = app.ui_state.chd_compress_prompt.as_mut().unwrap();
-        egui::Window::new("Compress to CHD")
-            .collapsible(false)
-            .resizable(true)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .open(&mut open)
-            .default_width(580.0)
-            .show(ctx, |ui| match &prompt.chdman {
+        crate::widgets::modal::show(ctx, "chd_compress_dialog", "Compress to CHD", 580.0, |ui| {
+            match &prompt.chdman {
                 Err(unavailable) => {
                     ui.colored_label(STATUS_ERR, "chdman is not available");
                     ui.label(unavailable.to_string());
@@ -44,10 +38,11 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
                         "If chdman is already installed somewhere unusual, set its full path \
                          in Settings → External Tools.",
                     );
-                    ui.separator();
-                    if ui.button("Close").clicked() {
-                        close = true;
-                    }
+                    crate::widgets::modal::footer(ui, |ui| {
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
                 }
                 Ok(chdman) => {
                     if chdman.version.is_empty() {
@@ -116,8 +111,7 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
                         .weak(),
                     );
 
-                    ui.separator();
-                    ui.horizontal(|ui| {
+                    crate::widgets::modal::footer(ui, |ui| {
                         let label = format!("Compress {} disc(s)", prompt.items.len());
                         if ui
                             .add_enabled(!prompt.items.is_empty(), egui::Button::new(label))
@@ -130,12 +124,14 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
                         }
                     });
                 }
-            });
-    }
+            }
+        })
+        .dismissed
+    };
 
     if start {
         crate::backend::chd_compress::start_compression(app, ctx);
-    } else if close || !open {
+    } else if close || dismissed {
         app.ui_state.chd_compress_prompt = None;
     }
 }

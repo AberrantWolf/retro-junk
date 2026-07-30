@@ -24,32 +24,22 @@ pub fn show_results_dialog<T>(
     summary: impl Fn(&[T]) -> String,
     row: impl Fn(&mut egui::Ui, &T),
 ) -> bool {
-    let mut dismiss = false;
-    let mut open = true;
-    egui::Window::new(title)
-        .collapsible(false)
-        .resizable(true)
-        .open(&mut open)
-        .default_width(500.0)
-        .show(ctx, |ui| {
-            ui.label(summary(items));
-            ui.separator();
+    let outcome = crate::widgets::modal::show(ctx, "results_dialog", title, 500.0, |ui| {
+        ui.label(summary(items));
+        ui.add_space(4.0);
 
-            egui::ScrollArea::vertical()
-                .max_height(400.0)
-                .show(ui, |ui| {
-                    for item in items {
-                        ui.horizontal(|ui| row(ui, item));
-                    }
-                });
+        egui::ScrollArea::vertical()
+            .max_height(400.0)
+            .show(ui, |ui| {
+                for item in items {
+                    ui.horizontal(|ui| row(ui, item));
+                }
+            });
 
-            ui.separator();
-            if ui.button("OK").clicked() {
-                dismiss = true;
-            }
-        });
+        crate::widgets::modal::footer(ui, |ui| ui.button("OK").clicked())
+    });
 
-    dismiss || !open
+    outcome.inner || outcome.dismissed
 }
 
 #[cfg(test)]

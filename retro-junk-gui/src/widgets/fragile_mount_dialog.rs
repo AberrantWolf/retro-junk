@@ -13,16 +13,12 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
     let kind = prompt.kind;
     let path_text = prompt.root.display().to_string();
 
-    let mut confirmed = false;
-    let mut cancelled = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-
-    egui::Window::new("Network Share Warning")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
-            ui.set_max_width(440.0);
-
+    let outcome = crate::widgets::modal::show(
+        ctx,
+        "fragile_mount_dialog",
+        "Network Share Warning",
+        440.0,
+        |ui| {
             ui.label(format!("This path is a {kind} userspace network mount:"));
             ui.add_space(4.0);
             ui.monospace(&path_text);
@@ -37,17 +33,17 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 "For best results, mount the share via the kernel (CIFS/NFS) \
                  at a normal filesystem path like /mnt/roms.",
             );
-            ui.add_space(8.0);
 
-            ui.horizontal(|ui| {
-                if ui.button("Use Anyway").clicked() {
-                    confirmed = true;
-                }
-                if ui.button("Cancel").clicked() {
-                    cancelled = true;
-                }
-            });
-        });
+            crate::widgets::modal::footer(ui, |ui| {
+                (
+                    ui.button("Use Anyway").clicked(),
+                    ui.button("Cancel").clicked(),
+                )
+            })
+        },
+    );
+    let (confirmed, cancelled) = outcome.inner;
+    let cancelled = cancelled || outcome.dismissed;
 
     if confirmed {
         if let Some(prompt) = app.ui_state.fragile_mount_prompt.take() {

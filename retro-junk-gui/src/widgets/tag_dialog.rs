@@ -14,11 +14,12 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
     let mut confirmed = false;
     let mut cancelled = false;
 
-    egui::Window::new("Mark as Homebrew")
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
+    let outcome = crate::widgets::modal::show(
+        ctx,
+        "tag_homebrew_dialog",
+        "Mark as Homebrew",
+        360.0,
+        |ui| {
             ui.label("Enter the homebrew game name:");
             ui.add_space(4.0);
 
@@ -29,8 +30,7 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     resp.request_focus();
                 }
 
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
+                crate::widgets::modal::footer(ui, |ui| {
                     if ui.button("Confirm").clicked()
                         || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                     {
@@ -41,7 +41,9 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     }
                 });
             }
-        });
+        },
+    );
+    cancelled |= outcome.dismissed;
 
     if confirmed {
         if let TagDialog::Homebrew {
@@ -90,12 +92,12 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
     let mut cancelled = false;
     let mut confirmed = false;
 
-    egui::Window::new("Mark as Modded Version of\u{2026}")
-        .collapsible(false)
-        .resizable(true)
-        .default_size([400.0, 350.0])
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(ctx, |ui| {
+    let outcome = crate::widgets::modal::show(
+        ctx,
+        "tag_mod_search_dialog",
+        "Mark as Modded Version of\u{2026}",
+        400.0,
+        |ui| {
             ui.label("Search for the original game:");
             ui.add_space(4.0);
 
@@ -193,7 +195,7 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     );
                     ui.add_space(8.0);
                 }
-                ui.horizontal(|ui| {
+                crate::widgets::modal::footer(ui, |ui| {
                     let can_confirm = selected.is_some()
                         && (!disc_number_required || parse_disc_number(disc_number).is_some());
                     if ui
@@ -207,7 +209,9 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     }
                 });
             }
-        });
+        },
+    );
+    cancelled |= outcome.dismissed;
 
     if confirmed {
         if let TagDialog::ModSearch {

@@ -1628,14 +1628,13 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
 
     let mut execute = false;
     let mut dismiss = false;
-    let mut open = true;
 
-    egui::Window::new("Organize Disc Files")
-        .collapsible(false)
-        .resizable(true)
-        .open(&mut open)
-        .default_width(550.0)
-        .show(ctx, |ui| {
+    let outcome = widgets::modal::show(
+        ctx,
+        "organize_preview_dialog",
+        "Organize Disc Files",
+        550.0,
+        |ui| {
             ui.label(format!(
                 "{job_count} folders to create ({total_files} files to move)"
             ));
@@ -1652,7 +1651,7 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 );
             }
 
-            ui.separator();
+            ui.add_space(4.0);
 
             egui::ScrollArea::vertical()
                 .max_height(350.0)
@@ -1687,8 +1686,7 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     }
                 });
 
-            ui.separator();
-            ui.horizontal(|ui| {
+            widgets::modal::footer(ui, |ui| {
                 if ui
                     .add_enabled(job_count > 0, egui::Button::new("Execute"))
                     .clicked()
@@ -1699,12 +1697,13 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     dismiss = true;
                 }
             });
-        });
+        },
+    );
 
     if execute {
         let (folder_name, plan) = app.ui_state.pending_organize_plan.take().unwrap();
         crate::backend::organize::execute_organize_plan(app, folder_name, plan, ctx);
-    } else if dismiss || !open {
+    } else if dismiss || outcome.dismissed {
         app.ui_state.pending_organize_plan = None;
     }
 }

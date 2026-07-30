@@ -523,16 +523,12 @@ fn show_credential_info_popup(ctx: &egui::Context, app: &mut RetroJunkApp) {
         return;
     };
 
-    let mut dismiss = false;
-    let mut open = true;
-
-    egui::Window::new(meta.label)
-        .collapsible(false)
-        .resizable(false)
-        .open(&mut open)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .default_width(420.0)
-        .show(ctx, |ui| {
+    let outcome = crate::widgets::modal::show(
+        ctx,
+        "credential_info_dialog",
+        meta.label,
+        420.0,
+        |ui| {
             ui.label(meta.description);
             ui.add_space(8.0);
 
@@ -550,13 +546,11 @@ fn show_credential_info_popup(ctx: &egui::Context, app: &mut RetroJunkApp) {
                 ui.monospace(format!("[screenscraper] {}", meta.key));
             });
 
-            ui.separator();
-            if ui.button("Close").clicked() {
-                dismiss = true;
-            }
-        });
+            crate::widgets::modal::footer(ui, |ui| ui.button("Close").clicked())
+        },
+    );
 
-    if dismiss || !open {
+    if outcome.inner || outcome.dismissed {
         app.ui_state.credential_info_popup = None;
     }
 }

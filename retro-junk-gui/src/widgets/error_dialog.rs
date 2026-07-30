@@ -13,42 +13,30 @@ pub fn show(ctx: &egui::Context, errors: &mut Vec<UserError>) {
         return;
     }
 
-    let mut dismiss = false;
-    let mut open = true;
+    let outcome = crate::widgets::modal::show(ctx, "error_dialog", "Errors", 500.0, |ui| {
+        let count = errors.len();
+        ui.label(format!(
+            "{} error{} occurred",
+            count,
+            if count == 1 { "" } else { "s" }
+        ));
+        ui.add_space(4.0);
 
-    egui::Window::new("Errors")
-        .collapsible(false)
-        .resizable(true)
-        .open(&mut open)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .default_width(500.0)
-        .show(ctx, |ui| {
-            let count = errors.len();
-            ui.label(format!(
-                "{} error{} occurred",
-                count,
-                if count == 1 { "" } else { "s" }
-            ));
-            ui.separator();
+        egui::ScrollArea::vertical()
+            .max_height(300.0)
+            .show(ui, |ui| {
+                for error in errors.iter() {
+                    ui.horizontal(|ui| {
+                        ui.colored_label(crate::theme::STATUS_ERR, &error.category);
+                        ui.label(&error.message);
+                    });
+                }
+            });
 
-            egui::ScrollArea::vertical()
-                .max_height(300.0)
-                .show(ui, |ui| {
-                    for error in errors.iter() {
-                        ui.horizontal(|ui| {
-                            ui.colored_label(crate::theme::STATUS_ERR, &error.category);
-                            ui.label(&error.message);
-                        });
-                    }
-                });
+        crate::widgets::modal::footer(ui, |ui| ui.button("Dismiss").clicked())
+    });
 
-            ui.separator();
-            if ui.button("Dismiss").clicked() {
-                dismiss = true;
-            }
-        });
-
-    if dismiss || !open {
+    if outcome.inner || outcome.dismissed {
         errors.clear();
     }
 }
