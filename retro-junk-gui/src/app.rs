@@ -297,9 +297,10 @@ pub struct RetroJunkApp {
     pub op_threads: HashMap<u64, std::thread::JoinHandle<()>>,
 
     /// Native menubar. Held for the life of the app so the menu and its
-    /// items are not dropped out from under the OS. `None` in headless
-    /// test instances, which never build one.
-    _app_menu: Option<crate::menu::AppMenu>,
+    /// items are not dropped out from under the OS; nothing reads it back.
+    /// `None` in headless test instances, which never build one.
+    #[expect(dead_code, reason = "held so the platform menu outlives startup")]
+    app_menu: Option<crate::menu::AppMenu>,
 
     /// Menu-item identities, copied out of `_app_menu` so dispatch does not
     /// re-borrow it.
@@ -366,7 +367,7 @@ impl RetroJunkApp {
         let app_menu = crate::menu::build();
         app_menu.install();
         app.menu_ids = Some(app_menu.ids.clone());
-        app._app_menu = Some(app_menu);
+        app.app_menu = Some(app_menu);
         log::info!(
             "startup: settings + UI construction took {:?}",
             construct_started.elapsed()
@@ -536,7 +537,7 @@ impl RetroJunkApp {
             pending_scan_commits: HashMap::new(),
             pending_first_open_scan: false,
             op_threads: HashMap::new(),
-            _app_menu: None,
+            app_menu: None,
             menu_ids: None,
             toasts: crate::widgets::toasts::Toasts::default(),
         }
