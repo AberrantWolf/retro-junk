@@ -80,7 +80,7 @@ fn all_ui_symbols_have_glyphs_in_configured_fonts() {
             None,
         )
     });
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     // Check the family's actual character map, NOT `FontsView::has_glyph`:
     // that API falsely reports "missing" for any char served by the same font

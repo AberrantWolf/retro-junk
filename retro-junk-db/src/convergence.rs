@@ -9,14 +9,22 @@
 //! archive walk, cheap enough for a 30-second daemon tick over a network
 //! mount.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use retro_junk_frontend::{AssetSelection, AssetType};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::library::{ArchivedPlayableGap, GapScope, LibraryError, query_playable_gaps};
+use crate::library::{
+    ArchivedPlayableGap, ArchivedScrapeIdentity, GapScope, LibraryError, ScrapeIdentityTier,
+    query_playable_gaps,
+};
 
-/// What a proposed action would do. `#[non_exhaustive]`: Scrape and
-/// miximage derivation arrive in later phases.
+/// What a proposed action would do. `#[non_exhaustive]`: miximage staleness
+/// derivation arrives in a later phase.
+///
+/// Declaration order is worker stage order, and — through the derived `Ord` —
+/// both the sort order of derived actions and the chip order in the GUI
+/// backlog strip. Keep it in the order work actually happens.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ActionKind {
@@ -29,6 +37,8 @@ pub enum ActionKind {
     /// Build the preferred playable representation for a release (includes
     /// the playlist when the set completes, plus asset/gamelist projection).
     BuildPlayable,
+    /// Fetch missing artwork from `ScreenScraper` into the archive.
+    Scrape,
     /// Project archived artwork originals to the frontend media tree.
     ProjectAssets,
     /// Upsert the release's ES-DE gamelist entry.
@@ -43,6 +53,7 @@ impl ActionKind {
             Self::VerifyCatalog => "verify_catalog",
             Self::AuditRedumper => "audit_redumper",
             Self::BuildPlayable => "build",
+            Self::Scrape => "scrape",
             Self::ProjectAssets => "project_assets",
             Self::SyncGamelist => "sync_gamelist",
         }
@@ -57,6 +68,7 @@ impl ActionKind {
             Self::VerifyCatalog,
             Self::AuditRedumper,
             Self::BuildPlayable,
+            Self::Scrape,
             Self::ProjectAssets,
             Self::SyncGamelist,
         ]
@@ -72,6 +84,7 @@ impl std::str::FromStr for ActionKind {
             "verify_catalog" | "verify-catalog" | "catalog" => Ok(Self::VerifyCatalog),
             "audit_redumper" | "audit-redumper" | "audit" => Ok(Self::AuditRedumper),
             "build" | "build_playable" => Ok(Self::BuildPlayable),
+            "scrape" | "artwork" => Ok(Self::Scrape),
             "project_assets" | "project" => Ok(Self::ProjectAssets),
             "sync_gamelist" | "gamelist" => Ok(Self::SyncGamelist),
             other => Err(format!("unknown action kind '{other}'")),
@@ -119,6 +132,9 @@ pub enum BlockedReason {
     NoPolicy,
     /// The archive does not hold every catalog-expected carrier.
     IncompleteArchive { have: u32, need: u32 },
+    /// Nothing identifies the release to a scraper — no serial, no complete
+    /// hash triple, not even a filename — so there is nothing to look up.
+    NoScrapeIdentity,
 }
 
 impl std::fmt::Display for BlockedReason {
@@ -127,6 +143,9 @@ impl std::fmt::Display for BlockedReason {
             Self::NoPolicy => write!(f, "no preferred playable format is set"),
             Self::IncompleteArchive { have, need } => {
                 write!(f, "archive holds {have} of {need} expected discs")
+            }
+            Self::NoScrapeIdentity => {
+                write!(f, "no catalog identity to look up")
             }
         }
     }
@@ -168,11 +187,13 @@ pub enum Scope {
 pub fn derive_convergence(
     conn: &Connection,
     scope: &Scope,
+    expected_assets: &AssetSelection,
 ) -> Result<Vec<ProposedAction>, LibraryError> {
     let mut actions = Vec::new();
     for profile_id in profiles_in_scope(conn, scope)? {
         derive_dump_actions(conn, &profile_id, &mut actions)?;
         derive_build_actions(conn, &profile_id, &mut actions)?;
+        derive_scrape_actions(conn, &profile_id, expected_assets, &mut actions)?;
         derive_projection_actions(conn, &profile_id, &mut actions)?;
     }
     // Scope narrowing happens after derivation: the queries are
@@ -468,6 +489,139 @@ fn derive_projection_actions(
     Ok(())
 }
 
+/// Every release's artwork holdings, whether or not it has any. The `LEFT
+/// JOIN` is what makes a release with no artwork at all appear — an inner
+/// join would silently exclude exactly the releases most in need of a scrape.
+const RELEASE_ARTWORK_SQL: &str = "
+    SELECT ar.id, ar.platform_id, ar.region, ar.title, COALESCE(arf.asset_type,'')
+    FROM archive_releases ar
+    LEFT JOIN archive_release_files arf
+      ON arf.archive_release_id=ar.id AND arf.category IN ('artwork','video')
+    WHERE ar.profile_id=?1";
+
+/// One release's artwork position against the expected set.
+#[derive(Debug, Clone)]
+pub struct ScrapeGap {
+    pub archive_release_id: String,
+    pub platform_id: String,
+    pub region: String,
+    pub title: String,
+    /// Expected types the archive already holds.
+    pub have: Vec<AssetType>,
+    /// Expected types it does not.
+    pub missing: Vec<AssetType>,
+    /// How well this release can be identified to a scraper.
+    pub identity: ScrapeIdentityTier,
+}
+
+impl ScrapeGap {
+    #[must_use]
+    pub fn expected(&self) -> usize {
+        self.have.len() + self.missing.len()
+    }
+}
+
+/// Compare every release's archived artwork against the expected set.
+///
+/// One definition of "what artwork does this release owe", shared by
+/// derivation, the summary's done count, and the executor. `Miximage` is
+/// excluded throughout: it is composed locally from the others, so expecting
+/// it from a scraper would make every release permanently incomplete.
+pub fn scrape_gaps(
+    conn: &Connection,
+    profile_id: &str,
+    expected: &AssetSelection,
+) -> Result<Vec<ScrapeGap>, LibraryError> {
+    let expected: Vec<AssetType> = expected
+        .types
+        .iter()
+        .copied()
+        .filter(|asset_type| *asset_type != AssetType::Miximage)
+        .collect();
+    if expected.is_empty() {
+        return Ok(Vec::new());
+    }
+    let identities = crate::library::query_archived_scrape_identities(conn, profile_id)?;
+
+    let mut statement = conn.prepare(RELEASE_ARTWORK_SQL)?;
+    let rows = statement
+        .query_map([profile_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut releases: BTreeMap<String, (String, String, String, BTreeSet<AssetType>)> =
+        BTreeMap::new();
+    for (release_id, platform_id, region, title, asset_type) in rows {
+        let entry = releases
+            .entry(release_id)
+            .or_insert_with(|| (platform_id, region, title, BTreeSet::new()));
+        if let Some(asset_type) = AssetType::from_archive_name(&asset_type) {
+            entry.3.insert(asset_type);
+        }
+    }
+
+    Ok(releases
+        .into_iter()
+        .map(|(release_id, (platform_id, region, title, held))| {
+            let (have, missing) = expected
+                .iter()
+                .partition::<Vec<_>, _>(|asset_type| held.contains(asset_type));
+            ScrapeGap {
+                identity: identities
+                    .get(&release_id)
+                    .map_or(ScrapeIdentityTier::None, ArchivedScrapeIdentity::tier),
+                archive_release_id: release_id,
+                platform_id,
+                region,
+                title,
+                have,
+                missing,
+            }
+        })
+        .collect())
+}
+
+/// Releases missing expected artwork owe a scrape.
+///
+/// Unlike the projection kinds this does *not* require a present playable:
+/// an archive-only release is scrapeable from its catalog identity, and
+/// waiting for a build before fetching its box art would leave the collection
+/// view blank for everything not yet built.
+fn derive_scrape_actions(
+    conn: &Connection,
+    profile_id: &str,
+    expected: &AssetSelection,
+    actions: &mut Vec<ProposedAction>,
+) -> Result<(), LibraryError> {
+    for gap in scrape_gaps(conn, profile_id, expected)? {
+        if gap.missing.is_empty() {
+            continue;
+        }
+        actions.push(ProposedAction {
+            kind: ActionKind::Scrape,
+            target: WorkTarget::Release(gap.archive_release_id.clone()),
+            profile_id: profile_id.to_owned(),
+            playable_platform_id: retro_junk_frontend::esde::system_directory(
+                &gap.platform_id,
+                Some(&gap.region),
+            ),
+            label: dump_label(&gap.title, &gap.region, 0),
+            blocked: (gap.identity == ScrapeIdentityTier::None)
+                .then_some(BlockedReason::NoScrapeIdentity),
+            platform_id: gap.platform_id,
+            build: None,
+        });
+    }
+    Ok(())
+}
+
 fn release_identity(
     conn: &Connection,
     archive_release_id: &str,
@@ -519,9 +673,10 @@ pub struct ConvergenceSummary {
 pub fn summarize_convergence(
     conn: &Connection,
     scope: &Scope,
+    expected_assets: &AssetSelection,
 ) -> Result<ConvergenceSummary, LibraryError> {
     let mut summary = ConvergenceSummary::default();
-    for action in derive_convergence(conn, scope)? {
+    for action in derive_convergence(conn, scope, expected_assets)? {
         let counts = summary.per_kind.entry(action.kind).or_default();
         if action.blocked.is_some() {
             counts.blocked += 1;
@@ -595,6 +750,11 @@ pub fn summarize_convergence(
             .entry(ActionKind::BuildPlayable)
             .or_default()
             .done += satisfied;
+        let fully_scraped = scrape_gaps(conn, &profile_id, expected_assets)?
+            .into_iter()
+            .filter(|gap| gap.missing.is_empty())
+            .count() as u64;
+        summary.per_kind.entry(ActionKind::Scrape).or_default().done += fully_scraped;
     }
     summary.open_suggestions = conn.query_row(
         "SELECT COUNT(*) FROM suggestions WHERE resolved_at IS NULL",

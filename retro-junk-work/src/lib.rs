@@ -11,12 +11,18 @@ pub mod executor;
 pub mod incoming;
 pub mod policy;
 pub mod profiles;
+pub mod scrape;
+pub mod suggestions;
 pub mod watch;
 pub mod worker;
 
 pub use executor::{
-    ActionOutcome, ExecContext, LockEtiquette, ReconcileMode, ToolPaths, WorkError, execute_action,
+    ActionOutcome, ExecContext, LockEtiquette, ReconcileMode, ScrapeSettings, ToolPaths, WorkError,
+    execute_action,
 };
 pub use policy::{AutoImportMode, AutomationPolicy, BindConfidence};
+pub use suggestions::{
+    SCRAPE_SUGGESTION_KIND, ScrapeSuggestionPayload, apply_suggestion, is_applicable,
+};
 pub use watch::{DirectoryWatcher, WatchEvent};
 pub use worker::{ProjectionPass, RunMode, RunStats, run_once};

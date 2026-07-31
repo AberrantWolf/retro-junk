@@ -27,6 +27,33 @@ pub struct ToolPaths {
     pub dolphin_tool: PathBuf,
 }
 
+/// What a scrape may do, resolved once by the caller from policy.
+///
+/// Same precedent as [`ToolPaths`]: an external resource the executor needs
+/// but does not decide. Derivation needs `expected_assets` too, so it is the
+/// one definition of "what artwork a release owes".
+#[derive(Debug, Clone)]
+pub struct ScrapeSettings {
+    /// Asset types a release is expected to hold.
+    pub expected_assets: retro_junk_frontend::AssetSelection,
+    /// Refuse to publish a filename-tier match unattended. A filename match
+    /// is a guess, and the archive is where guesses become durable.
+    pub only_when_unambiguous: bool,
+    /// Stop a run when the daily request budget falls to this many
+    /// remaining. `0` disables the reserve.
+    pub daily_request_reserve: u32,
+}
+
+impl Default for ScrapeSettings {
+    fn default() -> Self {
+        Self {
+            expected_assets: retro_junk_frontend::AssetSelection::default(),
+            only_when_unambiguous: true,
+            daily_request_reserve: 0,
+        }
+    }
+}
+
 /// How to wait for the whole-archive lock.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LockEtiquette {
@@ -54,6 +81,7 @@ pub struct ExecContext {
     pub profile: retro_junk_archive::CollectionProfile,
     pub db_path: PathBuf,
     pub tools: ToolPaths,
+    pub scrape: ScrapeSettings,
     pub roots: FrontendRoots,
     pub analyzers: Arc<retro_junk_lib::AnalysisContext>,
     /// Claim owner identity, e.g. `"host:1234:daemon"`.
@@ -379,6 +407,21 @@ fn dispatch(
                 outputs.push(playlist);
             }
             Ok(outputs)
+        }
+        ActionKind::Scrape => {
+            let report =
+                crate::scrape::scrape_release_artwork(ctx, action, conn, progress, cancelled)?;
+            if let Some(weak) = &report.needs_review {
+                // Not a failure: the match exists but is too weak to make
+                // durable unattended, so it becomes a reviewable card rather
+                // than an error that would back the release off for hours.
+                crate::suggestions::open_scrape_suggestion(conn, action, weak)?;
+                progress("Filed for review: only a filename match", 1, 1);
+            }
+            if ctx.reconcile == ReconcileMode::PerAction && report.published > 0 {
+                reconcile_if_per_action(ctx, conn)?;
+            }
+            Ok(Vec::new())
         }
         ActionKind::ProjectAssets => {
             let snapshot = scan(ctx)?;

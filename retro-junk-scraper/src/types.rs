@@ -14,7 +14,7 @@ pub struct JeuInfosData {
 }
 
 /// Game info from `ScreenScraper`. Fields use nested arrays with typed objects.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Clone, Default)]
 pub struct GameInfo {
     pub id: String,
     #[serde(default)]

@@ -50,7 +50,7 @@ fn the_first_poll_records_the_tick_without_refreshing() {
     harness.state_mut().ui_state.backlog_scope = Some(retro_junk_db::convergence::Scope::Profile(
         "prof".to_owned(),
     ));
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     assert_eq!(
         harness.state().ui_state.dirty_tick,
@@ -77,7 +77,7 @@ fn the_first_poll_records_the_tick_without_refreshing() {
     .expect("open suggestion");
     // Skip the 1 Hz throttle rather than sleeping through it.
     harness.state_mut().ui_state.last_dirty_poll = None;
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     assert!(
         harness.state().ui_state.dirty_tick > Some(observed_before),

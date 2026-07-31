@@ -24,7 +24,7 @@ fn harness<'a>() -> Harness<'a, RetroJunkApp> {
 #[test]
 fn first_launch_shows_sidebar_and_welcome() {
     let mut harness = harness();
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     // Sidebar navigation entries (icon + label, per `widgets::icons`)
     harness.get_by_label(&icons::labeled(icons::LIBRARY, "Library"));
@@ -61,10 +61,10 @@ fn app_disables_virtual_list_incompatible_rect_id_warning() {
 #[test]
 fn sidebar_click_switches_to_settings_view() {
     let mut harness = harness();
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     harness.get_by_label_contains("Settings").click();
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     assert_eq!(harness.state().ui_state.current_view, View::Settings);
     harness.get_by_label("Current root:");
@@ -413,13 +413,13 @@ fn tools_data_tab_renders_operation_cards() {
     use crate::state::ToolsTab;
 
     let mut harness = harness();
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     // Navigate to Tools, then the Data tab.
     harness.get_by_label_contains("Tools").click();
-    harness.run();
+    crate::test_support::settle(&mut harness);
     harness.get_by_label("Data").click();
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     assert_eq!(
         harness.state().ui_state.tools_state.active_tab,

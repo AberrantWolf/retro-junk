@@ -7,8 +7,10 @@ pub enum ScrapeError {
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
 
+    /// HTTP 429. `retry_after` carries the server's `Retry-After` header when
+    /// it sent one, so the backoff can honor it instead of guessing.
     #[error("Rate limited by ScreenScraper API")]
-    RateLimit,
+    RateLimit { retry_after: Option<u64> },
 
     #[error("Daily quota exceeded ({used}/{max} requests)")]
     QuotaExceeded { used: u32, max: u32 },

@@ -4,7 +4,7 @@ pub mod esde;
 pub mod miximage;
 pub mod miximage_layout;
 
-pub use asset_types::AssetType;
+pub use asset_types::{AssetSelection, AssetType, DISPLAY_ASSET_TYPES, collect_existing_assets};
 pub use error::FrontendError;
 
 use std::path::Path;

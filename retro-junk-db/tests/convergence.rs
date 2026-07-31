@@ -192,7 +192,21 @@ impl Fixture {
     }
 
     fn derive(&self) -> Vec<retro_junk_db::convergence::ProposedAction> {
-        derive_convergence(&self.conn, &Scope::Profile("prof".to_owned())).unwrap()
+        derive_convergence(
+            &self.conn,
+            &Scope::Profile("prof".to_owned()),
+            &expected_assets(),
+        )
+        .unwrap()
+    }
+}
+
+/// The artwork a release is expected to hold in these tests. Deliberately
+/// just the cover: the fixture's release owns exactly that one asset, so a
+/// Scrape action appearing means a genuine gap, not an unmet default.
+fn expected_assets() -> retro_junk_frontend::AssetSelection {
+    retro_junk_frontend::AssetSelection {
+        types: vec![retro_junk_frontend::AssetType::Cover],
     }
 }
 
@@ -332,6 +346,7 @@ fn scope_release_filters_to_one_release_including_its_dumps() {
         &Scope::Release {
             archive_release_id: release_a.clone(),
         },
+        &expected_assets(),
     )
     .unwrap();
     assert!(!actions.is_empty());
@@ -364,7 +379,12 @@ fn summary_counts_pending_blocked_done_and_running() {
         retro_junk_db::work::try_claim(&fixture.conn, "build", "release", &release, "daemon")
             .unwrap()
     );
-    let summary = summarize_convergence(&fixture.conn, &Scope::Profile("prof".to_owned())).unwrap();
+    let summary = summarize_convergence(
+        &fixture.conn,
+        &Scope::Profile("prof".to_owned()),
+        &expected_assets(),
+    )
+    .unwrap();
     let build = summary.per_kind[&ActionKind::BuildPlayable];
     assert_eq!(build.pending, 1);
     assert_eq!(build.running, 1);
@@ -427,4 +447,134 @@ fn path_targeted_errors_belong_to_no_release() {
             .unwrap()
             .is_empty()
     );
+}
+
+// ── Scrape derivation ──────────────────────────────────────────────────────
+
+/// The whole point of the kind: a release with nothing archived owes a
+/// scrape, and it does so without waiting for a playable build — an
+/// archive-only release is scrapeable from its catalog identity, and the
+/// collection view would otherwise stay blank for everything not yet built.
+#[test]
+fn a_release_with_no_artwork_owes_a_scrape_even_with_no_playable() {
+    let mut fixture = Fixture::new();
+    let (release, copy) = fixture.release("Alpha");
+    fixture.media("m1", 0);
+    let (_carrier, _dump) =
+        fixture.carrier_with_dump(&copy, Some("m1"), 0, "iso", "verified", "verified", 1);
+
+    let actions = fixture.derive();
+
+    let scrape = actions
+        .iter()
+        .find(|action| action.kind == ActionKind::Scrape)
+        .expect("a release with no artwork owes a scrape");
+    assert_eq!(scrape.target, WorkTarget::Release(release));
+    assert_eq!(scrape.blocked, None);
+}
+
+/// Holding the expected set is the end state: no action, and it counts as
+/// done rather than quietly disappearing from the summary.
+#[test]
+fn a_release_holding_every_expected_type_owes_nothing() {
+    let mut fixture = Fixture::new();
+    let (release, copy) = fixture.release("Alpha");
+    fixture.media("m1", 0);
+    let (_carrier, _dump) =
+        fixture.carrier_with_dump(&copy, Some("m1"), 0, "iso", "verified", "verified", 1);
+    // The fixture's expected set is exactly the cover, which `artwork`
+    // inserts as `box-front`.
+    fixture.artwork(&release);
+
+    let actions = fixture.derive();
+
+    assert!(
+        !actions
+            .iter()
+            .any(|action| action.kind == ActionKind::Scrape),
+        "a fully-covered release should owe no scrape"
+    );
+    let summary = summarize_convergence(
+        &fixture.conn,
+        &Scope::Profile("prof".to_owned()),
+        &expected_assets(),
+    )
+    .unwrap();
+    assert_eq!(summary.per_kind[&ActionKind::Scrape].done, 1);
+    assert_eq!(summary.per_kind[&ActionKind::Scrape].pending, 0);
+}
+
+/// A release with nothing to look up is reported as blocked, never silently
+/// dropped: "we cannot identify this" is a fact the user should see.
+#[test]
+fn a_release_with_no_catalog_identity_is_blocked_not_hidden() {
+    let mut fixture = Fixture::new();
+    let (_release, copy) = fixture.release("Alpha");
+    // No `media` row, so the carrier binds to no catalog medium.
+    let (_carrier, _dump) =
+        fixture.carrier_with_dump(&copy, None, 0, "iso", "verified", "verified", 1);
+
+    let actions = fixture.derive();
+
+    let scrape = actions
+        .iter()
+        .find(|action| action.kind == ActionKind::Scrape)
+        .expect("the release still owes artwork");
+    assert_eq!(scrape.blocked, Some(BlockedReason::NoScrapeIdentity));
+}
+
+/// Expecting nothing must not derive work for everything. An empty selection
+/// is the user saying "I don't want artwork managed", not "fetch it all".
+#[test]
+fn expecting_no_asset_types_derives_no_scrapes() {
+    let mut fixture = Fixture::new();
+    let (_release, copy) = fixture.release("Alpha");
+    fixture.media("m1", 0);
+    let (_carrier, _dump) =
+        fixture.carrier_with_dump(&copy, Some("m1"), 0, "iso", "verified", "verified", 1);
+
+    let actions = derive_convergence(
+        &fixture.conn,
+        &Scope::Profile("prof".to_owned()),
+        &retro_junk_frontend::AssetSelection { types: Vec::new() },
+    )
+    .unwrap();
+
+    assert!(
+        !actions
+            .iter()
+            .any(|action| action.kind == ActionKind::Scrape)
+    );
+}
+
+/// Partial coverage is still a gap: this is the "artwork evidence is
+/// presence-only" fix — one screenshot must not read as a complete set.
+#[test]
+fn partial_coverage_still_owes_the_missing_types() {
+    let mut fixture = Fixture::new();
+    let (release, copy) = fixture.release("Alpha");
+    fixture.media("m1", 0);
+    let (_carrier, _dump) =
+        fixture.carrier_with_dump(&copy, Some("m1"), 0, "iso", "verified", "verified", 1);
+    fixture.artwork(&release);
+
+    let gaps = retro_junk_db::convergence::scrape_gaps(
+        &fixture.conn,
+        "prof",
+        &retro_junk_frontend::AssetSelection {
+            types: vec![
+                retro_junk_frontend::AssetType::Cover,
+                retro_junk_frontend::AssetType::Screenshot,
+            ],
+        },
+    )
+    .unwrap();
+
+    let gap = gaps.first().expect("one release");
+    assert_eq!(gap.have, vec![retro_junk_frontend::AssetType::Cover]);
+    assert_eq!(
+        gap.missing,
+        vec![retro_junk_frontend::AssetType::Screenshot]
+    );
+    assert_eq!(gap.expected(), 2);
 }

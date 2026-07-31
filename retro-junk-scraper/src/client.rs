@@ -25,6 +25,11 @@ const MAX_RETRIES: u32 = 3;
 /// Initial backoff duration before first retry (doubles each attempt).
 const INITIAL_BACKOFF: Duration = Duration::from_secs(2);
 
+/// Ceiling on a rate-limit wait. `Retry-After` is normally seconds; a server
+/// that asks for longer than this is telling us to come back later, and the
+/// caller's quota handling is the right place for that.
+const MAX_RATE_LIMIT_BACKOFF: Duration = Duration::from_mins(1);
+
 /// Hard timeout for media file downloads.
 const MEDIA_TIMEOUT: Duration = Duration::from_mins(2);
 
@@ -37,7 +42,7 @@ pub struct ScreenScraperClient {
     http: reqwest::Client,
     creds: Credentials,
     quota: Mutex<Option<UserQuota>>,
-    /// Global start-time gate derived from ScreenScraper's per-minute quota.
+    /// Global start-time gate derived from `ScreenScraper`'s per-minute quota.
     /// The API's thread allowance controls in-flight concurrency separately.
     next_api_request: Mutex<tokio::time::Instant>,
     request_interval_ms: AtomicU64,
@@ -139,7 +144,12 @@ impl ScreenScraperClient {
             ));
         }
         if text.contains("Le quota de scrape journalier") {
-            return Err(ScrapeError::QuotaExceeded { used: 0, max: 0 });
+            // Report the numbers the last response gave us. Zeroes here made
+            // the error read "0/0 requests" on every surface that shows it.
+            let (used, max) = self.current_quota().await.map_or((0, 0), |quota| {
+                (quota.requests_today(), quota.max_requests_per_day())
+            });
+            return Err(ScrapeError::QuotaExceeded { used, max });
         }
 
         // "Not found" — ScreenScraper uses "non trouvé(e)" for games/ROMs
@@ -216,6 +226,28 @@ impl ScreenScraperClient {
         })
     }
 
+    /// A client that has never contacted `ScreenScraper`, for exercising
+    /// orchestration paths that must not reach the network.
+    #[cfg(test)]
+    pub(crate) fn offline_for_tests() -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            creds: Credentials {
+                dev_id: "dev".to_owned(),
+                dev_password: "dev".to_owned(),
+                soft_name: "retro-junk-tests".to_owned(),
+                user_id: String::new(),
+                user_password: String::new(),
+            },
+            quota: Mutex::new(None),
+            next_api_request: Mutex::new(tokio::time::Instant::now()),
+            request_interval_ms: AtomicU64::new(FALLBACK_REQUEST_INTERVAL.as_millis() as u64),
+            next_download_byte: Mutex::new(tokio::time::Instant::now()),
+            download_bytes_per_second: AtomicU64::new(0),
+            request_counter: AtomicU64::new(0),
+        }
+    }
+
     /// Get current quota info if available.
     pub async fn current_quota(&self) -> Option<UserQuota> {
         if let Ok(guard) = tokio::time::timeout(LOCK_TIMEOUT, self.quota.lock()).await {
@@ -249,7 +281,13 @@ impl ScreenScraperClient {
             ));
         }
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            return Err(ScrapeError::RateLimit);
+            return Err(ScrapeError::RateLimit {
+                retry_after: resp
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.trim().parse::<u64>().ok()),
+            });
         }
         if status.is_server_error() {
             return Err(ScrapeError::ServerError {
@@ -338,6 +376,16 @@ impl ScreenScraperClient {
                         attempt_elapsed.as_millis(),
                         e,
                     );
+                    // A 429 carries the server's own wait; hold the global
+                    // request gate for it so every worker slows down, not just
+                    // this one.
+                    if let Some(wait) = rate_limit_backoff(&e, attempt) {
+                        log::info!(
+                            "[req:{req_id}] {endpoint} rate limited; pausing all requests for {}s",
+                            wait.as_secs(),
+                        );
+                        self.hold_request_slot(wait).await;
+                    }
                     last_error = Some(e);
                 }
                 Ok(Err(e)) => {
@@ -405,6 +453,27 @@ impl ScreenScraperClient {
         *next = tokio::time::Instant::now() + interval;
     }
 
+    /// Push the global request gate out by `wait`, so every worker backs off
+    /// together. Rate limiting is per account, not per connection: slowing
+    /// down only the worker that saw the 429 just moves the next one into it.
+    async fn hold_request_slot(&self, wait: Duration) {
+        let mut next = self.next_api_request.lock().await;
+        let resume = tokio::time::Instant::now() + wait;
+        if resume > *next {
+            *next = resume;
+        }
+    }
+
+    /// Requests left in the account's daily budget, and the budget itself.
+    ///
+    /// `None` until a response has reported quota — the caller cannot make a
+    /// reserve decision from a number it does not have.
+    pub async fn quota_headroom(&self) -> Option<(u32, u32)> {
+        let quota = self.current_quota().await?;
+        let (used, max) = (quota.requests_today(), quota.max_requests_per_day());
+        Some((max.saturating_sub(used), max))
+    }
+
     fn set_download_rate(&self, kilobytes_per_second: u32) {
         self.download_bytes_per_second.store(
             u64::from(kilobytes_per_second).saturating_mul(1024),
@@ -468,7 +537,28 @@ fn looks_like_html_error(text: &str) -> bool {
 
 /// Check if a `ScrapeError` is retryable (transient server issue).
 fn is_retryable(e: &ScrapeError) -> bool {
-    matches!(e, ScrapeError::ServerError { .. })
+    // 429 is the one error the server explicitly tells us to retry. Failing it
+    // outright turned a "slow down" into a per-game failure and, for the
+    // daemon, into a six-hour error backoff on a target that was fine.
+    matches!(
+        e,
+        ScrapeError::ServerError { .. } | ScrapeError::RateLimit { .. }
+    )
+}
+
+/// How long to wait before the next attempt at a rate-limited request.
+///
+/// A `Retry-After` is the server telling us exactly when it will serve us
+/// again; guessing shorter just earns another 429.
+fn rate_limit_backoff(error: &ScrapeError, attempt: u32) -> Option<Duration> {
+    match error {
+        ScrapeError::RateLimit { retry_after } => Some(
+            retry_after
+                .map_or_else(|| INITIAL_BACKOFF * 2u32.pow(attempt), Duration::from_secs)
+                .min(MAX_RATE_LIMIT_BACKOFF),
+        ),
+        _ => None,
+    }
 }
 
 /// Load credentials and create a connected `ScreenScraper` client.
@@ -592,3 +682,7 @@ fn redact_credentials(msg: &str) -> String {
     }
     result
 }
+
+#[cfg(test)]
+#[path = "tests/client_tests.rs"]
+mod tests;

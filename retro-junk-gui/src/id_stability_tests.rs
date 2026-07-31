@@ -69,13 +69,13 @@ fn panel_toggles_do_not_reassign_widget_ids() {
     harness
         .ctx
         .all_styles_mut(|style| style.debug.warn_if_rect_changes_id = true);
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     // ── Tools/Browse: toggling the bottom log viewer must not re-id the view ──
     harness.state_mut().ui_state.current_view = View::Tools;
     harness.state_mut().ui_state.tools_state.active_tab = ToolsTab::Browse;
     for _ in 0..4 {
-        harness.run();
+        crate::test_support::settle(&mut harness);
     }
 
     reset();
@@ -83,7 +83,7 @@ fn panel_toggles_do_not_reassign_widget_ids() {
         let cur = harness.state().ui_state.log_viewer.open;
         harness.state_mut().ui_state.log_viewer.open = !cur;
         for _ in 0..3 {
-            harness.run();
+            crate::test_support::settle(&mut harness);
         }
     }
     assert_eq!(
@@ -95,7 +95,7 @@ fn panel_toggles_do_not_reassign_widget_ids() {
     // ── Switching browse tables (with the log open) must stay clean too ──
     harness.state_mut().ui_state.log_viewer.open = true;
     for _ in 0..3 {
-        harness.run();
+        crate::test_support::settle(&mut harness);
     }
     reset();
     for &table in BrowseTable::ALL {
@@ -108,7 +108,7 @@ fn panel_toggles_do_not_reassign_widget_ids() {
             .table_state
             .needs_query = true;
         for _ in 0..3 {
-            harness.run();
+            crate::test_support::settle(&mut harness);
         }
     }
     assert_eq!(clashes(), 0, "cycling browse tables re-assigned widget ids");
@@ -118,14 +118,14 @@ fn panel_toggles_do_not_reassign_widget_ids() {
     harness.state_mut().ui_state.current_view = View::Library;
     harness.state_mut().root_path = Some(std::path::PathBuf::from("/nonexistent/library"));
     for _ in 0..4 {
-        harness.run();
+        crate::test_support::settle(&mut harness);
     }
     reset();
     for _ in 0..4 {
         let cur = harness.state().ui_state.detail_panel_open;
         harness.state_mut().ui_state.detail_panel_open = !cur;
         for _ in 0..3 {
-            harness.run();
+            crate::test_support::settle(&mut harness);
         }
     }
     assert_eq!(
@@ -178,7 +178,7 @@ fn panel_toggles_do_not_reassign_widget_ids() {
     harness.state_mut().ui_state.focused_panel = FocusedPanel::GameTable;
     harness.state_mut().ui_state.detail_panel_open = false;
     for _ in 0..3 {
-        harness.run();
+        crate::test_support::settle(&mut harness);
     }
     reset();
     harness.event(egui::Event::PointerMoved(egui::pos2(600.0, 400.0)));
@@ -191,7 +191,7 @@ fn panel_toggles_do_not_reassign_widget_ids() {
             phase: egui::TouchPhase::Move,
             modifiers: egui::Modifiers::NONE,
         });
-        harness.run();
+        crate::test_support::settle(&mut harness);
     }
     assert_eq!(
         clashes(),

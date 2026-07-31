@@ -33,7 +33,7 @@ fn settings_harness<'a>() -> Harness<'a, RetroJunkApp> {
 #[test]
 fn scraper_section_lists_all_credential_fields() {
     let mut harness = settings_harness();
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     harness.get_by_label("ScreenScraper");
     harness.get_by_label("Open Config File");
@@ -52,7 +52,7 @@ fn scraper_section_lists_all_credential_fields() {
 #[test]
 fn credential_info_button_opens_and_closes_popup() {
     let mut harness = settings_harness();
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     // Info buttons render in CREDENTIAL_FIELDS order, so the first one
     // belongs to the first field.
@@ -61,7 +61,7 @@ fn credential_info_button_opens_and_closes_popup() {
         .next()
         .expect("at least one info button")
         .click();
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     let meta = harness
         .state()
@@ -73,7 +73,7 @@ fn credential_info_button_opens_and_closes_popup() {
     harness.get_by_label(meta.env_var);
 
     harness.get_by_label("Close").click();
-    harness.run();
+    crate::test_support::settle(&mut harness);
     assert!(harness.state().ui_state.credential_info_popup.is_none());
 }
 
@@ -157,7 +157,7 @@ fn chdman_probe_runs_off_the_ui_thread() {
 #[test]
 fn scraper_account_fields_start_from_resolved_credentials() {
     let mut harness = settings_harness();
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     let account = harness
         .state()

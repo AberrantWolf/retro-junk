@@ -1,71 +1,12 @@
 use std::path::{Path, PathBuf};
 
-use retro_junk_frontend::AssetType;
+use retro_junk_frontend::{AssetSelection, AssetType};
 use tokio::sync::mpsc;
 
 use crate::client::ScreenScraperClient;
 use crate::error::ScrapeError;
-use crate::scrape::ScrapeEvent;
+use crate::session::ScrapeEvent;
 use crate::types::GameInfo;
-
-/// Configuration for which asset types to download.
-#[derive(Debug, Clone)]
-pub struct AssetSelection {
-    pub types: Vec<AssetType>,
-}
-
-impl Default for AssetSelection {
-    fn default() -> Self {
-        Self {
-            types: vec![
-                AssetType::Cover,
-                AssetType::Cover3D,
-                AssetType::Screenshot,
-                AssetType::Marquee,
-                AssetType::PhysicalMedia,
-                AssetType::Video,
-            ],
-        }
-    }
-}
-
-impl AssetSelection {
-    #[must_use]
-    pub fn all() -> Self {
-        Self {
-            types: vec![
-                AssetType::Cover,
-                AssetType::Cover3D,
-                AssetType::Screenshot,
-                AssetType::TitleScreen,
-                AssetType::Marquee,
-                AssetType::Video,
-                AssetType::Fanart,
-                AssetType::PhysicalMedia,
-            ],
-        }
-    }
-
-    /// Parse from a comma-separated list (e.g., "covers,screenshots,videos").
-    #[must_use]
-    pub fn from_names(names: &[String]) -> Self {
-        let types = names
-            .iter()
-            .filter_map(|n| match n.as_str() {
-                "covers" | "cover" => Some(AssetType::Cover),
-                "3dboxes" | "3dbox" | "cover3d" => Some(AssetType::Cover3D),
-                "screenshots" | "screenshot" => Some(AssetType::Screenshot),
-                "titlescreens" | "titlescreen" => Some(AssetType::TitleScreen),
-                "marquees" | "marquee" => Some(AssetType::Marquee),
-                "videos" | "video" => Some(AssetType::Video),
-                "fanart" => Some(AssetType::Fanart),
-                "physicalmedia" => Some(AssetType::PhysicalMedia),
-                _ => None,
-            })
-            .collect();
-        Self { types }
-    }
-}
 
 /// Map an `AssetType` to the `ScreenScraper` media type string.
 fn ss_asset_type(at: AssetType) -> &'static str {
@@ -89,53 +30,6 @@ fn ss_asset_type_fallback(at: AssetType) -> Option<&'static str> {
         AssetType::Video => Some("video"),
         _ => None,
     }
-}
-
-/// Subdirectory name for an asset type (matches ES-DE layout).
-#[must_use]
-pub fn asset_subdir(at: AssetType) -> &'static str {
-    match at {
-        AssetType::Cover => "covers",
-        AssetType::Cover3D => "3dboxes",
-        AssetType::Screenshot => "screenshots",
-        AssetType::TitleScreen => "titlescreens",
-        AssetType::Marquee => "marquees",
-        AssetType::Video => "videos",
-        AssetType::Fanart => "fanart",
-        AssetType::PhysicalMedia => "physicalmedia",
-        AssetType::Miximage => "miximages",
-    }
-}
-
-/// Collect paths for asset files that already exist on disk for a given ROM.
-///
-/// Returns a map of `AssetType` -> path for every selected asset type that has
-/// an existing file in the expected location. Miximage is excluded from the
-/// returned map (it's checked separately).
-#[must_use]
-pub fn collect_existing_assets(
-    selection: &AssetSelection,
-    media_dir: &Path,
-    rom_stem: &str,
-) -> std::collections::HashMap<AssetType, PathBuf> {
-    let mut found = std::collections::HashMap::new();
-
-    for &at in &selection.types {
-        if at == AssetType::Miximage {
-            continue;
-        }
-        let subdir = media_dir.join(asset_subdir(at));
-        // Check all plausible extensions — ScreenScraper may return JPG instead of PNG.
-        for ext in at.discovery_extensions() {
-            let path = subdir.join(format!("{rom_stem}.{ext}"));
-            if path.exists() {
-                found.insert(at, path);
-                break;
-            }
-        }
-    }
-
-    found
 }
 
 /// Resolve the source URL selected for each asset using the same region and
@@ -217,7 +111,7 @@ pub async fn download_game_assets(
             } else {
                 &media.format
             };
-            let subdir = request.media_dir.join(asset_subdir(at));
+            let subdir = request.media_dir.join(at.subdirectory());
             let dest = subdir.join(format!("{}.{ext}", request.rom_stem));
 
             // Skip if file already exists (unless force redownload)

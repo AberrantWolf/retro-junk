@@ -68,9 +68,11 @@ fn only_executable_suggestions_offer_apply() {
         )
     });
     harness.state_mut().ui_state.current_view = View::Inbox;
-    // The load is a background thread; run until its reply lands.
+    // The load is a background thread; step frames until its reply lands.
+    // A spinner is on screen the whole time, so this cannot wait for the UI
+    // to go quiescent.
     for _ in 0..40 {
-        harness.run();
+        harness.step();
         if !harness.state().ui_state.inbox.items.is_empty() {
             break;
         }
@@ -92,7 +94,7 @@ fn only_executable_suggestions_offer_apply() {
     assert!(applicable.contains(&("import".to_owned(), true)));
     assert!(applicable.contains(&("adopt_playable".to_owned(), false)));
 
-    harness.run();
+    crate::test_support::settle(&mut harness);
     // "Wipeout" appears both as the card headline and inside its source
     // path; the assertion is that the card rendered at all.
     assert!(

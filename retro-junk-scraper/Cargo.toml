@@ -7,6 +7,7 @@ edition.workspace = true
 retro-junk-core.workspace = true
 retro-junk-lib.workspace = true
 retro-junk-frontend.workspace = true
+retro-junk-archive.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 tokio.workspace = true
 serde.workspace = true
@@ -17,6 +18,11 @@ dirs.workspace = true
 futures.workspace = true
 chrono.workspace = true
 log.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+# `start_paused` lets the rate-limit tests assert on waits without sleeping.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

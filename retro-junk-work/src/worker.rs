@@ -39,7 +39,13 @@ impl RunStats {
     }
 }
 
-/// The verification, build, and projection stages, in order.
+/// The verification, build, scrape, and projection stages, in order.
+///
+/// Scraping is its own stage rather than part of the projection one: the
+/// projection stage is gated on "did this run change anything", and artwork a
+/// release has never had is pending work regardless of whether a build just
+/// happened. Running it before projections also means freshly fetched art
+/// reaches the frontend in the same pass, via the stage-boundary re-derive.
 const STAGES: &[&[ActionKind]] = &[
     &[
         ActionKind::VerifyIntegrity,
@@ -47,6 +53,7 @@ const STAGES: &[&[ActionKind]] = &[
         ActionKind::AuditRedumper,
     ],
     &[ActionKind::BuildPlayable],
+    &[ActionKind::Scrape],
     &[ActionKind::ProjectAssets, ActionKind::SyncGamelist],
 ];
 
@@ -115,7 +122,7 @@ pub fn run_once(
             reconcile(ctx, &mut conn, progress)?;
             stage_mutated = false;
         }
-        let actions = derive_convergence(&conn, scope)?;
+        let actions = derive_convergence(&conn, scope, &ctx.scrape.expected_assets)?;
         for action in actions
             .into_iter()
             .filter(|action| stage.contains(&action.kind))
@@ -140,6 +147,7 @@ pub fn run_once(
                     ActionKind::BuildPlayable
                     | ActionKind::ProjectAssets
                     | ActionKind::SyncGamelist => policy.auto_build,
+                    ActionKind::Scrape => policy.auto_scrape,
                     _ => false,
                 };
                 if !allowed {

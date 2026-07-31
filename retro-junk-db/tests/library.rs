@@ -364,3 +364,71 @@ fn multiple_roots_independent() {
     let c2_after = load_consoles_for_root(&conn, root2).unwrap();
     assert_eq!(c2_after.len(), 1);
 }
+
+// ── Scrape identity strength ───────────────────────────────────────────────
+
+/// Automation gates on this: a serial or a complete hash triple identifies a
+/// release, a bare filename is a guess. Getting the order wrong would either
+/// publish guesses into the archive unattended or refuse to scrape releases
+/// that are perfectly well identified.
+#[test]
+fn identity_strength_ranks_serial_above_hashes_above_filename() {
+    use retro_junk_db::library::{ArchivedScrapeIdentity, ScrapeIdentityTier};
+
+    let base = ArchivedScrapeIdentity {
+        filename: "Game (USA).chd".to_owned(),
+        file_size: 1,
+        serial: String::new(),
+        crc32: String::new(),
+        md5: String::new(),
+        sha1: String::new(),
+    };
+
+    assert_eq!(base.tier(), ScrapeIdentityTier::Filename);
+    assert_eq!(
+        ArchivedScrapeIdentity {
+            crc32: "a".to_owned(),
+            md5: "b".to_owned(),
+            sha1: "c".to_owned(),
+            ..base.clone()
+        }
+        .tier(),
+        ScrapeIdentityTier::Hashes
+    );
+    assert_eq!(
+        ArchivedScrapeIdentity {
+            serial: "SLUS-00067".to_owned(),
+            ..base.clone()
+        }
+        .tier(),
+        ScrapeIdentityTier::Serial
+    );
+    assert_eq!(
+        ArchivedScrapeIdentity {
+            filename: String::new(),
+            ..base.clone()
+        }
+        .tier(),
+        ScrapeIdentityTier::None
+    );
+    assert!(ScrapeIdentityTier::Filename < ScrapeIdentityTier::Hashes);
+    assert!(ScrapeIdentityTier::Hashes < ScrapeIdentityTier::Serial);
+}
+
+/// A partial hash set is not a hash match: `ScreenScraper`'s hash tier needs
+/// the whole triple, so two of three is really just a filename.
+#[test]
+fn a_partial_hash_set_does_not_count_as_a_hash_identity() {
+    use retro_junk_db::library::{ArchivedScrapeIdentity, ScrapeIdentityTier};
+
+    let partial = ArchivedScrapeIdentity {
+        filename: "Game (USA).chd".to_owned(),
+        file_size: 1,
+        serial: String::new(),
+        crc32: "a".to_owned(),
+        md5: "b".to_owned(),
+        sha1: String::new(),
+    };
+
+    assert_eq!(partial.tier(), ScrapeIdentityTier::Filename);
+}

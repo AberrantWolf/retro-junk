@@ -10,6 +10,37 @@ For the catalog/scraper/analyzer technical backlog, see `TODO.md`. For the
 archive/playable-library data model this roadmap builds on, see
 `docs/archive-architecture.md` and `docs/collection-library-state-matrix.md`.
 
+## Status (2026-07-31) — Phase A.5 landed
+
+Scraping was the one convergence destination with no shared implementation,
+so it was the one thing the daemon could not do. It now has one:
+`retro-junk-scraper/src/session.rs` takes a target list and returns per-target
+verdicts, `scrape_folder` is a folder-scanning adapter over it, the GUI builds
+targets from its selection and translates `ScrapeEvent` to `AppMessage`, and
+`retro_junk_work::scrape` is the executor's third call site. It keeps
+`archive_ops`' contract but lives in the scraper crate, because
+`retro-junk-scraper` already depends on `retro-junk-lib` and orchestration in
+`archive_ops` would close a cycle.
+
+`ActionKind::Scrape` derives from expected-vs-archived artwork —
+`convergence::scrape_gaps`, the one comparison behind derivation, the summary's
+done count, and the evidence badge, which no longer calls one screenshot a
+complete set. It is gated by `auto_scrape`, the only automation switch that
+defaults off: unlike verification and builds it spends a metered external quota
+and adds durable files to the archive. Filename-tier matches are too weak to
+make durable unattended, so they become Inbox cards — and the Inbox's Apply
+path became multi-kind so those cards actually work.
+
+Quota throttling landed first, as Phase A required: HTTP 429 is retryable,
+honors `Retry-After`, and holds a global gate so every worker backs off
+together; a daily reserve stops a run instead of burning the budget.
+
+Fixes that fell out of having one implementation: a game with a screenshot can
+finally acquire its missing cover, `--skip-existing` does something, the CLI
+binds artwork to releases by the archive's own build evidence instead of by
+matching titles, `retro-junk scrape` and `sync` handle Ctrl-C, and the GUI
+drains the scraper's event channel it used to leak. Next: Phase C.
+
 ## Status (2026-07-31) — Phase B landed
 
 Phase B shipped in ten step-commits. Presentation: one `widgets::modal`
@@ -29,8 +60,7 @@ login, and daemon start/stop/status/log-tail in Settings.
 Two dependency substitutions against the plan: `egui-notify` is still
 built for egui 0.34 and would duplicate egui, so the toast widget is
 ~110 lines in-house; `egui_table` 0.9, `egui-phosphor` 0.13, and `muda`
-0.19 went in as planned. Next: Phase A.5 (scrape consolidation;
-TODO.md), then Phase C.
+0.19 went in as planned.
 
 ## Status (2026-07-30) — Phase A landed
 
@@ -48,8 +78,7 @@ rewired through the shared executor with an `[automation]` Settings
 section plus a status-bar suggestion count. Verified live: with
 `auto_import = on`, a dump dropped into a watched folder becomes an
 archived, integrity- and catalog-verified, canonically-named playable
-with projected gamelist — zero interaction. Next: Phase A.5 (scrape
-consolidation; TODO.md), then Phase B.
+with projected gamelist — zero interaction.
 
 ## Original context (2026-07-29) — rebooted atop the v0.4 archive architecture
 
@@ -135,7 +164,7 @@ The load-bearing chunk. Everything else is small follow-on work.
 | A2 | `summarize_convergence(conn, scope)` | Counts per action kind: done / pending / blocked-by-policy / errored. Consumed by CLI `status`, the GUI backlog strip (B5), and daemon logging. Single aggregation, no per-view re-derivation. |
 | A3 | Worker | Registers handlers that are thin dispatchers to the existing shared implementations — no logic of their own beyond claim/heartbeat/error recording. `run_once(scope)` and `run_continuously(events)`. Cooperates with the existing recoverable process lock and the archive-refresh lock; per-action claims with heartbeat + stale-reap (port the reference branch's SQL pattern) so a crashed run never strands work and GUI/daemon can share a database safely. |
 | A4 | Filesystem watcher | Port of `watch/` from the reference branch (notify wrapper, ~500 ms per-path debounce, basename/hash rename pairing, event coalescing — that logic is schema-independent). Watches: (a) configured **incoming** directories → triggers import identification (dry-run first; auto-import within policy, else inbox); (b) playable roots → additions route to adopt/import-playable triage, renames update bindings without re-verifying unchanged bytes, removals become normal `presence_state` transitions on selectively synced devices — never "loss". The archive tree itself is not watched; it only changes through the tool. |
-| A5 | Policy | `AutomationPolicy` (TOML, same file GUI Settings edits): `auto_import: On/Suggest/Off`, `auto_bind_min_confidence` (exact-hash / exact-serial / filename), `auto_build: bool`, `auto_scrape` + `only_when_unambiguous`, quiet hours, pause-heavy-work-on-battery. Conservative defaults (suggest, don't act) — carried verbatim from the reference branch. Complements, never bypasses, the matrix's "boundaries where automation must stop". |
+| A5 | Policy | `AutomationPolicy` (TOML, same file GUI Settings edits): `auto_import: On/Suggest/Off`, `auto_bind_min_confidence` (exact-hash / exact-serial / filename), `auto_build: bool`, `auto_scrape` + `scrape_only_when_unambiguous` (A.5). Quiet hours and pause-on-battery are deferred to C6: both gate the whole daemon branch rather than one kind, and battery detection has no dependency here yet. Defaults are automation-first for local idempotent work and opt-in for anything that spends an external quota. Complements, never bypasses, the matrix's "boundaries where automation must stop". |
 | A6 | Suggestions store | Persist proposed-but-unapplied commands with kind, payload, confidence, provenance, and resolution state. Unifies what today is scattered: `.retro-junk/playable-inbox.toml` triage entries, ambiguous import candidates, policy-blocked auto-actions, and (read-only) catalog `disagreements`. Inbox UI lands in Phase B; CLI can list/apply/dismiss from day one. |
 | A7 | CLI surface | `retro-junk sync [--scope ...] [--only KIND]` = `run_once` and exit. `retro-junk daemon start [--foreground] / stop / status / reload`. `status` prints `summarize_convergence` + heartbeat age. Daemon stays a CLI subcommand (shared install, creds, config). |
 
@@ -188,9 +217,11 @@ is ~110 lines in-house), `egui-modal` (stale), `egui_dock`/`egui_tiles`,
 - **C5 Storage & diagnostics** — asset disk usage, orphaned-projection
   cleanup, DAT/catalog snapshot versions, scraper quota, daemon status,
   log locations.
-- **C6 Throttle & quiet hours enforcement** — policy fields from A5 wired
-  into the worker scheduler (don't hammer ScreenScraper overnight; defer
-  disc verifies on battery).
+- **C6 Throttle & quiet hours enforcement** — quiet-hours and battery fields
+  on `AutomationPolicy`, wired into the worker's daemon gate (defer disc
+  verifies on battery; hold scraping to chosen hours). A.5 already bounds
+  ScreenScraper use by live quota and a daily reserve, so this is about *when*
+  work runs, not how hard it hits the API.
 - **C7 Rename preview + undo** — builds on the existing per-game
   filesystem transactions; add preview before bulk apply and a
   `rename_history`-style undo window.

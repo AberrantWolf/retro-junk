@@ -62,7 +62,7 @@ fn library_harness<'a>(row_count: u64) -> Harness<'a, RetroJunkApp> {
     harness.state_mut().ui_state.detail_panel_open = false;
     harness.state_mut().root_path = Some(std::path::PathBuf::from("/nonexistent/library"));
     for _ in 0..3 {
-        harness.run();
+        crate::test_support::settle(&mut harness);
     }
     harness
 }
@@ -79,7 +79,7 @@ fn header_rect(harness: &Harness<'_, RetroJunkApp>, header: &str) -> egui::Rect 
 
 fn click_at(harness: &mut Harness<'_, RetroJunkApp>, position: egui::Pos2) {
     harness.event(egui::Event::PointerMoved(position));
-    harness.run();
+    crate::test_support::settle(harness);
     for pressed in [true, false] {
         harness.event(egui::Event::PointerButton {
             pos: position,
@@ -88,7 +88,7 @@ fn click_at(harness: &mut Harness<'_, RetroJunkApp>, position: egui::Pos2) {
             modifiers: egui::Modifiers::default(),
         });
     }
-    harness.run();
+    crate::test_support::settle(harness);
 }
 
 /// `egui_table` splits a row across two scroll regions when there are sticky
@@ -105,7 +105,7 @@ fn clicking_either_the_frozen_or_the_scrolling_region_selects_the_row() {
     for (region, header) in [("frozen", "Name"), ("scrolling", "Availability")] {
         harness.state_mut().ui_state.selected_entries.clear();
         harness.state_mut().ui_state.focused_entry = None;
-        harness.run();
+        crate::test_support::settle(&mut harness);
 
         let x = header_rect(&harness, header).center().x;
         click_at(&mut harness, egui::pos2(x, y));

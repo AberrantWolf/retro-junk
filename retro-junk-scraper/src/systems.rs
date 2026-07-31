@@ -89,14 +89,24 @@ pub fn expects_serial(platform: Platform) -> bool {
     )
 }
 
-/// Map a `ScreenScraper` region code to a preferred region for name/media lookup.
+/// Map a written region — catalog slug, archive region, or `ScreenScraper`
+/// code — to the `ScreenScraper` region code.
+///
+/// One table for every caller that has a region as text rather than as a
+/// [`Region`]. Anything unrecognized reads as "us", which is `ScreenScraper`'s
+/// most populated catalog and the historical default on every surface.
 #[must_use]
-pub fn preferred_ss_region(region: &str) -> &str {
-    match region.to_lowercase().as_str() {
-        "eu" | "europe" => "eu",
-        "jp" | "japan" => "jp",
-        "wor" | "world" => "wor",
-        // "us"/"usa"/"united states", plus anything unrecognized
+pub fn region_slug_to_ss_code(region: &str) -> &'static str {
+    match region.trim().to_ascii_lowercase().as_str() {
+        "europe" | "eur" | "eu" => "eu",
+        "japan" | "jpn" | "jp" => "jp",
+        "australia" | "aus" | "au" => "au",
+        "korea" | "kor" | "kr" => "kr",
+        "china" | "chn" | "cn" => "cn",
+        "taiwan" | "twn" | "tw" => "tw",
+        "asia" | "asi" => "asi",
+        "brazil" | "bra" | "br" | "latin america" | "lat" => "br",
+        "world" | "wld" | "wor" => "wor",
         _ => "us",
     }
 }

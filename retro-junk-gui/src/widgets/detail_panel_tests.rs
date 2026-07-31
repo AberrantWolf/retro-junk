@@ -71,7 +71,7 @@ fn long_values_wrap_instead_of_widening_the_panel() {
     // out wider -> panel persists the wider size -> repeat) grows one step
     // per frame.
     for _ in 0..8 {
-        harness.run();
+        crate::test_support::settle(&mut harness);
     }
 
     let panel =

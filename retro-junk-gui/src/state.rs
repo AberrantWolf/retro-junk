@@ -10,7 +10,7 @@ use std::sync::atomic::AtomicBool;
 
 use retro_junk_catalog::CatalogTag;
 use retro_junk_dat::{FileHashes, MatchMethod};
-use retro_junk_frontend::AssetType;
+use retro_junk_frontend::{AssetType, DISPLAY_ASSET_TYPES};
 use retro_junk_lib::rename::BrokenReference;
 
 // -- Asset status --
@@ -195,53 +195,9 @@ pub enum ScanStatus {
     Scanned,
 }
 
-/// Subdirectory name for a media type (matches ES-DE layout).
-fn asset_subdir(mt: AssetType) -> &'static str {
-    match mt {
-        AssetType::Cover => "covers",
-        AssetType::Cover3D => "3dboxes",
-        AssetType::Screenshot => "screenshots",
-        AssetType::TitleScreen => "titlescreens",
-        AssetType::Marquee => "marquees",
-        AssetType::Video => "videos",
-        AssetType::Fanart => "fanart",
-        AssetType::PhysicalMedia => "physicalmedia",
-        AssetType::Miximage => "miximages",
-    }
-}
-
-/// All displayable media types in preferred display order.
-pub const DISPLAY_ASSET_TYPES: &[AssetType] = &[
-    AssetType::Cover,
-    AssetType::Cover3D,
-    AssetType::Screenshot,
-    AssetType::TitleScreen,
-    AssetType::Marquee,
-    AssetType::PhysicalMedia,
-    AssetType::Fanart,
-    AssetType::Miximage,
-];
-
-/// Discover media files on disk for a given ROM entry.
-///
-/// Checks each media type subdirectory for a file matching `rom_stem.ext`.
+/// Discover media files on disk for a given ROM entry, in display order.
 pub fn collect_existing_assets(media_dir: &Path, rom_stem: &str) -> HashMap<AssetType, PathBuf> {
-    let mut found = HashMap::new();
-    for &mt in DISPLAY_ASSET_TYPES {
-        if mt == AssetType::Video {
-            continue;
-        }
-        let subdir = media_dir.join(asset_subdir(mt));
-        // Check all plausible extensions — ScreenScraper may return JPG instead of PNG.
-        for ext in mt.discovery_extensions() {
-            let path = subdir.join(format!("{rom_stem}.{ext}"));
-            if path.exists() {
-                found.insert(mt, path);
-                break;
-            }
-        }
-    }
-    found
+    retro_junk_frontend::collect_existing_assets(DISPLAY_ASSET_TYPES, media_dir, rom_stem)
 }
 
 /// Per-disc identification data for multi-disc entries.

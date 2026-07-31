@@ -12,6 +12,8 @@ retro-junk-db = { workspace = true }
 retro-junk-archive = { workspace = true }
 retro-junk-archive-import = { workspace = true }
 retro-junk-frontend = { workspace = true }
+retro-junk-scraper = { workspace = true }
+tokio = { workspace = true }
 retro-junk-io = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

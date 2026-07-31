@@ -316,6 +316,66 @@ pub fn generate_frontend_miximage(
         .map_err(|error| AssetProjectionError::Archive(error.to_string()))
 }
 
+/// Copy one asset file into the frontend media tree.
+///
+/// The single place anything writes the frontend media tree, whether the
+/// source is an archive original, a freshly scraped download, or a composed
+/// miximage. The extension follows the source, because `ScreenScraper` returns
+/// JPG for types whose default is PNG and discovery matches on extension.
+pub fn project_asset_file(
+    source: &Path,
+    media_directory: &Path,
+    stem: &str,
+    asset_type: AssetType,
+) -> Result<PathBuf, AssetProjectionError> {
+    let (destination, temporary) = projection_paths(source, media_directory, stem, asset_type)?;
+    std::fs::copy(source, &temporary)?;
+    commit_projection(&temporary, &destination)?;
+    Ok(destination)
+}
+
+/// Where a projection writes, and the scratch name it stages through.
+fn projection_paths(
+    source: &Path,
+    media_directory: &Path,
+    stem: &str,
+    asset_type: AssetType,
+) -> Result<(PathBuf, PathBuf), AssetProjectionError> {
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_else(|| asset_type.default_extension());
+    let directory = media_directory.join(asset_type.subdirectory());
+    std::fs::create_dir_all(&directory)?;
+    let token = SupportingFileId::new();
+    Ok((
+        directory.join(format!("{stem}.{extension}")),
+        directory.join(format!(".{stem}.{token}.tmp")),
+    ))
+}
+
+/// Swap a fully written temporary into place.
+///
+/// The delicate part: an existing file is moved aside first and restored if
+/// the swap fails, so a failed projection never leaves the media tree without
+/// the asset it already had.
+fn commit_projection(temporary: &Path, destination: &Path) -> Result<(), AssetProjectionError> {
+    if !destination.exists() {
+        std::fs::rename(temporary, destination)?;
+        return Ok(());
+    }
+    let directory = destination.parent().unwrap_or(Path::new("."));
+    let backup = directory.join(format!(".projection-{}.backup", BuildId::new()));
+    std::fs::rename(destination, &backup)?;
+    if let Err(error) = std::fs::rename(temporary, destination) {
+        let _ = std::fs::rename(&backup, destination);
+        let _ = std::fs::remove_file(temporary);
+        return Err(error.into());
+    }
+    std::fs::remove_file(backup)?;
+    Ok(())
+}
+
 fn project_one(
     source: &Path,
     expected_sha256: &str,
@@ -325,13 +385,7 @@ fn project_one(
     asset_type: AssetType,
     cancelled: &AtomicBool,
 ) -> Result<(PathBuf, bool), AssetProjectionError> {
-    let extension = source
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_else(|| asset_type.default_extension());
-    let directory = media_directory.join(asset_type.subdirectory());
-    std::fs::create_dir_all(&directory)?;
-    let destination = directory.join(format!("{stem}.{extension}"));
+    let (destination, temporary) = projection_paths(source, media_directory, stem, asset_type)?;
     if destination.is_file() {
         let (size, sha256) = sha256_file(&destination, cancelled)
             .map_err(|error| AssetProjectionError::Archive(error.to_string()))?;
@@ -339,9 +393,9 @@ fn project_one(
             return Ok((destination, true));
         }
     }
-    let token = SupportingFileId::new();
-    let temporary = directory.join(format!(".{stem}.{token}.tmp"));
     std::fs::copy(source, &temporary)?;
+    // Verify before committing: a corrupted copy must never replace a good
+    // projection.
     let (size, sha256) = sha256_file(&temporary, cancelled)
         .map_err(|error| AssetProjectionError::Archive(error.to_string()))?;
     if size != expected_size || sha256 != expected_sha256 {
@@ -350,18 +404,7 @@ fn project_one(
             source.display().to_string(),
         ));
     }
-    if destination.exists() {
-        let backup = directory.join(format!(".{stem}.{}.backup", BuildId::new()));
-        std::fs::rename(&destination, &backup)?;
-        if let Err(error) = std::fs::rename(&temporary, &destination) {
-            let _ = std::fs::rename(&backup, &destination);
-            let _ = std::fs::remove_file(&temporary);
-            return Err(error.into());
-        }
-        std::fs::remove_file(backup)?;
-    } else {
-        std::fs::rename(&temporary, &destination)?;
-    }
+    commit_projection(&temporary, &destination)?;
     Ok((destination, false))
 }
 
@@ -502,5 +545,48 @@ mod tests {
         let xml = std::fs::read_to_string(path).unwrap();
         assert!(xml.contains("<path>./Game.nes</path>"));
         assert!(xml.contains("<name>Game</name>"));
+    }
+
+    /// Replacing artwork must not leave the media tree without a file: the
+    /// old one is moved aside and restored if the swap fails. Every surface
+    /// that writes the frontend tree goes through this one function.
+    #[test]
+    fn projecting_over_an_existing_asset_replaces_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("original.png");
+        std::fs::write(&source, b"new").unwrap();
+        let media = dir.path().join("media");
+        let covers = media.join(AssetType::Cover.subdirectory());
+        std::fs::create_dir_all(&covers).unwrap();
+        std::fs::write(covers.join("Game.png"), b"old").unwrap();
+
+        let destination = project_asset_file(&source, &media, "Game", AssetType::Cover).unwrap();
+
+        assert_eq!(destination, covers.join("Game.png"));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new");
+        let leftovers = std::fs::read_dir(&covers)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with('.'))
+            .count();
+        assert_eq!(leftovers, 0, "temporary or backup files were left behind");
+    }
+
+    /// The extension follows the source, because `ScreenScraper` returns JPG for
+    /// types whose default is PNG and discovery matches on extension.
+    #[test]
+    fn projection_keeps_the_source_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("original.jpg");
+        std::fs::write(&source, b"jpeg").unwrap();
+
+        let destination =
+            project_asset_file(&source, &dir.path().join("media"), "Game", AssetType::Cover)
+                .unwrap();
+
+        assert_eq!(
+            destination.extension().and_then(|e| e.to_str()),
+            Some("jpg")
+        );
     }
 }

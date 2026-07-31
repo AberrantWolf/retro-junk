@@ -14,93 +14,35 @@ use crate::cli_types::{ConsoleFilterArgs, ScrapeArgs};
 use crate::scan_folders;
 use crate::spinner;
 
-fn archive_scraped_assets(
-    archive_root: &Path,
+/// Bind this console's ROM files to the archived releases they were built
+/// from, so downloaded media is published into the archive rather than only
+/// dropped into the frontend tree.
+///
+/// The binding comes from the archive's own build evidence — the output path
+/// it recorded when it produced the file. Matching on titles instead (as this
+/// once did) silently mis-files artwork whenever two releases share a name.
+fn archive_binding<'a>(
+    archive_root: &'a Path,
     platform_id: &str,
-    games: &[retro_junk_frontend::ScrapedGame],
-) -> Result<(), CliError> {
-    let _archive_lock = retro_junk_archive::ArchiveLock::acquire(archive_root)
-        .map_err(|error| CliError::other(error.to_string()))?;
+) -> Result<retro_junk_scraper::FolderArchiveBinding<'a>, CliError> {
     let snapshot = retro_junk_archive::scan_archive(archive_root)
         .map_err(|error| CliError::other(error.to_string()))?;
-    let cancelled = std::sync::atomic::AtomicBool::new(false);
-    let mut pending = Vec::new();
-    for game in games {
-        let candidates = snapshot
-            .releases
-            .iter()
-            .filter(|release| {
-                release
-                    .manifest
-                    .platform_id
-                    .eq_ignore_ascii_case(platform_id)
-            })
-            .filter(|release| {
-                let managed_filename_match = release
-                    .physical_copies
-                    .iter()
-                    .flat_map(|item| &item.carriers)
-                    .flat_map(|medium| &medium.dumps)
-                    .flat_map(|dump| &dump.builds)
-                    .any(|build| {
-                        std::path::Path::new(&build.evidence.relative_output_path)
-                            .file_name()
-                            .and_then(|value| value.to_str())
-                            .is_some_and(|name| name.eq_ignore_ascii_case(&game.rom_filename))
-                    });
-                release.manifest.title.eq_ignore_ascii_case(&game.name)
-                    || (!game.cover_title.is_empty()
-                        && release
-                            .manifest
-                            .title
-                            .eq_ignore_ascii_case(&game.cover_title))
-                    || (!release.manifest.catalog_binding.dat_name.is_empty()
-                        && release
-                            .manifest
-                            .catalog_binding
-                            .dat_name
-                            .eq_ignore_ascii_case(&game.name))
-                    || managed_filename_match
-            })
-            .collect::<Vec<_>>();
-        let [release] = candidates.as_slice() else {
-            log::warn!(
-                "Could not uniquely bind scraped assets for {} to an archived {platform_id} release",
-                game.name
-            );
-            continue;
-        };
-        for (asset_type, path) in &game.assets {
-            pending.push((
-                release.manifest.archive_release_id,
-                asset_type.to_string(),
-                path.clone(),
-            ));
-        }
+    let releases_by_filename = retro_junk_scraper::release_ids_by_output(&snapshot, platform_id);
+    if releases_by_filename.is_empty() {
+        log::warn!(
+            "No archived {platform_id} release names a built playable file; scraped media \
+             will not be archived for this console"
+        );
     }
-    let requests = pending
-        .iter()
-        .map(
-            |(release_id, asset_type, path)| retro_junk_archive::NewReleaseFile {
-                release_id: *release_id,
-                source_file: path,
-                category: if asset_type.eq_ignore_ascii_case("video") {
-                    retro_junk_archive::ReleaseFileCategory::Video
-                } else if asset_type.to_ascii_lowercase().contains("manual") {
-                    retro_junk_archive::ReleaseFileCategory::Document
-                } else {
-                    retro_junk_archive::ReleaseFileCategory::Artwork
-                },
-                asset_type,
-                source: "screenscraper",
-                source_url: "",
-                caption: "",
-            },
-        )
-        .collect::<Vec<_>>();
-    retro_junk_archive::add_release_files(archive_root, &requests, &cancelled)
-        .map_err(|error| CliError::other(error.to_string()))?;
-    Ok(())
+    Ok(retro_junk_scraper::FolderArchiveBinding {
+        archive_root,
+        scratch_root: archive_root
+            .join(".retro-junk")
+            .join("work")
+            .join("scrape")
+            .join(std::process::id().to_string()),
+        releases_by_filename,
+    })
 }
 
 /// Try to enrich scraped games with `cover_title` from the catalog database.
@@ -299,6 +241,11 @@ pub(crate) fn run_scrape(
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| CliError::runtime(format!("Failed to create tokio runtime: {e}")))?;
 
+    // Ctrl-C stops at the next target boundary instead of orphaning a
+    // half-downloaded asset in the archive scratch directory.
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    retro_junk_work::daemon::install_signal_handlers(&cancel);
+
     rt.block_on(async {
         let (client, max_workers) = connect_screenscraper(threads, quiet).await?;
 
@@ -345,15 +292,22 @@ pub(crate) fn run_scrape(
             let (event_tx, event_rx) =
                 tokio::sync::mpsc::unbounded_channel::<retro_junk_scraper::ScrapeEvent>();
 
-            let scrape_future = retro_junk_scraper::scrape_folder(
-                &client,
-                path,
-                console.analyzer.as_ref(),
-                &options,
-                folder_name,
-                max_workers,
-                event_tx,
-            );
+            let binding = match archive_root.as_deref() {
+                Some(archive_root) if !dry_run => Some(archive_binding(archive_root, folder_name)?),
+                _ => None,
+            };
+            let scrape_future =
+                retro_junk_scraper::scrape_folder(retro_junk_scraper::FolderScrapeRequest {
+                    client: &client,
+                    folder_path: path,
+                    analyzer: console.analyzer.as_ref(),
+                    options: &options,
+                    folder_name,
+                    max_workers,
+                    archive: binding.as_ref(),
+                    events: event_tx,
+                    cancel: &cancel,
+                });
 
             let scrape_result =
                 retro_junk_lib::async_util::run_with_events(scrape_future, event_rx, |e| match e {
@@ -445,9 +399,23 @@ pub(crate) fn run_scrape(
                         );
                         pool.release(index);
                     }
+                    retro_junk_scraper::ScrapeEvent::Publishing { files } => {
+                        pool.claim(
+                            usize::MAX,
+                            format!("Publishing {files} file(s) to the archive..."),
+                        );
+                    }
+                    retro_junk_scraper::ScrapeEvent::QuotaExhausted { used, max } => {
+                        pool.clear_all();
+                        log::warn!(
+                            "  {} Daily ScreenScraper quota reached ({used}/{max}); \
+                             stopping so the rest can run tomorrow",
+                            "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
+                        );
+                    }
                     // Grouped discs happen after the concurrent phase; no spinner
-                    retro_junk_scraper::ScrapeEvent::GameGrouped { .. }
-                    | retro_junk_scraper::ScrapeEvent::Done => {}
+                    retro_junk_scraper::ScrapeEvent::GameGrouped { .. } => {}
+                    retro_junk_scraper::ScrapeEvent::Done => pool.release(usize::MAX),
                     retro_junk_scraper::ScrapeEvent::FatalError { ref message } => {
                         pool.clear_all();
                         log::warn!(
@@ -581,14 +549,17 @@ pub(crate) fn run_scrape(
                         }
                     }
 
+                    if result.published > 0 {
+                        log::info!(
+                            "  {} {} media files added to the archive",
+                            "\u{2714}".if_supports_color(Stdout, |t| t.green()),
+                            result.published,
+                        );
+                    }
+
                     // Enrich with cover titles from catalog DB
                     let mut games = result.games;
                     enrich_from_catalog(&mut games);
-                    if let Some(archive_root) = archive_root.as_deref()
-                        && !dry_run
-                    {
-                        archive_scraped_assets(archive_root, folder_name, &games)?;
-                    }
 
                     // Write metadata
                     if !games.is_empty() && !dry_run {

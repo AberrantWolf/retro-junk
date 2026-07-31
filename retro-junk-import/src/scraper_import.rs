@@ -1105,20 +1105,11 @@ fn epoch_secs() -> u64 {
 }
 
 /// Map catalog region slug to `ScreenScraper` region code.
-#[must_use]
-pub fn catalog_region_to_ss(region: &str) -> &str {
-    match region {
-        "europe" | "eu" => "eu",
-        "japan" | "jp" => "jp",
-        "australia" | "au" => "au",
-        "korea" | "kr" => "kr",
-        "china" | "cn" => "cn",
-        "taiwan" | "tw" => "tw",
-        "brazil" | "br" => "br",
-        "world" | "wor" => "wor",
-        _ => "us",
-    }
-}
+///
+/// The table lives in `retro-junk-scraper` beside the rest of the
+/// `ScreenScraper` vocabulary; the GUI and the scrape core need the same
+/// mapping from written regions.
+pub use retro_junk_scraper::systems::region_slug_to_ss_code as catalog_region_to_ss;
 
 /// Map `ScreenScraper` region code back to catalog region slug.
 #[must_use]

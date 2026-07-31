@@ -17,10 +17,11 @@
 mod detail_panel_tests;
 
 use retro_junk_catalog::CatalogTag;
+use retro_junk_frontend::DISPLAY_ASSET_TYPES;
 use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
-use crate::state::{DISPLAY_ASSET_TYPES, DiscVerification, EntryStatus};
+use crate::state::{DiscVerification, EntryStatus};
 use crate::theme::{STATUS_ERR, STATUS_WARN, STATUS_WARN_STRONG};
 
 /// Indent for fields nested under a per-disc or per-reference heading.

@@ -56,3 +56,61 @@ fn save_round_trips_and_preserves_unrelated_settings() {
     assert!(contents.contains("current_root = \"/roms\""));
     assert!(contents.contains("chdman_path = \"/usr/bin/chdman\""));
 }
+
+/// Scraping spends a metered external quota and adds durable files to the
+/// archive, unlike the local idempotent work the other switches cover. It
+/// stays opt-in even though the rest of this policy is automation-first.
+#[test]
+fn scraping_is_the_one_automation_that_is_off_by_default() {
+    let policy = AutomationPolicy::default();
+
+    assert!(policy.auto_verify, "local verification stays automatic");
+    assert!(policy.auto_build, "local builds stay automatic");
+    assert!(!policy.auto_scrape);
+    assert!(policy.scrape_only_when_unambiguous);
+}
+
+/// The expected artwork set round-trips through the settings file. It is
+/// written as directory slugs and read back as types; if those two
+/// vocabularies disagree, every release reads as missing artwork it holds.
+#[test]
+fn the_expected_artwork_set_survives_a_save_and_load() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.toml");
+    let policy = AutomationPolicy {
+        scrape_asset_types: retro_junk_frontend::AssetSelection {
+            types: vec![
+                retro_junk_frontend::AssetType::Cover3D,
+                retro_junk_frontend::AssetType::PhysicalMedia,
+            ],
+        }
+        .names(),
+        ..AutomationPolicy::default()
+    };
+    policy.save_to(&path).unwrap();
+
+    let loaded = AutomationPolicy::load_from(&path);
+
+    assert_eq!(
+        loaded.scrape_selection().types,
+        vec![
+            retro_junk_frontend::AssetType::Cover3D,
+            retro_junk_frontend::AssetType::PhysicalMedia,
+        ]
+    );
+}
+
+/// An unreadable or empty list must not mean "expect nothing" — that would
+/// silently report every release as fully scraped and derive no work at all.
+#[test]
+fn an_unusable_artwork_list_falls_back_to_the_default_set() {
+    let policy = AutomationPolicy {
+        scrape_asset_types: vec!["not-an-asset-type".to_owned()],
+        ..AutomationPolicy::default()
+    };
+
+    assert_eq!(
+        policy.scrape_selection().types,
+        retro_junk_frontend::AssetSelection::default().types
+    );
+}

@@ -5,12 +5,13 @@
 //! whose pre-processing ended in an honest error state, and the count of
 //! unresolved catalog disagreements.
 //!
-//! Applying goes through `retro_junk_work::incoming::apply_import_suggestion`
-//! and dismissing through `retro_junk_db::work::resolve_suggestion` — the
-//! same calls `retro-junk suggestions apply|dismiss` makes, so a decision
-//! taken here and one taken at the terminal are the same decision.
+//! Applying goes through `retro_junk_work::apply_suggestion` and dismissing
+//! through `retro_junk_db::work::resolve_suggestion` — the same calls
+//! `retro-junk suggestions apply|dismiss` makes, so a decision taken here and
+//! one taken at the terminal are the same decision.
 
 use retro_junk_db::work::{IncomingPackage, Suggestion};
+use retro_junk_work::ScrapeSuggestionPayload;
 use retro_junk_work::incoming::{IMPORT_SUGGESTION_KIND, ImportSuggestionPayload};
 
 use crate::app::RetroJunkApp;
@@ -23,9 +24,9 @@ pub struct InboxItem {
     pub suggestion: Suggestion,
     pub headline: String,
     pub details: Vec<String>,
-    /// Whether this kind can be executed from here. Import suggestions were
-    /// fully pre-processed and only need confirmation; other kinds record a
-    /// decision the user still has to make elsewhere.
+    /// Whether this kind can be executed from here, per the one dispatch in
+    /// `retro_junk_work::suggestions` — so a card never offers a button that
+    /// does nothing.
     pub applicable: bool,
 }
 
@@ -87,9 +88,10 @@ pub fn load(app: &mut RetroJunkApp, ctx: &egui::Context) {
 
 /// Turn a stored suggestion into what the card shows.
 fn describe(suggestion: Suggestion) -> InboxItem {
-    let applicable = suggestion.kind == IMPORT_SUGGESTION_KIND;
+    let applicable = retro_junk_work::is_applicable(&suggestion.kind);
     let (headline, details) = match suggestion.kind.as_str() {
         IMPORT_SUGGESTION_KIND => describe_import(&suggestion),
+        retro_junk_work::SCRAPE_SUGGESTION_KIND => describe_scrape(&suggestion),
         "adopt_playable" => describe_adoption(&suggestion),
         _ => (suggestion.target_id.clone(), Vec::new()),
     };
@@ -135,6 +137,22 @@ fn describe_import(suggestion: &Suggestion) -> (String, Vec<String>) {
     (headline, details)
 }
 
+fn describe_scrape(suggestion: &Suggestion) -> (String, Vec<String>) {
+    let Ok(payload) = serde_json::from_str::<ScrapeSuggestionPayload>(&suggestion.payload_json)
+    else {
+        return (suggestion.target_id.clone(), Vec::new());
+    };
+    let mut details = vec![payload.reason.clone()];
+    if !payload.missing.is_empty() {
+        details.push(format!("would fetch: {}", payload.missing.join(", ")));
+    }
+    details.push(format!(
+        "{} — {}",
+        payload.platform_id, suggestion.target_id
+    ));
+    (payload.label, details)
+}
+
 fn describe_adoption(suggestion: &Suggestion) -> (String, Vec<String>) {
     let value: serde_json::Value =
         serde_json::from_str(&suggestion.payload_json).unwrap_or(serde_json::Value::Null);
@@ -165,8 +183,7 @@ fn describe_adoption(suggestion: &Suggestion) -> (String, Vec<String>) {
     )
 }
 
-/// Execute an import suggestion: re-validate the package fingerprint, then
-/// import through the shared path.
+/// Execute a suggestion through the shared dispatch.
 pub fn apply(app: &mut RetroJunkApp, id: i64, label: String, ctx: &egui::Context) {
     let exec = match crate::backend::convergence::exec_context(app) {
         Ok(exec) => exec,
@@ -177,13 +194,12 @@ pub fn apply(app: &mut RetroJunkApp, id: i64, label: String, ctx: &egui::Context
     };
     crate::backend::worker::spawn_background_op(
         app,
-        format!("Importing {label}"),
+        format!("Applying {label}"),
         OperationKind::ArchiveImport,
         "archive".to_owned(),
         ProgressDisplay::Count,
         move |op_id, cancel, sender| {
-            let result = retro_junk_work::incoming::apply_import_suggestion(&exec, id, &cancel)
-                .map(|()| format!("Imported {label}"))
+            let result = retro_junk_work::apply_suggestion(&exec, id, &cancel)
                 .map_err(|error| error.to_string());
             let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
             let _ = sender.send(AppMessage::InboxChanged);

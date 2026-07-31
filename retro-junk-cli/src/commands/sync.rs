@@ -76,6 +76,7 @@ pub(crate) fn exec_context(
         profile,
         db_path,
         tools,
+        scrape: AutomationPolicy::load().scrape_settings(),
         roots,
         analyzers: Arc::clone(ctx),
         owner: ExecContext::owner_string("cli"),
@@ -133,7 +134,7 @@ pub(crate) fn run_sync(args: SyncArgs) -> Result<(), CliError> {
         .map_err(|error| CliError::database(error.to_string()))?;
 
     if args.dry_run {
-        let actions = derive_convergence(&conn, &scope)
+        let actions = derive_convergence(&conn, &scope, &exec.scrape.expected_assets)
             .map_err(|error| CliError::database(error.to_string()))?;
         let mut blocked = 0_usize;
         for action in &actions {
@@ -164,7 +165,10 @@ pub(crate) fn run_sync(args: SyncArgs) -> Result<(), CliError> {
     }
 
     drop(conn);
-    let cancelled = AtomicBool::new(false);
+    // The executor checks cancellation at operation boundaries, so Ctrl-C
+    // stops between actions with everything completed so far persisted.
+    let cancelled = Arc::new(AtomicBool::new(false));
+    retro_junk_work::daemon::install_signal_handlers(&cancelled);
     let policy = AutomationPolicy::load();
     let stats = run_once(
         &exec,
@@ -209,7 +213,8 @@ pub(crate) fn run_status(args: StatusArgs) -> Result<(), CliError> {
     let conn = retro_junk_db::open_database(&db_path)
         .map_err(|error| CliError::database(error.to_string()))?;
     let scope = Scope::Profile(profile.profile_id.to_string());
-    let summary = summarize_convergence(&conn, &scope)
+    let expected = AutomationPolicy::load().scrape_selection();
+    let summary = summarize_convergence(&conn, &scope, &expected)
         .map_err(|error| CliError::database(error.to_string()))?;
     log::info!("Profile: {} ({})", profile.display_name, profile.profile_id);
     for (kind, counts) in &summary.per_kind {

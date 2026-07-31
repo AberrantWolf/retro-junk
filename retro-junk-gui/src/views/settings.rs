@@ -894,6 +894,31 @@ fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     }
     changed |= ui
         .checkbox(
+            &mut policy.auto_scrape,
+            "Fetch missing artwork from ScreenScraper automatically",
+        )
+        .changed();
+    if policy.auto_scrape {
+        changed |= ui
+            .checkbox(
+                &mut policy.scrape_only_when_unambiguous,
+                "Only publish confident matches; send filename-only guesses to the Inbox",
+            )
+            .changed();
+        ui.horizontal(|ui| {
+            ui.label("Keep");
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut policy.scrape_daily_request_reserve)
+                        .range(0..=20_000),
+                )
+                .changed();
+            ui.label("daily requests in reserve for manual scraping");
+        });
+    }
+    changed |= show_expected_artwork(ui, policy);
+    changed |= ui
+        .checkbox(
             &mut policy.verify_published_bytes,
             "Re-read published bytes at import (extra full read; background              verification covers this otherwise)",
         )
@@ -905,7 +930,54 @@ fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             .changed();
         ui.label("hours (0 = off)");
     });
-    if changed && let Err(error) = policy.save() {
-        app.push_error("Automation settings", error.to_string());
+    if changed {
+        // The badge counts against this set on every paint, so refresh the
+        // resolved copy rather than re-parsing the names per row.
+        app.ui_state.expected_assets = policy.scrape_selection();
+        if let Err(error) = policy.save() {
+            app.push_error("Automation settings", error.to_string());
+        }
     }
+}
+
+/// Pick the artwork types a release is expected to hold.
+///
+/// This drives three things at once — what a scrape fetches, what the
+/// artwork badge counts, and what derivation calls missing — so it is worth
+/// saying so on screen.
+fn show_expected_artwork(
+    ui: &mut egui::Ui,
+    policy: &mut retro_junk_work::AutomationPolicy,
+) -> bool {
+    use retro_junk_frontend::AssetSelection;
+
+    let mut changed = false;
+    ui.add_space(4.0);
+    ui.label("Artwork a game is expected to have:");
+    ui.weak("Also what the artwork badge counts and what a scrape fetches.");
+    let mut selected = policy.scrape_selection();
+    ui.horizontal_wrapped(|ui| {
+        for asset_type in AssetSelection::all().types {
+            let mut on = selected.contains(asset_type);
+            if ui
+                .checkbox(&mut on, asset_type.to_string())
+                .on_hover_text(format!("stored under {}/", asset_type.subdirectory()))
+                .changed()
+            {
+                if on {
+                    selected.types.push(asset_type);
+                } else {
+                    selected.types.retain(|held| *held != asset_type);
+                }
+                changed = true;
+            }
+        }
+    });
+    if changed {
+        // Keep a stable order so the settings file does not churn as boxes
+        // are toggled.
+        selected.types.sort_unstable();
+        policy.scrape_asset_types = selected.names();
+    }
+    changed
 }

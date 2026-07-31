@@ -20,14 +20,14 @@ fn escape_dismisses_the_dialog() {
             dismissed.set(true);
         }
     });
-    harness.run();
+    crate::test_support::settle(&mut harness);
     assert!(
         !dismissed.get(),
         "the dialog must stay open until dismissed"
     );
 
     harness.key_press(egui::Key::Escape);
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     assert!(dismissed.get(), "Escape should dismiss the dialog");
 }

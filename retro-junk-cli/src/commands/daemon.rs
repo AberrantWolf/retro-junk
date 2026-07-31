@@ -95,6 +95,7 @@ fn run_start(
             redumper: redumper.unwrap_or_default(),
             dolphin_tool: dolphin_tool.unwrap_or_default(),
         },
+        scrape: retro_junk_work::AutomationPolicy::load().scrape_settings(),
         roots,
         analyzers: Arc::new(retro_junk_lib::create_default_context()),
         owner: ExecContext::owner_string("daemon"),

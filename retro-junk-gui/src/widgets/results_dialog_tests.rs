@@ -25,7 +25,7 @@ fn dialog_renders_summary_and_dismisses_on_ok() {
             *dismissed.borrow_mut() = true;
         }
     });
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     // Summary line and both rows render.
     harness.get_by_label("2 items");
@@ -34,7 +34,7 @@ fn dialog_renders_summary_and_dismisses_on_ok() {
 
     // Clicking the dialog's OK button reports dismissal to the caller.
     harness.get_by_label("OK").click();
-    harness.run();
+    crate::test_support::settle(&mut harness);
 
     assert!(
         *dismissed.borrow(),

@@ -633,6 +633,36 @@ pub struct ArchivedScrapeIdentity {
     pub sha1: String,
 }
 
+/// How strongly a release can be identified to a scraper, weakest to
+/// strongest. Automation gates on this: a filename match is a guess, and
+/// publishing a guess into the archive is not something to do unattended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ScrapeIdentityTier {
+    /// Nothing usable — not even a filename.
+    None,
+    /// Only the ROM filename.
+    Filename,
+    /// A complete CRC32+MD5+SHA-1 triple, which the scraper matches exactly.
+    Hashes,
+    /// A serial read from the medium.
+    Serial,
+}
+
+impl ArchivedScrapeIdentity {
+    #[must_use]
+    pub fn tier(&self) -> ScrapeIdentityTier {
+        if !self.serial.trim().is_empty() {
+            ScrapeIdentityTier::Serial
+        } else if !self.crc32.is_empty() && !self.md5.is_empty() && !self.sha1.is_empty() {
+            ScrapeIdentityTier::Hashes
+        } else if !self.filename.trim().is_empty() {
+            ScrapeIdentityTier::Filename
+        } else {
+            ScrapeIdentityTier::None
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayableArtworkCandidate {
     pub catalog_release_id: String,
@@ -1902,7 +1932,7 @@ fn query_archived_release_assets(
     Ok(output)
 }
 
-fn query_archived_scrape_identities(
+pub fn query_archived_scrape_identities(
     conn: &Connection,
     profile_id: &str,
 ) -> Result<std::collections::HashMap<String, ArchivedScrapeIdentity>, LibraryError> {

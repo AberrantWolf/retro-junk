@@ -1,4 +1,4 @@
-//! Shared constructors for GUI tests.
+//! Shared constructors and harness helpers for GUI tests.
 //!
 //! `LibraryEntry`/`ConsoleState` have many fields that are irrelevant to most
 //! tests; these builders fill them with neutral defaults so each test module
@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use egui_kittest::Harness;
 use retro_junk_lib::Platform;
 use retro_junk_lib::scanner::GameEntry;
 
@@ -14,6 +15,26 @@ use crate::state::{ConsoleState, EntryStatus, LibraryEntry, ScanStatus};
 
 static NEXT_ENTRY_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_CONSOLE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// How many frames [`settle`] advances — `Harness::run`'s own limit, so tests
+/// converted from `run` see the same number of frames.
+const SETTLE_FRAMES: usize = 4;
+
+/// Advance the UI enough to observe a change, without requiring it to go
+/// quiescent.
+///
+/// `Harness::run` loops until nothing requests a repaint, and panics if that
+/// never happens. Plenty here keeps requesting: the startup modal's spinner
+/// while the database prepares, and the inbox and backlog spinners while their
+/// background loads are in flight. Whether a test sees one depends on whether a
+/// background thread finished before the first frame, so `run` fails as a
+/// load-dependent flake rather than a reliable error — the least useful kind of
+/// failure. Stepping a fixed number of frames is deterministic.
+pub fn settle<T>(harness: &mut Harness<'_, T>) {
+    for _ in 0..SETTLE_FRAMES {
+        harness.step();
+    }
+}
 
 /// Build a minimal `LibraryEntry` around a `GameEntry` — the other fields are
 /// irrelevant to most tests and start empty.

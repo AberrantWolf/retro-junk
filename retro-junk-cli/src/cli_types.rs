@@ -259,7 +259,7 @@ pub(crate) struct SyncArgs {
     #[arg(long)]
     pub release: Option<String>,
     /// Restrict to specific action kinds
-    /// (verify-integrity, verify-catalog, audit-redumper, build, project, gamelist)
+    /// (verify-integrity, verify-catalog, audit-redumper, build, scrape, project, gamelist)
     #[arg(long, value_delimiter = ',')]
     pub only: Vec<String>,
     /// Print the derived plan without executing; non-zero exit when
@@ -314,7 +314,7 @@ pub(crate) enum Commands {
         action: ArchiveAction,
     },
 
-    /// Run pending convergence actions (verify, build, project, gamelist)
+    /// Run pending convergence actions (verify, build, scrape, project, gamelist)
     Sync(SyncArgs),
 
     /// Show convergence counts, daemon liveness, and open suggestions

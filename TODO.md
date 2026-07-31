@@ -566,12 +566,15 @@ All 15 items resolved — see commit history for details.
 
 ## Phase A follow-ups (automation foundation, 2026-07-30)
 
-- [ ] **Phase A.5: scrape orchestration consolidation** — Extract the duplicated
-  tokio scrape cores (`retro-junk-gui/src/backend/assets.rs` vs
-  `retro-junk-cli/src/commands/scrape.rs`) into one shared implementation in
-  `retro-junk-scraper`, rewrite both callers, then add the `Scrape` convergence
-  action kind and `auto_scrape` policy fields. Deliberately deferred from
-  Phase A: unattended scraping needs quota throttling first.
+- [x] **Phase A.5: scrape orchestration consolidation** — Done (2026-07-31).
+  `retro-junk-scraper/src/session.rs` is the one orchestration; `scrape_folder`
+  is a folder adapter over it, the GUI builds targets and translates events,
+  and `retro_junk_work::scrape` gives the executor a third call site.
+  `ActionKind::Scrape` derives from expected-vs-archived artwork, gated by
+  `auto_scrape` (off by default) with weak matches filed as appliable
+  suggestions. Quota throttling landed first: 429 is retryable and honors
+  `Retry-After` against a global gate, and a daily reserve stops a run rather
+  than burning the budget.
 - [ ] **Instant-apply imports** — `plan_import` re-hashes on suggestion apply.
   The incoming pipeline already computed the full inventory digests at arrival;
   extend `retro-junk-archive-import` to accept precomputed digests so applying
@@ -585,17 +588,17 @@ All 15 items resolved — see commit history for details.
   kind once component staleness (source artwork vs generated image) is modeled.
 - [ ] **`ArchiveLock::acquire_wait` fairness** — daemon+GUI contention is
   fail-fast/wait polling today; add FIFO fairness if contention proves noisy.
-- [ ] **CLI Ctrl-C for `sync`** — the executor is cancel-safe; wire a real
-  SIGINT handler into `retro-junk sync` (the daemon already has one).
+- [x] **CLI Ctrl-C for `sync`** — Done (Phase A.5): `sync` and `scrape` both
+  install `retro_junk_work::daemon::install_signal_handlers` and thread the
+  resulting flag into the executor / scrape core.
 
 ## Phase B follow-ups (GUI surfacing, 2026-07-31)
 
-- [ ] **Artwork evidence is presence-only** — the `artwork` badge reads
-  "complete" as soon as one archived asset exists, because artwork is stored
-  as files rather than as evidence records and nothing models the expected
-  asset set per release. Model that (probably alongside the `Scrape`
-  convergence kind in Phase A.5) so the badge can distinguish "one screenshot"
-  from "the full set".
+- [x] **Artwork evidence is presence-only** — Done (Phase A.5): the expected
+  asset set is `AutomationPolicy::scrape_asset_types`, and
+  `convergence::scrape_gaps` is the one comparison behind derivation, the
+  summary's done count, and the badge, which now reads "3 of 6" and offers a
+  scrape rather than a projection when the set is short.
 - [ ] **`adopt_playable` suggestions cannot be applied** — the Inbox offers
   Apply only for imports, because `retro-junk suggestions apply` only handles
   imports too. Adoption reviews (byte-identical/ambiguous/unknown playable

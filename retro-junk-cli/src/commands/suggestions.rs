@@ -62,10 +62,11 @@ pub(crate) fn run_suggestions(action: SuggestionsAction) -> Result<(), CliError>
         }
         SuggestionsAction::Apply { id, profile, db } => {
             let ctx = exec_context(profile.as_deref(), db)?;
-            let cancelled = AtomicBool::new(false);
-            retro_junk_work::incoming::apply_import_suggestion(&ctx, id, &cancelled)
+            let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+            retro_junk_work::daemon::install_signal_handlers(&cancelled);
+            let summary = retro_junk_work::apply_suggestion(&ctx, id, &cancelled)
                 .map_err(|error| CliError::other(error.to_string()))?;
-            log::info!("Applied suggestion #{id}");
+            log::info!("Applied suggestion #{id}: {summary}");
             Ok(())
         }
         SuggestionsAction::Dismiss { id, db } => {
@@ -114,6 +115,7 @@ fn exec_context(profile: Option<&str>, db: Option<PathBuf>) -> Result<ExecContex
             redumper: PathBuf::new(),
             dolphin_tool: PathBuf::new(),
         },
+        scrape: retro_junk_work::AutomationPolicy::load().scrape_settings(),
         roots,
         analyzers: Arc::new(retro_junk_lib::create_default_context()),
         owner: ExecContext::owner_string("cli"),

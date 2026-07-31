@@ -75,11 +75,29 @@ struct Class {
     action: Option<ActionKind>,
 }
 
-/// Derive the five classes from the projected release summary. `artwork`
-/// comes from the archived asset list rather than the summary counts,
-/// because artwork lives in the archive as files, not as evidence records.
-fn classes(release: &retro_junk_db::ArchivedLibraryListItem) -> [Class; 5] {
+/// Derive the five classes from the projected release summary.
+///
+/// `artwork` comes from the archived asset list rather than the summary
+/// counts, because artwork lives in the archive as files rather than as
+/// evidence records — but it is counted against the same expected set that
+/// derivation uses, so "complete" means the same thing in the badge, the
+/// backlog strip, and what the daemon will actually do.
+fn classes(
+    release: &retro_junk_db::ArchivedLibraryListItem,
+    expected_assets: &retro_junk_frontend::AssetSelection,
+) -> [Class; 5] {
     let summary = &release.summary;
+    let held: std::collections::HashSet<retro_junk_frontend::AssetType> = release
+        .archived_assets
+        .iter()
+        .filter_map(|asset| retro_junk_frontend::AssetType::from_archive_name(&asset.asset_type))
+        .collect();
+    let expected = expected_assets.types.len() as u64;
+    let have = expected_assets
+        .types
+        .iter()
+        .filter(|asset_type| held.contains(asset_type))
+        .count() as u64;
     [
         Class {
             label: "present",
@@ -122,15 +140,17 @@ fn classes(release: &retro_junk_db::ArchivedLibraryListItem) -> [Class; 5] {
         },
         Class {
             label: "artwork",
-            meaning: "Scraped artwork archived and projected to the frontend",
-            level: if release.archived_assets.is_empty() {
-                EvidenceLevel::Absent
+            meaning: "Every expected artwork type archived and projected",
+            level: EvidenceLevel::of(have, expected),
+            have,
+            expected,
+            // Fetching what is missing is the action; projecting what is
+            // already archived cannot make an incomplete set complete.
+            action: Some(if have >= expected {
+                ActionKind::ProjectAssets
             } else {
-                EvidenceLevel::Complete
-            },
-            have: release.archived_assets.len() as u64,
-            expected: 1,
-            action: Some(ActionKind::ProjectAssets),
+                ActionKind::Scrape
+            }),
         },
     ]
 }
@@ -149,7 +169,7 @@ pub fn show(
     app: &RetroJunkApp,
     release: &retro_junk_db::ArchivedLibraryListItem,
 ) -> Option<RerunRequest> {
-    let classes = classes(release);
+    let classes = classes(release, &app.ui_state.expected_assets);
     let errors = app
         .ui_state
         .backlog

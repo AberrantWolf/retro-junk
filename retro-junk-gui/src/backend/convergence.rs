@@ -66,6 +66,7 @@ pub fn exec_context(app: &RetroJunkApp) -> Result<retro_junk_work::ExecContext, 
             redumper: PathBuf::new(),
             dolphin_tool: PathBuf::new(),
         },
+        scrape: retro_junk_work::AutomationPolicy::load().scrape_settings(),
         analyzers: app.context.clone(),
         owner: retro_junk_work::ExecContext::owner_string("gui"),
         // A human clicked: wait for the lock rather than fail fast, and keep
@@ -326,13 +327,17 @@ pub fn load_backlog(app: &mut RetroJunkApp, scope: Scope, ctx: &egui::Context) {
     app.ui_state.backlog_loading = true;
     let sender = app.message_tx.clone();
     let repaint = ctx.clone();
+    let expected = retro_junk_work::AutomationPolicy::load().scrape_selection();
     std::thread::spawn(move || {
         let result = retro_junk_db::open_database(&db_path)
             .map_err(|error| error.to_string())
             .and_then(|connection| {
-                let summary =
-                    retro_junk_db::convergence::summarize_convergence(&connection, &scope)
-                        .map_err(|error| error.to_string())?;
+                let summary = retro_junk_db::convergence::summarize_convergence(
+                    &connection,
+                    &scope,
+                    &expected,
+                )
+                .map_err(|error| error.to_string())?;
                 let errors = retro_junk_db::convergence::errors_by_release(&connection)
                     .map_err(|error| error.to_string())?;
                 Ok(Backlog { summary, errors })
@@ -350,6 +355,7 @@ pub fn kind_label(kind: ActionKind) -> &'static str {
         ActionKind::VerifyCatalog => "catalog",
         ActionKind::AuditRedumper => "raw audit",
         ActionKind::BuildPlayable => "playable",
+        ActionKind::Scrape => "scrape",
         ActionKind::ProjectAssets => "artwork",
         ActionKind::SyncGamelist => "gamelist",
         _ => "other",
