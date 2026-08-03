@@ -281,6 +281,40 @@ Override per-console when ScreenScraper needs a different format than DAT matchi
 The scraper lookup tries the adapted serial first, then falls back to the raw serial
 if they differ.
 
+## Files ScreenScraper Cannot Know: Mods and Homebrew
+
+Two kinds of file in a collection are not in ScreenScraper's database and never
+will be, and asking about them as though they were spends metered requests to
+learn nothing:
+
+- **A mod (ROM hack, translation patch, randomizer output).** Its bytes exist
+  only on the machine that produced them, so no hash matches, and its filename
+  names a game nobody catalogued. It *is* however derived from a game that is
+  catalogued — so look it up **as its parent** and let it wear the parent's
+  metadata and artwork, keeping its own name and media stem. A ROM hack usually
+  leaves the original header intact, so the file's own **serial still identifies
+  the parent** and is worth offering when the catalog has nothing better.
+- **Homebrew.** No publisher assigned it a serial, so whatever sits where a
+  serial would be is a placeholder — offering it to `serialnum` risks matching
+  a commercial game that really does own those characters, and publishing that
+  game's box art under a homebrew title. Its own digests *are* legitimate
+  (ScreenScraper does catalog popular homebrew) and its name is the strongest
+  thing it has.
+
+`romtaille` narrows a name match to files of that size, so it must be **omitted**
+when the name and the size describe different files — a mod asked about as its
+parent knows the parent's name but not its size. Sending `0` claims an empty file.
+
+In retro-junk this lives in `retro_junk_scraper::derivation`: one `Derivation`
+enum (`Own` / `Parent` / `UnknownParent` / `Standalone`) that rewrites the
+identity offered to a lookup, applied inside the shared scrape core so the CLI's
+folder scrape, the GUI's artwork actions, and the convergence executor cannot
+answer the question differently. Where the derivation comes from differs by
+surface — the catalog (`retro_junk_db::derivation`) where a database is at hand,
+the collection's portable marks (`retro_junk_archive::marks`) where one is not.
+"A mod of something unnamed" is not an identity: those targets are skipped
+without a request rather than falling back to the file's own bytes.
+
 ## Rate Limiting Best Practices
 
 1. Call `ssuserInfos.php` at startup to learn your limits.

@@ -4,9 +4,11 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 
 use retro_junk_archive::{
-    ArchiveRootManifest, BuildEvidence, BuildId, NewCarrierDump, RepresentationFormat,
-    RepresentationId, ingest_new_carrier_dump, initialize_archive, scan_archive, write_json_new,
-    write_toml_atomic,
+    ArchiveRootManifest, BuildId, NewCarrierDump, RepresentationFormat, ingest_new_carrier_dump,
+    initialize_archive, scan_archive, write_toml_atomic,
+};
+use retro_junk_work::adoption::{
+    AdoptionCandidate, AdoptionCandidateKind, AdoptionSuggestionPayload,
 };
 
 use crate::CliError;
@@ -358,7 +360,9 @@ pub(crate) fn run_archive(
             archive_root,
             playable_root,
             db,
-        } => run_adopt_playable(ctx, archive_root, playable_root, db),
+            release_id,
+            dry_run,
+        } => run_adopt_playable(ctx, archive_root, playable_root, db, release_id, dry_run),
         ArchiveAction::Recover { archive_root } => run_recover(archive_root),
         ArchiveAction::Reindex {
             archive_root,
@@ -371,9 +375,13 @@ pub(crate) fn run_archive(
 
 fn archive_mutation_root(action: &ArchiveAction) -> Option<&std::path::Path> {
     match action {
+        // A dry run writes nothing, so it has no business taking the write
+        // lock — doing so blocked every other reader for as long as the scan
+        // took, which for a whole-library sweep is a long time.
+        ArchiveAction::AdoptPlayable { dry_run: true, .. }
         // Build routes through the shared executor, which takes the archive
         // lock per action rather than for the whole invocation.
-        ArchiveAction::Init { .. }
+        | ArchiveAction::Init { .. }
         | ArchiveAction::Import { .. }
         | ArchiveAction::ImportPlayable { .. }
         | ArchiveAction::Status { .. }
@@ -989,12 +997,32 @@ fn run_generate_miximages(
     Ok(())
 }
 
+/// Account for the playable files that are actually on disk, in two passes.
+///
+/// A file can be unaccounted for in two different ways, and they need
+/// different evidence. Either a build's output moved and its evidence still
+/// names the old path — recoverable from the recorded output digest — or no
+/// build ever produced the file and it happens to be byte-identical to an
+/// archived master. The moved case runs first: it is exact, and resolving it
+/// keeps those files out of the second pass's suggestion pile.
 fn run_adopt_playable(
     ctx: &retro_junk_lib::AnalysisContext,
     archive_root: PathBuf,
     playable_root: PathBuf,
     db: Option<PathBuf>,
+    release_id: Option<String>,
+    dry_run: bool,
 ) -> Result<(), CliError> {
+    // The adoption passes append evidence into the archive, and every archive
+    // mutation happens under the whole-archive lock; the scan happens under
+    // it too, so what the sweep proves is what it writes against. A dry run
+    // writes nothing and stays lock-free.
+    let _archive_lock = if dry_run {
+        None
+    } else {
+        retro_junk_archive::ArchiveLock::acquire_wait(&archive_root, &AtomicBool::new(false))
+            .map_err(|error| CliError::other(error.to_string()))?
+    };
     let snapshot =
         scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
     let database_path = match db {
@@ -1003,6 +1031,51 @@ fn run_adopt_playable(
     };
     let mut connection = retro_junk_db::open_database(&database_path)
         .map_err(|error| CliError::database(error.to_string()))?;
+
+    let adoption = retro_junk_lib::archive_ops::AdoptionRequest {
+        snapshot: &snapshot,
+        playable_root: &playable_root,
+        only_release: release_id.as_deref(),
+        dry_run,
+    };
+    let quiet = |description: &str, _: retro_junk_io::ProgressUnit, _: u64, _: u64| {
+        log::debug!("{description}");
+    };
+    let mut moved = retro_junk_lib::archive_ops::adopt_moved_playables(
+        &adoption,
+        &quiet,
+        &AtomicBool::new(false),
+    )
+    .map_err(|error| CliError::other(error.to_string()))?;
+    for (label, from, to) in &moved.adopted {
+        log::info!("{label}: moved playable re-adopted, {from} -> {to}");
+    }
+    // Files the pipeline never built, proven to be a carrier's derivative by
+    // its verified track set. Runs before the byte-identical pass below, which
+    // can only ever match an uncompressed mirror of a master.
+    let unbuilt = retro_junk_lib::archive_ops::adopt_unbuilt_playables(
+        &adoption,
+        &connection,
+        &quiet,
+        &AtomicBool::new(false),
+    )
+    .map_err(|error| CliError::other(error.to_string()))?;
+    for (label, _, to) in &unbuilt.adopted {
+        log::info!("{label}: adopted existing playable {to} as this carrier's derivative");
+    }
+    let unbuilt_count = unbuilt.adopted.len();
+    moved.adopted.extend(unbuilt.adopted);
+    for (label, path) in &moved.unresolved {
+        log::warn!("{label}: {path} is missing and no file under the playable root matches it");
+    }
+    // Later passes must see the evidence just written, or a re-adopted file
+    // looks unaccounted for and gets suggested for review.
+    let snapshot = if moved.adopted.is_empty() || dry_run {
+        snapshot
+    } else {
+        scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?
+    };
+
     let mut files = Vec::new();
     collect_playable_files(&playable_root, &playable_root, &mut files)?;
     let known_outputs = snapshot
@@ -1014,15 +1087,30 @@ fn run_adopt_playable(
         .flat_map(|dump| &dump.builds)
         .map(|build| build.evidence.relative_output_path.as_str())
         .collect::<std::collections::BTreeSet<_>>();
+    // Decisions the user already made about whole groups of strays. Consulted
+    // before anything is hashed, so an ignored file costs a path comparison
+    // rather than a full read — which on a library of a thousand unaccounted
+    // files is the difference between a sweep and an afternoon.
+    let ignored = retro_junk_archive::IgnoreRules::load(&retro_junk_archive::collection_root_for(
+        &archive_root,
+        &playable_root,
+    ))
+    .map_err(|error| CliError::other(error.to_string()))?;
     let cancelled = AtomicBool::new(false);
     let mut suggested = 0_usize;
     let mut adopted = 0_usize;
+    let mut skipped = 0_usize;
     for path in files {
         let relative = retro_junk_archive::normalize_relative_path(
             path.strip_prefix(&playable_root).unwrap_or(&path),
         )
         .map_err(|error| CliError::other(error.to_string()))?;
         if known_outputs.contains(relative.as_str()) {
+            continue;
+        }
+        if let Some(rule) = ignored.matching(&relative) {
+            log::debug!("{relative}: ignored by rule '{}'", rule.pattern);
+            skipped += 1;
             continue;
         }
         let digests = retro_junk_archive::hash_file_digests(&path, &cancelled)
@@ -1044,116 +1132,111 @@ fn run_adopt_playable(
             })
             .collect::<Vec<_>>();
         if let [(release, medium, dump)] = masters.as_slice() {
-            let catalog_verified = retro_junk_archive::dump_catalog_verified(dump);
-            let build_id = BuildId::new();
-            let child_representation_id = RepresentationId::new();
-            let evidence = BuildEvidence {
-                schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
-                build_id,
-                parent_representation_id: dump.manifest.representation_id,
-                child_representation_id,
-                performed_at: chrono::Utc::now().to_rfc3339(),
-                input_manifest_sha256: dump.manifest_sha256.clone(),
-                recipe_version: 1,
-                format: dump.manifest.format.clone(),
-                relative_output_path: relative,
-                output_sha256: digests.sha256.clone(),
-                output_size: digests.size,
-                catalog_verified,
-                round_trip_verified: true,
-                tool: None,
-                omitted_features: Vec::new(),
-                canonical_intermediate: None,
-            };
-            let evidence_directory = dump.directory.join("evidence");
-            std::fs::create_dir_all(&evidence_directory)?;
-            write_json_new(
-                &evidence_directory.join(format!("build-{build_id}.json")),
-                &evidence,
+            if dry_run {
+                log::info!(
+                    "{relative} would be adopted: byte-identical to master {}",
+                    dump.manifest.dump_id
+                );
+                adopted += 1;
+                continue;
+            }
+            retro_junk_lib::archive_ops::adopt_identical_playable(
+                &retro_junk_lib::archive_ops::IdenticalAdoption {
+                    dump,
+                    carrier: medium,
+                    platform_id: &release.manifest.platform_id,
+                    relative_path: &relative,
+                    digests: &digests,
+                },
+                &connection,
             )
             .map_err(|error| CliError::other(error.to_string()))?;
-            let carrier_id = medium.manifest.carrier_id.to_string();
-            retro_junk_db::bind_library_entries_by_hash(
-                &connection,
-                &release.manifest.platform_id,
-                &digests,
-                &retro_junk_db::LibraryEntryBinding {
-                    // The adopted file is byte-identical to this carrier's
-                    // master, so it belongs to the carrier whether or not the
-                    // carrier is catalog-bound.
-                    carrier_id: Some(&carrier_id),
-                    catalog_media_id: &medium.manifest.catalog_binding.catalog_media_id,
-                    representation_id: None,
-                    match_method: "archive_adoption",
-                },
-            )
-            .map_err(|error| CliError::database(error.to_string()))?;
             adopted += 1;
             continue;
         }
         if masters.len() > 1 {
+            // Every master with these bytes, so the review can be resolved by
+            // choosing one rather than sending the user back to the files.
+            let candidates = masters
+                .iter()
+                .map(|(release, medium, dump)| AdoptionCandidate {
+                    kind: AdoptionCandidateKind::ArchiveMaster,
+                    id: dump.manifest.dump_id.to_string(),
+                    label: release_label(&release.manifest),
+                    archive_release_id: release.manifest.archive_release_id.to_string(),
+                    carrier_id: medium.manifest.carrier_id.to_string(),
+                    platform_id: release.manifest.platform_id.clone(),
+                })
+                .collect();
             suggest_adoption_review(
                 &mut connection,
-                &relative,
-                "ambiguous_archive_master",
-                &format!("bytes match {} archived masters", masters.len()),
+                &AdoptionSuggestionPayload {
+                    relative_path: relative.clone(),
+                    status: "ambiguous_archive_master".to_owned(),
+                    detail: format!("bytes match {} archived masters", masters.len()),
+                    candidates,
+                },
                 0.3,
+                dry_run,
             )?;
             suggested += 1;
             continue;
         }
-        let platform = std::path::Path::new(&relative)
-            .components()
-            .next()
-            .and_then(|component| component.as_os_str().to_str())
-            .unwrap_or_default();
-        let catalog_digests = if let Some(console) = ctx.get_by_short_name(platform) {
-            let mut input = std::fs::File::open(&path)?;
-            let hashes = retro_junk_lib::hasher::compute_all_hashes(
-                &mut input,
-                console.analyzer.as_ref(),
-                Some(&path),
-            )
-            .map_err(|error| CliError::other(error.to_string()))?;
-            retro_junk_archive::FileDigests {
-                size: hashes.data_size,
-                crc32: hashes.crc32,
-                md5: hashes.md5.unwrap_or_default(),
-                sha1: hashes.sha1.unwrap_or_default(),
-                sha256: digests.sha256.clone(),
-            }
-        } else {
-            digests.clone()
-        };
-        let catalog = retro_junk_db::match_catalog_file(&connection, platform, &catalog_digests)
+        let platform = retro_junk_work::adoption::platform_of(&relative);
+        // Format-aware hashing so a headered cartridge compares against the
+        // catalog the way the catalog stores it. A file this platform's
+        // analyzer cannot read is not a reason to abandon the run — the whole
+        // point of the sweep is that the playable tree contains things nobody
+        // has accounted for yet. It falls back to the raw digests, and if
+        // those match nothing it is filed for review like any other stranger.
+        let catalog_digests = catalog_comparison_digests(ctx, &platform, &path, &digests);
+        let catalog = retro_junk_db::match_catalog_file(&connection, &platform, &catalog_digests)
             .map_err(|error| CliError::database(error.to_string()))?;
-        let (status, detail) = match catalog.as_slice() {
+        let (status, detail, candidates) = match catalog.as_slice() {
             [matched] => {
-                retro_junk_db::bind_library_entries_by_hash(
-                    &connection,
-                    platform,
-                    &catalog_digests,
-                    &retro_junk_db::LibraryEntryBinding {
-                        // Catalog identity only: nothing in the archive holds
-                        // this file, which is exactly what the report says.
-                        catalog_media_id: &matched.media_id,
-                        match_method: "catalog_adoption",
-                        ..Default::default()
-                    },
-                )
-                .map_err(|error| CliError::database(error.to_string()))?;
+                if !dry_run {
+                    retro_junk_db::bind_library_entries_by_hash(
+                        &connection,
+                        &platform,
+                        &catalog_digests,
+                        &retro_junk_db::LibraryEntryBinding {
+                            // Catalog identity only: nothing in the archive
+                            // holds this file, which is what the report says.
+                            catalog_media_id: &matched.media_id,
+                            match_method: "catalog_adoption",
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|error| CliError::database(error.to_string()))?;
+                }
                 (
                     "catalog_only",
                     format!(
                         "matches {} ({}) but has no preservation master",
                         matched.game, matched.media_id
                     ),
+                    // Already bound above; there is nothing left to choose.
+                    Vec::new(),
                 )
             }
-            [] => ("unmatched", "no archive master or catalog match".to_owned()),
-            _ => (
+            [] => (
+                "unmatched",
+                "no archive master or catalog match".to_owned(),
+                Vec::new(),
+            ),
+            many => (
                 "ambiguous_catalog",
-                format!("matches {} catalog media", catalog.len()),
+                format!("matches {} catalog media", many.len()),
+                many.iter()
+                    .map(|matched| AdoptionCandidate {
+                        kind: AdoptionCandidateKind::CatalogMedium,
+                        id: matched.media_id.clone(),
+                        label: catalog_match_label(matched),
+                        archive_release_id: String::new(),
+                        carrier_id: String::new(),
+                        platform_id: matched.platform_id.clone(),
+                    })
+                    .collect(),
             ),
         };
         let confidence = match status {
@@ -1161,8 +1244,25 @@ fn run_adopt_playable(
             "ambiguous_catalog" => 0.3,
             _ => 0.1,
         };
-        suggest_adoption_review(&mut connection, &relative, status, &detail, confidence)?;
+        suggest_adoption_review(
+            &mut connection,
+            &AdoptionSuggestionPayload {
+                relative_path: relative.clone(),
+                status: status.to_owned(),
+                detail,
+                candidates,
+            },
+            confidence,
+            dry_run,
+        )?;
         suggested += 1;
+    }
+    if dry_run {
+        log::info!(
+            "Dry run: {} moved playable(s) re-adopted, {unbuilt_count} unbuilt playable(s) adopted, {adopted} byte-identical file(s) adopted, {suggested} filed for review",
+            moved.adopted.len() - unbuilt_count
+        );
+        return Ok(());
     }
     let refreshed =
         scan_archive(&archive_root).map_err(|error| CliError::other(error.to_string()))?;
@@ -1173,10 +1273,21 @@ fn run_adopt_playable(
         &archive_root.join(".retro-junk/work"),
     )
     .map_err(|error| CliError::database(error.to_string()))?;
+    log::info!(
+        "Re-adopted {} moved playable output(s) and {unbuilt_count} unbuilt one(s); {} still missing",
+        moved.adopted.len() - unbuilt_count,
+        moved.unresolved.len()
+    );
     log::info!("Adopted {adopted} byte-identical playable file(s)");
     log::info!(
-        "Recorded {suggested} unresolved playable file(s) as suggestions          (`retro-junk suggestions list`)"
+        "Recorded {suggested} unresolved playable file(s) as suggestions (`retro-junk suggestions list`)"
     );
+    if skipped > 0 {
+        log::info!(
+            "Skipped {skipped} file(s) covered by {} ignore rule(s) (`retro-junk suggestions ignores`)",
+            ignored.len()
+        );
+    }
     Ok(())
 }
 
@@ -1184,29 +1295,77 @@ fn run_adopt_playable(
 /// refreshes rather than piles up.
 fn suggest_adoption_review(
     connection: &mut retro_junk_db::Connection,
-    relative_path: &str,
-    status: &str,
-    detail: &str,
+    payload: &AdoptionSuggestionPayload,
     confidence: f64,
+    dry_run: bool,
 ) -> Result<(), CliError> {
-    let payload = serde_json::json!({
-        "relative_path": relative_path,
-        "status": status,
-        "detail": detail,
-    });
-    retro_junk_db::work::open_suggestion(
+    if dry_run {
+        log::info!(
+            "{} would be filed for review: {} — {}",
+            payload.relative_path,
+            payload.status,
+            payload.detail
+        );
+        return Ok(());
+    }
+    retro_junk_work::adoption::open_adoption_suggestion(
         connection,
-        &retro_junk_db::work::NewSuggestion {
-            kind: "adopt_playable",
-            target_kind: "path",
-            target_id: relative_path,
-            payload_json: &payload.to_string(),
-            confidence,
-            provenance: "cli-adopt",
-        },
+        payload,
+        confidence,
+        "cli-adopt",
     )
-    .map_err(|error| CliError::database(error.to_string()))?;
-    Ok(())
+    .map_err(|error| CliError::database(error.to_string()))
+}
+
+/// The digests the catalog compares a playable file against.
+fn catalog_comparison_digests(
+    ctx: &retro_junk_lib::AnalysisContext,
+    platform_id: &str,
+    path: &std::path::Path,
+    raw: &retro_junk_archive::FileDigests,
+) -> retro_junk_archive::FileDigests {
+    ctx.get_by_short_name(platform_id)
+        .and_then(|console| {
+            let mut input = std::fs::File::open(path).ok()?;
+            let hashes = retro_junk_lib::hasher::compute_all_hashes(
+                &mut input,
+                console.analyzer.as_ref(),
+                Some(path),
+            )
+            .map_err(|error| {
+                log::debug!("{}: {error}; comparing raw digests instead", path.display());
+            })
+            .ok()?;
+            Some(retro_junk_archive::FileDigests {
+                size: hashes.data_size,
+                crc32: hashes.crc32,
+                md5: hashes.md5.unwrap_or_default(),
+                sha1: hashes.sha1.unwrap_or_default(),
+                sha256: raw.sha256.clone(),
+            })
+        })
+        .unwrap_or_else(|| raw.clone())
+}
+
+/// A release as a person would name it, for a review card to show.
+fn release_label(manifest: &retro_junk_archive::ReleaseManifest) -> String {
+    if manifest.region.is_empty() {
+        manifest.title.clone()
+    } else {
+        format!("{} ({})", manifest.title, manifest.region)
+    }
+}
+
+/// A catalogued medium as a person would name it.
+fn catalog_match_label(matched: &retro_junk_db::CompleteCatalogMediaMatch) -> String {
+    let mut label = matched.game.clone();
+    if !matched.region.is_empty() {
+        label.push_str(&format!(" ({})", matched.region));
+    }
+    if !matched.source.is_empty() {
+        label.push_str(&format!(" · {}", matched.source));
+    }
+    label
 }
 
 fn collect_playable_files(
@@ -1218,6 +1377,13 @@ fn collect_playable_files(
     entries.sort_by_key(std::fs::DirEntry::path);
     for entry in entries {
         let path = entry.path();
+        // Host-filesystem bookkeeping is not collection content. A library
+        // mirrored onto exFAT or SMB carries an AppleDouble sidecar beside
+        // every file, and each one keeps the extension it shadows — so without
+        // this every game filed a second, bogus "unmatched" review row.
+        if retro_junk_io::is_noise_path(&path) {
+            continue;
+        }
         let metadata = std::fs::symlink_metadata(&path)?;
         if metadata.file_type().is_symlink() {
             log::warn!("Skipping symbolic link during adoption: {}", path.display());
@@ -1435,13 +1601,7 @@ fn run_shared_single_build(
     };
     let outcome = retro_junk_lib::playable_build::build_playable(
         &request,
-        &|phase, current, total| {
-            if total > 0 {
-                log::info!("{phase}: {current}/{total}");
-            } else {
-                log::info!("{phase}");
-            }
-        },
+        &log_progress,
         &AtomicBool::new(false),
     )
     .map_err(|error| CliError::other(error.to_string()))?;
@@ -1535,11 +1695,20 @@ fn run_redumper_audit(
     }
 }
 
-pub(crate) fn log_progress(phase: &str, current: u64, total: u64) {
-    if total > 0 {
-        log::info!("{phase}: {current}/{total}");
-    } else {
-        log::info!("{phase}");
+pub(crate) fn log_progress(
+    phase: &str,
+    unit: retro_junk_io::ProgressUnit,
+    current: u64,
+    total: u64,
+) {
+    match (total, unit) {
+        (0, _) => log::info!("{phase}"),
+        (_, retro_junk_io::ProgressUnit::Bytes) => log::info!(
+            "{phase}: {} / {}",
+            retro_junk_core::util::format_bytes_approx(current),
+            retro_junk_core::util::format_bytes_approx(total),
+        ),
+        (_, retro_junk_io::ProgressUnit::Items) => log::info!("{phase}: {current}/{total}"),
     }
 }
 
@@ -1814,7 +1983,14 @@ cp "$input" "$output"
             std::collections::BTreeMap::new(),
         )
         .unwrap();
-        assert!(playable.join("gc/game-usa.rvz").is_file());
+        // An unbound carrier is named the way a catalog would have named it —
+        // readable, with the region written as a DAT writes it — rather than
+        // slugified. A library must not read as two collections depending on
+        // whether a carrier happened to resolve to a catalog medium.
+        assert!(
+            playable.join("gc/Game (USA).rvz").is_file(),
+            "unbound carriers use the same readable scheme as bound ones"
+        );
         assert_eq!(
             retro_junk_archive::scan_archive(&archive).unwrap().releases[0].physical_copies[0]
                 .carriers[0]

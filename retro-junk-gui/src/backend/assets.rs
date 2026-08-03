@@ -112,6 +112,9 @@ struct ScrapeWorkItem {
     scraper_serial: String,
     /// Hash triple for the `ScreenScraper` hash tier (all-or-nothing).
     hashes: Option<retro_junk_scraper::lookup::RomHashes>,
+    /// What the user decided this file is, which settles whose identity the
+    /// lookup offers. Resolved from the catalog off the UI thread.
+    derivation: retro_junk_scraper::Derivation,
     preferred_region: String,
     platform: Platform,
     archive_release_id: Option<retro_junk_archive::ArchiveReleaseId>,
@@ -137,6 +140,7 @@ impl ScrapeWorkItem {
                 platform: self.platform,
                 expects_serial: retro_junk_scraper::expects_serial(self.platform),
             },
+            derivation: self.derivation.clone(),
             region: self.preferred_region.clone(),
             language: "en".to_owned(),
             destination: self.archive_release_id.map_or_else(
@@ -373,12 +377,14 @@ fn scrape_media_for_selection(
                 serial,
                 scraper_serial,
                 hashes: entry.hashes.as_ref().and_then(|h| {
-                    Some(retro_junk_scraper::lookup::RomHashes {
-                        crc32: h.crc32.clone(),
-                        md5: h.md5.clone()?,
-                        sha1: h.sha1.clone()?,
-                    })
+                    retro_junk_scraper::lookup::RomHashes::complete(
+                        &h.crc32,
+                        h.md5.as_deref().unwrap_or_default(),
+                        h.sha1.as_deref().unwrap_or_default(),
+                    )
                 }),
+                // Resolved from the catalog once the op is off the UI thread.
+                derivation: retro_junk_scraper::Derivation::Own,
                 preferred_region,
                 platform,
                 archive_release_id,
@@ -423,13 +429,11 @@ fn scrape_media_for_selection(
         let scraper_serial = analyzer
             .and_then(|analyzer| analyzer.analyzer.extract_scraper_serial(&serial))
             .unwrap_or_default();
-        let hashes =
-            (!identity.crc32.is_empty() && !identity.md5.is_empty() && !identity.sha1.is_empty())
-                .then(|| retro_junk_scraper::lookup::RomHashes {
-                    crc32: identity.crc32.clone(),
-                    md5: identity.md5.clone(),
-                    sha1: identity.sha1.clone(),
-                });
+        let hashes = retro_junk_scraper::lookup::RomHashes::complete(
+            &identity.crc32,
+            &identity.md5,
+            &identity.sha1,
+        );
         let archived_assets = release
             .archived_assets
             .iter()
@@ -448,6 +452,9 @@ fn scrape_media_for_selection(
             serial,
             scraper_serial,
             hashes,
+            // The projection already resolved this release's derivation; an
+            // archive-only row has no library entry to look it up from.
+            derivation: retro_junk_work::scrape::scrape_derivation(&identity.derivation),
             preferred_region: retro_junk_scraper::systems::region_slug_to_ss_code(
                 &release.summary.region,
             )
@@ -475,6 +482,7 @@ fn scrape_media_for_selection(
     }
 
     let media_dir_setting = app.settings.general.assets_dir.clone();
+    let db_path = app.db_path.clone();
     let ctx = ctx.clone();
     let verb = if force_redownload {
         "Scraping media"
@@ -510,6 +518,7 @@ fn scrape_media_for_selection(
                         std::fs::metadata(&item.analysis_path).map_or(0, |metadata| metadata.len());
                 }
             }
+            resolve_derivations(db_path.as_deref(), &mut work);
             let rt = match tokio::runtime::Runtime::new() {
                 Ok(rt) => rt,
                 Err(error) => {
@@ -657,6 +666,45 @@ fn scrape_media_for_selection(
             });
         },
     );
+}
+
+/// Fill in what the user decided each selected row is.
+///
+/// A mod's own bytes are in no scraper's database, so asking about them spends
+/// a request to learn nothing and leaves the row unidentified forever. The
+/// catalog holds the answer — which work a mod was made from — and this reads
+/// it once for the whole selection, off the UI thread because it is a query.
+///
+/// A failure here is not fatal: the scrape falls back to asking about each
+/// file as itself, which is what it did before there were marks at all.
+fn resolve_derivations(db_path: Option<&Path>, work: &mut [ScrapeWorkItem]) {
+    let entry_ids = work
+        .iter()
+        .filter_map(|item| item.entry_id)
+        .collect::<Vec<_>>();
+    if entry_ids.is_empty() {
+        return;
+    }
+    let Some(db_path) = db_path else {
+        return;
+    };
+    let derivations = match retro_junk_db::open_database(db_path)
+        .map_err(|error| error.to_string())
+        .and_then(|connection| {
+            retro_junk_db::query_entry_derivations(&connection, &entry_ids)
+                .map_err(|error| error.to_string())
+        }) {
+        Ok(derivations) => derivations,
+        Err(error) => {
+            log::warn!("Could not read collection marks for this scrape: {error}");
+            return;
+        }
+    };
+    for item in work {
+        if let Some(derivation) = item.entry_id.and_then(|id| derivations.get(&id)) {
+            item.derivation = retro_junk_work::scrape::scrape_derivation(derivation);
+        }
+    }
 }
 
 /// Translate one core event into UI progress.

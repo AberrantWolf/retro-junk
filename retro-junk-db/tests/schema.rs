@@ -84,13 +84,15 @@ fn v25_rebinds_archived_playables_to_their_carrier() {
              VALUES(1,1,'Nes','nes','/playable/nes','fp','ready');
              INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json)
              VALUES(1,1,'file:Game.nes','Game.nes','{}'),
-                   (2,1,'file:Other.nes','Other.nes','{}');
+                   (2,1,'file:Other.nes','Other.nes','{}'),
+                   (3,1,'file:Dup.nes','Dup.nes','{}');
              INSERT INTO works(id,canonical_name) VALUES('w','Game');
              INSERT INTO platforms(id,display_name,short_name,manufacturer,media_type)
              VALUES('nes','NES','NES','Nintendo','cartridge');
              INSERT INTO releases(id,work_id,platform_id,region,title)
              VALUES('r','w','nes','usa','Game');
-             INSERT INTO media(id,release_id,dat_source) VALUES('m','r','no-intro');
+             INSERT INTO media(id,release_id,dat_source) VALUES('m','r','no-intro'),
+                                                               ('m2','r','no-intro');
              INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,
                                           archive_root,playable_root)
              VALUES('p','Collection','retro-junk-archive.toml','sha','/archive','/playable');
@@ -115,9 +117,18 @@ fn v25_rebinds_archived_playables_to_their_carrier() {
                  representation_id TEXT REFERENCES representations(id) ON DELETE SET NULL,
                  match_method TEXT NOT NULL DEFAULT '',
                  PRIMARY KEY(library_entry_id, catalog_media_id));
+             -- Entry 3 has two legacy rows naming *different* catalog media
+             -- through the *same* representation — the re-slugged-media shape
+             -- the hash-binding paths leave behind. Both map to one
+             -- (entry, carrier) pair, which the migration must collapse
+             -- itself: the unique index is only created after the copy, and
+             -- a duplicate pair used to abort the migration and leave the
+             -- database unopenable.
              INSERT INTO library_entry_media_bindings(
                  library_entry_id,catalog_media_id,representation_id,match_method)
-             VALUES(2,'m',NULL,'catalog_adoption');
+             VALUES(2,'m',NULL,'catalog_adoption'),
+                   (3,'m','rep','hash'),
+                   (3,'m2','rep','hash');
              DELETE FROM schema_version;
              INSERT INTO schema_version(version) VALUES(24);
              PRAGMA foreign_keys=ON;",
@@ -150,6 +161,18 @@ fn v25_rebinds_archived_playables_to_their_carrier() {
         )
         .unwrap();
     assert_eq!(adopted, (None, "m".to_owned()));
+    // The duplicate pair collapsed to one row — the real assertion is that
+    // `open_database` above succeeded at all, which it did not when both
+    // rows survived to meet the unique index.
+    let dup_rows: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM library_entry_media_bindings
+             WHERE library_entry_id=3 AND carrier_id='c'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(dup_rows, 1);
 }
 
 #[test]

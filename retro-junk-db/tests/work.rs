@@ -4,9 +4,9 @@
 use retro_junk_db::work::{
     ClaimOutcome, NewSuggestion, daemon_heartbeat, daemon_started, get_incoming_package,
     get_suggestion, has_recent_error, held_claim, list_incoming_packages, list_open_suggestions,
-    observe_incoming_package, open_suggestion, read_runtime_state, refresh_claim, release_claim,
-    remove_incoming_package, resolve_suggestion, set_incoming_error, set_incoming_imported,
-    set_incoming_ready, try_claim,
+    observe_incoming_package, open_suggestion, open_suggestion_counts, read_runtime_state,
+    refresh_claim, release_claim, remove_incoming_package, reopen_suggestions, resolve_suggestion,
+    resolve_suggestions, set_incoming_error, set_incoming_imported, set_incoming_ready, try_claim,
 };
 
 fn conn() -> retro_junk_db::Connection {
@@ -24,7 +24,15 @@ fn fresh_claim_blocks_other_owners_until_released() {
     let held = held_claim(&db, "build", "release", "r1").unwrap().unwrap();
     assert_eq!(held.owner, "daemon");
 
-    release_claim(&mut db, "build", "release", "r1", &ClaimOutcome::Success).unwrap();
+    release_claim(
+        &mut db,
+        "build",
+        "release",
+        "r1",
+        "daemon",
+        &ClaimOutcome::Success,
+    )
+    .unwrap();
     assert!(held_claim(&db, "build", "release", "r1").unwrap().is_none());
     assert!(try_claim(&db, "build", "release", "r1", "gui").unwrap());
 }
@@ -47,6 +55,32 @@ fn stale_claims_are_reaped_and_refresh_extends_only_the_owner() {
     assert_eq!(held.owner, "daemon");
 }
 
+/// A process whose claim went stale and was taken over may finish late and
+/// release on its way out; that release must not delete the new owner's live
+/// claim, or a third process could claim the same target mid-work.
+#[test]
+fn release_by_a_former_owner_leaves_the_new_owners_claim() {
+    let mut db = conn();
+    assert!(try_claim(&db, "build", "release", "r1", "stalled").unwrap());
+    db.execute(
+        "UPDATE work_claims SET since=datetime('now','-10 minutes')",
+        [],
+    )
+    .unwrap();
+    assert!(try_claim(&db, "build", "release", "r1", "daemon").unwrap());
+    release_claim(
+        &mut db,
+        "build",
+        "release",
+        "r1",
+        "stalled",
+        &ClaimOutcome::Cancelled,
+    )
+    .unwrap();
+    let held = held_claim(&db, "build", "release", "r1").unwrap().unwrap();
+    assert_eq!(held.owner, "daemon");
+}
+
 #[test]
 fn failed_release_records_error_and_success_clears_it() {
     let mut db = conn();
@@ -57,6 +91,7 @@ fn failed_release_records_error_and_success_clears_it() {
         "build",
         "release",
         "r1",
+        "daemon",
         &ClaimOutcome::Failed {
             error: "chdman exploded".to_owned(),
         },
@@ -74,12 +109,28 @@ fn failed_release_records_error_and_success_clears_it() {
 
     // Success clears the record entirely.
     assert!(try_claim(&db, "build", "release", "r1", "daemon").unwrap());
-    release_claim(&mut db, "build", "release", "r1", &ClaimOutcome::Success).unwrap();
+    release_claim(
+        &mut db,
+        "build",
+        "release",
+        "r1",
+        "daemon",
+        &ClaimOutcome::Success,
+    )
+    .unwrap();
     assert!(!has_recent_error(&db, "build", "release", "r1", 24).unwrap());
 
     // Cancelled releases record nothing.
     assert!(try_claim(&db, "build", "release", "r1", "daemon").unwrap());
-    release_claim(&mut db, "build", "release", "r1", &ClaimOutcome::Cancelled).unwrap();
+    release_claim(
+        &mut db,
+        "build",
+        "release",
+        "r1",
+        "daemon",
+        &ClaimOutcome::Cancelled,
+    )
+    .unwrap();
     assert!(!has_recent_error(&db, "build", "release", "r1", 24).unwrap());
 
     let tick_after = read_runtime_state(&db).unwrap().dirty_tick;
@@ -128,6 +179,145 @@ fn reopening_a_suggestion_supersedes_the_old_row_and_keeps_history() {
     // Resolving twice is a lost race, not an error.
     assert!(!resolve_suggestion(&mut db, second, "dismissed").unwrap());
     assert!(list_open_suggestions(&db, None).unwrap().is_empty());
+}
+
+/// The daemon re-derives every pass and proposes the same thing each time.
+/// An identical proposal must keep the open row — its id is what undo holds —
+/// and must not bump the dirty tick, which every other process reads as
+/// "refresh now".
+#[test]
+fn refiling_an_identical_suggestion_keeps_the_open_row() {
+    let mut db = conn();
+    let proposal = NewSuggestion {
+        kind: "scrape_review",
+        target_kind: "release",
+        target_id: "r1",
+        payload_json: r#"{"match":"filename"}"#,
+        confidence: 0.4,
+        provenance: "daemon",
+    };
+    let first = open_suggestion(&mut db, &proposal).unwrap();
+    let tick_before = read_runtime_state(&db).unwrap().dirty_tick;
+    let second = open_suggestion(&mut db, &proposal).unwrap();
+    assert_eq!(first, second);
+    let open = list_open_suggestions(&db, None).unwrap();
+    assert_eq!(open.len(), 1);
+    let tick_after = read_runtime_state(&db).unwrap().dirty_tick;
+    assert_eq!(
+        tick_before, tick_after,
+        "an unchanged proposal is not a change other processes must refresh for"
+    );
+}
+
+/// Open one adoption review per path, the way an adoption sweep does.
+fn file_reviews(db: &mut retro_junk_db::Connection, paths: &[&str]) -> Vec<i64> {
+    paths
+        .iter()
+        .map(|path| {
+            open_suggestion(
+                db,
+                &NewSuggestion {
+                    kind: "adopt_playable",
+                    target_kind: "path",
+                    target_id: path,
+                    payload_json: "{}",
+                    confidence: 0.1,
+                    provenance: "cli-adopt",
+                },
+            )
+            .unwrap()
+        })
+        .collect()
+}
+
+/// Bulk dismissal reports exactly which rows it closed, which is what makes it
+/// undoable: the caller keeps that list rather than trying to reconstruct
+/// "whatever the filter matched a moment ago".
+#[test]
+fn bulk_dismissal_reports_what_it_actually_closed() {
+    let mut db = conn();
+    let ids = file_reviews(&mut db, &["gc/a.txt", "gc/b.txt", "gc/c.rvz"]);
+    // Somebody else got to one of them first.
+    assert!(resolve_suggestion(&mut db, ids[1], "applied").unwrap());
+
+    let closed = resolve_suggestions(&mut db, &ids, "dismissed").unwrap();
+    assert_eq!(
+        closed,
+        vec![ids[0], ids[2]],
+        "a row someone else resolved is absent, not a failure of the batch"
+    );
+    assert!(list_open_suggestions(&db, None).unwrap().is_empty());
+    assert_eq!(
+        get_suggestion(&db, ids[1]).unwrap().unwrap().resolution,
+        "applied",
+        "the earlier resolution must stand"
+    );
+
+    let outcome = reopen_suggestions(&mut db, &closed).unwrap();
+    assert!(outcome.is_complete());
+    assert_eq!(outcome.reopened, closed);
+    assert_eq!(list_open_suggestions(&db, None).unwrap().len(), 2);
+}
+
+/// The store allows only one open row per target, so undoing a dismissal after
+/// a sweep re-filed the same path would collide. The newer row is the better
+/// answer — the undo must say so rather than failing, or blowing up the whole
+/// batch on one path.
+#[test]
+fn undo_yields_to_a_freshly_filed_suggestion() {
+    let mut db = conn();
+    let ids = file_reviews(&mut db, &["gc/a.txt", "gc/b.txt"]);
+    let closed = resolve_suggestions(&mut db, &ids, "dismissed").unwrap();
+    // A later sweep files one of them again.
+    let refiled = file_reviews(&mut db, &["gc/a.txt"]);
+
+    let outcome = reopen_suggestions(&mut db, &[closed[0], closed[1], 9999]).unwrap();
+    assert_eq!(outcome.superseded, vec![closed[0]]);
+    assert_eq!(outcome.reopened, vec![closed[1]]);
+    assert_eq!(outcome.missing, vec![9999]);
+    assert!(!outcome.is_complete());
+
+    let open: Vec<i64> = list_open_suggestions(&db, None)
+        .unwrap()
+        .into_iter()
+        .map(|suggestion| suggestion.id)
+        .collect();
+    assert_eq!(open, vec![closed[1], refiled[0]]);
+
+    // Undoing twice is harmless: already-open rows count as reopened.
+    let again = reopen_suggestions(&mut db, &[closed[1]]).unwrap();
+    assert_eq!(again.reopened, vec![closed[1]]);
+    assert!(again.is_complete());
+}
+
+#[test]
+fn counts_by_kind_describe_the_backlog_without_listing_it() {
+    let mut db = conn();
+    file_reviews(&mut db, &["gc/a.txt", "gc/b.txt"]);
+    let import = open_suggestion(
+        &mut db,
+        &NewSuggestion {
+            kind: "import",
+            target_kind: "path",
+            target_id: "/incoming/game.bin",
+            payload_json: "{}",
+            confidence: 1.0,
+            provenance: "daemon",
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        open_suggestion_counts(&db).unwrap(),
+        vec![("adopt_playable".to_owned(), 2), ("import".to_owned(), 1)]
+    );
+
+    assert!(resolve_suggestion(&mut db, import, "applied").unwrap());
+    assert_eq!(
+        open_suggestion_counts(&db).unwrap(),
+        vec![("adopt_playable".to_owned(), 2)],
+        "a resolved kind drops out rather than showing zero"
+    );
 }
 
 #[test]

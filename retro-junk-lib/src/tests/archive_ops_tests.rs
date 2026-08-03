@@ -50,7 +50,7 @@ fn ingest(
     .unwrap()
 }
 
-fn noop_progress(_: &str, _: u64, _: u64) {}
+fn noop_progress(_: &str, _: retro_junk_io::ProgressUnit, _: u64, _: u64) {}
 
 #[test]
 fn integrity_verification_appends_evidence_and_flags_corruption() {
@@ -279,4 +279,132 @@ fn release_playlist_writes_relative_ordered_entries_once() {
     let again =
         write_release_playlist(&playable, "psx", "Game", "usa", "Game (USA)", &files).unwrap();
     assert_eq!(again, playlist);
+}
+
+/// `evidence/` is append-only, so a release rebuilt or re-adopted under a
+/// corrected name carries both names in its history. A projection that reads
+/// all of them republishes artwork under a name no file has carried since —
+/// one copy per name, on every run — and gives the frontend a second, dead
+/// entry for the same game.
+#[test]
+fn only_the_name_a_release_currently_publishes_under_is_projected() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    init_archive(&archive);
+    let source = temp.path().join("dump");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("Game.bin"), b"disc bytes").unwrap();
+    let ingested = ingest(&archive, &source, "psx", "Game");
+
+    let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+    let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
+
+    // The same lineage published twice: first under a track-shaped name, then
+    // corrected. Both records stay in the archive; only the second is current.
+    let parent = dump.manifest.representation_id;
+    for path in ["psx/Game (USA) (Track 1).chd", "psx/Game (USA).chd"] {
+        retro_junk_archive::write_build_evidence(
+            &dump.directory,
+            &retro_junk_archive::BuildEvidence {
+                schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+                build_id: retro_junk_archive::BuildId::new(),
+                parent_representation_id: parent,
+                child_representation_id: retro_junk_archive::RepresentationId::new(),
+                performed_at: chrono::Utc::now().to_rfc3339(),
+                input_manifest_sha256: dump.manifest_sha256.clone(),
+                recipe_version: 1,
+                format: RepresentationFormat::Chd,
+                relative_output_path: path.to_owned(),
+                output_sha256: "abc".to_owned(),
+                output_size: 10,
+                catalog_verified: false,
+                round_trip_verified: true,
+                tool: None,
+                omitted_features: Vec::new(),
+                canonical_intermediate: None,
+            },
+        )
+        .unwrap();
+    }
+
+    let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+    let release = &snapshot.releases[0];
+
+    let stems = crate::archive_assets::release_media_stems(release);
+    assert!(
+        stems.contains("Game (USA)"),
+        "the name in use must be projected"
+    );
+    assert!(
+        !stems.contains("Game (USA) (Track 1)"),
+        "a name the release stopped using must not keep receiving artwork"
+    );
+
+    let retired = crate::archive_assets::superseded_media_stems(release);
+    assert!(
+        retired.contains("Game (USA) (Track 1)"),
+        "the abandoned name is what a projection has to clean up"
+    );
+    assert!(
+        !retired.contains("Game (USA)"),
+        "a live name must never be scheduled for deletion"
+    );
+}
+
+/// Two lineages — two dumps of one carrier — can land on the same output name.
+/// That name is live for both, so retiring one lineage's record must not
+/// delete the artwork the other is still publishing under.
+#[test]
+fn a_name_two_lineages_share_is_never_retired() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    init_archive(&archive);
+    let source = temp.path().join("dump");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("Game.bin"), b"disc bytes").unwrap();
+    let ingested = ingest(&archive, &source, "psx", "Game");
+
+    let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+    let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
+    let mut write = |parent, path: &str| {
+        retro_junk_archive::write_build_evidence(
+            &dump.directory,
+            &retro_junk_archive::BuildEvidence {
+                schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+                build_id: retro_junk_archive::BuildId::new(),
+                parent_representation_id: parent,
+                child_representation_id: retro_junk_archive::RepresentationId::new(),
+                performed_at: chrono::Utc::now().to_rfc3339(),
+                input_manifest_sha256: dump.manifest_sha256.clone(),
+                recipe_version: 1,
+                format: RepresentationFormat::Chd,
+                relative_output_path: path.to_owned(),
+                output_sha256: "abc".to_owned(),
+                output_size: 10,
+                catalog_verified: false,
+                round_trip_verified: true,
+                tool: None,
+                omitted_features: Vec::new(),
+                canonical_intermediate: None,
+            },
+        )
+        .unwrap();
+    };
+    // One lineage moved off the shared name; another still publishes under it.
+    write(dump.manifest.representation_id, "psx/Game (USA).chd");
+    write(
+        dump.manifest.representation_id,
+        "psx/Game (USA) (Disc 1).chd",
+    );
+    write(
+        retro_junk_archive::RepresentationId::new(),
+        "psx/Game (USA).chd",
+    );
+
+    let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+    let release = &snapshot.releases[0];
+    assert!(
+        !crate::archive_assets::superseded_media_stems(release).contains("Game (USA)"),
+        "a name another lineage still publishes under is live, not abandoned"
+    );
 }

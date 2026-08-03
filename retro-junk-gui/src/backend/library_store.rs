@@ -1,4 +1,4 @@
-//! Serialized SQLite worker and revision-aware UI projection controller.
+//! Serialized `SQLite` worker and revision-aware UI projection controller.
 #![allow(dead_code)] // APIs are consumed incrementally as producers cut over.
 
 use std::collections::{HashMap, HashSet};
@@ -46,15 +46,21 @@ pub enum LibraryStoreRequest {
         entry_id: LibraryEntryId,
         value: Option<String>,
     },
+    /// Every tagging request carries the collection root, because the
+    /// decision has to be recorded beside the files as well as in the row:
+    /// this database is rebuilt from DATs, and these are exactly the files no
+    /// DAT describes.
     SetTag {
         entry_id: LibraryEntryId,
         value: Option<String>,
+        collection_root: Option<std::path::PathBuf>,
     },
     CreateHomebrewAndTag {
         entry_id: LibraryEntryId,
         name: String,
         platform_id: String,
         region: String,
+        collection_root: Option<std::path::PathBuf>,
     },
     CreateModdedAndTag {
         entry_id: LibraryEntryId,
@@ -63,6 +69,7 @@ pub enum LibraryStoreRequest {
         region: String,
         disc_number: Option<u32>,
         hashes: Option<retro_junk_db::MediaHashes>,
+        collection_root: Option<std::path::PathBuf>,
     },
     ApplyAnalysis {
         entry_id: LibraryEntryId,
@@ -169,6 +176,35 @@ impl LibraryStore {
         } else {
             self.write_tx.send(envelope)
         }
+    }
+
+    /// Queue many requests without ever blocking the caller.
+    ///
+    /// `submit` blocks when the bounded queue is full. That is the right
+    /// backpressure for worker threads, but the UI thread must never wait on
+    /// it — a bulk action submits one request per selected row and can outrun
+    /// the queue, freezing the window mid-frame. The envelopes are handed to
+    /// a short-lived feeder thread that performs the same routing and
+    /// (blocking) sends; ids, replies, and FIFO order within the batch are
+    /// exactly as if each had been submitted directly.
+    pub fn submit_batch(&self, envelopes: Vec<StoreEnvelope<LibraryStoreRequest>>) {
+        let write_tx = self.write_tx.clone();
+        let read_tx = self.read_tx.clone();
+        let _ = thread::Builder::new()
+            .name("library-store-feeder".into())
+            .spawn(move || {
+                for envelope in envelopes {
+                    let sent = if is_read_request(&envelope.payload) {
+                        read_tx.send(envelope)
+                    } else {
+                        write_tx.send(envelope)
+                    };
+                    if sent.is_err() {
+                        // The store shut down; the rest have nowhere to go.
+                        break;
+                    }
+                }
+            });
     }
 
     pub fn try_recv(&self) -> Result<LibraryStoreReply, mpsc::TryRecvError> {
@@ -317,20 +353,29 @@ fn execute(
         R::SetRegionOverride { entry_id, value } => LibraryStoreValue::ChangeSet(
             retro_junk_db::set_entry_region_override(conn, entry_id, value.as_deref())?,
         ),
-        R::SetTag { entry_id, value } => LibraryStoreValue::ChangeSet(
-            retro_junk_db::set_entry_tag(conn, entry_id, value.as_deref())?,
-        ),
+        R::SetTag {
+            entry_id,
+            value,
+            collection_root,
+        } => LibraryStoreValue::ChangeSet(retro_junk_db::set_entry_tag(
+            conn,
+            entry_id,
+            value.as_deref(),
+            collection_root.as_deref(),
+        )?),
         R::CreateHomebrewAndTag {
             entry_id,
             name,
             platform_id,
             region,
+            collection_root,
         } => LibraryStoreValue::ChangeSet(retro_junk_db::create_homebrew_and_tag_entry(
             conn,
             entry_id,
             &name,
             &platform_id,
             &region,
+            collection_root.as_deref(),
         )?),
         R::CreateModdedAndTag {
             entry_id,
@@ -339,14 +384,18 @@ fn execute(
             region,
             disc_number,
             hashes,
+            collection_root,
         } => LibraryStoreValue::ChangeSet(retro_junk_db::create_modded_and_tag_entry(
             conn,
             entry_id,
-            &work_id,
-            &platform_id,
-            &region,
-            disc_number,
-            hashes.as_ref(),
+            &retro_junk_db::ModdedEntry {
+                work_id: &work_id,
+                platform_id: &platform_id,
+                region: &region,
+                disc_number,
+                hashes: hashes.as_ref(),
+                collection_root: collection_root.as_deref(),
+            },
         )?),
         R::ApplyAnalysis {
             entry_id,

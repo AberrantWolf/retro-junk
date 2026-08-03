@@ -120,13 +120,15 @@ fn chdman_probe_runs_off_the_ui_thread() {
          running synchronously on the UI thread instead of in the background"
     );
 
+    // Deliberately not asserting `Probing` here: whether the background thread
+    // has finished by now is the scheduler's business, and on a loaded machine
+    // it sometimes had. What the frame must have done is *start* a probe.
     assert!(
-        matches!(
+        !matches!(
             harness.state().ui_state.chdman_probe,
-            crate::app::ChdmanProbe::Probing
+            crate::app::ChdmanProbe::Idle
         ),
-        "expected a probe to be kicked off for the configured path, with no result until the \
-         background thread's message is delivered"
+        "expected a probe to be kicked off for the configured path"
     );
 
     // Drain frames until the background thread's result message lands.

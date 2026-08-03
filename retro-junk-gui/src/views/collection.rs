@@ -1075,12 +1075,11 @@ pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
                         selected_plan.request.make_playable = *make_playable;
                         selected_plan.request.discard_redundant_bin_cue =
                             *discard_redundant_bin_cue;
-                        if *make_playable {
-                            if let Some(profile) = app.settings.library.active_profile() {
+                        if *make_playable
+                            && let Some(profile) = app.settings.library.active_profile() {
                                 selected_plan.request.playable_root =
                                     Some(profile.playable_root.clone());
                             }
-                        }
                         if *new_physical_copy {
                             selected_plan.request.new_physical_copy = true;
                             for candidate in &mut selected_plan.candidates {

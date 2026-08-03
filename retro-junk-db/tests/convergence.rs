@@ -135,12 +135,57 @@ impl Fixture {
     }
 
     fn playable_present(&mut self, carrier: &str, format: &str) {
+        self.playable(carrier, format, "present");
+    }
+
+    /// A built playable whose recorded file is not where the evidence says.
+    fn playable_missing(&mut self, carrier: &str, format: &str) {
+        self.playable(carrier, format, "missing");
+    }
+
+    fn playable(&mut self, carrier: &str, format: &str, presence: &str) {
         let representation = self.id("repp");
         self.conn
             .execute(
                 "INSERT INTO representations(id,carrier_id,role,format,location_role,relative_path,presence_state,input_manifest_sha256)
-                 VALUES(?1,?2,'playable',?3,'playable',?1||'/game.chd','present','msha')",
-                (&representation, carrier, format),
+                 VALUES(?1,?2,'playable',?3,'playable',?1||'/game.chd',?4,'msha')",
+                (&representation, carrier, format, presence),
+            )
+            .unwrap();
+    }
+
+    /// A scanned playable file under the profile's playable root that no
+    /// carrier claims, carrying `media_id`'s digests — the shape a collection
+    /// assembled before the archive leaves behind.
+    fn unbound_library_file(&mut self, media_id: &str) {
+        // The medium needs digests for anything to match against; the base
+        // fixture leaves them blank because most tests match by id alone.
+        self.conn
+            .execute(
+                "UPDATE media SET sha1='a2aee128',crc32='42fc324d',file_size=652028496
+                 WHERE id=?1",
+                [media_id],
+            )
+            .unwrap();
+        self.unbound_library_file_with_digest("a2aee128", "42fc324d", 652_028_496);
+    }
+
+    fn unbound_library_file_with_digest(&mut self, sha1: &str, crc32: &str, size: i64) {
+        let key = self.id("file");
+        self.conn
+            .execute_batch(
+                "INSERT INTO library_roots(id,root_path)
+                 SELECT 1,'/roms' WHERE NOT EXISTS(SELECT 1 FROM library_roots WHERE id=1);
+                 INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash)
+                 SELECT 1,1,'Ps1','psx','psx',''
+                 WHERE NOT EXISTS(SELECT 1 FROM library_consoles WHERE id=1);",
+            )
+            .unwrap();
+        self.conn
+            .execute(
+                "INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json,sha1,crc32,data_size)
+                 VALUES(1,'file:'||?1||'.chd',?1,'{}',?2,?3,?4)",
+                rusqlite::params![key, sha1, crc32, size],
             )
             .unwrap();
     }
@@ -260,6 +305,67 @@ fn unbound_redumper_master_owes_an_audit_not_a_file_verification() {
     assert_eq!(kinds_for(&actions, &dump), vec![&ActionKind::AuditRedumper]);
 }
 
+/// Reproducing a raw disc costs a full copy and split of its raw dump, so a
+/// disc that already came back matching no single catalog medium must not be
+/// proposed again. Failing to match is exactly what leaves a dump looking
+/// unidentified, so without this the same disc is re-reproduced on every run,
+/// forever.
+#[test]
+fn a_disc_that_matched_nothing_is_not_proposed_again() {
+    let mut fixture = Fixture::new();
+    let (_release, copy) = fixture.release("Unknown Disc");
+    let (_carrier, dump) = fixture.carrier_with_dump(
+        &copy,
+        None,
+        0,
+        "redumper_raw",
+        "verified",
+        retro_junk_db::archive::CATALOG_UNRESOLVED,
+        4,
+    );
+    assert!(kinds_for(&fixture.derive(), &dump).is_empty());
+}
+
+/// Same rule for single-file masters: hashing an ISO against the catalog again
+/// cannot produce a different answer until the file or the catalog changes.
+#[test]
+fn a_file_master_that_matched_nothing_is_not_proposed_again() {
+    let mut fixture = Fixture::new();
+    let (_release, copy) = fixture.release("Unknown ISO");
+    let (_carrier, dump) = fixture.carrier_with_dump(
+        &copy,
+        None,
+        0,
+        "iso",
+        "verified",
+        retro_junk_db::archive::CATALOG_UNRESOLVED,
+        1,
+    );
+    assert!(kinds_for(&fixture.derive(), &dump).is_empty());
+}
+
+/// Evidence says these bytes matched, but the carrier carries no medium id —
+/// an inconsistency a fresh identification would repair, so it still gets
+/// proposed.
+#[test]
+fn a_verified_dump_whose_carrier_lost_its_binding_is_proposed() {
+    let mut fixture = Fixture::new();
+    let (_release, copy) = fixture.release("Rebindable");
+    let (_carrier, dump) = fixture.carrier_with_dump(
+        &copy,
+        None,
+        0,
+        "redumper_raw",
+        "verified",
+        retro_junk_db::archive::CATALOG_VERIFIED,
+        4,
+    );
+    assert_eq!(
+        kinds_for(&fixture.derive(), &dump),
+        vec![&ActionKind::AuditRedumper]
+    );
+}
+
 #[test]
 fn verified_complete_release_with_policy_derives_an_unblocked_build() {
     let mut fixture = Fixture::new();
@@ -329,6 +435,62 @@ fn satisfied_release_owes_only_projections() {
             .iter()
             .any(|action| action.kind == ActionKind::BuildPlayable),
         "satisfied release must not re-derive a build"
+    );
+}
+
+/// A playable that moved is not a playable that is missing. Deriving only a
+/// build for it rebuilt the file beside the copy the library already held; the
+/// adoption action has to come first, and the worker's stage order depends on
+/// `ActionKind`'s declaration order to run it that way.
+#[test]
+fn a_moved_playable_owes_adoption_before_a_rebuild() {
+    let mut fixture = Fixture::new();
+    fixture.media("m1", 0);
+    let (release, copy) = fixture.release("Moved Game");
+    fixture.bind_release(&release);
+    let (carrier, dump) =
+        fixture.carrier_with_dump(&copy, Some("m1"), 0, "iso", "verified", "not_attempted", 1);
+    fixture.catalog_verify(&dump);
+    fixture.policy(&carrier, "chd");
+    fixture.playable_missing(&carrier, "chd");
+
+    let actions = fixture.derive();
+    let kinds = kinds_for(&actions, &release);
+    assert!(
+        kinds.contains(&&ActionKind::AdoptPlayable),
+        "a missing playable owes adoption, got {kinds:?}"
+    );
+    let adopt = actions
+        .iter()
+        .position(|action| action.kind == ActionKind::AdoptPlayable)
+        .expect("adoption derived");
+    let build = actions
+        .iter()
+        .position(|action| action.kind == ActionKind::BuildPlayable);
+    if let Some(build) = build {
+        assert!(adopt < build, "adoption must be ordered before the rebuild");
+    }
+}
+
+/// Presence states other than `missing` are not adoption work: a `stale`
+/// output belongs to superseded evidence and a `modified` one is an integrity
+/// question. Neither is answered by finding bytes elsewhere.
+#[test]
+fn a_present_playable_owes_no_adoption() {
+    let mut fixture = Fixture::new();
+    fixture.media("m1", 0);
+    let (release, copy) = fixture.release("Done Game");
+    fixture.bind_release(&release);
+    let (carrier, dump) =
+        fixture.carrier_with_dump(&copy, Some("m1"), 0, "iso", "verified", "not_attempted", 1);
+    fixture.catalog_verify(&dump);
+    fixture.policy(&carrier, "chd");
+    fixture.playable_present(&carrier, "chd");
+    assert!(
+        !fixture
+            .derive()
+            .iter()
+            .any(|action| action.kind == ActionKind::AdoptPlayable)
     );
 }
 
@@ -413,6 +575,7 @@ fn dump_errors_group_under_the_release_that_owns_them() {
         ActionKind::VerifyIntegrity.as_str(),
         "dump",
         &dump,
+        "test",
         &retro_junk_db::work::ClaimOutcome::Failed {
             error: "sha256 mismatch on track 2".to_owned(),
         },
@@ -436,6 +599,7 @@ fn path_targeted_errors_belong_to_no_release() {
         ActionKind::VerifyIntegrity.as_str(),
         "path",
         "/incoming/mystery.bin",
+        "test",
         &retro_junk_db::work::ClaimOutcome::Failed {
             error: "unreadable".to_owned(),
         },
@@ -577,4 +741,68 @@ fn partial_coverage_still_owes_the_missing_types() {
         vec![retro_junk_frontend::AssetType::Screenshot]
     );
     assert_eq!(gap.expected(), 2);
+}
+
+/// A collection assembled before the archive existed holds playable files
+/// nobody built here: a CHD beside a preservation master of the same disc,
+/// with no build evidence connecting them. The carrier has no playable
+/// representation at all, so the "recorded output is missing" rule never fires
+/// — but the catalog medium the carrier verified against identifies the file
+/// just as well, and that is adoptable work rather than a build gap.
+#[test]
+fn an_unbuilt_playable_matching_the_carriers_catalog_digests_owes_adoption() {
+    let mut fixture = Fixture::new();
+    fixture.media("m1", 0);
+    let (release, copy) = fixture.release("Pre-existing Game");
+    fixture.bind_release(&release);
+    let (carrier, dump) = fixture.carrier_with_dump(
+        &copy,
+        Some("m1"),
+        0,
+        "redumper_raw",
+        "verified",
+        "verified",
+        4,
+    );
+    fixture.catalog_verify(&dump);
+    fixture.policy(&carrier, "chd");
+    // No playable representation exists for this carrier at all.
+    fixture.unbound_library_file("m1");
+
+    let actions = fixture.derive();
+    let kinds = kinds_for(&actions, &release);
+    assert!(
+        kinds.contains(&&ActionKind::AdoptPlayable),
+        "an unbuilt playable carrying the carrier's digests owes adoption, got {kinds:?}"
+    );
+}
+
+/// The same shape, but the file on disk is a different game. Nothing links it
+/// to this carrier, so there is nothing to adopt and the release simply owes a
+/// build.
+#[test]
+fn an_unrelated_library_file_does_not_owe_adoption() {
+    let mut fixture = Fixture::new();
+    fixture.media("m1", 0);
+    let (release, copy) = fixture.release("Unrelated Game");
+    fixture.bind_release(&release);
+    let (carrier, dump) = fixture.carrier_with_dump(
+        &copy,
+        Some("m1"),
+        0,
+        "redumper_raw",
+        "verified",
+        "verified",
+        4,
+    );
+    fixture.catalog_verify(&dump);
+    fixture.policy(&carrier, "chd");
+    fixture.unbound_library_file_with_digest("deadbeef", "ff00", 999);
+
+    assert!(
+        !fixture
+            .derive()
+            .iter()
+            .any(|action| action.kind == ActionKind::AdoptPlayable)
+    );
 }

@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use retro_junk_db::convergence::{ProposedAction, WorkTarget, scrape_gaps};
 use retro_junk_db::library::ScrapeIdentityTier;
+use retro_junk_io::{PhaseProgressFn, ProgressUnit};
 
 use crate::executor::{ExecContext, WorkError};
 
@@ -43,7 +44,7 @@ pub fn scrape_release_artwork(
     ctx: &ExecContext,
     action: &ProposedAction,
     conn: &retro_junk_db::Connection,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<ScrapeReport, WorkError> {
     let WorkTarget::Release(release_id) = &action.target else {
@@ -123,9 +124,47 @@ pub fn scrape_release_artwork(
         Some(retro_junk_scraper::TargetState::NotFound { .. }) => Err(WorkError::Message(
             "ScreenScraper has no entry for this release".to_owned(),
         )),
+        // A target the core declined to ask about — a mod with no parent
+        // recorded — is not a failure and must not be backed off like one, but
+        // an explicit run deserves to hear why nothing happened.
+        Some(retro_junk_scraper::TargetState::Skipped { reason, .. }) => {
+            progress(reason, ProgressUnit::Items, 1, 1);
+            log::info!("{}: {reason}", action.label);
+            Ok(ScrapeReport::default())
+        }
         _ => Ok(ScrapeReport {
             published: run.published,
             needs_review: None,
+        }),
+    }
+}
+
+/// The catalog's record of a derivation, in the terms the scrape core speaks.
+///
+/// One translation, shared by the executor and the GUI's artwork actions —
+/// the only two layers that can see both crates. Two copies would be two
+/// chances to disagree about what a mod is looked up as, and disagreeing means
+/// one surface publishing artwork the other would have refused.
+#[must_use]
+pub fn scrape_derivation(
+    derivation: &retro_junk_db::CatalogDerivation,
+) -> retro_junk_scraper::Derivation {
+    use retro_junk_db::CatalogDerivation;
+    match derivation {
+        CatalogDerivation::Own => retro_junk_scraper::Derivation::Own,
+        CatalogDerivation::Homebrew => retro_junk_scraper::Derivation::Standalone,
+        CatalogDerivation::Modded { parent: None } => retro_junk_scraper::Derivation::UnknownParent,
+        CatalogDerivation::Modded {
+            parent: Some(parent),
+        } => retro_junk_scraper::Derivation::Parent(retro_junk_scraper::ParentIdentity {
+            filename: parent.filename.clone(),
+            file_size: parent.file_size,
+            serial: parent.serial.clone(),
+            hashes: retro_junk_scraper::RomHashes::complete(
+                &parent.crc32,
+                &parent.md5,
+                &parent.sha1,
+            ),
         }),
     }
 }
@@ -140,7 +179,7 @@ struct RunOne<'a> {
     target: &'a retro_junk_scraper::ScrapeTarget,
     selection: &'a retro_junk_frontend::AssetSelection,
     options: &'a retro_junk_scraper::ScrapeSessionOptions,
-    progress: &'a dyn Fn(&str, u64, u64),
+    progress: &'a PhaseProgressFn<'a>,
     cancelled: &'a AtomicBool,
 }
 
@@ -151,7 +190,7 @@ struct RunOne<'a> {
 /// only waiting on the API's rate limiter still has to speak up or it loses
 /// its claim to the next tick.
 fn run_one(run: RunOne<'_>) -> Result<retro_junk_scraper::ScrapeRunResult, WorkError> {
-    (run.progress)("Connecting to ScreenScraper", 0, 1);
+    (run.progress)("Connecting to ScreenScraper", ProgressUnit::Items, 0, 1);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -197,7 +236,7 @@ fn run_one(run: RunOne<'_>) -> Result<retro_junk_scraper::ScrapeRunResult, WorkE
                     }
                 }
                 () = tokio::time::sleep(HEARTBEAT_HINT) => {
-                    (run.progress)(&format!("Scraping {}", run.label), 0, 1);
+                    (run.progress)(&format!("Scraping {}", run.label), ProgressUnit::Items, 0, 1);
                     last.set(Instant::now());
                 }
             }
@@ -251,19 +290,15 @@ fn build_target(
             scraper_serial,
             filename: identity.filename.clone(),
             file_size: identity.file_size,
-            // The hash tier needs the whole triple; a partial set is no
-            // better than a filename.
-            hashes: (!identity.crc32.is_empty()
-                && !identity.md5.is_empty()
-                && !identity.sha1.is_empty())
-            .then(|| retro_junk_scraper::RomHashes {
-                crc32: identity.crc32.clone(),
-                md5: identity.md5.clone(),
-                sha1: identity.sha1.clone(),
-            }),
+            hashes: retro_junk_scraper::RomHashes::complete(
+                &identity.crc32,
+                &identity.md5,
+                &identity.sha1,
+            ),
             platform,
             expects_serial: retro_junk_scraper::expects_serial(platform),
         },
+        derivation: scrape_derivation(&identity.derivation),
         region: retro_junk_scraper::systems::region_slug_to_ss_code(&gap.region).to_owned(),
         language: "en".to_owned(),
         destination: retro_junk_scraper::ScrapeDestination::Archive {
@@ -277,7 +312,7 @@ fn build_target(
 /// Report one scrape event as executor progress, keeping the claim alive.
 fn report_event(
     event: &retro_junk_scraper::ScrapeEvent,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
     last: &std::cell::Cell<Instant>,
 ) {
     use retro_junk_scraper::ScrapeEvent;
@@ -293,7 +328,7 @@ fn report_event(
         }
         _ => return,
     };
-    progress(&description, 0, 1);
+    progress(&description, ProgressUnit::Items, 0, 1);
     last.set(Instant::now());
 }
 

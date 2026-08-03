@@ -17,7 +17,7 @@ use retro_junk_work::{
 };
 
 use crate::CliError;
-use crate::cli_types::{StatusArgs, SyncArgs};
+use crate::cli_types::{RebuildPlayableArgs, StatusArgs, SyncArgs};
 
 /// Resolve the target profile: `--profile` selector, explicit roots, or the
 /// active settings profile.
@@ -199,6 +199,79 @@ pub(crate) fn run_sync(args: SyncArgs) -> Result<(), CliError> {
     }
 }
 
+/// Force a release's playable representation into a good state, bypassing
+/// the "already satisfied" check `sync`'s normal derivation applies.
+///
+/// A release whose evidence points at bytes that moved, were regenerated,
+/// or were adopted against a file that turned out not to be there reads as
+/// satisfied off of stale caches and never reaches `sync`'s derivation at
+/// all. `--dry-run` previews via `forced_build_action` alone (adoption is
+/// never a preview — it only ever links a file to evidence by matching
+/// content, so there is nothing unsafe about just running it); a real run
+/// goes through `retro_junk_work::force_rebuild_playable`, the identical
+/// function the GUI's "Force Rebuild Playable" uses, so "force" means the
+/// same thing from either surface.
+pub(crate) fn run_rebuild_playable(args: RebuildPlayableArgs) -> Result<(), CliError> {
+    let ctx = Arc::new(retro_junk_lib::create_default_context());
+    let profile = resolve_target(
+        args.profile.as_deref(),
+        args.archive_root,
+        args.playable_root,
+        args.workspace_root,
+    )?;
+    let exec = exec_context(
+        profile,
+        args.db,
+        ToolPaths {
+            chdman: args.chdman.unwrap_or_default(),
+            redumper: args.redumper.unwrap_or_default(),
+            dolphin_tool: args.dolphin_tool.unwrap_or_default(),
+        },
+        None,
+        None,
+        &ctx,
+    )?;
+    reconcile_projection(&exec)?;
+    if args.dry_run {
+        let conn = retro_junk_db::open_database(&exec.db_path)
+            .map_err(|error| CliError::database(error.to_string()))?;
+        let action = retro_junk_db::convergence::forced_build_action(&conn, &args.release_id)
+            .map_err(|error| CliError::database(error.to_string()))?
+            .ok_or_else(|| {
+                CliError::other(format!(
+                    "no archived release {} to rebuild",
+                    args.release_id
+                ))
+            })?;
+        match &action.blocked {
+            Some(reason) => log::warn!("{} — blocked: {reason}", action.label),
+            None => log::info!("Would rebuild: {}", action.label),
+        }
+        return Ok(());
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    retro_junk_work::daemon::install_signal_handlers(&cancelled);
+    let outcome = retro_junk_work::force_rebuild_playable(
+        &exec,
+        &args.release_id,
+        &crate::commands::archive::log_progress,
+        &cancelled,
+    )
+    .map_err(|error| CliError::other(error.to_string()))?;
+    match outcome {
+        retro_junk_work::ForceRebuildOutcome::Adopted(label) => {
+            log::info!("{label} was already there — adopted it");
+            Ok(())
+        }
+        retro_junk_work::ForceRebuildOutcome::Built(outputs) => {
+            for output in &outputs {
+                log::info!("Rebuilt {}", output.display());
+            }
+            Ok(())
+        }
+    }
+}
+
 pub(crate) fn run_status(args: StatusArgs) -> Result<(), CliError> {
     let profile = resolve_target(
         args.profile.as_deref(),
@@ -219,10 +292,11 @@ pub(crate) fn run_status(args: StatusArgs) -> Result<(), CliError> {
     log::info!("Profile: {} ({})", profile.display_name, profile.profile_id);
     for (kind, counts) in &summary.per_kind {
         log::info!(
-            "{:<16} done {:>5}  pending {:>4}  blocked {:>3}  errored {:>3}  running {:>2}",
+            "{:<16} done {:>5}  pending {:>4}  unresolved {:>3}  blocked {:>3}  errored {:>3}  running {:>2}",
             kind.as_str(),
             counts.done,
             counts.pending,
+            counts.unresolved,
             counts.blocked,
             counts.errored,
             counts.running

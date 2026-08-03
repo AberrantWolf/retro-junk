@@ -334,6 +334,91 @@ const PATH_TAGS: &[&str] = &[
     "fanart",
 ];
 
+/// Remove the `<game>` entries whose ROM path is one of `paths`.
+///
+/// A gamelist entry outlives the file it points at, because upserting is keyed
+/// on the path: rebuild a playable under a corrected name and the old entry
+/// stays, so the frontend shows the game twice — once playable, once dead.
+/// Removing the entry is the other half of renaming it.
+///
+/// `paths` are ROM paths relative to the system directory, in the `./Name.chd`
+/// form the file stores; a bare `Name.chd` is accepted too, since that is how
+/// callers naturally hold them. Returns how many entries were dropped, and
+/// writes nothing when that is zero.
+///
+/// Operates line-by-line on the simple one-tag-per-line XML this crate
+/// generates, the same assumption [`rewrite_gamelist_stems`] makes.
+pub fn remove_game_entries(
+    gamelist_path: &Path,
+    paths: &std::collections::BTreeSet<String>,
+) -> Result<usize, FrontendError> {
+    if paths.is_empty() || !gamelist_path.is_file() {
+        return Ok(0);
+    }
+    let wanted = paths
+        .iter()
+        .map(|path| {
+            path.trim_start_matches("./")
+                .replace('\\', "/")
+                .to_ascii_lowercase()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let content = fs::read_to_string(gamelist_path)?;
+    let mut kept = String::with_capacity(content.len());
+    let mut block: Vec<&str> = Vec::new();
+    let mut in_game = false;
+    let mut drop_block = false;
+    let mut removed = 0;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<game>") {
+            in_game = true;
+            drop_block = false;
+            block.clear();
+            block.push(line);
+            continue;
+        }
+        if !in_game {
+            kept.push_str(line);
+            kept.push('\n');
+            continue;
+        }
+        block.push(line);
+        if let Some(value) = tag_value(trimmed, "path") {
+            let path = unescape_xml(value)
+                .trim_start_matches("./")
+                .replace('\\', "/")
+                .to_ascii_lowercase();
+            drop_block = wanted.contains(&path);
+        }
+        if trimmed.starts_with("</game>") {
+            in_game = false;
+            if drop_block {
+                removed += 1;
+            } else {
+                for kept_line in &block {
+                    kept.push_str(kept_line);
+                    kept.push('\n');
+                }
+            }
+            block.clear();
+        }
+    }
+    // An unterminated final block is malformed input, not something to drop
+    // silently — keep it exactly as it was.
+    for kept_line in &block {
+        kept.push_str(kept_line);
+        kept.push('\n');
+    }
+
+    if removed > 0 {
+        write_atomic(gamelist_path, kept.as_bytes())?;
+    }
+    Ok(removed)
+}
+
 /// Read a gamelist.xml and compute its content after applying a stem rename
 /// map. Returns `(path, new_content)` for a transactional write, or `None`
 /// when the file doesn't exist or nothing changes.

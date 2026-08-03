@@ -1,6 +1,7 @@
 pub mod assets;
 pub mod client;
 pub mod credentials;
+pub mod derivation;
 pub mod error;
 pub mod log;
 pub mod lookup;
@@ -15,6 +16,7 @@ pub use credentials::{
     config_path, credential_sources, ensure_config_file, has_embedded_dev_credentials,
     save_to_file,
 };
+pub use derivation::{Derivation, ParentIdentity};
 pub use error::ScrapeError;
 pub use log::{LogEntry, ScrapeLog};
 pub use lookup::{LookupMethod, LookupResult, RomHashes, RomInfo};

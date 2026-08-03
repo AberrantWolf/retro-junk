@@ -16,6 +16,7 @@ use retro_junk_frontend::{AssetSelection, AssetType, ScrapedGame};
 use retro_junk_lib::scanner::{self, GameEntry};
 use tokio::sync::mpsc;
 
+use crate::derivation::Derivation;
 use crate::error::ScrapeError;
 use crate::log::{LogEntry, ScrapeLog};
 use crate::lookup::{RomHashes, RomInfo};
@@ -33,6 +34,12 @@ use crate::types::GameInfo;
 pub struct ScrapeOptions {
     /// Root path containing console folders
     pub root: PathBuf,
+    /// Where this collection's portable marks live — the user's own decisions
+    /// about which files are homebrew and which are mods of what.
+    ///
+    /// Defaults to the directory holding the ROM tree, which is where a
+    /// collection profile puts them. A collection with no marks costs nothing.
+    pub collection_root: Option<PathBuf>,
     /// Preferred region for names/media (e.g., "us", "eu", "jp")
     pub region: String,
     /// Preferred language for descriptions (e.g., "en", "fr", "match")
@@ -70,9 +77,11 @@ impl ScrapeOptions {
     pub fn new(root: PathBuf) -> Self {
         let metadata_dir = retro_junk_lib::util::default_metadata_dir(&root);
         let media_dir = retro_junk_lib::util::default_media_dir(&root);
+        let collection_root = root.parent().map(Path::to_path_buf);
 
         Self {
             root,
+            collection_root,
             region: "us".to_string(),
             language: "en".to_string(),
             language_fallback: "en".to_string(),
@@ -131,8 +140,15 @@ struct TargetContext {
     locale: GameLocale,
     /// Disc-group index when this target is a primary disc.
     primary_group: Option<usize>,
-    /// Identity offered to `ScreenScraper`, kept for unidentified reporting.
+    /// The file's own identity, kept for unidentified reporting.
     rom: RomInfo,
+    /// What the user decided this file is, which decides both how it was
+    /// looked up and what the gamelist entry ends up called.
+    derivation: Derivation,
+    /// The name the user gave a derivative. A mod wears its parent's artwork
+    /// but keeps its own name, or the collection lists two "Super Mario World"
+    /// entries and only one of them is.
+    name_override: String,
 }
 
 /// Scrape every ROM in one console folder.
@@ -171,6 +187,7 @@ pub async fn scrape_folder(request: FolderScrapeRequest<'_>) -> Result<ScrapeRes
         total: plan.work_items.len(),
     });
 
+    let marks = collection_marks(options);
     let mut log = ScrapeLog::new();
     let (targets, contexts) = build_targets(
         &plan,
@@ -178,6 +195,7 @@ pub async fn scrape_folder(request: FolderScrapeRequest<'_>) -> Result<ScrapeRes
         options,
         &system_media_dir,
         archive,
+        &marks,
         &events,
         &mut log,
     );
@@ -243,12 +261,16 @@ pub async fn scrape_folder(request: FolderScrapeRequest<'_>) -> Result<ScrapeRes
 ///
 /// The per-entry ROM analysis and hashing happen here, once, before any
 /// network call: the core takes identities, not files.
+// One entry's identity, destination, and derivation are decided together;
+// splitting the loop would mean re-deriving the parts from each other.
+#[allow(clippy::too_many_arguments)]
 fn build_targets(
     plan: &WorkPlan<'_>,
     analyzer: &dyn RomAnalyzer,
     options: &ScrapeOptions,
     system_media_dir: &Path,
     archive: Option<&FolderArchiveBinding<'_>>,
+    marks: &retro_junk_archive::MarkIndex,
     events: &mpsc::UnboundedSender<ScrapeEvent>,
     log: &mut ScrapeLog,
 ) -> (Vec<ScrapeTarget>, HashMap<u64, TargetContext>) {
@@ -298,6 +320,17 @@ fn build_targets(
             platform,
             expects_serial: analyzer.expects_serial(),
         };
+        let mark = file_mark(marks, &rom);
+        let derivation = mark.map_or(Derivation::Own, Derivation::from_mark);
+        // Only a mod needs its name defended: what came back describes its
+        // parent. Homebrew was looked up as itself, so the scraper's name for
+        // it is better than a filename.
+        let name_override = match derivation {
+            Derivation::Parent(_) | Derivation::UnknownParent => {
+                mark.map_or_else(String::new, |mark| mark.name.clone())
+            }
+            Derivation::Own | Derivation::Standalone => String::new(),
+        };
         let locale = GameLocale::from_rom(options, &rom_regions);
         // A file the archive built is scraped archive-first; anything else
         // (loose ROMs, unmanaged consoles) goes straight to the media tree.
@@ -320,6 +353,7 @@ fn build_targets(
             region: locale.region.clone(),
             language: locale.language.clone(),
             rom: rom.clone(),
+            derivation: derivation.clone(),
             destination,
             archived_assets: HashMap::new(),
         });
@@ -331,10 +365,49 @@ fn build_targets(
                 locale,
                 primary_group: *primary_group,
                 rom,
+                derivation,
+                name_override,
             },
         );
     }
     (targets, contexts)
+}
+
+/// The user's own decisions about the files in this collection, read from
+/// beside them rather than from a database: a folder scrape has to be
+/// derivation-aware on a machine that has never imported a DAT.
+///
+/// Unreadable marks are a warning, not a failure — losing a scrape because a
+/// curation file is malformed would be the wrong trade.
+fn collection_marks(options: &ScrapeOptions) -> retro_junk_archive::MarkIndex {
+    options
+        .collection_root
+        .as_deref()
+        .map(retro_junk_archive::MarkIndex::load)
+        .transpose()
+        .unwrap_or_else(|error| {
+            log::warn!("Could not read collection marks: {error}");
+            None
+        })
+        .unwrap_or_default()
+}
+
+/// The user's decision about one scanned file, by content where this run
+/// hashed it and by name and size where it did not.
+///
+/// Serial-expecting platforms skip hashing for speed, so the fallback is not
+/// an edge case: on those consoles it is the only key available.
+fn file_mark<'a>(
+    marks: &'a retro_junk_archive::MarkIndex,
+    rom: &RomInfo,
+) -> Option<&'a retro_junk_archive::CollectionMark> {
+    if marks.is_empty() {
+        return None;
+    }
+    rom.hashes
+        .as_ref()
+        .and_then(|hashes| marks.find(&hashes.sha1, &hashes.crc32))
+        .or_else(|| marks.find_by_name(&rom.filename, rom.file_size))
 }
 
 /// Turn one core verdict into a gamelist entry and a log line.
@@ -351,10 +424,13 @@ fn fold_outcome(
             warnings,
             assets,
         } => {
-            let game_name = game
-                .name_for_region(&context.locale.region)
-                .unwrap_or("Unknown")
-                .to_owned();
+            let game_name = if context.name_override.is_empty() {
+                game.name_for_region(&context.locale.region)
+                    .unwrap_or("Unknown")
+                    .to_owned()
+            } else {
+                context.name_override.clone()
+            };
             let media_names = assets
                 .keys()
                 .map(|asset_type| asset_type.subdirectory().to_owned())
@@ -395,9 +471,16 @@ fn fold_outcome(
         }),
         TargetState::Skipped { .. } | TargetState::NotReached => None,
         TargetState::NotFound { warnings } => {
+            // Report what was actually offered, not what the file holds: for a
+            // mod those are different, and a log claiming its own hashes were
+            // tried would send the reader looking for a DAT entry that cannot
+            // exist.
+            let attempted = context
+                .derivation
+                .identify(&context.rom)
+                .unwrap_or_else(|| context.rom.clone());
             let (crc32, md5, sha1) =
-                context
-                    .rom
+                attempted
                     .hashes
                     .as_ref()
                     .map_or_else(Default::default, |hashes| {
@@ -409,10 +492,10 @@ fn fold_outcome(
                     });
             log.add(LogEntry::Unidentified {
                 file: context.filename.clone(),
-                scraper_serial_tried: context.rom.scraper_serial.clone(),
-                serial_tried: context.rom.serial.clone(),
+                scraper_serial_tried: attempted.scraper_serial.clone(),
+                serial_tried: attempted.serial.clone(),
                 filename_tried: true,
-                hashes_tried: context.rom.hashes.is_some(),
+                hashes_tried: attempted.hashes.is_some(),
                 crc32,
                 md5,
                 sha1,
@@ -656,3 +739,7 @@ fn build_scraped_game(
         cover_title: String::new(),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/scrape_tests.rs"]
+mod tests;

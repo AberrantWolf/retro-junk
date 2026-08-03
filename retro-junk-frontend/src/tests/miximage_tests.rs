@@ -143,10 +143,16 @@ fn test_box_blur_preserves_dimensions() {
     assert_eq!(blurred.height(), 15);
 }
 
+// These tests write real image files. Each gets its own `TempDir`: sharing a
+// fixed path under the system temp directory made two concurrent runs delete
+// the directory the other was still writing into, so the suite failed at
+// random with no relation to the code under test.
+
 #[test]
 fn test_generate_miximage_no_screenshot() {
+    let dir = tempfile::TempDir::new().unwrap();
     let media = HashMap::new();
-    let output = std::env::temp_dir().join("test_miximage_no_ss.png");
+    let output = dir.path().join("test_miximage_no_ss.png");
     let layout = MiximageLayout::default();
     let result = generate_miximage(&media, &output, &layout).unwrap();
     assert!(!result); // false = no screenshot
@@ -154,8 +160,8 @@ fn test_generate_miximage_no_screenshot() {
 
 #[test]
 fn test_generate_miximage_screenshot_only() {
-    let dir = std::env::temp_dir().join("retro_junk_miximage_test_ss_only");
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir = temp.path();
 
     // Create a test screenshot
     let ss = RgbaImage::from_pixel(320, 240, Rgba([64, 128, 192, 255]));
@@ -175,15 +181,12 @@ fn test_generate_miximage_screenshot_only() {
     let generated = image::open(&output).unwrap();
     assert_eq!(generated.width(), 1280);
     assert_eq!(generated.height(), 960);
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn test_generate_miximage_all_components() {
-    let dir = std::env::temp_dir().join("retro_junk_miximage_test_all");
-    std::fs::create_dir_all(&dir).unwrap();
+    let temp = tempfile::TempDir::new().unwrap();
+    let dir = temp.path();
 
     // Create test images
     let ss = RgbaImage::from_pixel(640, 480, Rgba([32, 64, 128, 255]));
@@ -217,9 +220,6 @@ fn test_generate_miximage_all_components() {
     let generated = image::open(&output).unwrap();
     assert_eq!(generated.width(), 1280);
     assert_eq!(generated.height(), 960);
-
-    // Cleanup
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

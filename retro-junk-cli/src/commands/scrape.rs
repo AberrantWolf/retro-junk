@@ -178,6 +178,15 @@ pub(crate) fn run_scrape(
     options.no_log = no_log;
     options.force_redownload = force_redownload;
     options.limit = limit;
+    // With an archive in play, marks live where the archive says they do —
+    // guessing from the ROM tree alone would read a different directory than
+    // the one the GUI and the reconciler write.
+    if let Some(archive_root) = archive_root.as_deref() {
+        options.collection_root = Some(retro_junk_archive::collection_root_for(
+            archive_root,
+            root_path,
+        ));
+    }
 
     // Load miximage layout unless disabled
     options.miximage = if no_miximage {

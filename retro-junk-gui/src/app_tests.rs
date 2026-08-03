@@ -321,6 +321,7 @@ fn archive_detail_owns_grouped_playable_assets() {
                 preservation_present_count: 1,
                 playable_count: 1,
                 playable_present_count: 1,
+                playable_missing_count: 0,
                 desired_playable_count: 1,
                 satisfied_playable_count: 1,
                 integrity_verified_count: 1,

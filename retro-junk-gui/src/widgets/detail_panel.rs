@@ -249,11 +249,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         });
 
         // Apply override change
-        if new_override != current_override {
-            if let Some(entry_id) = app.browser.consoles[console_idx].entries[entry_idx].id {
+        if new_override != current_override
+            && let Some(entry_id) = app.browser.consoles[console_idx].entries[entry_idx].id {
                 app.set_entry_regions([entry_id], new_override, ui.ctx());
             }
-        }
 
         // Warning text
         if app.settings.general.warn_on_region_override
@@ -1018,10 +1017,10 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         }
     });
     if let Some((action, format)) = requested_build {
-        let playable_platform_id = app
-            .selected_console_index()
-            .map(|index| app.browser.consoles[index].folder_name.clone())
-            .unwrap_or_else(|| summary.platform_id.clone());
+        let playable_platform_id = app.selected_console_index().map_or_else(
+            || summary.platform_id.clone(),
+            |index| app.browser.consoles[index].folder_name.clone(),
+        );
         crate::backend::playable_build::start(app, action, &format, playable_platform_id, ui.ctx());
     }
 }

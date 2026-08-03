@@ -83,6 +83,33 @@ impl Region {
         }
     }
 
+    /// Recover a region from the lowercase form projections and manifests
+    /// store it in, so it can be written back out the way a DAT writes it.
+    ///
+    /// Records keep region as a lowercase token — `usa`, `jp`, `eur` — which
+    /// is right for comparing and grouping and wrong for naming a file: DAT
+    /// convention is `(USA)`, `(Japan)`, `(Europe)`, and a playable named
+    /// `Game (usa).chd` matches neither the catalog nor what a frontend or a
+    /// scraper expects to see. The aliases mirror the ones the archive
+    /// importer already accepts, so both sides agree on what a token means.
+    #[must_use]
+    pub fn from_slug(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "japan" | "jp" | "jpn" => Some(Self::Japan),
+            "usa" | "us" | "canada" | "north america" | "north-america" => Some(Self::Usa),
+            "europe" | "eur" | "eu" | "pal" => Some(Self::Europe),
+            "australia" | "aus" => Some(Self::Australia),
+            "korea" | "kor" => Some(Self::Korea),
+            "china" | "chn" => Some(Self::China),
+            "taiwan" | "twn" => Some(Self::Taiwan),
+            "asia" | "asi" => Some(Self::Asia),
+            "brazil" | "bra" => Some(Self::Brazil),
+            "latin america" | "latin-america" | "lat" => Some(Self::LatinAmerica),
+            "world" | "wld" => Some(Self::World),
+            _ => None,
+        }
+    }
+
     /// Attempt to parse a region from a code character (common in serial numbers).
     #[must_use]
     pub fn from_code_char(c: char) -> Option<Self> {

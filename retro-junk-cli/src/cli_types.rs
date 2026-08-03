@@ -275,7 +275,7 @@ pub(crate) struct SyncArgs {
     /// Path to redumper for raw-master reproduction
     #[arg(long)]
     pub redumper: Option<PathBuf>,
-    /// Path to DolphinTool for RVZ builds
+    /// Path to `DolphinTool` for RVZ builds
     #[arg(long)]
     pub dolphin_tool: Option<PathBuf>,
     /// Frontend media root (default: the playable root's sibling media dir)
@@ -284,6 +284,50 @@ pub(crate) struct SyncArgs {
     /// Frontend metadata root (default: the playable root's sibling metadata dir)
     #[arg(long)]
     pub metadata_root: Option<PathBuf>,
+    /// Catalog database path
+    #[arg(long)]
+    pub db: Option<PathBuf>,
+}
+
+/// Force a rebuild for one release regardless of whether convergence
+/// currently reads it as satisfied.
+///
+/// The normal `sync`/build path skips a release once its preferred playable
+/// looks present — by a live representation row or a bound library entry —
+/// so a release whose evidence points at bytes that moved, were
+/// regenerated, or were adopted against a file that turned out not to be
+/// there can get stuck with no path back to a build. This is that path: it
+/// bypasses the "already satisfied" check specifically, not a genuine
+/// blocker like a missing preferred format or an incomplete archive.
+#[derive(clap::Args)]
+pub(crate) struct RebuildPlayableArgs {
+    /// Collection profile id or display name (default: the active profile)
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Archive root (with --playable-root, overrides profile resolution)
+    #[arg(long)]
+    pub archive_root: Option<PathBuf>,
+    /// Playable library root
+    #[arg(long)]
+    pub playable_root: Option<PathBuf>,
+    /// Scratch workspace root
+    #[arg(long)]
+    pub workspace_root: Option<PathBuf>,
+    /// Archive release UUID to rebuild
+    #[arg(long)]
+    pub release_id: String,
+    /// Print what would be rebuilt without building it
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Path to chdman for CHD builds
+    #[arg(long)]
+    pub chdman: Option<PathBuf>,
+    /// Path to redumper for raw-master reproduction
+    #[arg(long)]
+    pub redumper: Option<PathBuf>,
+    /// Path to `DolphinTool` for RVZ builds
+    #[arg(long)]
+    pub dolphin_tool: Option<PathBuf>,
     /// Catalog database path
     #[arg(long)]
     pub db: Option<PathBuf>,
@@ -316,6 +360,10 @@ pub(crate) enum Commands {
 
     /// Run pending convergence actions (verify, build, scrape, project, gamelist)
     Sync(SyncArgs),
+
+    /// Force a fresh playable build for one release, even if convergence
+    /// currently reads it as already satisfied
+    RebuildPlayable(RebuildPlayableArgs),
 
     /// Show convergence counts, daemon liveness, and open suggestions
     Status(StatusArgs),
@@ -837,7 +885,9 @@ pub(crate) enum ArchiveAction {
         release_id: Option<String>,
     },
 
-    /// Adopt existing playable files when they exactly match archived masters
+    /// Make the archive account for the playable files that are actually
+    /// there: re-adopt outputs that moved out from under their build evidence,
+    /// then adopt unarchived files that exactly match archived masters
     AdoptPlayable {
         archive_root: PathBuf,
 
@@ -846,6 +896,14 @@ pub(crate) enum ArchiveAction {
 
         #[arg(long)]
         db: Option<PathBuf>,
+
+        /// Re-adopt moved outputs for only this archive release UUID
+        #[arg(long)]
+        release_id: Option<String>,
+
+        /// Report what would be adopted without appending any evidence
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Move abandoned staging/work directories into a recoverable quarantine
@@ -1292,7 +1350,7 @@ pub(crate) enum DaemonAction {
         /// Path to redumper for raw-master reproduction
         #[arg(long)]
         redumper: Option<PathBuf>,
-        /// Path to DolphinTool for RVZ builds
+        /// Path to `DolphinTool` for RVZ builds
         #[arg(long)]
         dolphin_tool: Option<PathBuf>,
     },
@@ -1310,6 +1368,13 @@ pub(crate) enum DaemonAction {
 pub(crate) enum SuggestionsAction {
     /// List open suggestions
     List {
+        /// Only this kind (import, scrape, `adopt_playable`)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only targets matching this path pattern: `*.txt`, `*/rvz/*`, or a
+        /// bare word to match anywhere in the path
+        #[arg(long = "match")]
+        pattern: Option<String>,
         /// Catalog database path
         #[arg(long)]
         db: Option<PathBuf>,
@@ -1324,6 +1389,10 @@ pub(crate) enum SuggestionsAction {
     /// Apply a suggestion (imports re-validate and execute)
     Apply {
         id: i64,
+        /// For a review with several candidates, the one to accept (its id, as
+        /// shown by `suggestions show`)
+        #[arg(long)]
+        choice: Option<String>,
         /// Collection profile id or display name (default: the active profile)
         #[arg(long)]
         profile: Option<String>,
@@ -1331,9 +1400,66 @@ pub(crate) enum SuggestionsAction {
         #[arg(long)]
         db: Option<PathBuf>,
     },
-    /// Dismiss a suggestion without applying it
+    /// Dismiss suggestions without applying them
+    ///
+    /// Dismissing closes review rows and never touches a file. It is not
+    /// durable: re-running the sweep that proposed them files them again. To
+    /// stop that, record an ignore rule instead.
     Dismiss {
-        id: i64,
+        /// Suggestion ids to dismiss
+        ids: Vec<i64>,
+        /// Dismiss everything of this kind instead of naming ids
+        #[arg(long)]
+        kind: Option<String>,
+        /// Dismiss everything whose target matches this path pattern
+        #[arg(long = "match")]
+        pattern: Option<String>,
+        /// Print what would be dismissed and stop
+        #[arg(long)]
+        dry_run: bool,
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Undo a dismissal, putting suggestions back in front of you
+    Reopen {
+        /// Suggestion ids to reopen
+        ids: Vec<i64>,
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Never file playable files matching this pattern again, and close the
+    /// reviews it covers
+    Ignore {
+        /// Path pattern relative to the playable root: `*.txt`, `*/rvz/*`
+        pattern: String,
+        /// Why, for your own reference later
+        #[arg(long, default_value = "")]
+        note: String,
+        /// Collection profile id or display name (default: the active profile)
+        #[arg(long)]
+        profile: Option<String>,
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// List the ignore rules in force for this collection
+    Ignores {
+        /// Collection profile id or display name (default: the active profile)
+        #[arg(long)]
+        profile: Option<String>,
+        /// Catalog database path
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// Revoke an ignore rule; the next sweep files those files again
+    Unignore {
+        /// The pattern of the rule to revoke
+        pattern: String,
+        /// Collection profile id or display name (default: the active profile)
+        #[arg(long)]
+        profile: Option<String>,
         /// Catalog database path
         #[arg(long)]
         db: Option<PathBuf>,

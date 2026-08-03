@@ -84,17 +84,25 @@ pub fn refresh_claim(
 
 /// Release a claim, recording or clearing the target's error state per the
 /// outcome, and bump `dirty_tick` — all in one transaction.
+///
+/// The delete is scoped to `owner`: a process whose claim went stale and was
+/// legitimately taken over must not delete the new owner's live claim on its
+/// way out — that would open the target to a third claimant while the second
+/// is still working. The outcome is recorded either way; it reports this
+/// owner's attempt honestly regardless of who holds the claim now.
 pub fn release_claim(
     conn: &mut Connection,
     action_kind: &str,
     target_kind: &str,
     target_id: &str,
+    owner: &str,
     outcome: &ClaimOutcome,
 ) -> Result<(), OperationError> {
     let tx = conn.transaction()?;
     tx.execute(
-        "DELETE FROM work_claims WHERE action_kind=?1 AND target_kind=?2 AND target_id=?3",
-        params![action_kind, target_kind, target_id],
+        "DELETE FROM work_claims
+         WHERE action_kind=?1 AND target_kind=?2 AND target_id=?3 AND owner=?4",
+        params![action_kind, target_kind, target_id, owner],
     )?;
     match outcome {
         ClaimOutcome::Success => {
@@ -232,11 +240,35 @@ pub struct NewSuggestion<'a> {
 /// Open a suggestion, superseding any open one for the same (kind, target)
 /// so re-derivation refreshes instead of piling up. History is preserved —
 /// superseded rows resolve, they don't vanish.
+///
+/// An open row that already says exactly this (same payload and confidence)
+/// is kept and its id returned instead. Re-derivation proposes the same
+/// thing on every daemon pass; superseding each time would grow the table
+/// without bound, churn the id out from under undo-by-id, and bump the
+/// dirty tick — a refresh signal to every other process — forever.
 pub fn open_suggestion(
     conn: &mut Connection,
     suggestion: &NewSuggestion<'_>,
 ) -> Result<i64, OperationError> {
     let tx = conn.transaction()?;
+    let unchanged: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM suggestions
+             WHERE kind=?1 AND target_kind=?2 AND target_id=?3
+               AND resolved_at IS NULL AND payload_json=?4 AND confidence=?5",
+            params![
+                suggestion.kind,
+                suggestion.target_kind,
+                suggestion.target_id,
+                suggestion.payload_json,
+                suggestion.confidence,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(id) = unchanged {
+        return Ok(id);
+    }
     tx.execute(
         "UPDATE suggestions SET resolved_at=datetime('now'), resolution='superseded'
          WHERE kind=?1 AND target_kind=?2 AND target_id=?3 AND resolved_at IS NULL",
@@ -296,6 +328,19 @@ pub fn get_suggestion(conn: &Connection, id: i64) -> Result<Option<Suggestion>, 
     Ok(row)
 }
 
+/// How many open suggestions there are of each kind, for a review surface
+/// that wants to show the shape of the backlog before anyone scrolls it.
+pub fn open_suggestion_counts(conn: &Connection) -> Result<Vec<(String, usize)>, OperationError> {
+    let mut statement = conn.prepare(
+        "SELECT kind, COUNT(*) FROM suggestions
+         WHERE resolved_at IS NULL GROUP BY kind ORDER BY kind",
+    )?;
+    let rows = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get::<_, i64>(1)? as usize)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Resolve an open suggestion (`applied` / `dismissed`). Returns `false` if
 /// it was already resolved — the caller lost a race, not an invariant.
 pub fn resolve_suggestion(
@@ -303,15 +348,115 @@ pub fn resolve_suggestion(
     id: i64,
     resolution: &str,
 ) -> Result<bool, OperationError> {
+    Ok(resolve_suggestions(conn, &[id], resolution)?.len() == 1)
+}
+
+/// Resolve many suggestions at once, returning the ids actually closed.
+///
+/// Returning the ids is what makes a bulk action undoable: the caller can hand
+/// exactly those back to [`reopen_suggestions`] later. Ids that were already
+/// resolved are simply absent from the result — a row someone else closed
+/// first is a race the caller lost, not a failure of the whole batch.
+///
+/// One transaction, so a review surface that closes nine hundred rows either
+/// closes them or does not, and a reader never sees half a decision.
+pub fn resolve_suggestions(
+    conn: &mut Connection,
+    ids: &[i64],
+    resolution: &str,
+) -> Result<Vec<i64>, OperationError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
     let tx = conn.transaction()?;
-    let changed = tx.execute(
-        "UPDATE suggestions SET resolved_at=datetime('now'), resolution=?1
-         WHERE id=?2 AND resolved_at IS NULL",
-        params![resolution, id],
-    )?;
+    let mut resolved = Vec::with_capacity(ids.len());
+    {
+        let mut statement = tx.prepare(
+            "UPDATE suggestions SET resolved_at=datetime('now'), resolution=?1
+             WHERE id=?2 AND resolved_at IS NULL",
+        )?;
+        for &id in ids {
+            if statement.execute(params![resolution, id])? == 1 {
+                resolved.push(id);
+            }
+        }
+    }
     bump_dirty_tick(&tx)?;
     tx.commit()?;
-    Ok(changed == 1)
+    Ok(resolved)
+}
+
+/// What became of a request to undo a resolution.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReopenOutcome {
+    /// Rows that are open again — including ones that were already open, so
+    /// undoing twice is harmless rather than an error.
+    pub reopened: Vec<i64>,
+    /// Rows left closed because re-derivation has already filed a fresh
+    /// suggestion about the same target. The newer row is the better answer,
+    /// and the store allows only one open row per target.
+    pub superseded: Vec<i64>,
+    /// Ids no suggestion was ever stored under.
+    pub missing: Vec<i64>,
+}
+
+impl ReopenOutcome {
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.superseded.is_empty() && self.missing.is_empty()
+    }
+}
+
+/// Undo a resolution, putting suggestions back in front of the user.
+///
+/// This is what makes a bulk dismiss safe to press: the exact rows it closed
+/// can be put back, without re-running the sweep that derived them.
+pub fn reopen_suggestions(
+    conn: &mut Connection,
+    ids: &[i64],
+) -> Result<ReopenOutcome, OperationError> {
+    let mut outcome = ReopenOutcome::default();
+    if ids.is_empty() {
+        return Ok(outcome);
+    }
+    let tx = conn.transaction()?;
+    {
+        // Is this row already open, and does a *different* open row already
+        // hold its (kind, target)? Asked together so the answer is one read.
+        let mut probe = tx.prepare(
+            "SELECT target.resolved_at IS NULL,
+                    EXISTS(SELECT 1 FROM suggestions AS newer
+                           WHERE newer.resolved_at IS NULL
+                             AND newer.id <> target.id
+                             AND newer.kind = target.kind
+                             AND newer.target_kind = target.target_kind
+                             AND newer.target_id = target.target_id)
+             FROM suggestions AS target WHERE target.id = ?1",
+        )?;
+        let mut reopen = tx.prepare(
+            "UPDATE suggestions SET resolved_at=NULL, resolution=''
+             WHERE id=?1 AND resolved_at IS NOT NULL",
+        )?;
+        for &id in ids {
+            let state = probe
+                .query_row(params![id], |row| {
+                    Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?))
+                })
+                .optional()?;
+            match state {
+                None => outcome.missing.push(id),
+                Some((true, _)) => outcome.reopened.push(id),
+                Some((false, true)) => outcome.superseded.push(id),
+                Some((false, false)) => {
+                    reopen.execute(params![id])?;
+                    outcome.reopened.push(id);
+                }
+            }
+        }
+    }
+    bump_dirty_tick(&tx)?;
+    tx.commit()?;
+    Ok(outcome)
 }
 
 fn row_to_suggestion(row: &rusqlite::Row<'_>) -> rusqlite::Result<Suggestion> {

@@ -29,6 +29,7 @@ use tokio::time::Duration;
 
 use crate::assets::{self, AssetDownloadRequest};
 use crate::client::ScreenScraperClient;
+use crate::derivation::Derivation;
 use crate::error::ScrapeError;
 use crate::lookup::{self, LookupMethod, RomInfo};
 use crate::types::GameInfo;
@@ -150,8 +151,15 @@ pub struct ScrapeTarget {
     pub label: String,
     /// Media file stem — what downloaded files are named after.
     pub rom_stem: String,
-    /// Identity offered to `ScreenScraper`, strongest tier first.
+    /// The file's own identity, strongest tier first.
+    ///
+    /// What is actually offered to `ScreenScraper` is this run through
+    /// [`ScrapeTarget::derivation`]: a mod is asked about as its parent, and
+    /// its own bytes are never offered to a catalog that has never held them.
     pub rom: RomInfo,
+    /// What the user decided this file is. [`Derivation::Own`] for the
+    /// overwhelming majority — anything that matched a DAT is itself.
+    pub derivation: Derivation,
     /// `ScreenScraper` region code for media and name selection ("us", "jp"…).
     pub region: String,
     /// Language for descriptions and genres.
@@ -279,13 +287,25 @@ pub fn release_ids_by_output(
     snapshot: &retro_junk_archive::ArchiveIndexSnapshot,
     platform_id: &str,
 ) -> HashMap<String, ArchiveReleaseId> {
+    // The caller names a ROM folder (frontend spellings: "psx", "gc"), the
+    // archive names platforms canonically and regionally ("ps1", "snesna"), so
+    // spellings are compared as parsed platforms, not strings. Regional
+    // variants of one console fold together here, which is safe because the
+    // binding below is keyed on the exact built filename — the region lives in
+    // the name the build wrote.
+    let wanted: Option<retro_junk_core::Platform> = platform_id.parse().ok();
     let mut bindings = HashMap::new();
     for release in &snapshot.releases {
-        if !release
-            .manifest
-            .platform_id
-            .eq_ignore_ascii_case(platform_id)
-        {
+        let release_platform: Option<retro_junk_core::Platform> =
+            release.manifest.platform_id.parse().ok();
+        let same_platform = match (wanted, release_platform) {
+            (Some(a), Some(b)) => a == b,
+            _ => release
+                .manifest
+                .platform_id
+                .eq_ignore_ascii_case(platform_id),
+        };
+        if !same_platform {
             continue;
         }
         let outputs = release
@@ -461,18 +481,21 @@ struct OneOutcome {
 
 /// What [`prepare`] decided about a target.
 enum Prepared {
-    /// Ask `ScreenScraper` for these types; `present` is what is already on
-    /// disk for this target.
+    /// Ask `ScreenScraper` about `rom` for these types; `present` is what is
+    /// already on disk for this target.
     Fetch {
         wanted: AssetSelection,
         present: HashMap<AssetType, PathBuf>,
+        /// The identity to ask about, which is the file's own only when the
+        /// file is what it appears to be.
+        rom: RomInfo,
     },
     /// Finished without spending a request.
     Settled(OneOutcome),
 }
 
 /// Restore archived originals and decide whether this target needs the
-/// network at all.
+/// network at all — and, if it does, what to ask about.
 fn prepare(
     request: &ScrapeRequest<'_>,
     index: usize,
@@ -490,13 +513,16 @@ fn prepare(
 
     // Archived originals are the durable copy: put them in the frontend tree
     // before anything else, so a wiped media folder is rebuilt even if the
-    // lookup later fails.
-    for (asset_type, source) in &target.archived_assets {
-        if let Err(error) = project_asset(source, media_dir, &target.rom_stem, *asset_type) {
-            log::warn!(
-                "Could not project archived {asset_type} for {}: {error}",
-                target.label
-            );
+    // lookup later fails. Not on a dry run, though — a dry run reports what
+    // would happen and must leave the media tree untouched.
+    if !options.dry_run {
+        for (asset_type, source) in &target.archived_assets {
+            if let Err(error) = project_asset(source, media_dir, &target.rom_stem, *asset_type) {
+                log::warn!(
+                    "Could not project archived {asset_type} for {}: {error}",
+                    target.label
+                );
+            }
         }
     }
 
@@ -522,17 +548,38 @@ fn prepare(
         )));
     }
 
+    // What the user decided this file is settles what to ask about — and
+    // sometimes that there is nothing to ask. A mod with no parent recorded is
+    // reported as skipped rather than failed: no request was spent, nothing
+    // went wrong, and the missing piece is a decision only the user can make.
+    let Some(rom) = target.derivation.identify(&target.rom) else {
+        return Prepared::Settled(settled(skipped(
+            request,
+            index,
+            filename,
+            &target
+                .derivation
+                .note()
+                .unwrap_or_else(|| "nothing to look up".to_owned()),
+            with_miximage(request, target, present),
+        )));
+    };
+
     if options.dry_run {
         return Prepared::Settled(settled(skipped(
             request,
             index,
             filename,
-            &format!("dry run (would try {})", planned_tier(&target.rom)),
+            &format!("dry run (would try {})", planned_tier(&rom)),
             with_miximage(request, target, present),
         )));
     }
 
-    Prepared::Fetch { wanted, present }
+    Prepared::Fetch {
+        wanted,
+        present,
+        rom,
+    }
 }
 
 /// Look up and fetch one target's media.
@@ -556,8 +603,12 @@ async fn scrape_one(
         file: filename.clone(),
     });
 
-    let (wanted, present) = match prepare(request, index, target, &filename) {
-        Prepared::Fetch { wanted, present } => (wanted, present),
+    let (wanted, present, lookup_rom) = match prepare(request, index, target, &filename) {
+        Prepared::Fetch {
+            wanted,
+            present,
+            rom,
+        } => (wanted, present, rom),
         Prepared::Settled(outcome) => return outcome,
     };
 
@@ -565,9 +616,15 @@ async fn scrape_one(
         index,
         file: filename.clone(),
     });
-    let lookup = match lookup::lookup_game(request.client, request.system_id, &target.rom).await {
-        Ok(lookup) => lookup,
-        Err(ScrapeError::NotFound { warnings }) => {
+    let lookup = match lookup::lookup_game(request.client, request.system_id, &lookup_rom).await {
+        Ok(mut lookup) => {
+            // Say whose metadata this is. Artwork that silently describes a
+            // different game is worse than no artwork.
+            lookup.warnings.extend(target.derivation.note());
+            lookup
+        }
+        Err(ScrapeError::NotFound { mut warnings }) => {
+            warnings.extend(target.derivation.note());
             let _ = request.events.send(ScrapeEvent::GameFailed {
                 index,
                 file: filename,
@@ -861,7 +918,15 @@ fn publish_and_project(
     let held = if archive.acquire_lock {
         match retro_junk_archive::ArchiveLock::acquire_wait(archive.archive_root, request.cancel) {
             Ok(Some(lock)) => Some(lock),
-            Ok(None) => return 0,
+            Ok(None) => {
+                // Cancelled while waiting for the lock. The downloads only
+                // exist in scratch and are about to be discarded with it, so
+                // the outcomes must stop claiming these targets were scraped —
+                // otherwise a caller records converged work whose media never
+                // entered the archive.
+                mark_publication_failure(outcomes, pending, "cancelled before publication");
+                return 0;
+            }
             Err(error) => {
                 log::error!("Could not lock the archive to publish scraped media: {error}");
                 mark_publication_failure(outcomes, pending, &error.to_string());
@@ -884,8 +949,10 @@ fn publish_and_project(
         }
     };
 
-    // Project from the archive copy, not the scratch file: what the frontend
-    // shows is then exactly what the archive holds.
+    // Project from the scratch file, whose bytes `add_release_files` just
+    // copy-verified into the archive — so what the frontend shows is
+    // byte-identical to what the archive holds. If publication ever becomes a
+    // move instead of a copy, this must switch to the archived destination.
     let mut projected: HashMap<u64, HashMap<AssetType, PathBuf>> = HashMap::new();
     for item in pending {
         match project_asset(&item.path, &item.media_dir, &item.rom_stem, item.asset_type) {

@@ -286,13 +286,15 @@ fn set_preferred_playable_format(
                             .iter()
                             .find(|default| same_platform(&default.platform_id, &platform_id))
                     })
-                    .map(|default| default.policy.clone())
-                    .unwrap_or(retro_junk_archive::DesiredPlayablePolicy {
-                        format: format.clone(),
-                        retain_canonical_intermediate: false,
-                        allow_unverified: false,
-                        options: std::collections::BTreeMap::new(),
-                    });
+                    .map_or(
+                        retro_junk_archive::DesiredPlayablePolicy {
+                            format: format.clone(),
+                            retain_canonical_intermediate: false,
+                            allow_unverified: false,
+                            options: std::collections::BTreeMap::new(),
+                        },
+                        |default| default.policy.clone(),
+                    );
                 policy.format = format;
                 policy
             });

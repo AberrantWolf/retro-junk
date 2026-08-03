@@ -10,6 +10,7 @@ use std::sync::atomic::AtomicBool;
 
 use serde::{Deserialize, Serialize};
 
+use crate::adoption::{ADOPT_SUGGESTION_KIND, AdoptionCandidate};
 use crate::executor::{ExecContext, WorkError};
 use crate::incoming::IMPORT_SUGGESTION_KIND;
 
@@ -29,14 +30,116 @@ pub struct ScrapeSuggestionPayload {
     pub reason: String,
 }
 
-/// Whether a suggestion of this kind can be executed from a review surface.
+/// Which open reviews a person is currently talking about.
 ///
-/// Kinds that record a decision the user still has to make elsewhere are
-/// reviewable but not appliable; offering Apply for them would promise an
-/// action that does not exist.
+/// A backlog of a thousand rows is not reviewed one row at a time; it is
+/// reviewed by describing a group — "everything ending `.txt`", "everything
+/// under `rvz`" — and acting on the group. This is that description, and it
+/// lives here so the filter that decides what a list *shows* is the same one
+/// that decides what a bulk button *acts on*. Two implementations would mean a
+/// button labelled "dismiss 412" could dismiss a different 412.
+///
+/// The pattern is matched against the review's target — the incoming package
+/// path for an import, the playable-relative path for an adoption review — so
+/// both directory-shaped and filename-shaped descriptions work against the
+/// same field.
+#[derive(Debug, Clone, Default)]
+pub struct SuggestionFilter {
+    /// Restrict to one kind of review, or all of them.
+    pub kind: Option<String>,
+    /// Restrict to targets this pattern describes. An empty pattern matches
+    /// everything, so an empty filter box means "show all".
+    pub pattern: retro_junk_io::glob::Pattern,
+}
+
+impl SuggestionFilter {
+    #[must_use]
+    pub fn new(kind: Option<&str>, pattern: &str) -> Self {
+        Self {
+            kind: kind
+                .map(str::trim)
+                .filter(|kind| !kind.is_empty())
+                .map(ToOwned::to_owned),
+            pattern: retro_junk_io::glob::Pattern::new(pattern.trim()),
+        }
+    }
+
+    /// Whether this review is one of the ones being talked about.
+    #[must_use]
+    pub fn matches(&self, suggestion: &retro_junk_db::work::Suggestion) -> bool {
+        self.kind
+            .as_ref()
+            .is_none_or(|kind| suggestion.kind == *kind)
+            && self.pattern.matches(&suggestion.target_id)
+    }
+
+    /// Narrow a list of reviews to the ones being talked about.
+    #[must_use]
+    pub fn select(
+        &self,
+        suggestions: Vec<retro_junk_db::work::Suggestion>,
+    ) -> Vec<retro_junk_db::work::Suggestion> {
+        suggestions
+            .into_iter()
+            .filter(|suggestion| self.matches(suggestion))
+            .collect()
+    }
+}
+
+/// What a review surface can offer for one suggestion.
+///
+/// Derived here rather than at each surface, so a card in the GUI and a row in
+/// the terminal agree about what is possible — and so a button never appears
+/// that does nothing.
+#[derive(Debug, Clone, Default)]
+pub struct OfferedActions {
+    /// Executable as it stands, with no further input.
+    pub applicable: bool,
+    /// Answers to choose between before it can be applied. Non-empty means the
+    /// surface must ask before it can offer Apply.
+    pub choices: Vec<AdoptionCandidate>,
+    /// Whether "never file these again" is meaningful — true for reviews about
+    /// a path, which is the only thing an ignore rule can describe.
+    pub ignorable: bool,
+}
+
+/// What can be done about one open suggestion.
+#[must_use]
+pub fn offered_actions(suggestion: &retro_junk_db::work::Suggestion) -> OfferedActions {
+    match suggestion.kind.as_str() {
+        IMPORT_SUGGESTION_KIND | SCRAPE_SUGGESTION_KIND => OfferedActions {
+            applicable: true,
+            ..OfferedActions::default()
+        },
+        ADOPT_SUGGESTION_KIND => {
+            let payload = crate::adoption::read_payload(suggestion);
+            OfferedActions {
+                // One candidate is not a choice, so it can be applied outright.
+                applicable: !payload.candidates.is_empty(),
+                choices: if payload.candidates.len() > 1 {
+                    payload.candidates
+                } else {
+                    Vec::new()
+                },
+                ignorable: true,
+            }
+        }
+        _ => OfferedActions::default(),
+    }
+}
+
+/// Whether a suggestion of this kind can ever be executed from a review
+/// surface.
+///
+/// A coarse test on the kind alone. Adoption reviews answer "it depends" —
+/// only the ones the sweep found candidates for can be applied — so a surface
+/// holding an actual suggestion should ask [`offered_actions`] instead.
 #[must_use]
 pub fn is_applicable(kind: &str) -> bool {
-    matches!(kind, IMPORT_SUGGESTION_KIND | SCRAPE_SUGGESTION_KIND)
+    matches!(
+        kind,
+        IMPORT_SUGGESTION_KIND | SCRAPE_SUGGESTION_KIND | ADOPT_SUGGESTION_KIND
+    )
 }
 
 /// Execute an open suggestion and resolve it.
@@ -45,6 +148,20 @@ pub fn is_applicable(kind: &str) -> bool {
 pub fn apply_suggestion(
     ctx: &ExecContext,
     id: i64,
+    cancelled: &AtomicBool,
+) -> Result<String, WorkError> {
+    apply_suggestion_choice(ctx, id, None, cancelled)
+}
+
+/// Execute an open suggestion, answering any question it asked.
+///
+/// `choice` names one of the suggestion's candidates; it is only meaningful
+/// for reviews that carry several, and is ignored by kinds that propose a
+/// single command.
+pub fn apply_suggestion_choice(
+    ctx: &ExecContext,
+    id: i64,
+    choice: Option<&str>,
     cancelled: &AtomicBool,
 ) -> Result<String, WorkError> {
     let conn = retro_junk_db::open_database(&ctx.db_path).map_err(WorkError::msg)?;
@@ -64,6 +181,9 @@ pub fn apply_suggestion(
             Ok(format!("Imported {}", suggestion.target_id))
         }
         SCRAPE_SUGGESTION_KIND => apply_scrape(ctx, &suggestion, cancelled),
+        ADOPT_SUGGESTION_KIND => {
+            crate::adoption::apply_adoption(ctx, &suggestion, choice, cancelled)
+        }
         other => Err(WorkError::Message(format!(
             "suggestions of kind '{other}' record a decision rather than an action"
         ))),
@@ -112,7 +232,8 @@ fn apply_scrape(
         blocked: None,
         build: None,
     };
-    let outcome = crate::executor::execute_action(&confirmed, &action, &|_, _, _| {}, cancelled)?;
+    let outcome =
+        crate::executor::execute_action(&confirmed, &action, &|_, _, _, _| {}, cancelled)?;
     match outcome {
         crate::executor::ActionOutcome::Completed { .. } => {
             let mut conn = retro_junk_db::open_database(&ctx.db_path).map_err(WorkError::msg)?;

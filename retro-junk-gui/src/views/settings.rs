@@ -834,7 +834,7 @@ fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     ui.strong("Automation");
     ui.add_space(4.0);
     ui.weak(
-        "What the daemon and background runs do unattended. Safe, idempotent          work (verify, build, project) defaults to automatic; imports touch          files you placed, so they default to review.",
+        "What the daemon and background runs do unattended. Safe, idempotent work (verify, build, project) defaults to automatic; imports touch files you placed, so they default to review.",
     );
     ui.add_space(4.0);
     let policy = app
@@ -854,6 +854,10 @@ fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             "Build playable copies, project artwork, and update gamelists automatically",
         )
         .changed();
+    ui.weak(
+        "Playable files you rename or move are always re-attached to their archived release; \
+         that is bookkeeping, not new work, so this switch does not cover it.",
+    );
     ui.horizontal(|ui| {
         ui.label("Incoming dumps:");
         changed |= ui
@@ -920,7 +924,7 @@ fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     changed |= ui
         .checkbox(
             &mut policy.verify_published_bytes,
-            "Re-read published bytes at import (extra full read; background              verification covers this otherwise)",
+            "Re-read published bytes at import (extra full read; background verification covers this otherwise)",
         )
         .changed();
     ui.horizontal(|ui| {

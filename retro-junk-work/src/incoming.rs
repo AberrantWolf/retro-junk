@@ -176,6 +176,14 @@ pub fn process_pending_incoming(
             stats.waiting += 1;
             continue;
         }
+        if policy.auto_import == AutoImportMode::Off {
+            // "Track only": the package stays recorded (vanish/settle
+            // bookkeeping above still ran), but nothing reads its contents
+            // and no suggestion is filed. Counted as waiting because that is
+            // what it does — waits for the user to raise the mode.
+            stats.waiting += 1;
+            continue;
+        }
         match plan_and_apply(ctx, policy, &mut conn, &path, cancelled) {
             Ok(PackageOutcome::Imported) => stats.imported += 1,
             Ok(PackageOutcome::Suggested) => stats.suggested += 1,

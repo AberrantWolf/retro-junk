@@ -99,7 +99,7 @@ pub struct UiState {
     pub chd_compress_prompt: Option<crate::state::ChdCompressPrompt>,
     /// Cached chdman detection for the Settings view.
     pub chdman_probe: ChdmanProbe,
-    /// Cached ScreenScraper credential provenance for the Settings view.
+    /// Cached `ScreenScraper` credential provenance for the Settings view.
     pub credential_status: Option<(std::time::Instant, retro_junk_scraper::CredentialSources)>,
     /// Account fields and login-test state for Settings; loaded on first show.
     pub scraper_account: Option<crate::state::ScraperAccount>,
@@ -183,6 +183,8 @@ pub struct UiState {
     /// Set when something changed that the inbox reflects; the view reloads
     /// on its next render rather than every writer racing to reload it.
     pub inbox_dirty: bool,
+    /// How the inbox is currently being filtered, sorted, and browsed.
+    pub inbox_ui: crate::state::InboxUiState,
 }
 
 impl Default for UiState {
@@ -238,6 +240,7 @@ impl Default for UiState {
             inbox: crate::backend::inbox::InboxContents::default(),
             inbox_loading: false,
             inbox_dirty: true,
+            inbox_ui: crate::state::InboxUiState::default(),
         }
     }
 }
@@ -304,10 +307,12 @@ pub struct RetroJunkApp {
     /// Native menubar. Held for the life of the app so the menu and its
     /// items are not dropped out from under the OS; nothing reads it back.
     /// `None` in headless test instances, which never build one.
-    #[expect(dead_code, reason = "held so the platform menu outlives startup")]
+    // `allow`, not `expect`: assigning the field counts as a use here, so
+    // `dead_code` does not actually fire and an `expect` warns about itself.
+    #[allow(dead_code, reason = "held so the platform menu outlives startup")]
     app_menu: Option<crate::menu::AppMenu>,
 
-    /// Menu-item identities, copied out of `_app_menu` so dispatch does not
+    /// Menu-item identities, copied out of `app_menu` so dispatch does not
     /// re-borrow it.
     menu_ids: Option<crate::menu::AppMenuIds>,
 
@@ -669,6 +674,35 @@ impl RetroJunkApp {
         ctx: &egui::Context,
     ) {
         self.queue_store(payload);
+        ctx.request_repaint_after(Duration::from_millis(20));
+    }
+
+    /// Submit a set of requests as one handoff that cannot block the UI
+    /// thread, no matter how far the batch outruns the store's bounded queue.
+    fn submit_store_batch(
+        &mut self,
+        payloads: Vec<crate::backend::library_store::LibraryStoreRequest>,
+        ctx: &egui::Context,
+    ) {
+        if self.library_store.is_none() {
+            return;
+        }
+        let envelopes: Vec<_> = payloads
+            .into_iter()
+            .map(|payload| {
+                self.next_store_request_id = self.next_store_request_id.wrapping_add(1);
+                crate::backend::library_store::StoreEnvelope {
+                    session_generation: self.library_controller.session_generation,
+                    request_id: self.next_store_request_id,
+                    payload,
+                }
+            })
+            .collect();
+        self.store_requests_in_flight
+            .extend(envelopes.iter().map(|envelope| envelope.request_id));
+        if let Some(store) = self.library_store.as_ref() {
+            store.submit_batch(envelopes);
+        }
         ctx.request_repaint_after(Duration::from_millis(20));
     }
 
@@ -1384,15 +1418,25 @@ impl RetroJunkApp {
         ctx: &egui::Context,
     ) {
         let value = value.map(|region| region.name().to_owned());
-        for entry_id in entry_ids {
-            self.submit_store(
-                crate::backend::library_store::LibraryStoreRequest::SetRegionOverride {
+        let requests = entry_ids
+            .into_iter()
+            .map(
+                |entry_id| crate::backend::library_store::LibraryStoreRequest::SetRegionOverride {
                     entry_id,
                     value: value.clone(),
                 },
-                ctx,
-            );
-        }
+            )
+            .collect();
+        self.submit_store_batch(requests, ctx);
+    }
+
+    /// The directory this collection's portable marks live in, if a profile
+    /// names one.
+    pub fn collection_root(&self) -> Option<std::path::PathBuf> {
+        self.settings
+            .library
+            .active_profile()
+            .map(retro_junk_archive::CollectionProfile::collection_root)
     }
 
     pub fn set_entry_tags(
@@ -1405,15 +1449,21 @@ impl RetroJunkApp {
             retro_junk_catalog::CatalogTag::Homebrew => "homebrew".to_owned(),
             retro_junk_catalog::CatalogTag::Modded => "modded".to_owned(),
         });
-        for entry_id in entry_ids {
-            self.submit_store(
-                crate::backend::library_store::LibraryStoreRequest::SetTag {
+        // The store writes the durable mark alongside the row: one place
+        // decides what a tag means on disk, with the catalog at hand to name
+        // the work a mod derives from.
+        let collection_root = self.collection_root();
+        let requests = entry_ids
+            .into_iter()
+            .map(
+                |entry_id| crate::backend::library_store::LibraryStoreRequest::SetTag {
                     entry_id,
                     value: value.clone(),
+                    collection_root: collection_root.clone(),
                 },
-                ctx,
-            );
-        }
+            )
+            .collect();
+        self.submit_store_batch(requests, ctx);
     }
 
     /// Persist derived analysis from stable job-owned state. The entry need

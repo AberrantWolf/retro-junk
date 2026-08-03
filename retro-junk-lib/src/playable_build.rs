@@ -6,10 +6,11 @@ use std::sync::atomic::AtomicBool;
 
 use retro_junk_archive::{
     BuildEvidence, BuildId, CanonicalIntermediateEvidence, CapturedFeature, CatalogEvidence,
-    IndexedCarrier, IndexedDump, IndexedRelease, Redumper, RepresentationFormat, RepresentationId,
+    IndexedCarrier, IndexedDump, IndexedRelease, RepresentationFormat, RepresentationId,
     ToolRecord, TrackDigest, TrackVerification, VerificationEvidence, VerificationId,
     VerificationKind, VerificationOutcome, scan_archive, sha256_file, write_json_new,
 };
+use retro_junk_io::{PhaseProgressFn, ProgressUnit};
 
 #[derive(Debug, Clone)]
 pub struct PlayableBuildRequest {
@@ -65,10 +66,10 @@ pub struct CatalogVerificationRequest {
 #[allow(clippy::too_many_lines)]
 pub fn verify_dump_against_catalog(
     request: &CatalogVerificationRequest,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<bool, PlayableBuildError> {
-    progress("Reading archive manifests", 0, 0);
+    progress("Reading archive manifests", ProgressUnit::Items, 0, 0);
     let snapshot = scan_archive(&request.archive_root)
         .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
     let dump = snapshot
@@ -91,36 +92,22 @@ pub fn verify_dump_against_catalog(
     }
     let (actual_tracks, tool, detail) = if dump.manifest.format == RepresentationFormat::RedumperRaw
     {
-        progress(
-            "Copying raw dump to an isolated workspace for Redumper verification",
-            0,
-            0,
-        );
-        let redumper = Redumper::detect(&request.redumper_path)
-            .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
-        progress("Regenerating and hashing the complete disc track set", 0, 0);
-        let prepared = redumper
-            .prepare_with_progress(
-                &dump.directory.join("raw"),
-                &request.workspace_root,
-                cancelled,
-                |current, total| {
-                    progress(
-                        "Copying raw dump to an isolated workspace for Redumper verification",
-                        current,
-                        total,
-                    );
-                },
-            )
-            .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
-        let cache = prepared_cache_directory(&request.workspace_root, &dump.manifest_sha256);
-        if cache.exists() {
-            std::fs::remove_dir_all(&cache)?;
-        }
-        cache_prepared_intermediate(&prepared, &cache, cancelled)?;
+        // Kept for whatever builds this dump next: the split CUE/BIN files are
+        // exactly what a CHD conversion needs, and reproducing them is the
+        // expensive part.
+        let prepared = crate::redumper_cache::prepare(
+            &request.redumper_path,
+            &dump.directory.join("raw"),
+            &request.workspace_root,
+            &dump.manifest_sha256,
+            progress,
+            cancelled,
+        )?;
+        let audit = prepared.audit().clone();
+        prepared.keep();
         (
-            prepared.audit.tracks.clone(),
-            Some(prepared.audit.tool.clone()),
+            audit.tracks,
+            Some(audit.tool),
             "Redumper regenerated a complete ordered track set matching the catalog".to_owned(),
         )
     } else {
@@ -132,6 +119,7 @@ pub fn verify_dump_against_catalog(
         };
         progress(
             "Hashing the preservation master against the catalog",
+            ProgressUnit::Bytes,
             0,
             file.size,
         );
@@ -228,10 +216,10 @@ pub fn verify_dump_against_catalog(
 /// the underlying converter exposes byte progress.
 pub fn build_playable(
     request: &PlayableBuildRequest,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<PlayableBuildOutcome, PlayableBuildError> {
-    progress("Reading archive manifests", 0, 0);
+    progress("Reading archive manifests", ProgressUnit::Items, 0, 0);
     let snapshot = scan_archive(&request.archive_root)
         .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
     let selected = snapshot.releases.iter().find_map(|release| {
@@ -259,7 +247,12 @@ pub fn build_playable(
                 &build.evidence,
             ) == retro_junk_archive::RepresentationPresence::Present
     }) {
-        progress("Preferred playable representation is already present", 1, 1);
+        progress(
+            "Preferred playable representation is already present",
+            ProgressUnit::Items,
+            1,
+            1,
+        );
         if request.expected_disc_count > 1 {
             project_selected_playlist(request, &request.dump_id)?;
         }
@@ -286,7 +279,7 @@ pub fn build_playable(
         ))),
     }?;
     if request.expected_disc_count > 1 {
-        progress("Updating multi-disc playlist", 0, 0);
+        progress("Updating multi-disc playlist", ProgressUnit::Items, 0, 0);
         project_selected_playlist(request, &request.dump_id)?;
     }
     Ok(outcome)
@@ -298,7 +291,7 @@ fn build_chd(
     release: &IndexedRelease,
     carrier: &IndexedCarrier,
     dump: &IndexedDump,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<PlayableBuildOutcome, PlayableBuildError> {
     let catalog_verified = retro_junk_archive::dump_catalog_verified(dump);
@@ -316,33 +309,23 @@ fn build_chd(
                 release.manifest.platform_id
             ))
         })?;
-    let mut redumper_workspace = None;
+    // Raw dumps reach a converter only through the shared prepared-output
+    // cache, so identification and this build never split the same dump twice.
     let mut prepared_cache = None;
     let input = match dump.manifest.format {
         RepresentationFormat::RedumperRaw => {
-            let cache = prepared_cache_directory(&request.workspace_root, &dump.manifest_sha256);
-            if cache.is_dir() {
-                let input = find_input(&cache.join("raw"), &["cue", "iso"])?;
-                prepared_cache = Some(cache);
-                input
-            } else {
-                progress("Preparing Redumper files in an isolated workspace", 0, 0);
-                let redumper = Redumper::detect(&request.redumper_path)
-                    .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
-                let prepared = redumper
-                    .prepare_with_phase_progress(
-                        &dump.directory.join("raw"),
-                        &request.workspace_root,
-                        cancelled,
-                        |phase, current, total| {
-                            progress(phase, current, total);
-                        },
-                    )
-                    .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
-                let entrypoint = prepared.entrypoint.clone();
-                redumper_workspace = Some(prepared);
-                entrypoint
-            }
+            let prepared = crate::redumper_cache::prepare(
+                &request.redumper_path,
+                &dump.directory.join("raw"),
+                &request.workspace_root,
+                &dump.manifest_sha256,
+                progress,
+                cancelled,
+            )?;
+            let input = prepared.entrypoint()?;
+            prepared_cache = Some(prepared.directory().to_path_buf());
+            prepared.keep();
+            input
         }
         RepresentationFormat::CueBin => find_input(&dump.directory.join("raw"), &["cue"])?,
         RepresentationFormat::Iso => find_input(&dump.directory.join("raw"), &["iso"])?,
@@ -369,6 +352,7 @@ fn build_chd(
     }
     progress(
         "Compressing and round-trip verifying CHD",
+        ProgressUnit::Bytes,
         0,
         job.input_bytes,
     );
@@ -384,7 +368,12 @@ fn build_chd(
         &|phase, fraction| {
             let total = job.input_bytes;
             let done = (crate::chd_convert::job_fraction(phase, fraction) * total as f64) as u64;
-            progress("Compressing and round-trip verifying CHD", done, total);
+            progress(
+                "Compressing and round-trip verifying CHD",
+                ProgressUnit::Bytes,
+                done,
+                total,
+            );
         },
         cancelled,
     )
@@ -394,7 +383,7 @@ fn build_chd(
             "CHD round-trip verification failed".to_owned(),
         ));
     }
-    progress("Recording build evidence", 0, 0);
+    progress("Recording build evidence", ProgressUnit::Items, 0, 0);
     let (output_size, output_sha256) = sha256_file(&outcome.output, cancelled)
         .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
     let build_id = BuildId::new();
@@ -402,28 +391,14 @@ fn build_chd(
         .directory
         .join("intermediates")
         .join(build_id.to_string());
-    let canonical_intermediate = if request.retain_intermediate {
-        if let Some(workspace) = redumper_workspace.as_ref() {
-            let files = workspace
-                .retain_intermediate(&retained_path, cancelled)
-                .map_err(|error| PlayableBuildError::Message(error.to_string()))?;
-            let format = if workspace
-                .entrypoint
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|value| value.eq_ignore_ascii_case("iso"))
-            {
-                RepresentationFormat::Iso
-            } else {
-                RepresentationFormat::CueBin
-            };
-            Some(CanonicalIntermediateEvidence {
-                representation_id: RepresentationId::new(),
-                format,
-                relative_path: format!("intermediates/{build_id}"),
-                files,
-            })
-        } else if let Some(cache) = prepared_cache.as_ref() {
+    // Every raw-dump build now reads its split files from the shared cache, so
+    // there is one way to promote them into the archive rather than one per
+    // place the files might have come from.
+    let canonical_intermediate = match prepared_cache
+        .as_ref()
+        .filter(|_| request.retain_intermediate)
+    {
+        Some(cache) => {
             let files = retain_cached_intermediate(cache, &retained_path, cancelled)?;
             let format = if input
                 .extension()
@@ -440,11 +415,8 @@ fn build_chd(
                 relative_path: format!("intermediates/{build_id}"),
                 files,
             })
-        } else {
-            None
         }
-    } else {
-        None
+        None => None,
     };
     let evidence = BuildEvidence {
         schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
@@ -489,7 +461,7 @@ fn build_rvz(
     release: &IndexedRelease,
     carrier: &IndexedCarrier,
     dump: &IndexedDump,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<PlayableBuildOutcome, PlayableBuildError> {
     if dump.manifest.format != RepresentationFormat::Iso || dump.manifest.files.len() != 1 {
@@ -508,7 +480,7 @@ fn build_rvz(
     } else {
         request.dolphin_tool_path.clone()
     };
-    progress("Checking DolphinTool", 0, 0);
+    progress("Checking DolphinTool", ProgressUnit::Items, 0, 0);
     let help = std::process::Command::new(&dolphin_tool)
         .arg("--help")
         .output()
@@ -561,7 +533,12 @@ fn build_rvz(
         .options
         .get("compression_level")
         .map_or("5", String::as_str);
-    progress("Converting ISO to RVZ", 0, dump.manifest.files[0].size);
+    progress(
+        "Converting ISO to RVZ",
+        ProgressUnit::Bytes,
+        0,
+        dump.manifest.files[0].size,
+    );
     let convert = std::process::Command::new(&dolphin_tool)
         .args(["convert", "-i"])
         .arg(&input)
@@ -594,7 +571,12 @@ fn build_rvz(
             "operation cancelled".to_owned(),
         ));
     }
-    progress("Round-trip verifying RVZ", 0, dump.manifest.files[0].size);
+    progress(
+        "Round-trip verifying RVZ",
+        ProgressUnit::Bytes,
+        0,
+        dump.manifest.files[0].size,
+    );
     let extract = std::process::Command::new(&dolphin_tool)
         .args(["convert", "-i"])
         .arg(&temporary_output)
@@ -649,63 +631,6 @@ fn build_rvz(
         output,
         format: RepresentationFormat::Rvz,
     })
-}
-
-fn prepared_cache_directory(workspace_root: &Path, manifest_sha256: &str) -> PathBuf {
-    workspace_root
-        .join("prepared-redumper")
-        .join(manifest_sha256)
-}
-
-fn cache_prepared_intermediate(
-    prepared: &retro_junk_archive::RedumperWorkspace,
-    destination: &Path,
-    cancelled: &AtomicBool,
-) -> Result<(), PlayableBuildError> {
-    let parent = destination.parent().ok_or_else(|| {
-        PlayableBuildError::Message("prepared cache has no parent directory".to_owned())
-    })?;
-    std::fs::create_dir_all(parent)?;
-    let staging = parent.join(format!(".prepared-staging-{}", BuildId::new()));
-    let raw = staging.join("raw");
-    std::fs::create_dir_all(&raw)?;
-    let result = (|| {
-        let mut sources =
-            std::fs::read_dir(prepared.entrypoint.parent().ok_or_else(|| {
-                PlayableBuildError::Message("invalid Redumper output".to_owned())
-            })?)?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.extension()
-                    .and_then(|value| value.to_str())
-                    .is_some_and(|value| {
-                        matches!(value.to_ascii_lowercase().as_str(), "cue" | "bin" | "iso")
-                    })
-            })
-            .collect::<Vec<_>>();
-        sources.sort();
-        for source in sources {
-            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(PlayableBuildError::Message(
-                    "operation cancelled".to_owned(),
-                ));
-            }
-            let name = source.file_name().ok_or_else(|| {
-                PlayableBuildError::Message(format!(
-                    "prepared file has no filename: {}",
-                    source.display()
-                ))
-            })?;
-            std::fs::rename(&source, raw.join(name))?;
-        }
-        std::fs::rename(&staging, destination)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_dir_all(&staging);
-    }
-    result
 }
 
 fn retain_cached_intermediate(
@@ -767,7 +692,7 @@ fn mirror(
     release: &IndexedRelease,
     carrier: &IndexedCarrier,
     dump: &IndexedDump,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<PlayableBuildOutcome, PlayableBuildError> {
     let file = &dump.manifest.files[0];
@@ -791,6 +716,7 @@ fn mirror(
     }
     progress(
         "Mirroring preservation bytes to the playable library",
+        ProgressUnit::Bytes,
         0,
         file.size,
     );
@@ -835,19 +761,19 @@ fn write_evidence(
     evidence: &BuildEvidence,
     output: &Path,
 ) -> Result<(), PlayableBuildError> {
-    let directory = dump.directory.join("evidence");
-    std::fs::create_dir_all(&directory)?;
-    if let Err(error) = write_json_new(
-        &directory.join(format!("build-{}.json", evidence.build_id)),
-        evidence,
-    ) {
+    if let Err(error) = retro_junk_archive::write_build_evidence(&dump.directory, evidence) {
+        // An output no evidence names is worse than no output: nothing would
+        // ever find it again.
         let _ = std::fs::remove_file(output);
         return Err(PlayableBuildError::Message(error.to_string()));
     }
     Ok(())
 }
 
-fn find_input(directory: &Path, extensions: &[&str]) -> Result<PathBuf, PlayableBuildError> {
+pub(crate) fn find_input(
+    directory: &Path,
+    extensions: &[&str],
+) -> Result<PathBuf, PlayableBuildError> {
     let mut paths = std::fs::read_dir(directory)?
         .filter_map(Result::ok)
         .map(|entry| entry.path())
@@ -870,28 +796,40 @@ fn find_input(directory: &Path, extensions: &[&str]) -> Result<PathBuf, Playable
     })
 }
 
+/// What a carrier's playable file is called.
+///
+/// One scheme, whether or not the carrier resolved to a catalog medium. It
+/// used to be two: a bound carrier took the catalog's name (`Castlevania -
+/// Symphony of the Night (USA)`) and an unbound one was slugified
+/// (`castlevania-symphony-of-the-night-usa`). A library holding both read as
+/// two collections, and — worse — binding a carrier later silently changed
+/// what its playable was called, so a rebuild left the old file behind under
+/// the old name. The archive's own title is the same title the catalog would
+/// have supplied, so there is no reason for the two to look different.
+///
+/// Both paths go through [`retro_junk_archive::safe_file_stem`] here rather
+/// than at their sources, so a catalog name that is not a legal filename
+/// cannot reach the filesystem by either route.
 fn playable_output_stem(
     request: &PlayableBuildRequest,
     release: &IndexedRelease,
     carrier: &IndexedCarrier,
 ) -> String {
-    if !request.canonical_output_stem.trim().is_empty() {
-        return request.canonical_output_stem.clone();
-    }
-    let mut name = release.manifest.title.clone();
-    for value in [
-        &release.manifest.region,
-        &release.manifest.revision,
-        &release.manifest.variant,
-    ] {
-        if !value.is_empty() {
-            let _ = write!(name, " ({value})");
-        }
-    }
-    if request.expected_disc_count > 1 && carrier.manifest.sequence_number > 0 {
+    let mut name = if request.canonical_output_stem.trim().is_empty() {
+        release_output_name(release)
+    } else {
+        request.canonical_output_stem.clone()
+    };
+    // A disc number belongs to the carrier, not to the catalog medium, so it
+    // is appended to either form. A supplied stem that already names its disc
+    // keeps it — the catalog's own name carries `(Disc N)` when the DAT does.
+    if request.expected_disc_count > 1
+        && carrier.manifest.sequence_number > 0
+        && !name.contains("(Disc ")
+    {
         let _ = write!(name, " (Disc {})", carrier.manifest.sequence_number);
     }
-    retro_junk_archive::slugify(&name)
+    retro_junk_archive::safe_file_stem(&name)
 }
 
 fn playable_output_directory(
@@ -914,10 +852,21 @@ fn playable_output_directory(
     }
 }
 
+/// The archive's own name for a release, in the shape a DAT would write it.
+///
+/// Region is stored lowercased for comparison and written back out the way a
+/// catalog writes it — `(USA)`, not `(usa)` — so a carrier that never resolved
+/// to a catalog medium still produces the name that medium would have given
+/// it. An unrecognized region is passed through rather than dropped: a name
+/// the tool does not understand is still the user's.
 fn release_output_name(release: &IndexedRelease) -> String {
     let mut name = release.manifest.title.clone();
+    let region = retro_junk_core::Region::from_slug(&release.manifest.region).map_or_else(
+        || release.manifest.region.clone(),
+        |region| region.name().to_owned(),
+    );
     for value in [
-        &release.manifest.region,
+        &region,
         &release.manifest.revision,
         &release.manifest.variant,
     ] {
@@ -928,12 +877,18 @@ fn release_output_name(release: &IndexedRelease) -> String {
     name
 }
 
+/// What a multi-disc set's `.m3u` directory is called.
+///
+/// The same unification as [`playable_output_stem`], for the same reason: a
+/// set whose carriers are unbound must not land in a differently-named folder
+/// from one whose carriers are bound.
 fn canonical_release_name(request: &PlayableBuildRequest, release: &IndexedRelease) -> String {
-    if request.canonical_release_name.trim().is_empty() {
-        retro_junk_archive::slugify(&release_output_name(release))
+    let name = if request.canonical_release_name.trim().is_empty() {
+        release_output_name(release)
     } else {
         request.canonical_release_name.clone()
-    }
+    };
+    retro_junk_archive::safe_file_stem(&name)
 }
 
 fn project_selected_playlist(
@@ -1084,12 +1039,12 @@ mod tests {
             canonical_output_stem: String::new(),
             canonical_release_name: String::new(),
         };
-        let outcome = build_playable(&request, &|_, _, _| {}, &AtomicBool::new(false)).unwrap();
+        let outcome = build_playable(&request, &|_, _, _, _| {}, &AtomicBool::new(false)).unwrap();
         assert_eq!(
             std::fs::read(&outcome.output).unwrap(),
             b"preservation bytes"
         );
-        build_playable(&request, &|_, _, _| {}, &AtomicBool::new(false)).unwrap();
+        build_playable(&request, &|_, _, _, _| {}, &AtomicBool::new(false)).unwrap();
         let snapshot = scan_archive(&archive).unwrap();
         assert_eq!(
             snapshot.releases[0].physical_copies[0].carriers[0].dumps[0]
@@ -1161,7 +1116,7 @@ mod tests {
         };
         build_playable(
             &request(ingested[0].clone(), 1),
-            &|_, _, _| {},
+            &|_, _, _, _| {},
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -1169,7 +1124,7 @@ mod tests {
         assert!(!set_dir.join("Two Disc Game (USA).m3u").exists());
         build_playable(
             &request(ingested[1].clone(), 2),
-            &|_, _, _| {},
+            &|_, _, _, _| {},
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -1258,7 +1213,7 @@ cp "$input" "$output"
             canonical_output_stem: "Game".to_owned(),
             canonical_release_name: "Game".to_owned(),
         };
-        let outcome = build_playable(&request, &|_, _, _| {}, &AtomicBool::new(false)).unwrap();
+        let outcome = build_playable(&request, &|_, _, _, _| {}, &AtomicBool::new(false)).unwrap();
         assert_eq!(std::fs::read(&outcome.output).unwrap(), b"disc image");
         let snapshot = scan_archive(&archive).unwrap();
         let evidence =
@@ -1347,14 +1302,20 @@ echo '<rom name="disc (Track 01).bin" size="5" crc="AABBCCDD" md5="0011" sha1="1
             },
         };
         assert!(
-            verify_dump_against_catalog(&request, &|_, _, _| {}, &AtomicBool::new(false)).unwrap()
+            verify_dump_against_catalog(&request, &|_, _, _, _| {}, &AtomicBool::new(false))
+                .unwrap()
         );
         let snapshot = scan_archive(&archive).unwrap();
         let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
         assert!(retro_junk_archive::dump_catalog_verified(dump));
-        assert!(prepared_cache_directory(&workspace, &dump.manifest_sha256).is_dir());
+        // Verification leaves the split output behind on purpose, so the build
+        // that follows it does not copy and split the same raw dump again.
+        let cache = crate::redumper_cache::cache_directory(&workspace, &dump.manifest_sha256);
+        assert!(cache.join("raw").is_dir());
+        assert!(cache.join("audit.json").is_file());
         assert!(
-            !verify_dump_against_catalog(&request, &|_, _, _| {}, &AtomicBool::new(false)).unwrap()
+            !verify_dump_against_catalog(&request, &|_, _, _, _| {}, &AtomicBool::new(false))
+                .unwrap()
         );
     }
 }

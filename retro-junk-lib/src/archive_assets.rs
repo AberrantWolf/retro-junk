@@ -12,6 +12,9 @@ pub struct AssetProjectionReport {
     pub copied: usize,
     pub current: usize,
     pub skipped_unknown: usize,
+    /// Projected files removed because the name they carried is one this
+    /// release no longer publishes under.
+    pub removed_stale: usize,
     pub destinations: Vec<PathBuf>,
 }
 
@@ -29,30 +32,19 @@ pub enum AssetProjectionError {
 ///
 /// Single-disc games use playable output stems. Multi-disc games additionally
 /// use the full `.m3u` directory name because ES-DE keys media by that name.
+///
+/// Only *current* builds count. `evidence/` is append-only, so a release
+/// rebuilt or re-adopted under a corrected name keeps both names in its
+/// history — and reading all of them made every projection republish artwork
+/// under names no file has carried since, one copy per name, forever.
 #[must_use]
 pub fn release_media_stems(release: &IndexedRelease) -> BTreeSet<String> {
-    let mut stems = release
-        .physical_copies
-        .iter()
-        .flat_map(|copy| &copy.carriers)
-        .flat_map(|carrier| &carrier.dumps)
-        .flat_map(|dump| &dump.builds)
-        .filter_map(|build| {
-            let output = Path::new(&build.evidence.relative_output_path);
-            output
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .map(str::to_owned)
-        })
-        .collect::<BTreeSet<_>>();
-    for build in release
-        .physical_copies
-        .iter()
-        .flat_map(|copy| &copy.carriers)
-        .flat_map(|carrier| &carrier.dumps)
-        .flat_map(|dump| &dump.builds)
-    {
-        let output = Path::new(&build.evidence.relative_output_path);
+    let mut stems = BTreeSet::new();
+    for evidence in retro_junk_archive::current_release_builds(release) {
+        let output = Path::new(&evidence.relative_output_path);
+        if let Some(stem) = output.file_stem().and_then(|value| value.to_str()) {
+            stems.insert(stem.to_owned());
+        }
         if let Some(directory) = output
             .parent()
             .and_then(Path::file_name)
@@ -68,6 +60,37 @@ pub fn release_media_stems(release: &IndexedRelease) -> BTreeSet<String> {
     stems
 }
 
+/// Names a release used to publish under and no longer does.
+///
+/// What a projection has to remove rather than write. A stem that is still
+/// current is never returned, so two lineages sharing one output name cannot
+/// delete each other's artwork.
+#[must_use]
+pub fn superseded_media_stems(release: &IndexedRelease) -> BTreeSet<String> {
+    let current = release_media_stems(release);
+    let mut stems = BTreeSet::new();
+    for evidence in retro_junk_archive::superseded_release_builds(release) {
+        let output = Path::new(&evidence.relative_output_path);
+        if let Some(stem) = output
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|stem| !current.contains(*stem))
+        {
+            stems.insert(stem.to_owned());
+        }
+        if let Some(directory) = output
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|value| value.to_str())
+            .filter(|name| name.to_ascii_lowercase().ends_with(".m3u"))
+            .filter(|name| !current.contains(*name))
+        {
+            stems.insert(directory.to_owned());
+        }
+    }
+    stems
+}
+
 /// Project every recognized archived release asset to one console's frontend
 /// media directory using the supplied frontend entry stems.
 pub fn project_release_assets(
@@ -76,7 +99,14 @@ pub fn project_release_assets(
     stems: &BTreeSet<String>,
     cancelled: &AtomicBool,
 ) -> Result<AssetProjectionReport, AssetProjectionError> {
-    let mut report = AssetProjectionReport::default();
+    // Artwork belonging to a name this release has stopped publishing under.
+    // Removed here rather than left behind, because the media tree is a
+    // projection: a file in it that no output answers to is not a spare copy,
+    // it is a second game in the frontend under the old name.
+    let mut report = AssetProjectionReport {
+        removed_stale: remove_stale_projections(media_directory, &superseded_media_stems(release)),
+        ..AssetProjectionReport::default()
+    };
     for asset in &release.supporting_files {
         let Some(asset_type) = AssetType::from_archive_name(&asset.manifest.asset_type) else {
             report.skipped_unknown += 1;
@@ -141,13 +171,12 @@ pub fn sync_esde_gamelist_for_release(
     metadata_root: &Path,
     media_root: &Path,
 ) -> Result<Option<PathBuf>, AssetProjectionError> {
-    let mut outputs = release
-        .physical_copies
-        .iter()
-        .flat_map(|copy| &copy.carriers)
-        .flat_map(|carrier| &carrier.dumps)
-        .flat_map(|dump| &dump.builds)
-        .map(|build| PathBuf::from(&build.evidence.relative_output_path))
+    // Only current builds: a superseded output whose file happens to still be
+    // on disk is not a game, it is the leftover of a rename — and giving it a
+    // gamelist entry is how one release became two in the frontend.
+    let mut outputs = retro_junk_archive::current_release_builds(release)
+        .into_iter()
+        .map(|evidence| PathBuf::from(&evidence.relative_output_path))
         .filter(|relative| playable_root.join(relative).is_file())
         .collect::<BTreeSet<_>>();
     let playlist = outputs.iter().find(|relative| {
@@ -185,6 +214,21 @@ pub fn sync_esde_gamelist_for_release(
     let rom_dir = playable_root.join(platform);
     let media_dir = media_root.join(platform);
     let metadata_dir = metadata_root.join(platform);
+    // Entries for names this release has stopped publishing under. Upserting
+    // is keyed on the path, so without this a rebuild under a corrected name
+    // leaves the old entry behind and the frontend lists the game twice — once
+    // playable, once pointing at a file that is gone.
+    let retired = retro_junk_archive::superseded_release_builds(release)
+        .into_iter()
+        .filter_map(|evidence| {
+            Path::new(&evidence.relative_output_path)
+                .strip_prefix(platform)
+                .ok()
+                .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        })
+        .collect::<BTreeSet<_>>();
+    retro_junk_frontend::esde::remove_game_entries(&metadata_dir.join("gamelist.xml"), &retired)
+        .map_err(|error| AssetProjectionError::Archive(error.to_string()))?;
     let stem = if relative_rom
         .parent()
         .and_then(Path::file_name)
@@ -262,14 +306,8 @@ pub fn release_media_stems_by_platform(
     release: &IndexedRelease,
 ) -> std::collections::BTreeMap<String, BTreeSet<String>> {
     let mut grouped = std::collections::BTreeMap::<String, BTreeSet<String>>::new();
-    for build in release
-        .physical_copies
-        .iter()
-        .flat_map(|copy| &copy.carriers)
-        .flat_map(|carrier| &carrier.dumps)
-        .flat_map(|dump| &dump.builds)
-    {
-        let output = Path::new(&build.evidence.relative_output_path);
+    for evidence in retro_junk_archive::current_release_builds(release) {
+        let output = Path::new(&evidence.relative_output_path);
         let platform = output
             .components()
             .next()
@@ -335,6 +373,55 @@ pub fn project_asset_file(
 }
 
 /// Where a projection writes, and the scratch name it stages through.
+/// Delete projected media carrying any of `stems`, across every asset
+/// directory.
+///
+/// Only the media tree is touched, and only files whose stem is one this
+/// release has stopped using — never a stem it still publishes under, which
+/// [`superseded_media_stems`] has already excluded. Everything here is
+/// rebuildable from the archive's originals, so removing it costs nothing but
+/// a re-projection; leaving it costs a duplicate game in the frontend.
+///
+/// A file that cannot be removed is logged and skipped: failing a projection
+/// because a leftover is read-only would be a worse outcome than the leftover.
+fn remove_stale_projections(media_directory: &Path, stems: &BTreeSet<String>) -> usize {
+    if stems.is_empty() {
+        return 0;
+    }
+    let mut removed = 0;
+    for asset_type in AssetType::EVERY {
+        let directory = media_directory.join(asset_type.subdirectory());
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for path in entries.flatten().map(|entry| entry.path()) {
+            let is_stale = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .is_some_and(|stem| stems.contains(stem));
+            if !is_stale || !path.is_file() {
+                continue;
+            }
+            match std::fs::remove_file(&path) {
+                Ok(()) => {
+                    log::info!(
+                        "Removed {} — its release no longer publishes under that name",
+                        path.display()
+                    );
+                    removed += 1;
+                }
+                Err(error) => {
+                    log::warn!(
+                        "Could not remove stale projection {}: {error}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+    removed
+}
+
 fn projection_paths(
     source: &Path,
     media_directory: &Path,
@@ -530,7 +617,7 @@ mod tests {
                 canonical_output_stem: "Game".to_owned(),
                 canonical_release_name: "Game".to_owned(),
             },
-            &|_, _, _| {},
+            &|_, _, _, _| {},
             &AtomicBool::new(false),
         )
         .unwrap();

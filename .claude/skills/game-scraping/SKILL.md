@@ -43,6 +43,12 @@ metadata/media using multiple sources:
   can be used as a quick check without full decompression.
 - **Rate limiting**: ScreenScraper enforces per-minute and per-day request limits. Always check
   user quota via `ssuserInfos.php` and respect limits.
+- **Derivation**: a mod and a homebrew title are the two things no DAT and no scraper describes.
+  A mod is identified as the *work it was derived from* — never by its own bytes, which are in
+  nobody's database — while keeping its own name and media stem; homebrew is identified by name,
+  never by a serial nobody assigned it. The decision lives with the collection
+  (`<collection>/.retro-junk/marks/`), not in the rebuildable catalog database. See
+  [ScreenScraper API](ScreenScraperAPI.md#files-screenscraper-cannot-know-mods-and-homebrew).
 
 ## Credentials and Authentication
 - ScreenScraper requires **two layers** of authentication on every request:

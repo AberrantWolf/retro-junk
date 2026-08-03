@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use retro_junk_db::convergence::{ActionKind, ProposedAction, WorkTarget};
 use retro_junk_db::work::{ClaimOutcome, HeldClaim};
+use retro_junk_io::{PhaseProgressFn, ProgressUnit};
 use retro_junk_lib::archive_ops::{
     ArchiveOpsError, FrontendRoots, IdentifyCarriersRequest, IdentifySelection,
     ReleaseBuildRequest, build_release_playable, identify_archived_carriers,
@@ -150,7 +151,7 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 pub fn execute_action(
     ctx: &ExecContext,
     action: &ProposedAction,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<ActionOutcome, WorkError> {
     if let Some(reason) = &action.blocked {
@@ -179,6 +180,7 @@ pub fn execute_action(
                         kind,
                         target_kind,
                         target_id,
+                        &ctx.owner,
                         &ClaimOutcome::Cancelled,
                     )?;
                     return Ok(ActionOutcome::ArchiveBusy);
@@ -192,6 +194,7 @@ pub fn execute_action(
                         kind,
                         target_kind,
                         target_id,
+                        &ctx.owner,
                         &outcome,
                     )?;
                     return Err(WorkError::msg(error));
@@ -199,7 +202,7 @@ pub fn execute_action(
             }
         }
         LockEtiquette::InteractiveWait => {
-            progress("Waiting for the archive lock", 0, 0);
+            progress("Waiting for the archive lock", ProgressUnit::Items, 0, 0);
             match retro_junk_archive::ArchiveLock::acquire_wait(
                 &ctx.profile.archive_root,
                 cancelled,
@@ -211,6 +214,7 @@ pub fn execute_action(
                         kind,
                         target_kind,
                         target_id,
+                        &ctx.owner,
                         &ClaimOutcome::Cancelled,
                     )?;
                     return Ok(ActionOutcome::Cancelled);
@@ -224,6 +228,7 @@ pub fn execute_action(
                         kind,
                         target_kind,
                         target_id,
+                        &ctx.owner,
                         &outcome,
                     )?;
                     return Err(WorkError::msg(error));
@@ -243,7 +248,7 @@ pub fn execute_action(
         target_kind.to_owned(),
         target_id.to_owned(),
     );
-    let beating_progress = move |phase: &str, current: u64, total: u64| {
+    let beating_progress = move |phase: &str, unit: ProgressUnit, current: u64, total: u64| {
         if last_beat.get().elapsed() >= HEARTBEAT_INTERVAL {
             last_beat.set(Instant::now());
             let _ = retro_junk_db::work::refresh_claim(
@@ -254,7 +259,7 @@ pub fn execute_action(
                 &owner,
             );
         }
-        progress(phase, current, total);
+        progress(phase, unit, current, total);
     };
 
     let result = dispatch(ctx, action, &mut conn, &beating_progress, cancelled);
@@ -274,8 +279,121 @@ pub fn execute_action(
             )
         }
     };
-    retro_junk_db::work::release_claim(&mut conn, kind, target_kind, target_id, &verdict)?;
+    retro_junk_db::work::release_claim(
+        &mut conn,
+        kind,
+        target_kind,
+        target_id,
+        &ctx.owner,
+        &verdict,
+    )?;
     Ok(outcome)
+}
+
+/// What resolved a forced rebuild.
+#[derive(Debug)]
+pub enum ForceRebuildOutcome {
+    /// A file already at the target location was proven to be this
+    /// release's own derivative and adopted — nothing was rebuilt.
+    Adopted(String),
+    /// A fresh playable was actually built.
+    Built(Vec<PathBuf>),
+}
+
+/// Force a release's playable representation into a good state, regardless
+/// of whether convergence currently reads it as satisfied.
+///
+/// Adoption runs first, unconditionally: it is always safe (it only links an
+/// existing file to evidence by matching content, never writes over
+/// anything) and resolves both a moved output (evidence exists, wrong path)
+/// and a never-built carrier whose file already sits at the canonical spot
+/// (proven by matching the carrier's verified track digests). Only once
+/// adoption has had its chance and the release still genuinely needs a
+/// build does this force one via [`retro_junk_db::convergence::forced_build_action`]
+/// — going straight to a forced build first, without trying adoption, is
+/// exactly what makes a forced build collide with a file adoption would
+/// have recognized and linked instead.
+pub fn force_rebuild_playable(
+    ctx: &ExecContext,
+    archive_release_id: &str,
+    progress: &PhaseProgressFn<'_>,
+    cancelled: &AtomicBool,
+) -> Result<ForceRebuildOutcome, WorkError> {
+    let profile_id = ctx.profile.profile_id.to_string();
+    let adopt_action = ProposedAction {
+        kind: ActionKind::AdoptPlayable,
+        target: WorkTarget::Release(archive_release_id.to_owned()),
+        profile_id: profile_id.clone(),
+        platform_id: String::new(),
+        playable_platform_id: String::new(),
+        label: archive_release_id.to_owned(),
+        blocked: None,
+        build: None,
+    };
+    // A release with nothing findable by content reports as a failure here
+    // (the same message a plain "retry adopt" would show); that is not
+    // fatal to forcing — it means the build step below still has to run.
+    let _ = execute_action(ctx, &adopt_action, progress, cancelled);
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(WorkError::Message("operation cancelled".to_owned()));
+    }
+
+    // The adopt dispatch only reconciles under `ReconcileMode::PerAction`; a
+    // forced rebuild needs the release's real post-adoption state regardless
+    // of the caller's reconcile mode, so it reconciles explicitly here.
+    let snapshot = scan(ctx)?;
+    let mut conn = retro_junk_db::open_database(&ctx.db_path).map_err(WorkError::msg)?;
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &ctx.profile.playable_root,
+        &ctx.profile.workspace_root,
+    )
+    .map_err(WorkError::msg)?;
+
+    let still_needs_playable =
+        retro_junk_db::library::release_needs_playable(&conn, &profile_id, archive_release_id)?;
+    let Some(action) = retro_junk_db::convergence::forced_build_action(&conn, archive_release_id)?
+    else {
+        return Err(WorkError::Message(format!(
+            "no archived release {archive_release_id} to rebuild"
+        )));
+    };
+    drop(conn);
+    if !still_needs_playable {
+        return Ok(ForceRebuildOutcome::Adopted(action.label));
+    }
+    if let Some(reason) = &action.blocked {
+        return Err(WorkError::Message(format!("{}: {reason}", action.label)));
+    }
+    match execute_action(ctx, &action, progress, cancelled)? {
+        ActionOutcome::Completed { outputs } => Ok(ForceRebuildOutcome::Built(outputs)),
+        ActionOutcome::Blocked(message) => {
+            let hint = if message.contains("already exists") {
+                " — a file is already at that path but adoption could not confirm it belongs to \
+                 this release (its content doesn't match, or the carrier isn't catalog-verified \
+                 yet); verify the carrier, or move the file aside, then try again"
+            } else {
+                ""
+            };
+            Err(WorkError::Message(format!(
+                "{}: {message}{hint}",
+                action.label
+            )))
+        }
+        ActionOutcome::ClaimHeld(held) => Err(WorkError::Message(format!(
+            "{} is already being handled by {} (since {})",
+            action.label, held.owner, held.since
+        ))),
+        ActionOutcome::ArchiveBusy => Err(WorkError::Message(format!(
+            "the archive is busy; retry {}",
+            action.label
+        ))),
+        ActionOutcome::Cancelled => Err(WorkError::Message(format!(
+            "rebuilding {} was cancelled",
+            action.label
+        ))),
+    }
 }
 
 // The per-kind dispatch table is deliberately one function: it is the
@@ -285,7 +403,7 @@ fn dispatch(
     ctx: &ExecContext,
     action: &ProposedAction,
     conn: &mut retro_junk_db::Connection,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<Vec<PathBuf>, WorkError> {
     let ops_err = |error: ArchiveOpsError| match error {
@@ -362,6 +480,40 @@ fn dispatch(
             reconcile_if_per_action(ctx, conn)?;
             Ok(Vec::new())
         }
+        ActionKind::AdoptPlayable => {
+            let snapshot = scan(ctx)?;
+            let release_id = release_target(&action.target)?;
+            let adoption = retro_junk_lib::archive_ops::AdoptionRequest {
+                snapshot: &snapshot,
+                playable_root: &ctx.profile.playable_root,
+                only_release: Some(release_id),
+                dry_run: false,
+            };
+            let mut report =
+                retro_junk_lib::archive_ops::adopt_moved_playables(&adoption, progress, cancelled)
+                    .map_err(ops_err)?;
+            // A file the pipeline never built cannot have moved, so the two
+            // passes never compete for the same file: one searches for a
+            // recorded output digest, the other proves a derivative from the
+            // carrier's verified track set.
+            let unbuilt = retro_junk_lib::archive_ops::adopt_unbuilt_playables(
+                &adoption, conn, progress, cancelled,
+            )
+            .map_err(ops_err)?;
+            report.orphaned += unbuilt.orphaned;
+            report.adopted.extend(unbuilt.adopted);
+            if !report.unresolved.is_empty() && report.adopted.is_empty() {
+                // Nothing found by content: the bytes really are gone, so the
+                // build stage owes this release a rebuild. Report it rather
+                // than claiming success, but the message says what it is.
+                return Err(WorkError::Message(format!(
+                    "{} playable output(s) are missing and nothing in their system directories matches the recorded content",
+                    report.unresolved.len()
+                )));
+            }
+            reconcile_if_per_action(ctx, conn)?;
+            Ok(Vec::new())
+        }
         ActionKind::BuildPlayable => {
             let gap = action
                 .build
@@ -416,7 +568,12 @@ fn dispatch(
                 // durable unattended, so it becomes a reviewable card rather
                 // than an error that would back the release off for hours.
                 crate::suggestions::open_scrape_suggestion(conn, action, weak)?;
-                progress("Filed for review: only a filename match", 1, 1);
+                progress(
+                    "Filed for review: only a filename match",
+                    ProgressUnit::Items,
+                    1,
+                    1,
+                );
             }
             if ctx.reconcile == ReconcileMode::PerAction && report.published > 0 {
                 reconcile_if_per_action(ctx, conn)?;
@@ -464,6 +621,16 @@ fn dump_target(target: &WorkTarget) -> Result<&str, WorkError> {
         WorkTarget::Dump(id) => Ok(id),
         other => Err(WorkError::Message(format!(
             "expected a dump target, got {}",
+            other.kind()
+        ))),
+    }
+}
+
+fn release_target(target: &WorkTarget) -> Result<&str, WorkError> {
+    match target {
+        WorkTarget::Release(id) => Ok(id),
+        other => Err(WorkError::Message(format!(
+            "expected a release target, got {}",
             other.kind()
         ))),
     }

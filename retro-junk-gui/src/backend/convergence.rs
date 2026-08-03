@@ -15,19 +15,22 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use retro_junk_db::convergence::{ActionKind, ConvergenceSummary, ProposedAction, Scope};
+use retro_junk_db::convergence::{
+    ActionKind, BlockedReason, ConvergenceSummary, ProposedAction, Scope,
+};
 use retro_junk_db::work::WorkError;
 
 use crate::app::RetroJunkApp;
 use crate::state::{AppMessage, OperationKind, ProgressDisplay};
 
-/// The backlog for one scope: per-kind counts plus every open error grouped
-/// by the archive release it belongs to, loaded together so a refresh is one
-/// background pass rather than two.
+/// The backlog for one scope: per-kind counts plus every open error and
+/// blocked action, grouped by the archive release each belongs to, loaded
+/// together so a refresh is one background pass rather than several.
 #[derive(Default)]
 pub struct Backlog {
     pub summary: ConvergenceSummary,
     pub errors: BTreeMap<String, Vec<(ActionKind, WorkError)>>,
+    pub blocked: BTreeMap<String, Vec<(ActionKind, BlockedReason)>>,
 }
 
 impl Backlog {
@@ -36,6 +39,16 @@ impl Backlog {
     #[must_use]
     pub fn release_errors(&self, archive_release_id: &str) -> &[(ActionKind, WorkError)] {
         self.errors
+            .get(archive_release_id)
+            .map_or(&[][..], Vec::as_slice)
+    }
+
+    /// Actions derived for one archive release that cannot run unattended
+    /// right now, with why — the worker skips these before the executor ever
+    /// sees them, so this is the only place their reason is visible.
+    #[must_use]
+    pub fn release_blocked(&self, archive_release_id: &str) -> &[(ActionKind, BlockedReason)] {
+        self.blocked
             .get(archive_release_id)
             .map_or(&[][..], Vec::as_slice)
     }
@@ -105,20 +118,7 @@ pub fn run_action(
             let outcome = retro_junk_work::execute_action(
                 &exec,
                 &action,
-                &|description, current, total| {
-                    let display = if total == 0 {
-                        ProgressDisplay::Count
-                    } else {
-                        ProgressDisplay::Bytes
-                    };
-                    let _ = progress_sender.send(AppMessage::OperationPhase {
-                        op_id,
-                        description: description.to_owned(),
-                        display,
-                        current,
-                        total,
-                    });
-                },
+                &crate::backend::worker::forward_phases(op_id, progress_sender),
                 &cancel,
             );
             let result = match outcome {
@@ -177,20 +177,7 @@ pub fn run_scope(app: &mut RetroJunkApp, scope: Scope, ctx: &egui::Context) {
                 retro_junk_work::ProjectionPass::Always,
                 None,
                 None,
-                &|description, current, total| {
-                    let display = if total == 0 {
-                        ProgressDisplay::Count
-                    } else {
-                        ProgressDisplay::Bytes
-                    };
-                    let _ = progress_sender.send(AppMessage::OperationPhase {
-                        op_id,
-                        description: description.to_owned(),
-                        display,
-                        current,
-                        total,
-                    });
-                },
+                &crate::backend::worker::forward_phases(op_id, progress_sender),
                 &cancel,
             );
             let result = result
@@ -245,31 +232,88 @@ pub fn run_release_kind(
                 retro_junk_work::ProjectionPass::Always,
                 Some(&[kind]),
                 None,
-                &|description, current, total| {
-                    let display = if total == 0 {
-                        ProgressDisplay::Count
-                    } else {
-                        ProgressDisplay::Bytes
-                    };
-                    let _ = progress_sender.send(AppMessage::OperationPhase {
-                        op_id,
-                        description: description.to_owned(),
-                        display,
-                        current,
-                        total,
-                    });
-                },
+                &crate::backend::worker::forward_phases(op_id, progress_sender),
                 &cancel,
             );
             let result = result
                 .map(|stats| {
+                    // `completed == 0` is not one outcome — it also covers a
+                    // run that failed or that never reached the executor at
+                    // all, and those need to say so, not read as "nothing was
+                    // pending" beside a dot that is visibly red or gray.
                     if stats.completed > 0 {
                         format!("{} finished for {label}", kind_label(kind))
+                    } else if stats.failed > 0 {
+                        format!(
+                            "{} failed for {label} — see the evidence dot for why",
+                            kind_label(kind)
+                        )
+                    } else if stats.blocked > 0 {
+                        format!(
+                            "{} is blocked for {label} — see the evidence dot for why",
+                            kind_label(kind)
+                        )
+                    } else if stats.skipped_busy > 0 {
+                        format!("{label} is already being worked on")
                     } else {
                         format!("Nothing to do: {label} is already current")
                     }
                 })
                 .map_err(|error| error.to_string());
+            let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
+        },
+    );
+    ctx.request_repaint_after(std::time::Duration::from_millis(20));
+}
+
+/// Force a release's playable representation into a good state — the
+/// archive context menu's "Force Rebuild Playable".
+///
+/// Unlike [`run_release_kind`], this does not derive from what convergence
+/// currently believes is owed: a release whose evidence points at bytes
+/// that moved, were regenerated, or were adopted against a file that turned
+/// out not to be there reads as satisfied and never reaches derivation at
+/// all, so the ordinary build action never even appears for it. This routes
+/// straight to [`retro_junk_work::force_rebuild_playable`], which tries
+/// adoption before forcing a build — the CLI's `rebuild-playable` goes
+/// through the identical function, so "force" means the same thing from
+/// either surface.
+pub fn force_rebuild_playable(
+    app: &mut RetroJunkApp,
+    archive_release_id: String,
+    label: String,
+    ctx: &egui::Context,
+) {
+    let exec = match exec_context(app) {
+        Ok(exec) => exec,
+        Err(error) => {
+            app.push_error("Force rebuild", error);
+            return;
+        }
+    };
+    crate::backend::worker::spawn_background_op(
+        app,
+        format!("Force rebuilding {label}"),
+        OperationKind::Other,
+        "archive".to_owned(),
+        ProgressDisplay::Count,
+        move |op_id, cancel, sender| {
+            let progress_sender = sender.clone();
+            let outcome = retro_junk_work::force_rebuild_playable(
+                &exec,
+                &archive_release_id,
+                &crate::backend::worker::forward_phases(op_id, progress_sender),
+                &cancel,
+            );
+            let result = match outcome {
+                Ok(retro_junk_work::ForceRebuildOutcome::Adopted(found_label)) => {
+                    Ok(format!("{found_label} was already there — adopted it"))
+                }
+                Ok(retro_junk_work::ForceRebuildOutcome::Built(_)) => {
+                    Ok(format!("Rebuilt {label}"))
+                }
+                Err(error) => Err(error.to_string()),
+            };
             let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
         },
     );
@@ -328,6 +372,7 @@ pub fn load_backlog(app: &mut RetroJunkApp, scope: Scope, ctx: &egui::Context) {
     let sender = app.message_tx.clone();
     let repaint = ctx.clone();
     let expected = retro_junk_work::AutomationPolicy::load().scrape_selection();
+    let reply_scope = scope.clone();
     std::thread::spawn(move || {
         let result = retro_junk_db::open_database(&db_path)
             .map_err(|error| error.to_string())
@@ -340,9 +385,19 @@ pub fn load_backlog(app: &mut RetroJunkApp, scope: Scope, ctx: &egui::Context) {
                 .map_err(|error| error.to_string())?;
                 let errors = retro_junk_db::convergence::errors_by_release(&connection)
                     .map_err(|error| error.to_string())?;
-                Ok(Backlog { summary, errors })
+                let blocked =
+                    retro_junk_db::convergence::blocked_by_release(&connection, &scope, &expected)
+                        .map_err(|error| error.to_string())?;
+                Ok(Backlog {
+                    summary,
+                    errors,
+                    blocked,
+                })
             });
-        let _ = sender.send(AppMessage::BacklogReady { result });
+        let _ = sender.send(AppMessage::BacklogReady {
+            scope: reply_scope,
+            result,
+        });
         repaint.request_repaint();
     });
 }
@@ -354,6 +409,7 @@ pub fn kind_label(kind: ActionKind) -> &'static str {
         ActionKind::VerifyIntegrity => "integrity",
         ActionKind::VerifyCatalog => "catalog",
         ActionKind::AuditRedumper => "raw audit",
+        ActionKind::AdoptPlayable => "moved",
         ActionKind::BuildPlayable => "playable",
         ActionKind::Scrape => "scrape",
         ActionKind::ProjectAssets => "artwork",

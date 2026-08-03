@@ -39,13 +39,7 @@ pub(crate) fn start_archive_operation(
                     let report = retro_junk_lib::archive_ops::verify_archive_integrity(
                         &snapshot,
                         None,
-                        &|_phase, current, total| {
-                            let _ = progress_sender.send(AppMessage::OperationProgress {
-                                op_id,
-                                current,
-                                total,
-                            });
-                        },
+                        &crate::backend::worker::forward_phases(op_id, progress_sender),
                         &cancel,
                     )
                     .map_err(|error| error.to_string())?;
@@ -116,13 +110,7 @@ pub(crate) fn start_catalog_identification_operation(
                         workspace_root: &profile.processing_workspace_root(),
                     },
                     &connection,
-                    &|_phase, current, total| {
-                        let _ = progress_sender.send(AppMessage::OperationProgress {
-                            op_id,
-                            current,
-                            total,
-                        });
-                    },
+                    &crate::backend::worker::forward_phases(op_id, progress_sender),
                     &cancel,
                 )
                 .map_err(|error| error.to_string())?;

@@ -5,8 +5,10 @@ use std::path::{Path, PathBuf};
 
 /// Visual asset types that can be scraped and used by frontends.
 ///
-/// Ordered so collections of types read in the order a detail panel shows
-/// them rather than in an arbitrary hash order.
+/// `Ord` follows declaration order and exists so ordered collections
+/// (`BTreeSet`) iterate deterministically rather than in an arbitrary hash
+/// order. Display order is a separate concern: panels show
+/// [`DISPLAY_ASSET_TYPES`], which orders by prominence, not by this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum AssetType {
     /// In-game screenshot
@@ -76,6 +78,24 @@ impl AssetType {
     pub fn from_archive_name(value: &str) -> Option<Self> {
         Self::from_name(value)
     }
+
+    /// Every asset type there is, including [`Self::Miximage`].
+    ///
+    /// Distinct from [`AssetSelection::all`], which is every *downloadable*
+    /// type and so leaves out the miximage that is composed locally. Anything
+    /// walking the media tree — cleaning up after a rename, discovering what
+    /// is on disk — has to see every directory, including that one.
+    pub const EVERY: [Self; 9] = [
+        Self::Cover,
+        Self::Cover3D,
+        Self::Screenshot,
+        Self::TitleScreen,
+        Self::Marquee,
+        Self::Video,
+        Self::Fanart,
+        Self::PhysicalMedia,
+        Self::Miximage,
+    ];
 
     /// ES-DE-compatible media subdirectory used by both CLI and GUI
     /// projections.

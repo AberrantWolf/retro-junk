@@ -4,6 +4,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ArchiveProfileId, ArchiveRootManifest, PlatformPlayableDefault};
 
+/// The directory that holds one collection as a whole.
+///
+/// Marks describe both archived items and playables — a mod exists only as a
+/// playable, homebrew may be either — so their store belongs beside both roots
+/// rather than inside one of them. When the roots are siblings (the usual
+/// `Collection/{archive,roms}` layout) that is their shared parent; otherwise
+/// the archive root stands in, since it is the durable one.
+///
+/// One rule, because two would be worse than either: a writer and a reader
+/// that disagree about where marks live lose the decisions silently.
+#[must_use]
+pub fn collection_root_for(archive_root: &Path, playable_root: &Path) -> PathBuf {
+    match (archive_root.parent(), playable_root.parent()) {
+        (Some(archive), Some(playable)) if archive == playable => archive.to_path_buf(),
+        _ => archive_root.to_path_buf(),
+    }
+}
+
 /// Device-local roots paired with one portable archive identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CollectionProfile {
@@ -59,6 +77,12 @@ impl CollectionProfile {
         } else {
             self.archive_root.join(".retro-junk").join("work")
         }
+    }
+
+    /// The directory that holds this collection as a whole.
+    #[must_use]
+    pub fn collection_root(&self) -> PathBuf {
+        collection_root_for(&self.archive_root, &self.playable_root)
     }
 
     /// Pair device-local roots with an archive identity.

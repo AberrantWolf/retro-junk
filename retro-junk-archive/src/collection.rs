@@ -397,7 +397,7 @@ pub fn upgrade_legacy_regional_physical_platforms(root: &Path) -> Result<usize, 
         }
         if matches!(
             platform_folder.to_ascii_lowercase().as_str(),
-            "nes" | "snes" | "genesis" | "pce" | "saturn"
+            "nes" | "snes" | "genesis" | "pce" | "pcecd" | "saturn"
         ) {
             let _ = std::fs::remove_dir(&platform_directory);
         }
@@ -459,7 +459,16 @@ fn upgrade_legacy_regional_release(
     Ok(true)
 }
 
-fn regional_physical_platform(platform: &str, region: &str) -> Option<&'static str> {
+/// The canonical catalog-platform + region → regional physical platform
+/// mapping. Returns `None` when the pair needs no regional directory — the
+/// release stays under the catalog platform's own name.
+///
+/// This is the single copy: the legacy migration above and the importer's
+/// directory choice both call it, so a mapping added here moves new imports
+/// and old directories in the same release. When a mapping is added, bump
+/// [`crate::REGIONAL_PHYSICAL_PLATFORM_MIGRATION`] so already-migrated
+/// archives re-run and pick it up.
+pub fn regional_physical_platform(platform: &str, region: &str) -> Option<&'static str> {
     let platform = platform.trim().to_ascii_lowercase();
     let region = region.trim().to_ascii_lowercase();
     match platform.as_str() {
@@ -484,6 +493,15 @@ fn regional_physical_platform(platform: &str, region: &str) -> Option<&'static s
         }
         "pce" if matches!(region.as_str(), "usa" | "us" | "canada" | "europe" | "eur") => {
             Some("tg16")
+        }
+        "pcecd" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("pcenginecd"),
+        "pcecd"
+            if matches!(
+                region.as_str(),
+                "usa" | "us" | "north america" | "north-america"
+            ) =>
+        {
+            Some("tg-cd")
         }
         "saturn" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("saturnjp"),
         _ => None,

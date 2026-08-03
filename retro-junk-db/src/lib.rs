@@ -6,6 +6,7 @@
 pub mod archive;
 pub mod convergence;
 pub mod deduplicate;
+pub mod derivation;
 pub mod library;
 pub mod operations;
 pub mod queries;
@@ -14,18 +15,21 @@ pub mod work;
 
 pub use archive::{
     AdoptableHashes, ArchiveCollectionDetails, ArchiveEvidenceIdentity, ArchiveEvidenceScope,
-    ArchiveReleaseSummary, CompleteCatalogMediaMatch, LibraryEntryBinding, adopt_archive_hashes,
-    adoptable_archive_hashes, apply_archive_derivations, apply_archive_evidence_identities,
-    archive_evidence_identities, archive_profile_indexed_at, bind_library_entries_by_hash,
-    existing_playable_disc_paths, list_archive_release_summaries, load_archive_collection_details,
-    match_catalog_file, match_catalog_file_any_platform, match_catalog_serial_any_platform,
+    ArchiveReleaseSummary, CompleteCatalogMediaMatch, LibraryEntryBinding, MarkReport,
+    UnboundPlayableRow, adopt_archive_hashes, adoptable_archive_hashes, apply_archive_derivations,
+    apply_archive_evidence_identities, apply_collection_marks, archive_evidence_identities,
+    archive_profile_indexed_at, bind_library_entries_by_hash, existing_playable_disc_paths,
+    list_archive_release_summaries, load_archive_collection_details, match_catalog_file,
+    match_catalog_file_any_platform, match_catalog_serial_any_platform,
     match_complete_catalog_media, match_complete_catalog_media_any_platform,
-    reconcile_archive_snapshot, update_projected_platform_policy,
+    playable_system_directory, reconcile_archive_snapshot, release_disc_count,
+    unbound_playable_rows, update_projected_platform_policy,
 };
 pub use deduplicate::{
     CatalogDeduplicationReport, DuplicateMediaGroup, analyze_catalog_duplicates,
     deduplicate_catalog,
 };
+pub use derivation::{CatalogDerivation, query_entry_derivations};
 pub use library::{
     ArchivedLibraryListItem, ArchivedPlayableCarrier, ArchivedPlayableGap,
     ArchivedPlayableLibraryEntry, ArchivedPlayableRepresentation, ArchivedReleaseAsset,
@@ -35,17 +39,18 @@ pub use library::{
     LibraryEntryDetail, LibraryEntryFilter, LibraryEntryId, LibraryEntryListItem,
     LibraryEntryListPage, LibraryEntryListQuery, LibraryEntryRow, LibraryEntrySortField,
     LibraryError, LibraryExportEntry, LibraryRootId, LibraryScanState, LibrarySourceKey,
-    PlayableArtworkCandidate, ScannedLibraryEntry, SortDirection, SourceFileDescriptor,
-    SourceFileKind, apply_entry_analysis, apply_entry_analysis_batch, apply_entry_hash_update,
-    apply_filesystem_transition, begin_console_scan, clear_library_cache,
+    ModdedEntry, PlayableArtworkCandidate, ScannedLibraryEntry, SortDirection,
+    SourceFileDescriptor, SourceFileKind, apply_entry_analysis, apply_entry_analysis_batch,
+    apply_entry_hash_update, apply_filesystem_transition, begin_console_scan, clear_library_cache,
     create_homebrew_and_tag_entry, create_modded_and_tag_entry, delete_library_console,
     delete_library_console_if_empty, delete_library_root, ensure_library_console, file_source_key,
     get_library_root_id, list_console_summaries, load_archived_library_releases_for_console,
     load_consoles_for_root, load_entries_for_console, load_entry_detail, load_entry_details,
     load_entry_details_for_console, load_export_entries_for_console, mark_console_stale,
     normalize_relative_path, playable_artwork_candidates, query_entry_list, reconcile_console_scan,
-    set_entry_region_override, set_entry_tag, set_source_key, source_fingerprint,
-    source_fingerprint_from_game_entry_json, source_key_from_game_entry_json, upsert_library_root,
+    rekey_library_entry, set_entry_region_override, set_entry_tag, set_source_key,
+    source_fingerprint, source_fingerprint_from_game_entry_json, source_key_from_game_entry_json,
+    upsert_library_root,
 };
 pub use operations::{
     MediaHashes, MediaTrack, OperationError, SeedStats, apply_disagreement_resolution,

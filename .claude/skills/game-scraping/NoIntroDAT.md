@@ -70,6 +70,31 @@ sheet:
 </game>
 ```
 
+### Naming a file that holds the whole disc
+
+A `<rom>` name is a **member file**, not the medium. For the multi-track entry above, no `<rom>`
+name names the disc; only `<game name>` does (and the CUE's name, which is the game name plus
+`.cue`). Anything that holds every track — a CHD, an ISO, a cue/bin set as a unit — therefore takes
+the **game name**, never a track's.
+
+Getting this backwards produces artifacts like
+`Tenchi Muyou! Ryououki Gokuraku CD-ROM for Sega Saturn (Japan) (1M) (Track 1).chd` for a container
+holding the whole disc, and the wrong stem then propagates to scraped media and frontend entries
+derived from the filename. Two paths used to make exactly that mistake, both by taking
+`Media.rom_name`'s stem: playable builds (`retro-junk-lib/src/archive_ops.rs`) and library renames
+(`retro-junk-lib/src/rename.rs`).
+
+The rule lives once in `retro_junk_dat::tracks::whole_medium_stem`:
+
+| Medium                    | Stem source                | Why                                                       |
+|---------------------------|----------------------------|-----------------------------------------------------------|
+| Multi-track disc          | `<game name>`              | Track ROM names are members; the game name is the disc     |
+| Single-file (incl. 1 BIN) | `<rom name>` minus its ext | Distinguishes representations under one game name (N64 `.z64` vs `.v64`) |
+
+In the catalog, "multi-track" is exactly "this media row has `media_tracks` rows": DAT import
+creates one `Media` per game and stores the tracks separately, setting `Media.rom_name` to the
+**largest track**'s filename for hashing purposes.
+
 ## Key XML Elements
 
 | Element/Attribute      | Description                                         |

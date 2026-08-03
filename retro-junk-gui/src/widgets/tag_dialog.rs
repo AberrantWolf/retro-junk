@@ -1,6 +1,32 @@
 use crate::app::RetroJunkApp;
 use crate::state::TagDialog;
 
+/// Whether the row a dialog is about has been hashed yet.
+///
+/// Content is the only identity a mod or a homebrew title has — nothing else
+/// survives a rename or a copy to another machine — so an unhashed row can be
+/// tagged but cannot yet be recorded beside the collection. Saying so beats
+/// letting the decision quietly fail to travel.
+fn entry_is_hashed(
+    app: &RetroJunkApp,
+    console_id: retro_junk_db::LibraryConsoleId,
+    entry_id: retro_junk_db::LibraryEntryId,
+) -> bool {
+    app.browser
+        .find_by_id(console_id)
+        .and_then(|console_idx| app.browser.consoles[console_idx].entry_by_id(entry_id))
+        .is_some_and(|entry| entry.hashes.is_some())
+}
+
+/// The caveat shown for a row with no digests yet.
+fn show_unhashed_note(ui: &mut egui::Ui) {
+    ui.weak(
+        "This file has not been hashed yet, so the tag stays on this machine \
+         until it is \u{2014} hash it to have the decision travel with the collection.",
+    );
+    ui.add_space(4.0);
+}
+
 /// Render any active tag dialog as a modal window.
 pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
     match &app.ui_state.tag_dialog {
@@ -13,6 +39,14 @@ pub fn show(ctx: &egui::Context, app: &mut RetroJunkApp) {
 fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
     let mut confirmed = false;
     let mut cancelled = false;
+    let content_is_known = match app.ui_state.tag_dialog {
+        TagDialog::Homebrew {
+            console_id,
+            entry_id,
+            ..
+        } => entry_is_hashed(app, console_id, entry_id),
+        _ => true,
+    };
 
     let outcome = crate::widgets::modal::show(
         ctx,
@@ -22,6 +56,9 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
         |ui| {
             ui.label("Enter the homebrew game name:");
             ui.add_space(4.0);
+            if !content_is_known {
+                show_unhashed_note(ui);
+            }
 
             if let TagDialog::Homebrew { ref mut name, .. } = app.ui_state.tag_dialog {
                 let resp = ui.text_edit_singleline(name);
@@ -53,6 +90,7 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
         } = app.ui_state.tag_dialog
         {
             let name = name.clone();
+            let collection_root = app.collection_root();
             let Some(console_idx) = app.browser.find_by_id(console_id) else {
                 app.ui_state.tag_dialog = TagDialog::None;
                 return;
@@ -63,11 +101,10 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
             };
 
             let console = &app.browser.consoles[console_idx];
-            let platform_id = app
-                .context
-                .get_by_platform(console.platform)
-                .map(|registered| registered.analyzer.short_name().to_owned())
-                .unwrap_or_else(|| console.folder_name.clone());
+            let platform_id = app.context.get_by_platform(console.platform).map_or_else(
+                || console.folder_name.clone(),
+                |registered| registered.analyzer.short_name().to_owned(),
+            );
             let region = console.entries[entry_idx]
                 .effective_regions()
                 .first()
@@ -78,6 +115,7 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     name,
                     platform_id,
                     region,
+                    collection_root,
                 },
                 ctx,
             );
@@ -91,6 +129,14 @@ fn show_homebrew_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
 fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
     let mut cancelled = false;
     let mut confirmed = false;
+    let content_is_known = match app.ui_state.tag_dialog {
+        TagDialog::ModSearch {
+            console_id,
+            entry_id,
+            ..
+        } => entry_is_hashed(app, console_id, entry_id),
+        _ => true,
+    };
 
     let outcome = crate::widgets::modal::show(
         ctx,
@@ -100,6 +146,9 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
         |ui| {
             ui.label("Search for the original game:");
             ui.add_space(4.0);
+            if !content_is_known {
+                show_unhashed_note(ui);
+            }
 
             let mut query_changed = false;
             if let TagDialog::ModSearch {
@@ -225,6 +274,7 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
             && let Some(work) = results.get(sel_idx)
         {
             let work_id = work.id.clone();
+            let collection_root = app.collection_root();
             let Some(console_idx) = app.browser.find_by_id(console_id) else {
                 app.ui_state.tag_dialog = TagDialog::None;
                 return;
@@ -265,6 +315,7 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                             None
                         },
                         hashes,
+                        collection_root,
                     },
                     ctx,
                 );

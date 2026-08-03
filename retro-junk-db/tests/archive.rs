@@ -132,6 +132,150 @@ fn flat_file_matching_requires_size_and_every_available_catalog_digest() {
     );
 }
 
+/// Adopting a playable file must not depend on this machine's catalog holding
+/// the exact medium id the archive's manifest was written with. Those ids are
+/// minted per DAT import, so an archive built elsewhere (or before a DAT
+/// update) names media this catalog never created — and inserting one anyway
+/// made `SQLite` reject the whole adoption run with a foreign-key failure.
+#[test]
+fn binding_to_a_carrier_survives_a_catalog_medium_this_database_never_imported() {
+    let conn = open_memory().unwrap();
+    seed_playable_library_row(&conn);
+    seed_carrier(&conn, None);
+
+    let bound = bind_library_entries_by_hash(
+        &conn,
+        "nes",
+        &library_row_digests(),
+        &retro_junk_db::LibraryEntryBinding {
+            carrier_id: Some("carrier"),
+            // What the manifest says, which this catalog does not have.
+            catalog_media_id: "media-from-another-machine",
+            match_method: "archive_adoption",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(bound, 1);
+    let binding: (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT carrier_id,catalog_media_id FROM library_entry_media_bindings",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(binding, (Some("carrier".to_owned()), None));
+}
+
+/// The carrier row is what knows which medium this catalog resolved it to —
+/// reindexing re-derives that from digests when the manifest's id is unusable —
+/// so it wins over whatever the caller passes.
+#[test]
+fn binding_prefers_the_carriers_own_catalog_medium() {
+    let conn = open_memory().unwrap();
+    seed_playable_library_row(&conn);
+    seed_carrier(&conn, Some("media-flat"));
+
+    bind_library_entries_by_hash(
+        &conn,
+        "nes",
+        &library_row_digests(),
+        &retro_junk_db::LibraryEntryBinding {
+            carrier_id: Some("carrier"),
+            catalog_media_id: "media-from-another-machine",
+            match_method: "archive_adoption",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let medium: Option<String> = conn
+        .query_row(
+            "SELECT catalog_media_id FROM library_entry_media_bindings",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(medium, Some("media-flat".to_owned()));
+}
+
+/// A carrier the projection has not ingested yet is nothing to bind to. Writing
+/// the row anyway is a foreign-key failure; reindexing the archive is what
+/// makes it bindable, so this pass simply records nothing.
+#[test]
+fn binding_to_an_unknown_carrier_writes_nothing_instead_of_failing() {
+    let conn = open_memory().unwrap();
+    seed_playable_library_row(&conn);
+
+    let bound = bind_library_entries_by_hash(
+        &conn,
+        "nes",
+        &library_row_digests(),
+        &retro_junk_db::LibraryEntryBinding {
+            carrier_id: Some("carrier-not-indexed-yet"),
+            match_method: "archive_adoption",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(bound, 0);
+    let rows: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM library_entry_media_bindings",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+/// The digests of the scanned playable row [`seed_playable_library_row`] makes.
+fn library_row_digests() -> retro_junk_archive::FileDigests {
+    retro_junk_archive::FileDigests {
+        size: 4,
+        crc32: "11223344".to_owned(),
+        md5: "ccdd".to_owned(),
+        sha1: "aabb".to_owned(),
+        sha256: String::new(),
+    }
+}
+
+/// One scanned NES file in the playable-library projection, plus the catalog
+/// medium `media-flat` that matches its digests.
+fn seed_playable_library_row(conn: &retro_junk_db::Connection) {
+    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes')", []).unwrap();
+    conn.execute(
+        "INSERT INTO works(id,canonical_name) VALUES('work-flat','Flat Game')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('release-flat','work-flat','nes','usa','Flat Game')", []).unwrap();
+    conn.execute("INSERT INTO media(id,release_id,dat_source,file_size,crc32,sha1,md5) VALUES('media-flat','release-flat','no-intro',4,'11223344','aabb','ccdd')", []).unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,'/playable')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Nes','nes','/playable/nes','fp','ready')", []).unwrap();
+    conn.execute("INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status,data_size,crc32,sha1,md5) VALUES(1,1,'file:game.nes','game.nes','{}','matched',4,'11223344','aabb','ccdd')", []).unwrap();
+}
+
+/// An archived carrier `carrier`, bound to `catalog_media_id` if this catalog
+/// resolved one for it — as reindexing records it.
+fn seed_carrier(conn: &retro_junk_db::Connection, catalog_media_id: Option<&str>) {
+    conn.execute("INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root) VALUES('profile','Collection','retro-junk-archive.toml','sha','/archive')", []).unwrap();
+    conn.execute("INSERT INTO archive_releases(id,profile_id,platform_id,title,manifest_path,manifest_sha256) VALUES('archive-release','profile','nes','Flat Game','release.toml','sha')", []).unwrap();
+    conn.execute("INSERT INTO physical_copies(id,archive_release_id,copy_number,manifest_path,manifest_sha256) VALUES('copy','archive-release',1,'copy.toml','sha')", []).unwrap();
+    conn.execute(
+        "INSERT INTO carriers(id,physical_copy_id,catalog_media_id,manifest_path,manifest_sha256)
+         VALUES('carrier','copy',?1,'carrier.toml','sha')",
+        [catalog_media_id],
+    )
+    .unwrap();
+}
+
 #[test]
 #[allow(clippy::too_many_lines)]
 fn archive_projection_is_rebuildable_from_portable_manifests() {
@@ -1692,6 +1836,73 @@ fn append_rebuild_evidence(
     build.build_id
 }
 
+/// Adopting a moved playable appends evidence naming its *new* path. The old
+/// record must stop projecting entirely: keying currency on the output path
+/// instead of the build lineage left the old path behind as a permanently
+/// `missing` representation, which kept deriving adoption work for a release
+/// that was already whole and showed the game as both archived-only and
+/// playable-only.
+#[test]
+fn adopting_a_moved_playable_retires_the_representation_at_its_old_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Moved Game",
+        "Moved Game (USA)",
+        "nes/Moved Game.nes",
+        "nes/Moved Game.nes",
+    );
+    // Renamed outside the archive, then re-adopted by content.
+    std::fs::rename(
+        playable_root.join("nes/Moved Game.nes"),
+        playable_root.join("nes/Moved Game (USA).nes"),
+    )
+    .unwrap();
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    let orphans = retro_junk_archive::orphaned_playables(
+        &snapshot,
+        &playable_root,
+        &retro_junk_db::playable_system_directory,
+    );
+    assert_eq!(orphans.len(), 1, "the recorded output path is empty now");
+    retro_junk_archive::record_adoption(&orphans[0], "nes/Moved Game (USA).nes").unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    let mut conn = open_memory().unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .expect("an adopted playable must not abort the projection");
+
+    let rows: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT relative_path,presence_state FROM representations
+             WHERE location_role='playable' ORDER BY relative_path",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![("nes/Moved Game (USA).nes".to_owned(), "present".to_owned())],
+        "the old path leaves no missing row behind"
+    );
+}
+
 /// Build evidence is append-only, so rebuilding a playable derivative leaves
 /// two records naming one output path. A representation row is the *current*
 /// state of a file and the table admits one row per path, so projecting every
@@ -1772,4 +1983,398 @@ fn a_rebuilt_playable_projects_its_newest_build_instead_of_failing_the_reindex()
         )
         .unwrap();
     assert_eq!(rows, 1);
+}
+
+/// A media id encodes the DAT release it was minted against, so an archive
+/// written on one machine binds carriers to ids a differently versioned import
+/// on another machine never creates. Verified on the reference archive
+/// 2026-07-31: 201 of 248 carriers read as `unresolved` after a full local
+/// import, which in turn hid every catalog-derived binding behind them. The
+/// digests the archive recorded do survive the trip, so the projection
+/// re-resolves from those rather than trusting the id.
+#[test]
+fn a_carrier_whose_recorded_media_id_is_absent_re_resolves_from_its_track_digests() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Rebound Game",
+        "Rebound Game (USA)",
+        "nes/Rebound Game.nes",
+        "nes/Rebound Game.nes",
+    );
+
+    let mut conn = open_memory().unwrap();
+    // This machine's catalog holds the game under a *different* media id than
+    // the archive recorded — the cross-machine case.
+    conn.execute_batch(
+        "INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform)
+         VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes');
+         INSERT INTO works(id,canonical_name) VALUES('w','Rebound Game');
+         INSERT INTO releases(id,work_id,platform_id,region,title)
+         VALUES('rel','w','nes','usa','Rebound Game');
+         INSERT INTO media(id,release_id,dat_source,dat_name,file_size,sha1,crc32)
+         VALUES('rel:rebound-game-usa-nes','rel','no-intro','Rebound Game (USA)',
+                12,'0f4d9c1e','11223344');",
+    )
+    .unwrap();
+    // The archive's verification evidence carries the track digest that names
+    // it, keyed on nothing this machine minted.
+    set_catalog_track_digests(&root, "Rebound Game", 12, "0f4d9c1e");
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let (media, state): (Option<String>, String) = conn
+        .query_row(
+            "SELECT catalog_media_id,binding_state FROM carriers",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        media.as_deref(),
+        Some("rel:rebound-game-usa-nes"),
+        "the carrier re-resolves from the digests it recorded"
+    );
+    assert_eq!(
+        state, "rederived",
+        "and says so, rather than claiming the recorded id resolved"
+    );
+}
+
+/// Rewrite the catalog verification evidence for `title`'s dump so it carries
+/// one matched track digest.
+fn set_catalog_track_digests(root: &std::path::Path, title: &str, size: u64, sha1: &str) {
+    let snapshot = retro_junk_archive::scan_archive(root).unwrap();
+    let dump = snapshot
+        .releases
+        .iter()
+        .find(|release| release.manifest.title == title)
+        .map(|release| &release.physical_copies[0].carriers[0].dumps[0])
+        .unwrap();
+    for verification in &dump.verifications {
+        if verification.evidence.kind != retro_junk_archive::VerificationKind::Catalog {
+            continue;
+        }
+        let mut evidence = verification.evidence.clone();
+        evidence.tracks = vec![retro_junk_archive::TrackVerification {
+            number: 1,
+            size,
+            expected_sha1: sha1.to_owned(),
+            actual_sha1: sha1.to_owned(),
+            matched: true,
+        }];
+        std::fs::write(
+            &verification.path,
+            serde_json::to_vec_pretty(&evidence).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+/// A CHD is not a byte-identical mirror of its master, so the digest-equality
+/// rule that lets a cartridge row adopt hashes can never fire for a disc — and
+/// disc rows kept asking to be re-read even though the archive had already
+/// established the answer. Round-trip verification decompressed the derivative
+/// and compared it back against a master whose complete track set matched this
+/// catalog medium, so re-reading the file cannot produce a different answer.
+#[test]
+fn a_round_trip_verified_disc_adopts_its_catalog_digests_without_a_second_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Disc Game",
+        "Disc Game (USA)",
+        "nes/Disc Game.chd",
+        "nes/Disc Game.chd",
+    );
+    // The compressed derivative's own bytes match no master file.
+    set_build_flags(&root, "Disc Game", "compressed-bytes-unlike-any-master");
+
+    let mut conn = open_memory().unwrap();
+    conn.execute_batch(
+        "INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform)
+         VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes');
+         INSERT INTO works(id,canonical_name) VALUES('w','Disc Game');
+         INSERT INTO releases(id,work_id,platform_id,region,title)
+         VALUES('rel','w','nes','usa','Disc Game');
+         INSERT INTO media(id,release_id,dat_source,dat_name,rom_name,file_size,crc32,sha1,md5)
+         VALUES('med','rel','redump','Disc Game (USA)','Disc Game (USA) (Track 1).bin',
+                652028496,'42fc324d','a2aee128','9f8e7d6c');",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
+        [playable_root.to_string_lossy().as_ref()],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash,scan_state) VALUES(1,1,'Nes','nes','/playable/nes','fp','ready')", []).unwrap();
+    conn.execute(
+        "INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,status)
+         VALUES(1,1,'file:Disc Game.chd','Disc Game.chd','{}','unrecognized')",
+        [],
+    )
+    .unwrap();
+    bind_carrier_to_media(&root, "Disc Game", "med");
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let (crc32, sha1, size, source): (String, String, i64, String) = conn
+        .query_row(
+            "SELECT crc32,sha1,data_size,hash_source FROM library_entries WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(crc32, "42fc324d", "the disc row adopts without being read");
+    assert_eq!(sha1, "a2aee128");
+    assert_eq!(size, 652_028_496);
+    assert_eq!(
+        source, "archive_evidence",
+        "and says the digests were adopted, not read here"
+    );
+}
+
+/// Give `title`'s build evidence a distinct output digest and both verified
+/// flags, the shape a compressed round-trip-verified derivative has.
+fn set_build_flags(root: &std::path::Path, title: &str, output_sha256: &str) {
+    let snapshot = retro_junk_archive::scan_archive(root).unwrap();
+    let dump = snapshot
+        .releases
+        .iter()
+        .find(|release| release.manifest.title == title)
+        .map(|release| &release.physical_copies[0].carriers[0].dumps[0])
+        .unwrap();
+    for build in &dump.builds {
+        let mut evidence = build.evidence.clone();
+        output_sha256.clone_into(&mut evidence.output_sha256);
+        evidence.round_trip_verified = true;
+        evidence.catalog_verified = true;
+        std::fs::write(&build.path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
+    }
+}
+
+/// Point `title`'s carrier at a catalog medium in its portable manifest.
+fn bind_carrier_to_media(root: &std::path::Path, title: &str, media_id: &str) {
+    let snapshot = retro_junk_archive::scan_archive(root).unwrap();
+    let carrier = snapshot
+        .releases
+        .iter()
+        .find(|release| release.manifest.title == title)
+        .map(|release| &release.physical_copies[0].carriers[0])
+        .unwrap();
+    let mut manifest = carrier.manifest.clone();
+    media_id.clone_into(&mut manifest.catalog_binding.catalog_media_id);
+    retro_junk_archive::write_toml_atomic(&carrier.directory.join("carrier.toml"), &manifest)
+        .unwrap();
+}
+
+/// The single-file verification path recorded `complete_track_set: true`
+/// unconditionally. A medium the catalog stores as separate tracks can still be
+/// matched there on its primary (largest track) digests — that identifies the
+/// game while verifying one track of it, and calling it a complete set is
+/// exactly what the flag exists to prevent. The match result now carries
+/// whether the medium has tracks at all.
+#[test]
+fn a_single_file_match_against_a_multi_track_medium_is_not_a_complete_set() {
+    let conn = open_memory().unwrap();
+    conn.execute_batch(
+        "INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform)
+         VALUES('psx','PlayStation','PSX','Sony',5,'cd',1994,'','Psx');
+         INSERT INTO works(id,canonical_name) VALUES('w','Game');
+         INSERT INTO releases(id,work_id,platform_id,region,title)
+         VALUES('rel','w','psx','usa','Game');
+         INSERT INTO media(id,release_id,dat_source,dat_name,file_size,crc32,sha1)
+         VALUES('flat','rel','redump','Flat Game (USA)',12,'11111111','aaaa'),
+               ('disc','rel','redump','Disc Game (USA)',34,'22222222','bbbb');
+         INSERT INTO media_tracks(media_id,track_number,track_name,file_size,crc32,sha1,md5)
+         VALUES('disc',1,'Disc Game (USA) (Track 1).bin',34,'22222222','bbbb','');",
+    )
+    .unwrap();
+
+    let digests = |size: u64, crc32: &str, sha1: &str| retro_junk_archive::FileDigests {
+        size,
+        crc32: crc32.to_owned(),
+        md5: String::new(),
+        sha1: sha1.to_owned(),
+        sha256: String::new(),
+    };
+
+    let flat =
+        retro_junk_db::match_catalog_file(&conn, "psx", &digests(12, "11111111", "aaaa")).unwrap();
+    assert_eq!(flat.len(), 1);
+    assert!(
+        !flat[0].medium_has_tracks,
+        "a trackless medium matched by its only file is the complete set"
+    );
+
+    let disc =
+        retro_junk_db::match_catalog_file(&conn, "psx", &digests(34, "22222222", "bbbb")).unwrap();
+    assert_eq!(disc.len(), 1, "still identifies the game");
+    assert!(
+        disc[0].medium_has_tracks,
+        "but one track of a multi-track medium is not a complete set"
+    );
+}
+
+/// A mark carries the *inputs* catalog ids are minted from, never the ids, so
+/// applying it on a machine that has never seen the decision rebuilds the same
+/// rows — which is the whole point of keeping marks beside the collection
+/// rather than in this device-local database.
+#[test]
+fn applying_a_homebrew_mark_rebuilds_its_catalog_rows_and_claims_its_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = open_memory().unwrap();
+    conn.execute_batch(
+        "INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform)
+         VALUES('gb','Game Boy','GB','Nintendo',4,'cartridge',1989,'','Gb');
+         INSERT INTO library_roots(id,root_path) VALUES(1,'/roms');
+         INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash)
+         VALUES(1,1,'Gb','gb','gb','');
+         INSERT INTO library_entries(id,console_id,entry_key,display_name,game_entry_json,
+                                     crc32,sha1,data_size,status)
+         VALUES(1,1,'file:Finchy Quest.gb','Finchy Quest.gb','{}','deadbeef','aaaa1111',262144,'unrecognized');",
+    )
+    .unwrap();
+
+    let mark = retro_junk_archive::CollectionMark {
+        schema_version: 1,
+        kind: retro_junk_archive::MarkKind::Homebrew,
+        platform_id: "gb".to_owned(),
+        region: "usa".to_owned(),
+        name: "Finchy Quest".to_owned(),
+        parent_work_id: String::new(),
+        parent_dat_name: String::new(),
+        content: retro_junk_archive::MarkedContent {
+            size: 262_144,
+            crc32: "deadbeef".to_owned(),
+            sha1: "aaaa1111".to_owned(),
+            md5: String::new(),
+        },
+        note: String::new(),
+    };
+    retro_junk_archive::write_mark(temp.path(), &mark).unwrap();
+
+    let report = retro_junk_db::apply_collection_marks(&conn, temp.path()).unwrap();
+    assert_eq!(report.applied, 1);
+    assert_eq!(report.deferred, 0);
+
+    let (tag, media): (String, i64) = conn
+        .query_row(
+            "SELECT le.tag,(SELECT COUNT(*) FROM media m WHERE m.crc32='deadbeef')
+             FROM library_entries le WHERE le.id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(tag, "homebrew", "the file stops reading as a stranger");
+    assert_eq!(
+        media, 1,
+        "and the catalog medium carries the digests the mark supplied"
+    );
+
+    // Idempotent: ids are derived, so a second pass rewrites the same rows.
+    let again = retro_junk_db::apply_collection_marks(&conn, temp.path()).unwrap();
+    assert_eq!(again.applied, 1);
+    let works: i64 = conn
+        .query_row("SELECT COUNT(*) FROM works", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(works, 1);
+}
+
+/// A mod's parent is resolved by DAT name, because media ids are minted per
+/// DAT release and do not survive a re-import elsewhere. A machine whose
+/// catalog lacks that DAT keeps the decision rather than manufacturing an
+/// orphan work for it, and it resolves once the DAT arrives.
+#[test]
+fn a_mod_waits_for_the_parent_dat_instead_of_inventing_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let conn = open_memory().unwrap();
+    conn.execute_batch(
+        "INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform)
+         VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes');",
+    )
+    .unwrap();
+
+    let mark = retro_junk_archive::CollectionMark {
+        schema_version: 1,
+        kind: retro_junk_archive::MarkKind::Modded,
+        platform_id: "nes".to_owned(),
+        region: "usa".to_owned(),
+        name: "Castlevania II (Fan Enhancement)".to_owned(),
+        parent_work_id: String::new(),
+        parent_dat_name: "Castlevania II - Simon's Quest (USA)".to_owned(),
+        content: retro_junk_archive::MarkedContent {
+            size: 262_144,
+            crc32: "beefcafe".to_owned(),
+            sha1: "bbbb2222".to_owned(),
+            md5: String::new(),
+        },
+        note: String::new(),
+    };
+    retro_junk_archive::write_mark(temp.path(), &mark).unwrap();
+
+    let before = retro_junk_db::apply_collection_marks(&conn, temp.path()).unwrap();
+    assert_eq!(before.deferred, 1, "no parent yet");
+    assert_eq!(before.applied, 0);
+    let works: i64 = conn
+        .query_row("SELECT COUNT(*) FROM works", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(works, 0, "and nothing invented in its place");
+
+    // The DAT arrives.
+    conn.execute_batch(
+        "INSERT INTO works(id,canonical_name) VALUES('nes:castlevania-ii','Castlevania II');
+         INSERT INTO releases(id,work_id,platform_id,region,title)
+         VALUES('rel','nes:castlevania-ii','nes','usa','Castlevania II');
+         INSERT INTO media(id,release_id,dat_source,dat_name)
+         VALUES('med','rel','no-intro','Castlevania II - Simon''s Quest (USA)');",
+    )
+    .unwrap();
+
+    let after = retro_junk_db::apply_collection_marks(&conn, temp.path()).unwrap();
+    assert_eq!(after.applied, 1, "the same mark now resolves");
+    let parent: String = conn
+        .query_row(
+            "SELECT r.work_id FROM media m JOIN releases r ON r.id=m.release_id
+             WHERE m.crc32='beefcafe'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        parent, "nes:castlevania-ii",
+        "the mod hangs off the work it was derived from"
+    );
 }

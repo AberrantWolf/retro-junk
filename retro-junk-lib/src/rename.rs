@@ -102,27 +102,39 @@ const M3U_ENTRY_POINT_EXTENSIONS: &[&str] = &["cue", "chd", "iso", "gdi", "cso",
 /// 1. `detected_extension` from analyzer (auto-corrects mismatched extensions)
 /// 2. Original file extension (preserves container format)
 /// 3. DAT rom name as-is (fallback when no extension info available)
+///
+/// This path renames standalone files — whole-medium containers. Cue/bin sets
+/// are planned by [`crate::disc_set`], which names each member track from its
+/// own ROM entry. So when the matched ROM entry is a member track of a
+/// multi-track disc and the file is in a different format, the file holds the
+/// whole disc rather than that track, and takes the disc-level name: a CHD of
+/// a Redump multi-track disc must not be called `… (Track 1).chd`.
+///
+/// `dat_game_name` may be empty when the caller only carries the ROM entry.
 #[must_use]
 pub fn target_filename_for_rename(
+    dat_game_name: &str,
     dat_rom_name: &str,
     source_path: &Path,
     detected_extension: &str,
 ) -> String {
-    let dat_stem = Path::new(dat_rom_name)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(dat_rom_name);
-
     let ext = if detected_extension.is_empty() {
         source_path.extension().and_then(|e| e.to_str())
     } else {
         Some(detected_extension)
     };
 
-    match ext {
-        Some(e) => format!("{dat_stem}.{e}"),
-        None => dat_rom_name.to_string(),
-    }
+    let Some(ext) = ext else {
+        return dat_rom_name.to_string();
+    };
+    let rom_extension = Path::new(dat_rom_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    let whole_medium = retro_junk_dat::tracks::is_track_member(dat_rom_name)
+        && !ext.eq_ignore_ascii_case(rom_extension);
+    let stem = retro_junk_dat::tracks::whole_medium_stem(dat_game_name, dat_rom_name, whole_medium);
+    format!("{stem}.{ext}")
 }
 
 /// A planned M3U folder rename + playlist write for a multi-disc set.
@@ -921,7 +933,8 @@ pub fn plan_renames(
             let rom = &game.roms[result.rom_index];
 
             let parent = file_path.parent().unwrap_or(folder);
-            let target_name = target_filename_for_rename(&rom.name, file_path, &detected_ext);
+            let target_name =
+                target_filename_for_rename(&game.name, &rom.name, file_path, &detected_ext);
             let target = parent.join(&target_name);
 
             let target_filename = target

@@ -7,6 +7,13 @@ use retro_junk_catalog::name_parser::{self, DumpStatus};
 use retro_junk_catalog::types::{ImportLog, ImportLogId, Media, MediaStatus, Release};
 use retro_junk_core::Platform;
 use retro_junk_dat::DatFile;
+// Track structure lives in `retro_junk_dat::tracks` — the naming rule that
+// depends on it (a whole-disc container must not inherit a member track's
+// name) has other callers, and both must read the DAT the same way.
+use retro_junk_dat::tracks::{
+    is_cue_name as is_cue, is_multi_track as is_multi_track_game,
+    track_number as extract_track_number,
+};
 use retro_junk_db::operations::{self, OperationError};
 use rusqlite::Connection;
 use thiserror::Error;
@@ -423,34 +430,4 @@ pub fn dat_source_str(source: &retro_junk_core::DatSource) -> &'static str {
         retro_junk_core::DatSource::NoIntro => "no-intro",
         retro_junk_core::DatSource::Redump => "redump",
     }
-}
-
-/// Check if a ROM name has a `.cue` extension (case-insensitive).
-fn is_cue(name: &str) -> bool {
-    std::path::Path::new(name)
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("cue"))
-}
-
-/// Check if a game has multiple non-CUE ROMs (typical of full Redump DATs
-/// which include CUE + per-track BIN entries).
-fn is_multi_track_game(roms: &[retro_junk_dat::DatRom]) -> bool {
-    let non_cue_count = roms.iter().filter(|r| !is_cue(&r.name)).count();
-    non_cue_count > 1
-}
-
-/// Extract a track number from a Redump ROM name like "Game (Track 02).bin".
-/// Falls back to 0 if no track number is found.
-fn extract_track_number(name: &str) -> i32 {
-    // Look for "(Track NN)" pattern
-    if let Some(start) = name.find("(Track ") {
-        let after = &name[start + 7..];
-        if let Some(end) = after.find(')')
-            && let Ok(n) = after[..end].trim().parse::<i32>()
-        {
-            return n;
-        }
-    }
-    // Fallback: try to extract from ".bin" suffix pattern
-    0
 }

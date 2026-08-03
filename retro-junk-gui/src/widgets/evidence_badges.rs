@@ -11,7 +11,7 @@
 #[path = "evidence_badges_tests.rs"]
 mod tests;
 
-use retro_junk_db::convergence::ActionKind;
+use retro_junk_db::convergence::{ActionKind, BlockedReason};
 
 use crate::app::RetroJunkApp;
 
@@ -129,14 +129,26 @@ fn classes(
         },
         Class {
             label: "playable",
-            meaning: "Preferred playable representation built and present",
+            meaning: if summary.playable_missing_count > 0 {
+                "A built playable is not where its evidence says — find it before building another"
+            } else {
+                "Preferred playable representation built and present"
+            },
             level: EvidenceLevel::of(
                 summary.satisfied_playable_count,
                 summary.desired_playable_count,
             ),
             have: summary.satisfied_playable_count,
             expected: summary.desired_playable_count,
-            action: Some(ActionKind::BuildPlayable),
+            // A playable that moved is not a missing playable. Rebuilding one
+            // writes a second copy beside the file the library already holds,
+            // so re-adopt first and let the next pass decide if a build is
+            // still owed.
+            action: Some(if summary.playable_missing_count > 0 {
+                ActionKind::AdoptPlayable
+            } else {
+                ActionKind::BuildPlayable
+            }),
         },
         Class {
             label: "artwork",
@@ -174,6 +186,10 @@ pub fn show(
         .ui_state
         .backlog
         .release_errors(&release.summary.archive_release_id);
+    let blocked = app
+        .ui_state
+        .backlog
+        .release_blocked(&release.summary.archive_release_id);
 
     let mut request = None;
     for (index, class) in classes.iter().enumerate() {
@@ -184,15 +200,21 @@ pub fn show(
         let error = class
             .action
             .and_then(|kind| errors.iter().find(|(errored, _)| *errored == kind));
+        let blocked = class
+            .action
+            .and_then(|kind| blocked.iter().find(|(blocked, _)| *blocked == kind));
         if ui.is_rect_visible(rect) {
             let color = if error.is_some() {
                 crate::theme::STATUS_ERR
+            } else if blocked.is_some() {
+                crate::theme::STATUS_WARN
             } else {
                 class.level.color(ui)
             };
             ui.painter().circle_filled(rect.center(), DOT_RADIUS, color);
         }
-        let response = response.on_hover_text(summary_line(class, error.is_some()));
+        let response =
+            response.on_hover_text(summary_line(class, error.is_some(), blocked.is_some()));
 
         // A distinct id per release keeps two rows' popovers independent
         // even as virtualization recycles row slots.
@@ -203,7 +225,7 @@ pub fn show(
         ));
         if let Some(inner) = egui::Popup::menu(&response)
             .id(popup_id)
-            .show(|ui| popup_body(ui, release, class, error))
+            .show(|ui| popup_body(ui, release, class, error, blocked))
             && inner.inner
             && let Some(kind) = class.action
         {
@@ -217,7 +239,7 @@ pub fn show(
     request
 }
 
-fn summary_line(class: &Class, errored: bool) -> String {
+fn summary_line(class: &Class, errored: bool, blocked: bool) -> String {
     let mut line = format!("{}: {}", class.label, class.level.describe());
     if class.level != EvidenceLevel::NotApplicable {
         use std::fmt::Write as _;
@@ -225,6 +247,8 @@ fn summary_line(class: &Class, errored: bool) -> String {
     }
     if errored {
         line.push_str("\nLast run failed — click for details");
+    } else if blocked {
+        line.push_str("\nBlocked — click for why");
     }
     line
 }
@@ -235,11 +259,12 @@ fn popup_body(
     release: &retro_junk_db::ArchivedLibraryListItem,
     class: &Class,
     error: Option<&(ActionKind, retro_junk_db::work::WorkError)>,
+    blocked: Option<&(ActionKind, BlockedReason)>,
 ) -> bool {
     ui.set_max_width(340.0);
     ui.strong(format!("{} — {}", release.summary.title, class.label));
     ui.label(class.meaning);
-    ui.label(summary_line(class, false));
+    ui.label(summary_line(class, false, false));
     if let Some((_, error)) = error {
         ui.add_space(4.0);
         ui.colored_label(
@@ -250,6 +275,18 @@ fn popup_body(
             ),
         );
         ui.label(&error.message);
+    }
+    if let Some((_, reason)) = blocked {
+        ui.add_space(4.0);
+        ui.colored_label(
+            crate::theme::STATUS_WARN,
+            crate::widgets::icons::labeled(crate::widgets::icons::WARNING, "Blocked"),
+        );
+        ui.label(reason.to_string());
+        // The worker skips a blocked action before it ever reaches the
+        // executor, so a "run again" here would produce nothing but a
+        // second silent no-op — the reason above is the only thing to show.
+        return false;
     }
     let Some(kind) = class.action else {
         return false;

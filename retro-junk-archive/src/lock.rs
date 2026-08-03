@@ -24,8 +24,9 @@ pub enum ArchiveLockError {
 /// the holding process exits, so a crash cannot leave the archive wedged. On
 /// filesystems without enforcement — notably network mounts — the fallback is
 /// the existence-based protocol, where a crashed holder is reclaimed once its
-/// recorded PID is demonstrably absent on this host or, when liveness cannot
-/// be probed, after a conservative 24-hour age.
+/// record names this host and the PID is demonstrably absent. A record from
+/// another machine (a network share is shared) or one that cannot be
+/// attributed is reclaimed only after a conservative 24-hour age.
 pub struct ArchiveLock {
     backing: Backing,
     path: PathBuf,
@@ -75,7 +76,10 @@ impl ArchiveLock {
                     && !contents.contains("mode=os")
                     && !lock_is_stale(&path)
                 {
-                    return Err(ArchiveLockError::Busy(contents));
+                    // Same formatter as the OS-lock branch: both describe one
+                    // holder, and only one of them being readable is worse
+                    // than neither.
+                    return Err(ArchiveLockError::Busy(busy_details(&path)));
                 }
                 write_owner(&file, "os").map_err(|source| ArchiveLockError::Io {
                     path: path.display().to_string(),
@@ -101,13 +105,30 @@ impl ArchiveLock {
     }
 
     /// Existence-based acquisition for filesystems without enforced OS locks.
-    /// `create_new` is the atomic claim; a stale leftover is removed first.
+    /// `create_new` is the atomic claim; a stale leftover is renamed aside
+    /// first. Rename rather than remove, because several contenders can judge
+    /// the same leftover stale at once: exactly one rename wins, so a loser
+    /// cannot delete the lock a faster contender just created — with remove,
+    /// that deletion let two of them acquire.
     fn acquire_legacy(path: PathBuf) -> Result<Self, ArchiveLockError> {
         if path.exists() && lock_is_stale(&path) {
-            std::fs::remove_file(&path).map_err(|source| ArchiveLockError::Io {
-                path: path.display().to_string(),
-                source,
-            })?;
+            let aside = path.with_extension(format!("stale-{}", std::process::id()));
+            match std::fs::rename(&path, &aside) {
+                // A crash before this remove leaves an inert `.stale-*` file;
+                // nothing reads it, and the lock path itself is already free.
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&aside);
+                }
+                // Another contender reclaimed first; fall through and let
+                // `create_new` decide who acquires.
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(ArchiveLockError::Io {
+                        path: path.display().to_string(),
+                        source,
+                    });
+                }
+            }
         }
         let file = OpenOptions::new()
             .write(true)
@@ -209,12 +230,17 @@ fn fs_enforces_os_locks(state: &Path) -> bool {
     enforced.unwrap_or(false)
 }
 
-/// Record the holder in the lock file for `Busy` diagnostics.
+/// Record the holder in the lock file for `Busy` diagnostics and staleness
+/// decisions. The host rides along because a network share is read by other
+/// machines, and a PID means nothing without the host that issued it.
 fn write_owner(mut file: &File, mode: &str) -> std::io::Result<()> {
+    let host = retro_junk_io::local_host_id()
+        .map(|host| format!(" host={host}"))
+        .unwrap_or_default();
     file.set_len(0)?;
     writeln!(
         file,
-        "mode={mode} pid={} started_at={}",
+        "mode={mode} pid={}{host} started_at={}",
         std::process::id(),
         chrono::Utc::now().to_rfc3339()
     )?;
@@ -223,10 +249,41 @@ fn write_owner(mut file: &File, mode: &str) -> std::io::Result<()> {
 
 /// Current holder description for the `Busy` error, falling back to the lock
 /// path when the contents cannot be read (or have not been written yet).
+/// Describe the current holder in terms a reader can act on.
+///
+/// The record's `started_at` is RFC 3339 in UTC, and printing it raw invited
+/// exactly one misreading: a lock taken 34 minutes earlier read as "held since
+/// 02:06 this morning" to someone nine hours ahead of UTC, which looks like a
+/// wedged archive rather than a job still running. Elapsed time needs no
+/// timezone to interpret.
 fn busy_details(path: &Path) -> String {
-    match std::fs::read_to_string(path) {
-        Ok(contents) if !contents.trim().is_empty() => contents,
-        _ => path.display().to_string(),
+    let Ok(contents) = std::fs::read_to_string(path) else {
+        return path.display().to_string();
+    };
+    let contents = contents.trim();
+    if contents.is_empty() {
+        return path.display().to_string();
+    }
+    let field = |name: &str| {
+        contents
+            .split_whitespace()
+            .find_map(|part| part.strip_prefix(name))
+    };
+    let held = field("started_at=")
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .map(|started| {
+            let elapsed = chrono::Utc::now().signed_duration_since(started);
+            let minutes = elapsed.num_minutes().max(0);
+            if minutes < 60 {
+                format!("held {minutes}m")
+            } else {
+                format!("held {}h{}m", minutes / 60, minutes % 60)
+            }
+        });
+    match (held, field("pid=")) {
+        (Some(held), Some(pid)) => format!("{held} by pid {pid}"),
+        (Some(held), None) => held,
+        (None, _) => contents.to_owned(),
     }
 }
 
@@ -235,19 +292,32 @@ fn busy_details(path: &Path) -> String {
 /// An empty file records no claim — it is either an OS-mode release leftover
 /// or a crash inside the legacy write window — but a just-created file may be
 /// a legacy acquisition that has not written its owner yet, so only age rules
-/// it out. A recorded PID that can be probed on this host is authoritative in
-/// both directions; when liveness cannot be probed, only a conservative
-/// 24-hour age reclaims the lock.
+/// it out. A recorded PID is authoritative in both directions — but only when
+/// the record can be attributed to *this* host: the legacy protocol runs
+/// precisely on network shares, where the holder may be another machine whose
+/// PIDs this one cannot probe (and whose PID numbers collide with local
+/// ones). A record naming this host qualifies anywhere; a record with no host
+/// (an older binary's) qualifies only on a local filesystem, where no other
+/// machine could have written it. Everything else is reclaimed only by the
+/// conservative 24-hour age.
 pub(crate) fn lock_is_stale(path: &Path) -> bool {
     let contents = std::fs::read_to_string(path).unwrap_or_default();
     if contents.trim().is_empty() {
-        return lock_age_exceeds(path, std::time::Duration::from_secs(60));
+        return lock_age_exceeds(path, std::time::Duration::from_mins(1));
     }
-    if let Some(alive) = contents
-        .split_whitespace()
-        .find_map(|part| part.strip_prefix("pid="))
-        .and_then(|value| value.parse::<i32>().ok())
-        .and_then(retro_junk_io::process_alive)
+    let field = |name: &str| {
+        contents
+            .split_whitespace()
+            .find_map(|part| part.strip_prefix(name))
+    };
+    let probe_is_authoritative = match field("host=") {
+        Some(recorded) => retro_junk_io::local_host_id() == Some(recorded),
+        None => retro_junk_io::remote_mount_kind(path).is_none(),
+    };
+    if probe_is_authoritative
+        && let Some(alive) = field("pid=")
+            .and_then(|value| value.parse::<i32>().ok())
+            .and_then(retro_junk_io::process_alive)
     {
         return !alive;
     }

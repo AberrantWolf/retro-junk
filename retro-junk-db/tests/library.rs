@@ -100,6 +100,7 @@ fn reconcile_test_console(
             conn,
             detail.id,
             (!source.tag.is_empty()).then_some(source.tag.as_str()),
+            None,
         )?;
     }
     Ok(id)
@@ -382,6 +383,7 @@ fn identity_strength_ranks_serial_above_hashes_above_filename() {
         crc32: String::new(),
         md5: String::new(),
         sha1: String::new(),
+        derivation: retro_junk_db::CatalogDerivation::Own,
     };
 
     assert_eq!(base.tier(), ScrapeIdentityTier::Filename);
@@ -428,7 +430,89 @@ fn a_partial_hash_set_does_not_count_as_a_hash_identity() {
         crc32: "a".to_owned(),
         md5: "b".to_owned(),
         sha1: String::new(),
+        derivation: retro_junk_db::CatalogDerivation::Own,
     };
 
     assert_eq!(partial.tier(), ScrapeIdentityTier::Filename);
+}
+
+/// A rename is not a rewrite. Entries are keyed by path, so without moving the
+/// row the rescan meets the new name as a file it has never seen and drops the
+/// digests, DAT match, and identification the old row had earned — asking the
+/// user to re-read bytes a rename cannot have changed.
+#[test]
+fn rekeying_a_renamed_entry_carries_its_identity_to_the_new_path() {
+    let conn = retro_junk_db::open_memory().unwrap();
+    conn.execute_batch(
+        "INSERT INTO library_roots(id,root_path) VALUES(1,'/roms');
+         INSERT INTO library_consoles(id,root_id,platform,folder_name,folder_path,fingerprint_hash)
+         VALUES(1,1,'Saturn','saturnjp','saturnjp','');
+         INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json,
+                                     sha1,crc32,data_size,dat_game_name,source_fingerprint)
+         VALUES(1,'file:Game (Japan) (Track 1).chd','Game','{}',
+                'a2aee128','42fc324d',652028496,'Game (Japan)','old-fingerprint');",
+    )
+    .unwrap();
+    let console = retro_junk_db::LibraryConsoleId(1);
+
+    assert!(
+        retro_junk_db::rekey_library_entry(
+            &conn,
+            console,
+            "file:Game (Japan) (Track 1).chd",
+            "file:Game (Japan).chd",
+        )
+        .unwrap()
+    );
+
+    let (key, sha1, size, dat, fingerprint): (String, String, i64, String, String) = conn
+        .query_row(
+            "SELECT entry_key,sha1,data_size,dat_game_name,source_fingerprint
+             FROM library_entries WHERE console_id=1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(key, "file:Game (Japan).chd");
+    assert_eq!(sha1, "a2aee128", "digests survive the move");
+    assert_eq!(size, 652_028_496);
+    assert_eq!(dat, "Game (Japan)", "the DAT match survives the move");
+    assert_eq!(
+        fingerprint, "",
+        "the fingerprint described the old path, so the rescan re-reads it"
+    );
+
+    // Idempotent, and it never clobbers a row the rescan already created.
+    assert!(
+        !retro_junk_db::rekey_library_entry(
+            &conn,
+            console,
+            "file:Game (Japan).chd",
+            "file:Game (Japan).chd",
+        )
+        .unwrap()
+    );
+    conn.execute(
+        "INSERT INTO library_entries(console_id,entry_key,display_name,game_entry_json)
+         VALUES(1,'file:Taken.chd','Taken','{}')",
+        [],
+    )
+    .unwrap();
+    assert!(
+        !retro_junk_db::rekey_library_entry(
+            &conn,
+            console,
+            "file:Game (Japan).chd",
+            "file:Taken.chd",
+        )
+        .unwrap()
+    );
 }

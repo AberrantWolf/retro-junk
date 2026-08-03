@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use retro_junk_archive::{
-    ArchiveIndexSnapshot, RepresentationFormat, RepresentationRole, TrackDigest, playable_presence,
+    ArchiveIndexSnapshot, RepresentationFormat, RepresentationRole, TrackDigest,
     preservation_presence,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -26,6 +26,10 @@ pub struct ArchiveReleaseSummary {
     pub preservation_present_count: u64,
     pub playable_count: u64,
     pub playable_present_count: u64,
+    /// Playable representations whose recorded file is not there at all —
+    /// distinct from `stale` (superseded evidence) and `modified` (an
+    /// integrity question). Only these can be recovered by content.
+    pub playable_missing_count: u64,
     pub desired_playable_count: u64,
     pub satisfied_playable_count: u64,
     pub integrity_verified_count: u64,
@@ -204,10 +208,15 @@ fn same_platform(left: &str, right: &str) -> bool {
     }
 }
 
-/// Follow a playable moved from an internal archive platform directory to the
-/// active frontend's equivalent system directory. Portable build evidence is
+/// Follow a playable from the location its evidence records to the active
+/// frontend's equivalent system directory. Portable build evidence is
 /// historical and remains unchanged; only this rebuildable projection points
 /// at the file's current location.
+///
+/// The resolution itself lives in [`retro_junk_archive::resolve_playable`], so
+/// the archive's orphan scan cannot reach a different answer than this. All
+/// this layer adds is the frontend system directory, which is the one thing
+/// the archive crate has no business knowing.
 fn projected_playable_path(
     playable_root: &Path,
     platform_id: &str,
@@ -215,93 +224,92 @@ fn projected_playable_path(
     input_manifest_sha256: &str,
     evidence: &retro_junk_archive::BuildEvidence,
 ) -> (String, retro_junk_archive::RepresentationPresence) {
-    let presence = playable_presence(playable_root, input_manifest_sha256, evidence);
-    if presence != retro_junk_archive::RepresentationPresence::Missing {
-        return (evidence.relative_output_path.clone(), presence);
-    }
-    let historical = Path::new(&evidence.relative_output_path);
-    if historical.as_os_str().is_empty() {
-        return (evidence.relative_output_path.clone(), presence);
-    }
-    // Only a leading *directory* names the old location. Evidence written
-    // before outputs were filed under a platform directory records a bare
-    // file name, and consuming that name as the directory to replace would
-    // project the platform directory itself instead of the file inside it.
-    let mut components = historical.components();
-    let leading = components.next();
-    let tail = components.as_path();
-    let (leading, tail) = if tail.as_os_str().is_empty() {
-        (None, historical)
-    } else {
-        match leading.and_then(|component| component.as_os_str().to_str()) {
-            Some(directory) => (Some(directory), tail),
-            None => return (evidence.relative_output_path.clone(), presence),
-        }
-    };
-    let frontend_directory = retro_junk_frontend::esde::system_directory(platform_id, Some(region));
-    if leading.is_some_and(|directory| directory.eq_ignore_ascii_case(&frontend_directory)) {
-        return (evidence.relative_output_path.clone(), presence);
-    }
-    let mut projected_evidence = evidence.clone();
-    projected_evidence.relative_output_path = Path::new(&frontend_directory)
-        .join(tail)
-        .to_string_lossy()
-        .replace('\\', "/");
-    let projected_presence =
-        playable_presence(playable_root, input_manifest_sha256, &projected_evidence);
-    if projected_presence == retro_junk_archive::RepresentationPresence::Present {
-        log::info!(
-            "Resolved moved playable {} -> {}",
-            evidence.relative_output_path,
-            projected_evidence.relative_output_path
-        );
-        (projected_evidence.relative_output_path, projected_presence)
-    } else {
-        (evidence.relative_output_path.clone(), presence)
-    }
+    retro_junk_archive::resolve_playable(
+        playable_root,
+        input_manifest_sha256,
+        evidence,
+        &frontend_system_directory(platform_id, region),
+    )
+}
+
+/// The frontend system directory a release's playable outputs belong to.
+///
+/// One definition, shared with the archive-side orphan scan through
+/// [`playable_system_directory`], so both resolve the same file.
+fn frontend_system_directory(platform_id: &str, region: &str) -> String {
+    retro_junk_frontend::esde::system_directory(platform_id, Some(region))
+}
+
+/// The mapping the archive's orphan scan needs to resolve outputs the way the
+/// projection does.
+///
+/// Exposed rather than duplicated: `retro-junk-archive` deliberately does not
+/// depend on `retro-junk-frontend`, so callers that bridge the two pass this
+/// in instead of inventing their own answer.
+#[must_use]
+pub fn playable_system_directory(platform_id: &str, region: &str) -> String {
+    frontend_system_directory(platform_id, region)
 }
 
 /// Choose the build evidence that describes each output file's current state.
 ///
 /// `evidence/` is append-only, so rebuilding a derivative (a newer chdman, a
-/// changed recipe) leaves several records naming one output path. A
-/// representation is the current state of a file and the projection enforces
-/// one row per path, so projecting every historical record made a legitimately
-/// rebuilt release abort the whole reindex. Builds arrive in time order, so the
-/// last record for a path wins; the superseded ones remain in the archive.
+/// changed recipe, a corrected filename) leaves several records for one
+/// derivative. A representation is the current state of a file, so only the
+/// newest record in each build lineage may project —
+/// [`retro_junk_archive::current_build_evidence`] owns that rule, and the
+/// archive-side orphan scan reads it the same way.
+///
+/// The path dedup below is a second, narrower guard: two *different* lineages
+/// (redumps of one carrier) can converge on one canonical output name, and the
+/// projection's `UNIQUE(location_role, relative_path)` will not have that.
+/// Builds arrive in time order, so the last one wins.
 ///
 /// Returns the indices to project, mapped to the path and presence already
 /// resolved for them.
 fn current_builds_by_output(
-    builds: &[retro_junk_archive::IndexedBuild],
+    dump: &retro_junk_archive::IndexedDump,
     playable_root: &Path,
     platform_id: &str,
     region: &str,
     input_manifest_sha256: &str,
 ) -> HashMap<usize, (String, retro_junk_archive::RepresentationPresence)> {
+    let builds = &dump.builds;
+    let current_lineages = retro_junk_archive::current_build_evidence(dump)
+        .into_iter()
+        .map(|evidence| evidence.build_id)
+        .collect::<std::collections::HashSet<_>>();
     let mut current: HashMap<String, usize> = HashMap::new();
-    let mut projected = Vec::with_capacity(builds.len());
-    for build in builds {
-        projected.push(projected_playable_path(
+    let mut projected = HashMap::with_capacity(builds.len());
+    for (index, build) in builds.iter().enumerate() {
+        if !current_lineages.contains(&build.evidence.build_id) {
+            log::debug!(
+                "Superseded build {} for {}; a later build of the same derivative replaces it",
+                build.evidence.build_id,
+                build.evidence.relative_output_path
+            );
+            continue;
+        }
+        let resolved = projected_playable_path(
             playable_root,
             platform_id,
             region,
             input_manifest_sha256,
             &build.evidence,
-        ));
-    }
-    for (index, (path, _)) in projected.iter().enumerate() {
-        if let Some(superseded) = current.insert(path.clone(), index) {
+        );
+        if let Some(superseded) = current.insert(resolved.0.clone(), index) {
             log::info!(
-                "Superseded build {} for {path}; projecting {}",
+                "Superseded build {} for {}; projecting {}",
                 builds[superseded].evidence.build_id,
-                builds[index].evidence.build_id
+                resolved.0,
+                build.evidence.build_id
             );
         }
+        projected.insert(index, resolved);
     }
     current
         .into_values()
-        .map(|index| (index, projected[index].clone()))
+        .filter_map(|index| projected.get(&index).map(|value| (index, value.clone())))
         .collect()
 }
 
@@ -332,6 +340,34 @@ pub struct ArchiveCollectionDetails {
     pub allow_unverified: bool,
 }
 
+/// A dump's catalog identification matched exactly one medium.
+pub const CATALOG_VERIFIED: &str = "verified";
+/// Identification ran against these exact bytes and settled on no single
+/// medium — nothing matched, or several did. An answer, just not a binding.
+pub const CATALOG_UNRESOLVED: &str = "unresolved";
+/// Identification has not run against these bytes.
+pub const CATALOG_NOT_ATTEMPTED: &str = "not_attempted";
+
+/// Whether identification has work left to do for a projected dump.
+///
+/// The expensive half of identifying a disc is reproducing its tracks, so this
+/// asks only about states that a fresh reproduction would change: never tried,
+/// or tried successfully but the carrier somehow carries no medium id (an
+/// inconsistency worth repairing). A dump that already settled on "no single
+/// match" is left alone until its bytes change — the archive-side rule this
+/// mirrors is `retro_junk_archive::dump_catalog_attempted`.
+///
+/// Re-running after a *catalog* change is a deliberate act, not a derived one:
+/// `archive redumper-audit` audits regardless of state.
+#[must_use]
+pub fn needs_catalog_identification(catalog_state: &str, catalog_media_id: &str) -> bool {
+    match catalog_state {
+        CATALOG_VERIFIED => catalog_media_id.is_empty(),
+        CATALOG_UNRESOLVED => false,
+        _ => true,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompleteCatalogMediaMatch {
     pub media_id: String,
@@ -346,6 +382,31 @@ pub struct CompleteCatalogMediaMatch {
     pub variant: String,
     pub serial: String,
     pub sequence_number: u32,
+    /// Whether the catalog stores this medium as a set of separate tracks.
+    ///
+    /// A single-file dump can match such a medium on its primary (largest
+    /// track) digests alone, which identifies the game but verifies only one
+    /// track of it. Callers recording catalog evidence need that distinction:
+    /// claiming a complete track set from a single-file match is exactly what
+    /// `complete_track_set` exists to prevent.
+    pub medium_has_tracks: bool,
+}
+
+/// How many numbered discs the catalog records for a release, never less
+/// than 1. A release whose media carry no disc numbers is one "disc".
+///
+/// This is the release's *total*, as distinct from any one medium's
+/// `sequence_number` (its position). Playable builds need the total to decide
+/// playlist layout, so handing them a position instead silently truncates
+/// multi-disc sets.
+pub fn release_disc_count(conn: &Connection, release_id: &str) -> Result<u32, OperationError> {
+    let count: u32 = conn.query_row(
+        "SELECT COUNT(DISTINCT CASE WHEN disc_number>0 THEN disc_number END)
+         FROM media WHERE release_id = ?1",
+        params![release_id],
+        |row| row.get(0),
+    )?;
+    Ok(count.max(1))
 }
 
 /// Resolve a normalized serial across every platform for archive auto-import.
@@ -362,7 +423,8 @@ pub fn match_catalog_serial_any_platform(
                 COALESCE((SELECT il.source_version FROM import_log il
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
-                r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number
+                r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
+                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
          FROM media m JOIN releases r ON r.id=m.release_id
          LEFT JOIN media_serial_keys msk ON msk.media_id=m.id
          WHERE msk.serial_key=?1 OR
@@ -383,6 +445,7 @@ pub fn match_catalog_serial_any_platform(
             variant: row.get(9)?,
             serial: row.get(10)?,
             sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+            medium_has_tracks: row.get::<_, i64>(12)? != 0,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -415,13 +478,20 @@ fn match_catalog_file_inner(
                 COALESCE((SELECT il.source_version FROM import_log il
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
-                r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number
+                r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
+                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
          FROM media m JOIN releases r ON r.id=m.release_id
          WHERE (?1='' OR r.platform_id=?1) AND m.file_size=?2
            AND (m.sha1<>'' OR m.md5<>'' OR m.crc32<>'')
-           AND (m.sha1='' OR m.sha1=lower(?3))
-           AND (m.md5='' OR m.md5=lower(?4))
-           AND (m.crc32='' OR m.crc32=lower(?5))
+           -- An empty digest on *either* side means \"not available to
+           -- compare\", never \"mismatch\", and both sides must bring at
+           -- least one. The archive's own track evidence records SHA-1 only,
+           -- so demanding the CRC-32 the catalog happens to hold made every
+           -- such medium permanently unmatchable.
+           AND (?3<>'' OR ?4<>'' OR ?5<>'')
+           AND (m.sha1='' OR ?3='' OR m.sha1=lower(?3))
+           AND (m.md5='' OR ?4='' OR m.md5=lower(?4))
+           AND (m.crc32='' OR ?5='' OR m.crc32=lower(?5))
          ORDER BY m.id",
     )?;
     let rows = statement.query_map(
@@ -446,6 +516,7 @@ fn match_catalog_file_inner(
                 variant: row.get(9)?,
                 serial: row.get(10)?,
                 sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                medium_has_tracks: row.get::<_, i64>(12)? != 0,
             })
         },
     )?;
@@ -468,14 +539,54 @@ pub struct LibraryEntryBinding<'a> {
 /// Connect the legacy playable-library projection to catalog/archive identity
 /// using already-computed strong hashes. This does not make the library row
 /// authoritative and is safe to rebuild.
+///
+/// Every id a caller hands in names a row this database may simply not have.
+/// Archive manifests travel between machines, and a catalog medium id is minted
+/// against the DAT version that was imported when the carrier was archived, so
+/// a manifest routinely names a medium this catalog never created. Storing that
+/// id anyway is refused outright by the foreign keys — failing the caller's
+/// whole run over one file — so each reference is resolved first and only what
+/// exists is written:
+///
+/// - a carrier the projection does not hold yet means there is nothing to bind
+///   to, so nothing is written (reindexing the archive will bind it);
+/// - the carrier row's own catalog medium wins over the caller's, because
+///   reindexing already re-derived it from digests when the manifest's id was
+///   one this catalog does not have;
+/// - with no carrier, the caller's medium is used if this catalog holds it.
 pub fn bind_library_entries_by_hash(
     conn: &Connection,
     platform_id: &str,
     actual: &retro_junk_archive::FileDigests,
     binding: &LibraryEntryBinding<'_>,
 ) -> Result<usize, OperationError> {
-    let catalog_media_id =
-        (!binding.catalog_media_id.is_empty()).then_some(binding.catalog_media_id);
+    let carrier_medium = match binding.carrier_id {
+        Some(carrier) => {
+            let recorded = conn
+                .query_row(
+                    "SELECT catalog_media_id FROM carriers WHERE id=?1",
+                    [carrier],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .optional()?;
+            let Some(recorded) = recorded else {
+                log::warn!(
+                    "Not binding library rows to carrier {carrier}: this catalog has no such carrier yet"
+                );
+                return Ok(0);
+            };
+            recorded
+        }
+        None => None,
+    };
+    let catalog_media_id = match carrier_medium {
+        Some(recorded) => Some(recorded),
+        None => existing_id(conn, "media", binding.catalog_media_id)?,
+    };
+    let representation_id = match binding.representation_id {
+        Some(representation) => existing_id(conn, "representations", representation)?,
+        None => None,
+    };
     if catalog_media_id.is_none() && binding.carrier_id.is_none() {
         return Ok(0);
     }
@@ -494,13 +605,166 @@ pub fn bind_library_entries_by_hash(
             actual.sha1,
             binding.carrier_id,
             catalog_media_id,
-            binding.representation_id,
+            representation_id,
             binding.match_method,
             actual.md5,
             actual.crc32,
         ],
     )
     .map_err(Into::into)
+}
+
+/// A scanned playable file the archive does not yet account for.
+#[derive(Debug, Clone)]
+pub struct UnboundPlayableRow {
+    /// Path below the profile's playable root, as the projection spells it.
+    pub relative_path: String,
+    pub sha1: String,
+    pub crc32: String,
+    pub md5: String,
+    pub data_size: u64,
+}
+
+/// Scanned playable files under `playable_root` that no archived carrier
+/// claims, with the digests the library already read for them.
+///
+/// This is the input to adopting a playable nobody built here: a file that
+/// predates the archive, or arrived with a collection, but is provably a
+/// derivative of an archived carrier. Rows with no digest at all are excluded
+/// — there is nothing to prove anything with.
+pub fn unbound_playable_rows(
+    conn: &Connection,
+    playable_root: &str,
+) -> Result<Vec<UnboundPlayableRow>, OperationError> {
+    let sql = format!(
+        "SELECT {LIBRARY_ENTRY_PATH},le.sha1,le.crc32,le.md5,le.data_size
+         FROM library_entries le
+         JOIN library_consoles lc ON lc.id=le.console_id
+         JOIN library_roots lr ON lr.id=lc.root_id
+         WHERE lr.root_path=?1
+           AND (le.sha1<>'' OR le.crc32<>'')
+           AND NOT EXISTS(
+               SELECT 1 FROM library_entry_media_bindings b
+               WHERE b.library_entry_id=le.id AND b.carrier_id IS NOT NULL)"
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map([playable_root], |row| {
+        Ok(UnboundPlayableRow {
+            relative_path: row.get(0)?,
+            sha1: row.get(1)?,
+            crc32: row.get(2)?,
+            md5: row.get(3)?,
+            data_size: u64::try_from(row.get::<_, i64>(4)?).unwrap_or(0),
+        })
+    })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+}
+
+/// Re-resolve a carrier's catalog medium from the digests its own evidence
+/// records, for archives whose recorded media id this machine's catalog does
+/// not have.
+///
+/// Media ids encode the DAT release they were minted against, so they do not
+/// survive a re-import on another machine — which is the normal case for an
+/// archive written from more than one host. The digests do survive: a catalog
+/// verification records the complete ordered track set it matched. Feeding
+/// those back through the same complete-track rule recovers the binding
+/// without trusting the id.
+///
+/// Deliberately conservative: only current, successful, complete-track-set
+/// evidence counts, and an ambiguous match resolves to nothing rather than
+/// guessing between candidates.
+fn rederived_catalog_media(
+    conn: &Connection,
+    platform_id: &str,
+    carrier: &retro_junk_archive::IndexedCarrier,
+) -> Result<Option<String>, OperationError> {
+    let platform = catalog_platform_id(platform_id);
+    for dump in &carrier.dumps {
+        // One definition of "the archive calls this dump catalog-verified",
+        // shared with every other consumer — including the shape rule that
+        // rescues cartridge evidence written before the completeness flag.
+        if retro_junk_archive::dump_catalog_evidence(dump).is_none() {
+            continue;
+        }
+        for verification in &dump.verifications {
+            let evidence = &verification.evidence;
+            if evidence.kind != retro_junk_archive::VerificationKind::Catalog
+                || evidence.outcome != retro_junk_archive::VerificationOutcome::Verified
+                || evidence.input_manifest_sha256 != dump.manifest_sha256
+            {
+                continue;
+            }
+            // A cartridge records no per-track digests — its one archived file
+            // is the whole dump. Match on what the manifest recorded for it.
+            if evidence.tracks.is_empty() {
+                if let [file] = dump.manifest.files.as_slice()
+                    && let Some(id) = matched_single_file(conn, &platform, file)?
+                {
+                    log::info!(
+                        "Re-resolved carrier {} to catalog medium {id} from its recorded file digests",
+                        carrier.manifest.carrier_id
+                    );
+                    return Ok(Some(id));
+                }
+                continue;
+            }
+            let tracks = evidence
+                .tracks
+                .iter()
+                .filter(|track| track.matched)
+                .map(|track| TrackDigest {
+                    number: track.number,
+                    size: track.size,
+                    crc32: String::new(),
+                    md5: String::new(),
+                    sha1: track.actual_sha1.clone(),
+                })
+                .collect::<Vec<_>>();
+            if tracks.len() != evidence.tracks.len() {
+                continue;
+            }
+            if let [matched] = match_complete_catalog_media(conn, &platform, &tracks)?.as_slice() {
+                log::info!(
+                    "Re-resolved carrier {} to catalog medium {} from recorded track digests",
+                    carrier.manifest.carrier_id,
+                    matched.media_id
+                );
+                return Ok(Some(matched.media_id.clone()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The catalog medium one archived file's recorded digests name, if exactly
+/// one does.
+///
+/// The archive stores *raw* file digests while the catalog stores the payload
+/// (an iNES or copier header is skipped), so this resolves only formats whose
+/// stored bytes already are the payload. A headered dump simply stays
+/// unresolved rather than being force-matched on digests describing different
+/// bytes. A medium held as separate tracks is refused too: one file cannot be
+/// a complete match for it.
+fn matched_single_file(
+    conn: &Connection,
+    platform_id: &str,
+    file: &retro_junk_archive::ArchivedFile,
+) -> Result<Option<String>, OperationError> {
+    if file.crc32.is_empty() && file.sha1.is_empty() {
+        return Ok(None);
+    }
+    let digests = retro_junk_archive::FileDigests {
+        size: file.size,
+        crc32: file.crc32.clone(),
+        md5: file.md5.clone(),
+        sha1: file.sha1.clone(),
+        sha256: file.sha256.clone(),
+    };
+    match match_catalog_file(conn, platform_id, &digests)?.as_slice() {
+        [matched] if !matched.medium_has_tracks => Ok(Some(matched.media_id.clone())),
+        _ => Ok(None),
+    }
 }
 
 /// Match only when the complete ordered track set agrees. A single matching
@@ -530,14 +794,21 @@ fn match_single_track_catalog_media(
                 COALESCE((SELECT il.source_version FROM import_log il
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
-                r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number
+                r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
+                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
          FROM media m JOIN releases r ON r.id=m.release_id
          WHERE (?1='' OR r.platform_id=?1) AND m.file_size=?2
            AND NOT EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
            AND (m.sha1<>'' OR m.md5<>'' OR m.crc32<>'')
-           AND (m.sha1='' OR m.sha1=lower(?3))
-           AND (m.md5='' OR m.md5=lower(?4))
-           AND (m.crc32='' OR m.crc32=lower(?5))
+           -- An empty digest on *either* side means \"not available to
+           -- compare\", never \"mismatch\", and both sides must bring at
+           -- least one. The archive's own track evidence records SHA-1 only,
+           -- so demanding the CRC-32 the catalog happens to hold made every
+           -- such medium permanently unmatchable.
+           AND (?3<>'' OR ?4<>'' OR ?5<>'')
+           AND (m.sha1='' OR ?3='' OR m.sha1=lower(?3))
+           AND (m.md5='' OR ?4='' OR m.md5=lower(?4))
+           AND (m.crc32='' OR ?5='' OR m.crc32=lower(?5))
          ORDER BY m.id",
     )?;
     let rows = statement.query_map(
@@ -562,6 +833,7 @@ fn match_single_track_catalog_media(
                 variant: row.get(9)?,
                 serial: row.get(10)?,
                 sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                medium_has_tracks: row.get::<_, i64>(12)? != 0,
             })
         },
     )?;
@@ -589,7 +861,8 @@ fn match_complete_catalog_media_inner(
                 COALESCE((SELECT il.source_version FROM import_log il
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
-                r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number
+                r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
+                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
          FROM media_tracks mt
          JOIN media m ON m.id=mt.media_id
          JOIN releases r ON r.id=m.release_id
@@ -617,6 +890,7 @@ fn match_complete_catalog_media_inner(
                 variant: row.get(9)?,
                 serial: row.get(10)?,
                 sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
+                medium_has_tracks: row.get::<_, i64>(12)? != 0,
             })
         },
     )?;
@@ -805,15 +1079,27 @@ pub fn reconcile_archive_snapshot(
                 )?;
             }
             for carrier in &physical_copy.carriers {
-                let catalog_media = existing_id(
+                let recorded = existing_id(
                     &tx,
                     "media",
                     &carrier.manifest.catalog_binding.catalog_media_id,
                 )?;
-                let media_binding = if catalog_media.is_some() {
-                    "resolved"
-                } else {
-                    "unresolved"
+                // A media id is deterministic but not portable: it is derived
+                // from the DAT release it was minted against, so an archive
+                // built on one machine binds carriers to ids a differently
+                // versioned import never creates. Rather than call the carrier
+                // unbound, re-resolve it from the digests the archive itself
+                // recorded — the same complete-track rule the binding used in
+                // the first place, so this can only reach the same answer.
+                let (catalog_media, media_binding) = match recorded {
+                    Some(id) => (Some(id), "resolved"),
+                    None => {
+                        match rederived_catalog_media(&tx, &release.manifest.platform_id, carrier)?
+                        {
+                            Some(id) => (Some(id), "rederived"),
+                            None => (None, "unresolved"),
+                        }
+                    }
                 };
                 tx.execute(
                     "INSERT INTO carriers(id,physical_copy_id,catalog_media_id,kind,serial,sequence_number,label,manifest_path,manifest_sha256,binding_state)
@@ -880,10 +1166,17 @@ pub fn reconcile_archive_snapshot(
                     // catalog agreed on comes from that same evidence rather
                     // than from a second, drifting predicate.
                     let catalog_evidence = retro_junk_archive::dump_catalog_evidence(dump);
+                    // "Tried and got nowhere" is a third state, not the same as
+                    // never having tried. Collapsing the two made every disc the
+                    // catalog cannot resolve look untouched, so convergence
+                    // proposed a fresh reproduction for it on every single run —
+                    // a full copy and split of the raw dump each time.
                     let catalog_state = if catalog_evidence.is_some() {
-                        "verified"
+                        CATALOG_VERIFIED
+                    } else if retro_junk_archive::dump_catalog_attempted(dump) {
+                        CATALOG_UNRESOLVED
                     } else {
-                        "not_attempted"
+                        CATALOG_NOT_ATTEMPTED
                     };
                     let catalog_game = catalog_evidence.map_or("", |catalog| catalog.game.as_str());
                     tx.execute(
@@ -954,12 +1247,13 @@ pub fn reconcile_archive_snapshot(
                         )?;
                     }
                     // Build evidence is append-only history: rebuilding a
-                    // derivative appends a second record for the same output
-                    // path. A representation row is the *current* state of one
-                    // file, so only the newest build per output is projected
-                    // and the superseded records stay in `evidence/`.
+                    // derivative — or re-adopting one that moved — appends a
+                    // second record for it. A representation row is the
+                    // *current* state of one file, so only the newest build in
+                    // each lineage is projected and the superseded records stay
+                    // in `evidence/`.
                     let projected_builds = current_builds_by_output(
-                        &dump.builds,
+                        dump,
                         playable_root,
                         &release.manifest.platform_id,
                         &release.manifest.region,
@@ -1058,6 +1352,13 @@ pub fn reconcile_archive_snapshot(
 
     rebuild_library_entry_bindings(&tx)?;
     apply_archive_derivations(&tx, ArchiveEvidenceScope::All)?;
+    // The user's own decisions, kept beside the collection because this
+    // database is device-local and rebuilt from DATs. Applying them here is
+    // what makes a mark made on one machine mean something on the next.
+    apply_collection_marks(
+        &tx,
+        &retro_junk_archive::collection_root_for(&snapshot.root, playable_root),
+    )?;
     tx.commit()?;
     Ok(())
 }
@@ -1316,7 +1617,32 @@ pub fn adoptable_archive_hashes(
            AND (?1=0 OR lc.id=?1)
            AND (?2=0 OR le.id=?2)
            AND {is_playable}
-         ORDER BY le.id",
+         UNION
+         -- A derivative that is not a byte-identical mirror — a CHD of a
+         -- multi-track disc — can never satisfy the digest equality above, so
+         -- disc rows kept asking to be read even though the archive had
+         -- already answered. Round-trip verification decompressed this
+         -- derivative and compared it back against the master, and the
+         -- master's complete track set matched this catalog medium; the file
+         -- therefore holds the catalog's bytes, and reading it again cannot
+         -- produce a different answer. Both flags are required: either alone
+         -- would be a guess.
+         SELECT le.id,ar.platform_id,m.file_size,m.crc32,m.md5,m.sha1,''
+         FROM representations rep
+         {PLAYABLE_REPRESENTATION_TO_LIBRARY_ENTRY_JOIN}
+         JOIN media m ON m.id=c.catalog_media_id
+         WHERE rep.role='playable'
+           AND rep.location_role='playable'
+           AND rep.presence_state='present'
+           AND rep.round_trip_verified=1
+           AND rep.catalog_verified=1
+           AND m.crc32<>'' AND m.sha1<>''
+           AND le.crc32='' AND le.sha1='' AND le.md5=''
+           AND le.tag=''
+           AND (?1=0 OR lc.id=?1)
+           AND (?2=0 OR le.id=?2)
+           AND {is_playable}
+         ORDER BY 1",
         is_playable = playable_path_is_library_entry()
     ))?;
     let (console_filter, entry_filter) = scope.filters();
@@ -1659,7 +1985,10 @@ pub fn list_archive_release_summaries(
                       AS playable_count,
                     COUNT(CASE WHEN rep.role='playable'
                                 AND rep.presence_state='present' THEN 1 END)
-                      AS playable_present_count
+                      AS playable_present_count,
+                    COUNT(CASE WHEN rep.role='playable'
+                                AND rep.presence_state='missing' THEN 1 END)
+                      AS playable_missing_count
              FROM carrier_scope cs
              JOIN representations rep ON rep.carrier_id=cs.carrier_id
              GROUP BY cs.archive_release_id
@@ -1711,6 +2040,7 @@ pub fn list_archive_release_summaries(
                 COALESCE(rr.preservation_present_count,0),
                 COALESCE(rr.playable_count,0),
                 COALESCE(rr.playable_present_count,0),
+                COALESCE(rr.playable_missing_count,0),
                 COALESCE(pr.desired_playable_count,0),
                 COALESCE(pr.satisfied_playable_count,0),
                 COALESCE(vr.integrity_verified_count,0),
@@ -1742,12 +2072,13 @@ pub fn list_archive_release_summaries(
             preservation_present_count: row.get(10)?,
             playable_count: row.get(11)?,
             playable_present_count: row.get(12)?,
-            desired_playable_count: row.get(13)?,
-            satisfied_playable_count: row.get(14)?,
-            integrity_verified_count: row.get(15)?,
-            reproduction_verified_count: row.get(16)?,
-            catalog_verified_count: row.get(17)?,
-            round_trip_verified_count: row.get(18)?,
+            playable_missing_count: row.get(13)?,
+            desired_playable_count: row.get(14)?,
+            satisfied_playable_count: row.get(15)?,
+            integrity_verified_count: row.get(16)?,
+            reproduction_verified_count: row.get(17)?,
+            catalog_verified_count: row.get(18)?,
+            round_trip_verified_count: row.get(19)?,
             expected_disc_count: 0,
             verified_disc_count: 0,
             archive_complete: false,
@@ -1924,8 +2255,11 @@ pub fn load_archive_collection_details(
     .map_err(Into::into)
 }
 
+/// The candidate id, but only if `table` actually holds a row with it —
+/// otherwise nothing, so callers never store a reference that the foreign keys
+/// will reject. Takes a plain connection so a transaction can pass itself.
 fn existing_id(
-    tx: &Transaction<'_>,
+    conn: &Connection,
     table: &str,
     candidate: &str,
 ) -> Result<Option<String>, OperationError> {
@@ -1933,7 +2267,7 @@ fn existing_id(
         return Ok(None);
     }
     let query = format!("SELECT id FROM {table} WHERE id=?1");
-    tx.query_row(&query, [candidate], |row| row.get(0))
+    conn.query_row(&query, [candidate], |row| row.get(0))
         .optional()
         .map_err(Into::into)
 }
@@ -1996,4 +2330,83 @@ const fn physical_copy_file_category_key(
         retro_junk_archive::PhysicalCopyFileCategory::Provenance => "provenance",
         retro_junk_archive::PhysicalCopyFileCategory::Document => "document",
     }
+}
+
+/// What one pass of applying the collection's marks did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MarkReport {
+    /// Marks that produced (or refreshed) a catalog entry.
+    pub applied: usize,
+    /// Marks whose parent work this catalog does not have yet. Kept, not lost:
+    /// importing the right DAT later makes them resolve.
+    pub deferred: usize,
+    /// Library rows bound to what a mark established.
+    pub bound: usize,
+}
+
+/// Rebuild the catalog rows the collection's marks describe, and point the
+/// library rows carrying that content at them.
+///
+/// Marks are the user's own decisions — a homebrew title they own, a mod they
+/// applied — which nothing outside the collection can derive. They live beside
+/// the archive rather than in this database precisely because this database is
+/// device-local and rebuildable, so applying them is a normal part of building
+/// it rather than a migration.
+///
+/// Idempotent: every id involved is derived from the mark's contents, so a
+/// second pass rewrites the same rows.
+pub fn apply_collection_marks(
+    conn: &Connection,
+    collection_root: &std::path::Path,
+) -> Result<MarkReport, OperationError> {
+    let marks = retro_junk_archive::load_marks(collection_root)
+        .map_err(|error| OperationError::InvalidField(error.to_string()))?;
+    let mut report = MarkReport::default();
+    for mark in &marks {
+        let Some(applied) = crate::operations::apply_collection_mark(conn, mark)? else {
+            report.deferred += 1;
+            continue;
+        };
+        report.applied += 1;
+        let digests = retro_junk_archive::FileDigests {
+            size: mark.content.size,
+            crc32: mark.content.crc32.clone(),
+            md5: mark.content.md5.clone(),
+            sha1: mark.content.sha1.clone(),
+            sha256: String::new(),
+        };
+        // The library row keeps the user's tag, which is what stops the file
+        // reading as an unidentified stranger on a machine that never saw the
+        // decision being made.
+        report.bound += bind_library_entries_by_hash(
+            conn,
+            &mark.platform_id,
+            &digests,
+            &LibraryEntryBinding {
+                catalog_media_id: &applied.media_id,
+                match_method: "collection_mark",
+                ..Default::default()
+            },
+        )?;
+        conn.execute(
+            "UPDATE library_entries SET tag=?1,revision=revision+1
+             WHERE tag<>?1 AND data_size=?2
+               AND ((sha1<>'' AND sha1=?3) OR (crc32<>'' AND crc32=?4))",
+            params![
+                applied.tag,
+                i64::try_from(mark.content.size).unwrap_or(0),
+                mark.content.sha1,
+                mark.content.crc32,
+            ],
+        )?;
+    }
+    if report.applied > 0 || report.deferred > 0 {
+        log::info!(
+            "Collection marks: {} applied, {} awaiting their parent DAT, {} library row(s) bound",
+            report.applied,
+            report.deferred,
+            report.bound
+        );
+    }
+    Ok(report)
 }

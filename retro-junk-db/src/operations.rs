@@ -4,7 +4,7 @@ use retro_junk_catalog::types::{
     Asset, CatalogPlatform, CatalogTag, CollectionEntry, Company, Disagreement, DisagreementId,
     ImportLog, ImportLogId, Media, MediaStatus, MediaType, PlatformRelationship, Release,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -645,6 +645,16 @@ pub fn set_media_tag(
     Ok(())
 }
 
+/// The medium a homebrew work's single release holds.
+///
+/// Derived, never stored: the same three inputs always name the same row, so
+/// applying a mark twice — here and on another machine — lands on it rather
+/// than minting a second. One definition, because two would differ silently.
+#[must_use]
+pub fn homebrew_media_id(work_id: &str, platform_id: &str, region: &str) -> String {
+    format!("{work_id}:{platform_id}:{region}:media")
+}
+
 /// Create a homebrew Work with a Release and empty Media entry in a transaction.
 ///
 /// Returns the created Work ID.
@@ -657,7 +667,7 @@ pub fn create_homebrew_work(
     let slug = slugify(name);
     let work_id = format!("{platform_id}:homebrew:{slug}");
     let release_id = format!("{work_id}:{platform_id}:{region}");
-    let media_id = format!("{release_id}:media");
+    let media_id = homebrew_media_id(&work_id, platform_id, region);
 
     conn.execute(
         "INSERT INTO works (id, canonical_name, tag) VALUES (?1, ?2, 'homebrew')
@@ -1177,4 +1187,147 @@ fn relationship_str(r: PlatformRelationship) -> &'static str {
         PlatformRelationship::Addon => "addon",
         PlatformRelationship::Compatible => "compatible",
     }
+}
+
+// ── Collection Marks ────────────────────────────────────────────────────────
+
+/// What applying one portable mark did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedMark {
+    pub media_id: String,
+    pub work_id: String,
+    pub tag: &'static str,
+}
+
+/// Apply one user decision to the catalog, creating whatever it names.
+///
+/// Marks carry the *inputs* that catalog ids are minted from — name, platform,
+/// region, and the parent's DAT game name — never the ids themselves, because
+/// media ids are minted per DAT release and do not survive a re-import on
+/// another machine. Rebuilding the rows from those inputs is what makes a mark
+/// portable; the ids come out the same because they are derived, not stored.
+///
+/// A mod resolves its parent work through `parent_dat_name` first, falling
+/// back to `parent_work_id`. Nothing is created for a mod whose parent this
+/// machine's catalog does not know — the decision is kept, waiting for the DAT
+/// that gives it meaning, rather than manufacturing an orphan work.
+pub fn apply_collection_mark(
+    conn: &Connection,
+    mark: &retro_junk_archive::CollectionMark,
+) -> Result<Option<AppliedMark>, OperationError> {
+    let hashes = MediaHashes {
+        crc32: mark.content.crc32.clone(),
+        sha1: Some(mark.content.sha1.clone()).filter(|value| !value.is_empty()),
+        md5: Some(mark.content.md5.clone()).filter(|value| !value.is_empty()),
+        file_size: i64::try_from(mark.content.size).unwrap_or(0),
+    };
+    match mark.kind {
+        retro_junk_archive::MarkKind::Homebrew => {
+            let work_id = create_homebrew_work(conn, &mark.name, &mark.platform_id, &mark.region)?;
+            // `create_homebrew_work` mints the row but records no digests, so
+            // on its own the file it describes can never be matched back to
+            // it. The mark is the only place those digests exist.
+            let media_id = homebrew_media_id(&work_id, &mark.platform_id, &mark.region);
+            set_media_hashes(conn, &media_id, &hashes)?;
+            Ok(Some(AppliedMark {
+                media_id,
+                work_id,
+                tag: "homebrew",
+            }))
+        }
+        retro_junk_archive::MarkKind::Modded => {
+            let Some(work_id) = resolve_parent_work(conn, mark)? else {
+                log::debug!(
+                    "Mark for {} names parent '{}', which this catalog does not have yet",
+                    mark.name,
+                    mark.parent_dat_name
+                );
+                return Ok(None);
+            };
+            let media_id = create_modded_media(
+                conn,
+                &work_id,
+                &mark.platform_id,
+                &mark.region,
+                None,
+                Some(&hashes),
+            )?;
+            Ok(Some(AppliedMark {
+                media_id,
+                work_id,
+                tag: "modded",
+            }))
+        }
+    }
+}
+
+/// The work a mod is derived from: by the parent's name where the catalog has
+/// it, else by the recorded work id.
+///
+/// The name is tried against DAT game names first and canonical work names
+/// second, because that is the order the writing side prefers them in — a work
+/// with no DAT-derived medium has only a canonical name to be known by. The
+/// work id comes last: it is a local shortcut that says nothing on a machine
+/// whose catalog was built from a different import.
+fn resolve_parent_work(
+    conn: &Connection,
+    mark: &retro_junk_archive::CollectionMark,
+) -> Result<Option<String>, OperationError> {
+    if !mark.parent_dat_name.is_empty() {
+        let found: Option<String> = conn
+            .query_row(
+                "SELECT r.work_id FROM media m
+                 JOIN releases r ON r.id=m.release_id
+                 WHERE m.dat_name=?1 AND r.platform_id=?2
+                 ORDER BY m.id LIMIT 1",
+                params![mark.parent_dat_name, mark.platform_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if found.is_some() {
+            return Ok(found);
+        }
+        let by_name: Option<String> = conn
+            .query_row(
+                "SELECT w.id FROM works w
+                 JOIN releases r ON r.work_id=w.id
+                 WHERE w.canonical_name=?1 AND r.platform_id=?2
+                 ORDER BY w.id LIMIT 1",
+                params![mark.parent_dat_name, mark.platform_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if by_name.is_some() {
+            return Ok(by_name);
+        }
+    }
+    if mark.parent_work_id.is_empty() {
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row(
+            "SELECT id FROM works WHERE id=?1",
+            [&mark.parent_work_id],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+fn set_media_hashes(
+    conn: &Connection,
+    media_id: &str,
+    hashes: &MediaHashes,
+) -> Result<(), OperationError> {
+    conn.execute(
+        "UPDATE media SET crc32=?2,sha1=?3,md5=?4,file_size=?5,updated_at=datetime('now')
+         WHERE id=?1",
+        params![
+            media_id,
+            hashes.crc32,
+            hashes.sha1.clone().unwrap_or_default(),
+            hashes.md5.clone().unwrap_or_default(),
+            hashes.file_size,
+        ],
+    )?;
+    Ok(())
 }

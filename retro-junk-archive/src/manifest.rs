@@ -8,7 +8,11 @@ use uuid::Uuid;
 
 use crate::MANIFEST_SCHEMA_VERSION;
 
-pub const REGIONAL_PHYSICAL_PLATFORM_MIGRATION: &str = "regional-physical-platform-v2";
+// v3: snesna, megadrivejp, and the pcecd split (pcenginecd / tg-cd) joined
+// the regional mapping; archives that already ran v2 must re-run to move
+// releases those mappings now cover. The migration skips releases already
+// under a regional name, so re-running is safe.
+pub const REGIONAL_PHYSICAL_PLATFORM_MIGRATION: &str = "regional-physical-platform-v3";
 
 macro_rules! archive_id {
     ($name:ident) => {
@@ -293,7 +297,7 @@ pub enum RepresentationFormat {
 }
 
 impl RepresentationFormat {
-    /// The stable snake_case key used by policy rows and projections;
+    /// The stable `snake_case` key used by policy rows and projections;
     /// inverse of [`FromStr`](std::str::FromStr).
     #[must_use]
     pub fn key(&self) -> &str {
@@ -707,7 +711,11 @@ pub fn read_build_json(path: &Path) -> Result<BuildEvidence, ManifestError> {
     Ok(value)
 }
 
-fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, ManifestError> {
+/// Read and decode a JSON document.
+///
+/// The counterpart to [`write_json_new`], so both halves of every JSON file in
+/// and around the archive go through one pair of functions.
+pub fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, ManifestError> {
     let contents = std::fs::read(path).map_err(|source| ManifestError::Io {
         path: path.display().to_string(),
         source,

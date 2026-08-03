@@ -137,3 +137,78 @@ fn upsert_adds_new_game_without_replacing_user_metadata() {
     assert!(xml.contains("<favorite>true</favorite>"));
     assert_eq!(xml.matches("<path>./new.rom</path>").count(), 1);
 }
+
+/// A gamelist entry outlives the file it points at, because upserting is keyed
+/// on the path: rebuild a playable under a corrected name and the old entry
+/// stays, so the frontend lists the game twice — once playable, once dead.
+#[test]
+fn retiring_a_rom_path_removes_only_its_entry() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let gamelist = directory.path().join("gamelist.xml");
+    std::fs::write(
+        &gamelist,
+        "<?xml version=\"1.0\"?>\n<gameList>\n\
+         \x20 <game>\n    <path>./Castlevania - Symphony of the Night (USA) (Track 1).chd</path>\n\
+         \x20   <name>Castlevania</name>\n  </game>\n\
+         \x20 <game>\n    <path>./Castlevania - Symphony of the Night (USA).chd</path>\n\
+         \x20   <name>Castlevania</name>\n  </game>\n\
+         \x20 <game>\n    <path>./Wipeout (USA).chd</path>\n    <name>Wipeout</name>\n  </game>\n\
+         </gameList>\n",
+    )
+    .expect("write gamelist");
+
+    let retired = std::collections::BTreeSet::from([
+        "Castlevania - Symphony of the Night (USA) (Track 1).chd".to_owned(),
+    ]);
+    let removed = super::remove_game_entries(&gamelist, &retired).expect("remove");
+    assert_eq!(removed, 1);
+
+    let content = std::fs::read_to_string(&gamelist).expect("read");
+    assert!(
+        !content.contains("(Track 1)"),
+        "the retired entry must be gone"
+    );
+    assert!(
+        content.contains("./Castlevania - Symphony of the Night (USA).chd"),
+        "the entry that replaced it must survive"
+    );
+    assert!(
+        content.contains("./Wipeout (USA).chd"),
+        "an unrelated game must not be touched"
+    );
+    assert!(content.contains("</gameList>"));
+
+    // Nothing to retire is not a rewrite.
+    let unchanged = std::fs::read_to_string(&gamelist).expect("read");
+    assert_eq!(
+        super::remove_game_entries(&gamelist, &std::collections::BTreeSet::new()).expect("remove"),
+        0
+    );
+    assert_eq!(std::fs::read_to_string(&gamelist).expect("read"), unchanged);
+}
+
+/// Callers hold ROM paths in whichever form is natural to them; the file
+/// always stores `./Name`. Matching has to see through that, or a retirement
+/// silently does nothing.
+#[test]
+fn retiring_matches_regardless_of_leading_dot_slash() {
+    let directory = tempfile::tempdir().expect("temp dir");
+    let gamelist = directory.path().join("gamelist.xml");
+    std::fs::write(
+        &gamelist,
+        "<?xml version=\"1.0\"?>\n<gameList>\n  <game>\n    <path>./Game (USA).chd</path>\n\
+         \x20   <name>Game</name>\n  </game>\n</gameList>\n",
+    )
+    .expect("write gamelist");
+
+    let retired = std::collections::BTreeSet::from(["Game (USA).chd".to_owned()]);
+    assert_eq!(
+        super::remove_game_entries(&gamelist, &retired).expect("remove"),
+        1
+    );
+    assert!(
+        !std::fs::read_to_string(&gamelist)
+            .expect("read")
+            .contains("<game>")
+    );
+}

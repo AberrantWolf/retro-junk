@@ -4947,6 +4947,7 @@ dependencies = [
  "retro-junk-disc",
  "retro-junk-frontend",
  "retro-junk-import",
+ "retro-junk-io",
  "retro-junk-lib",
  "retro-junk-microsoft",
  "retro-junk-nintendo",

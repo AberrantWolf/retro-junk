@@ -1214,17 +1214,34 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                     let body = table_body("library_entry_media_bindings")?;
                     conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN;")?;
                     let result = (|| -> Result<(), SchemaError> {
+                        // The copy must collapse duplicates itself: the unique
+                        // indexes are only created after it, so `OR IGNORE`
+                        // has nothing to ignore against, and two old rows
+                        // landing on one (entry, carrier) pair — different
+                        // catalog media ids resolving through the same
+                        // representation — would make the index creation
+                        // fail and the database refuse to open. Which row of
+                        // a group survives is immaterial; the re-derivation
+                        // below rebuilds the archive-owned bindings anyway.
                         conn.execute_batch(&format!(
                             "CREATE TABLE library_entry_media_bindings_new {body};
                              INSERT OR IGNORE INTO library_entry_media_bindings_new(
                                  library_entry_id,carrier_id,catalog_media_id,
                                  representation_id,match_method)
-                             SELECT old.library_entry_id,
-                                    (SELECT c.id FROM representations rep
-                                     JOIN carriers c ON c.id=rep.carrier_id
-                                     WHERE rep.id=old.representation_id),
-                                    old.catalog_media_id,old.representation_id,old.match_method
-                             FROM library_entry_media_bindings old;
+                             SELECT library_entry_id,carrier_id,catalog_media_id,
+                                    representation_id,match_method
+                             FROM (SELECT old.library_entry_id AS library_entry_id,
+                                          (SELECT c.id FROM representations rep
+                                           JOIN carriers c ON c.id=rep.carrier_id
+                                           WHERE rep.id=old.representation_id) AS carrier_id,
+                                          old.catalog_media_id AS catalog_media_id,
+                                          old.representation_id AS representation_id,
+                                          old.match_method AS match_method
+                                   FROM library_entry_media_bindings old)
+                             GROUP BY library_entry_id,
+                                      CASE WHEN carrier_id IS NULL
+                                           THEN 'm:'||catalog_media_id
+                                           ELSE 'c:'||carrier_id END;
                              DROP TABLE library_entry_media_bindings;
                              ALTER TABLE library_entry_media_bindings_new
                                  RENAME TO library_entry_media_bindings;"

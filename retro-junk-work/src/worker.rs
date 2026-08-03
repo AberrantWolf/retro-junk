@@ -9,6 +9,7 @@
 use std::sync::atomic::AtomicBool;
 
 use retro_junk_db::convergence::{ActionKind, Scope, derive_convergence};
+use retro_junk_io::{PhaseProgressFn, ProgressUnit};
 
 use crate::executor::{ActionOutcome, ExecContext, WorkError, execute_action};
 use crate::policy::AutomationPolicy;
@@ -52,6 +53,10 @@ const STAGES: &[&[ActionKind]] = &[
         ActionKind::VerifyCatalog,
         ActionKind::AuditRedumper,
     ],
+    // Its own stage before builds, and the stage boundary reconciles: a
+    // playable that merely moved is re-adopted and stops looking like a gap,
+    // so the build stage never rebuilds a file the library already holds.
+    &[ActionKind::AdoptPlayable],
     &[ActionKind::BuildPlayable],
     &[ActionKind::Scrape],
     &[ActionKind::ProjectAssets, ActionKind::SyncGamelist],
@@ -63,9 +68,39 @@ pub enum RunMode {
     /// `sync` / GUI: run whatever was asked, ignore policy gates and error
     /// backoff — an explicit invocation is consent.
     Explicit,
-    /// The daemon: honor `auto_verify`/`auto_build` and back off targets
-    /// that errored recently.
+    /// The daemon: honor [`daemon_may_run`] and back off targets that errored
+    /// recently.
     Daemon,
+}
+
+/// Whether the unattended daemon may run this kind under `policy`.
+///
+/// Each gate asks permission to *produce* something the user might not want
+/// appearing on its own: `auto_verify` re-reads archived bytes, `auto_build`
+/// writes derivatives into the playable library, `auto_scrape` spends a daily
+/// external quota.
+///
+/// [`ActionKind::AdoptPlayable`] is ungated because it produces nothing. It
+/// corrects the archive's record of where a file it already built now lives,
+/// which is bookkeeping about the present, not new work. Gating it meant a
+/// rename outside the archive orphaned the playable until someone intervened,
+/// and the release advertised a gap that did not exist.
+///
+/// An unrecognized kind is refused: a new kind must state its own gate before
+/// the daemon will run it unattended.
+#[must_use]
+pub fn daemon_may_run(kind: ActionKind, policy: &AutomationPolicy) -> bool {
+    match kind {
+        ActionKind::VerifyIntegrity | ActionKind::VerifyCatalog | ActionKind::AuditRedumper => {
+            policy.auto_verify
+        }
+        ActionKind::AdoptPlayable => true,
+        ActionKind::BuildPlayable | ActionKind::ProjectAssets | ActionKind::SyncGamelist => {
+            policy.auto_build
+        }
+        ActionKind::Scrape => policy.auto_scrape,
+        _ => false,
+    }
 }
 
 /// When the projection stage (assets + gamelists) runs.
@@ -95,7 +130,7 @@ pub fn run_once(
     projections: ProjectionPass,
     only: Option<&[ActionKind]>,
     limit: Option<usize>,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<RunStats, WorkError> {
     let mut stats = RunStats::default();
@@ -122,11 +157,12 @@ pub fn run_once(
             reconcile(ctx, &mut conn, progress)?;
             stage_mutated = false;
         }
-        let actions = derive_convergence(&conn, scope, &ctx.scrape.expected_assets)?;
-        for action in actions
+        let actions = derive_convergence(&conn, scope, &ctx.scrape.expected_assets)?
             .into_iter()
             .filter(|action| stage.contains(&action.kind))
-        {
+            .collect::<Vec<_>>();
+        let queued = actions.len();
+        for (position, action) in actions.into_iter().enumerate() {
             if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                 stats.cancelled += 1;
                 break;
@@ -140,17 +176,7 @@ pub fn run_once(
                 break;
             }
             if mode == RunMode::Daemon {
-                let allowed = match action.kind {
-                    ActionKind::VerifyIntegrity
-                    | ActionKind::VerifyCatalog
-                    | ActionKind::AuditRedumper => policy.auto_verify,
-                    ActionKind::BuildPlayable
-                    | ActionKind::ProjectAssets
-                    | ActionKind::SyncGamelist => policy.auto_build,
-                    ActionKind::Scrape => policy.auto_scrape,
-                    _ => false,
-                };
-                if !allowed {
+                if !daemon_may_run(action.kind, policy) {
                     stats.skipped_policy += 1;
                     continue;
                 }
@@ -170,7 +196,16 @@ pub fn run_once(
                 continue;
             }
             executed += 1;
-            let outcome = execute_action(ctx, &action, progress, cancelled)?;
+            // Say where in the queue this is. Each action reports progress for
+            // its own single target — an audit says "dump 1 of 1" — so without
+            // the queue position a run over forty discs looks exactly like one
+            // disc being reworked over and over.
+            let queue_position = format!("[{}/{queued}] ", position + 1);
+            let placed = |phase: &str, unit: ProgressUnit, current: u64, total: u64| {
+                progress(&format!("{queue_position}{phase}"), unit, current, total);
+            };
+            placed(&action.label, ProgressUnit::Items, 0, 0);
+            let outcome = execute_action(ctx, &action, &placed, cancelled)?;
             if matches!(outcome, ActionOutcome::Completed { .. }) {
                 stage_mutated = true;
                 any_completed = true;
@@ -192,9 +227,14 @@ pub fn run_once(
 fn reconcile(
     ctx: &ExecContext,
     conn: &mut retro_junk_db::Connection,
-    progress: &dyn Fn(&str, u64, u64),
+    progress: &PhaseProgressFn<'_>,
 ) -> Result<(), WorkError> {
-    progress("Refreshing the archive projection", 0, 0);
+    progress(
+        "Refreshing the archive projection",
+        ProgressUnit::Items,
+        0,
+        0,
+    );
     let snapshot = retro_junk_archive::scan_archive(&ctx.profile.archive_root)
         .map_err(|error| WorkError::Message(error.to_string()))?;
     retro_junk_db::reconcile_archive_snapshot(

@@ -623,7 +623,13 @@ pub struct ArchivedReleaseAsset {
     pub source: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What one release can tell a scraper about itself.
+///
+/// The fields describe *this* medium. Whether they are the right thing to ask
+/// about is [`ArchivedScrapeIdentity::derivation`]'s business: a mod's own
+/// digests match nothing anywhere, and its parent's identity travels alongside
+/// rather than overwriting them, so both the file and the question stay legible.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ArchivedScrapeIdentity {
     pub filename: String,
     pub file_size: u64,
@@ -631,6 +637,8 @@ pub struct ArchivedScrapeIdentity {
     pub crc32: String,
     pub md5: String,
     pub sha1: String,
+    /// What the catalog says this medium is.
+    pub derivation: crate::derivation::CatalogDerivation,
 }
 
 /// How strongly a release can be identified to a scraper, weakest to
@@ -649,9 +657,29 @@ pub enum ScrapeIdentityTier {
 }
 
 impl ArchivedScrapeIdentity {
+    /// How strongly this release can be identified — to the scraper, about
+    /// whatever it will actually be asked about.
+    ///
+    /// A mod is asked about as its parent, so its parent's strength is the one
+    /// that matters; a mod with no parent recorded cannot be asked about at
+    /// all, whatever digests the file itself has. Automation gates on this, so
+    /// getting it wrong means either publishing a wrong match unattended or
+    /// spending the daily budget on questions with no answer.
     #[must_use]
     pub fn tier(&self) -> ScrapeIdentityTier {
-        if !self.serial.trim().is_empty() {
+        match &self.derivation {
+            crate::derivation::CatalogDerivation::Own => self.own_tier(true),
+            // Nobody assigned homebrew a serial, so the serial is never
+            // offered and never counts toward how well it is identified.
+            crate::derivation::CatalogDerivation::Homebrew => self.own_tier(false),
+            crate::derivation::CatalogDerivation::Modded { parent } => parent
+                .as_ref()
+                .map_or(ScrapeIdentityTier::None, |parent| parent.tier()),
+        }
+    }
+
+    fn own_tier(&self, serial_counts: bool) -> ScrapeIdentityTier {
+        if serial_counts && !self.serial.trim().is_empty() {
             ScrapeIdentityTier::Serial
         } else if !self.crc32.is_empty() && !self.md5.is_empty() && !self.sha1.is_empty() {
             ScrapeIdentityTier::Hashes
@@ -1079,12 +1107,33 @@ pub fn set_entry_region_override(
 ) -> Result<LibraryChangeSet, LibraryError> {
     set_user_field(conn, id, "region_override", value.unwrap_or(""))
 }
+/// Set or clear a row's tag, and keep the collection's durable marks in step.
+///
+/// `collection_root` is where the portable form lives. It is optional only
+/// because a profile-less library has nowhere to put one; a caller that has a
+/// collection must pass it, or the decision survives nothing.
 pub fn set_entry_tag(
     conn: &mut Connection,
     id: LibraryEntryId,
     value: Option<&str>,
+    collection_root: Option<&std::path::Path>,
 ) -> Result<LibraryChangeSet, LibraryError> {
-    set_user_field(conn, id, "tag", value.unwrap_or(""))
+    let change = set_user_field(conn, id, "tag", value.unwrap_or(""))?;
+    if let Some(collection_root) = collection_root {
+        let decision = match value {
+            None | Some("") => crate::derivation::MarkDecision::Cleared,
+            Some("homebrew") => crate::derivation::MarkDecision::Homebrew {
+                name: "",
+                region: "",
+            },
+            // A "modded" tag with no parent named cannot be recorded
+            // portably: "a mod of something" is not a decision anything can
+            // act on. `create_modded_and_tag_entry` is the path that has one.
+            Some(_) => return Ok(change),
+        };
+        crate::derivation::record_entry_mark(conn, id, collection_root, decision)?;
+    }
+    Ok(change)
 }
 
 pub fn create_homebrew_and_tag_entry(
@@ -1093,35 +1142,71 @@ pub fn create_homebrew_and_tag_entry(
     name: &str,
     platform_id: &str,
     region: &str,
+    collection_root: Option<&std::path::Path>,
 ) -> Result<LibraryChangeSet, LibraryError> {
-    mutate_entry_with_catalog(conn, id, "homebrew", |tx| {
+    let change = mutate_entry_with_catalog(conn, id, "homebrew", |tx| {
         crate::operations::create_homebrew_work(tx, name, platform_id, region)
-            .map(|_| ())
+            .map(|work_id| crate::operations::homebrew_media_id(&work_id, platform_id, region))
             .map_err(|error| LibraryError::CatalogMutation(error.to_string()))
-    })
+    })?;
+    if let Some(collection_root) = collection_root {
+        crate::derivation::record_entry_mark(
+            conn,
+            id,
+            collection_root,
+            crate::derivation::MarkDecision::Homebrew { name, region },
+        )?;
+    }
+    Ok(change)
+}
+
+/// One file's derivation from a catalogued work, as the user stated it.
+pub struct ModdedEntry<'a> {
+    /// The catalogued work this file was made from.
+    pub work_id: &'a str,
+    pub platform_id: &'a str,
+    pub region: &'a str,
+    /// Which disc of the parent, when the file is one disc image of several.
+    pub disc_number: Option<u32>,
+    /// The derivative's own digests, which identify it and nothing else.
+    pub hashes: Option<&'a crate::operations::MediaHashes>,
+    /// Where to record the durable form. `None` leaves the decision in this
+    /// database only, which is where it does not survive.
+    pub collection_root: Option<&'a std::path::Path>,
 }
 
 pub fn create_modded_and_tag_entry(
     conn: &mut Connection,
     id: LibraryEntryId,
-    work_id: &str,
-    platform_id: &str,
-    region: &str,
-    disc_number: Option<u32>,
-    hashes: Option<&crate::operations::MediaHashes>,
+    modded: &ModdedEntry<'_>,
 ) -> Result<LibraryChangeSet, LibraryError> {
-    mutate_entry_with_catalog(conn, id, "modded", |tx| {
+    let change = mutate_entry_with_catalog(conn, id, "modded", |tx| {
         crate::operations::create_modded_media(
             tx,
-            work_id,
-            platform_id,
-            region,
-            disc_number,
-            hashes,
+            modded.work_id,
+            modded.platform_id,
+            modded.region,
+            modded.disc_number,
+            modded.hashes,
         )
-        .map(|_| ())
         .map_err(|error| LibraryError::CatalogMutation(error.to_string()))
-    })
+    })?;
+    // The catalog rows are rebuildable; which work this file was made from is
+    // not. Recording it beside the collection is what lets a second machine —
+    // or this one after a catalog rebuild — know the file is a mod of anything
+    // at all.
+    if let Some(collection_root) = modded.collection_root {
+        crate::derivation::record_entry_mark(
+            conn,
+            id,
+            collection_root,
+            crate::derivation::MarkDecision::Modded {
+                parent_work_id: modded.work_id,
+                region: modded.region,
+            },
+        )?;
+    }
+    Ok(change)
 }
 
 #[derive(Debug, Clone)]
@@ -1938,38 +2023,68 @@ pub fn query_archived_scrape_identities(
 ) -> Result<std::collections::HashMap<String, ArchivedScrapeIdentity>, LibraryError> {
     let mut output = std::collections::HashMap::new();
     let mut scrape_statement = conn.prepare(
-        "SELECT ar.id,m.rom_name,m.dat_name,m.file_size,m.media_serial,
-                m.crc32,m.md5,m.sha1
+        "SELECT ar.id,m.rom_name,m.dat_name,r.title,m.file_size,m.media_serial,
+                m.crc32,m.md5,m.sha1,COALESCE(m.tag,''),r.work_id,r.platform_id,r.region,
+                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
          FROM archive_releases ar
          JOIN physical_copies pc ON pc.archive_release_id=ar.id
          JOIN carriers c ON c.physical_copy_id=pc.id
          JOIN media m ON m.id=c.catalog_media_id
+         JOIN releases r ON r.id=m.release_id
          WHERE ar.profile_id=?1
          ORDER BY ar.id,
                   CASE WHEN m.disc_number > 0 THEN m.disc_number ELSE 2147483647 END,
                   m.dat_name COLLATE NOCASE,m.id",
     )?;
-    for row in scrape_statement.query_map([profile_id], |row| {
-        let rom_name = row.get::<_, String>(1)?;
-        let dat_name = row.get::<_, String>(2)?;
-        Ok((
-            row.get::<_, String>(0)?,
-            ArchivedScrapeIdentity {
-                filename: if rom_name.is_empty() {
-                    dat_name
-                } else {
-                    rom_name
+    let rows = scrape_statement
+        .query_map([profile_id], |row| {
+            let multi_track = row.get::<_, i64>(13)? != 0;
+            Ok((
+                row.get::<_, String>(0)?,
+                ArchivedScrapeIdentity {
+                    filename: crate::derivation::lookup_name(
+                        &row.get::<_, String>(1)?,
+                        &row.get::<_, String>(2)?,
+                        &row.get::<_, String>(3)?,
+                        multi_track,
+                    ),
+                    file_size: crate::derivation::lookup_size(
+                        u64::try_from(row.get::<_, i64>(4)?).unwrap_or_default(),
+                        multi_track,
+                    ),
+                    serial: row.get(5)?,
+                    crc32: row.get(6)?,
+                    md5: row.get(7)?,
+                    sha1: row.get(8)?,
+                    derivation: crate::derivation::CatalogDerivation::Own,
                 },
-                file_size: u64::try_from(row.get::<_, i64>(3)?).unwrap_or_default(),
-                serial: row.get(4)?,
-                crc32: row.get(5)?,
-                md5: row.get(6)?,
-                sha1: row.get(7)?,
+                row.get::<_, String>(9)?,
+                (
+                    row.get::<_, String>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                ),
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (release_id, mut identity, tag, (work_id, platform_id, region)) in rows {
+        if output.contains_key(&release_id) {
+            continue;
+        }
+        // Resolved per release rather than in the join above: a mod's parent
+        // is another row of the same table, and only a handful of releases are
+        // ever tagged, so the cost is one extra query per mod rather than a
+        // self-join every archive pays for.
+        identity.derivation = crate::derivation::derivation_for_media(
+            conn,
+            &tag,
+            &crate::derivation::ParentScope {
+                work_id: &work_id,
+                platform_id: &platform_id,
+                region: &region,
             },
-        ))
-    })? {
-        let (release_id, identity) = row?;
-        output.entry(release_id).or_insert(identity);
+        )?;
+        output.insert(release_id, identity);
     }
     Ok(output)
 }
@@ -2025,6 +2140,48 @@ fn regional_archive_platform(value: &str) -> Option<&'static str> {
 #[allow(clippy::too_many_lines)]
 /// The library console whose folder contains `path` under `root_path`, for
 /// watcher events that must invalidate the right console projection.
+/// Move a library row's identity to the path it was renamed to.
+///
+/// Entries are keyed by path, so a rescan after a rename sees the new name as
+/// a file it has never met: the row comes back with no digests, no DAT match,
+/// and no identification, and the user is asked to re-read bytes that were
+/// only ever renamed. A rename is not a rewrite — the content is unchanged by
+/// construction, so its identity moves with it.
+///
+/// The display name is deliberately left alone: the rescan that follows a
+/// rename sets it from the file, and guessing it here would only flicker.
+///
+/// Returns whether a row was re-keyed. A destination row that already exists
+/// (the rescan got there first) is left alone rather than clobbered.
+pub fn rekey_library_entry(
+    conn: &Connection,
+    console_id: LibraryConsoleId,
+    old_key: &str,
+    new_key: &str,
+) -> Result<bool, LibraryError> {
+    if old_key == new_key {
+        return Ok(false);
+    }
+    let taken: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM library_entries WHERE console_id=?1 AND entry_key=?2)",
+        params![console_id.0, new_key],
+        |row| row.get(0),
+    )?;
+    if taken {
+        return Ok(false);
+    }
+    // The fingerprint describes the file the row was last read from; the
+    // rename changed its path and mtime, so clearing it lets the rescan
+    // refresh cheap metadata while the digests below it survive.
+    let changed = conn.execute(
+        "UPDATE library_entries
+         SET entry_key=?1,source_fingerprint='',revision=revision+1
+         WHERE console_id=?2 AND entry_key=?3",
+        params![new_key, console_id.0, old_key],
+    )?;
+    Ok(changed > 0)
+}
+
 pub fn console_for_path(
     conn: &Connection,
     root_path: &str,
@@ -2072,6 +2229,73 @@ fn query_availability(
 pub fn query_playable_gaps(
     conn: &Connection,
     scope: &GapScope,
+) -> Result<(Vec<ArchivedPlayableGap>, std::collections::HashSet<String>), LibraryError> {
+    query_playable_gaps_with_force(conn, scope, None)
+}
+
+/// One release's playable-build gap, forced regardless of whether it
+/// currently reads as satisfied.
+///
+/// A release reads as satisfied off of two caches that can each go stale
+/// without the archive knowing: the projected `presence_state` on a
+/// representation, and a library scan's binding to a carrier. Neither
+/// updates just because the file it points at moved, was regenerated, or
+/// turned out not to be there — this is the explicit "build it anyway" for
+/// when that has happened and adoption could not relink it. `buildable`
+/// still reflects reality: forcing skips the satisfied check, not a source
+/// format that genuinely cannot produce the preferred one.
+pub fn query_forced_playable_gap(
+    conn: &Connection,
+    profile_id: &str,
+    archive_release_id: &str,
+) -> Result<Option<ArchivedPlayableGap>, LibraryError> {
+    let (gaps, _completeness) = query_playable_gaps_with_force(
+        conn,
+        &GapScope::Profile {
+            profile_id: profile_id.to_owned(),
+        },
+        Some(archive_release_id),
+    )?;
+    Ok(gaps
+        .into_iter()
+        .find(|gap| gap.archive_release_id == archive_release_id))
+}
+
+/// Whether a release still owes a playable build under the ordinary,
+/// unforced check.
+///
+/// A forced build overwrites `needs_playable` unconditionally, so it cannot
+/// answer this — used after an adoption pass to decide whether adoption
+/// alone resolved things well enough that forcing a build is unnecessary
+/// (and would otherwise collide with the file adoption just recognized).
+pub fn release_needs_playable(
+    conn: &Connection,
+    profile_id: &str,
+    archive_release_id: &str,
+) -> Result<bool, LibraryError> {
+    let (gaps, _completeness) = query_playable_gaps(
+        conn,
+        &GapScope::Profile {
+            profile_id: profile_id.to_owned(),
+        },
+    )?;
+    Ok(gaps
+        .into_iter()
+        .find(|gap| gap.archive_release_id == archive_release_id)
+        .is_some_and(|gap| gap.needs_playable))
+}
+
+/// Shared implementation. `force_release_id`, when set, keeps that one
+/// release's carriers past the "already satisfied" skip and the
+/// completeness-based retain, and reports their `needs_playable` as true so
+/// the build stage that consumes the gap actually acts on them — bypassing
+/// the belief that nothing is owed, not the checks for whether a build is
+/// possible at all.
+#[allow(clippy::too_many_lines)]
+fn query_playable_gaps_with_force(
+    conn: &Connection,
+    scope: &GapScope,
+    force_release_id: Option<&str>,
 ) -> Result<(Vec<ArchivedPlayableGap>, std::collections::HashSet<String>), LibraryError> {
     let completeness = match scope {
         GapScope::Console(console_id) => archive_completeness_for_console(conn, *console_id)?,
@@ -2159,11 +2383,15 @@ pub fn query_playable_gaps(
         verified_disc_count,
         physical_copy_id,
         has_playlist,
-        carrier,
+        mut carrier,
     ) in archived_playable_gaps
     {
+        let forced = force_release_id == Some(archive_release_id.as_str());
+        if forced {
+            carrier.needs_playable = true;
+        }
         let needs_playlist = expected_disc_count > 1 && !has_playlist;
-        if !carrier.needs_playable && carrier.catalog_verified && !needs_playlist {
+        if !forced && !carrier.needs_playable && carrier.catalog_verified && !needs_playlist {
             continue;
         }
         if let Some(release) = grouped.iter_mut().find(|release| {
@@ -2809,6 +3037,13 @@ fn set_user_field(
     })
 }
 
+/// Tag one row and mint the catalog rows that tag implies, atomically.
+///
+/// `catalog_mutation` returns the medium it created, which this then binds the
+/// row to. The binding is what makes the decision *usable*: everything
+/// downstream — which work a mod derives from, and therefore whose artwork it
+/// should wear — reads the row's medium, and without it a freshly tagged mod
+/// would look like a mod of nothing until the next full reconcile.
 fn mutate_entry_with_catalog<F>(
     conn: &mut Connection,
     id: LibraryEntryId,
@@ -2816,7 +3051,7 @@ fn mutate_entry_with_catalog<F>(
     catalog_mutation: F,
 ) -> Result<LibraryChangeSet, LibraryError>
 where
-    F: FnOnce(&Transaction<'_>) -> Result<(), LibraryError>,
+    F: FnOnce(&Transaction<'_>) -> Result<String, LibraryError>,
 {
     let tx = conn.transaction()?;
     let (console_id, root_id): (u64, u64) = tx
@@ -2828,7 +3063,15 @@ where
         )
         .optional()?
         .ok_or(LibraryError::NotFound)?;
-    catalog_mutation(&tx)?;
+    let media_id = catalog_mutation(&tx)?;
+    if !media_id.is_empty() {
+        tx.execute(
+            "INSERT OR REPLACE INTO library_entry_media_bindings(
+                 library_entry_id,catalog_media_id,match_method)
+             VALUES(?1,?2,'collection_mark')",
+            params![id.0, media_id],
+        )?;
+    }
     tx.execute(
         "UPDATE library_entries SET tag=?1,revision=revision+1 WHERE id=?2",
         params![tag, id.0],

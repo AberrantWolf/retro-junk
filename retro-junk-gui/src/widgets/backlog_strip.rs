@@ -20,7 +20,14 @@ pub fn show(ui: &mut egui::Ui, app: &RetroJunkApp) -> bool {
         .per_kind
         .iter()
         .filter(|(_, counts)| {
-            counts.pending > 0 || counts.blocked > 0 || counts.errored > 0 || counts.running > 0
+            counts.pending > 0
+                || counts.blocked > 0
+                || counts.errored > 0
+                || counts.running > 0
+                // Tried and unresolved is not pending work, but it is not
+                // "up to date" either — hiding it would quietly drop every
+                // disc the catalog cannot name.
+                || counts.unresolved > 0
         })
         .map(|(kind, counts)| (*kind, *counts))
         .collect();
@@ -78,10 +85,15 @@ fn chip(ui: &mut egui::Ui, kind: ActionKind, counts: &KindCounts) {
             format!("{label} {} blocked", counts.blocked),
             crate::theme::STATUS_WARN,
         )
-    } else {
+    } else if counts.pending > 0 {
         (
             format!("{label} {}", counts.pending),
             ui.visuals().text_color(),
+        )
+    } else {
+        (
+            format!("{label} {} unresolved", counts.unresolved),
+            crate::theme::STATUS_WARN,
         )
     };
     egui::Frame::NONE
@@ -90,8 +102,15 @@ fn chip(ui: &mut egui::Ui, kind: ActionKind, counts: &KindCounts) {
         .fill(ui.visuals().faint_bg_color)
         .show(ui, |ui| {
             ui.colored_label(color, text).on_hover_text(format!(
-                "{} done, {} pending, {} blocked, {} failed, {} running",
-                counts.done, counts.pending, counts.blocked, counts.errored, counts.running
+                "{} done, {} pending, {} blocked, {} failed, {} running\n\
+                 {} tried and matched no single catalog medium; re-running is \
+                 a deliberate act, since reproducing a disc is expensive",
+                counts.done,
+                counts.pending,
+                counts.blocked,
+                counts.errored,
+                counts.running,
+                counts.unresolved,
             ));
         });
 }

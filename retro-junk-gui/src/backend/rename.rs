@@ -16,6 +16,9 @@ struct RenameJob {
     entry_id: retro_junk_db::LibraryEntryId,
     entry_name: String,
     source: PathBuf,
+    /// Disc-level DAT game name; empty when the match did not carry one. A
+    /// whole-disc container is named from this, never from a member track.
+    dat_game_name: String,
     /// Raw DAT rom name (e.g., "Game (USA).iso") — extension corrected at rename time.
     dat_rom_name: String,
 }
@@ -124,16 +127,17 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                     }
                 }
 
-                // Determine target ROM name from existing dat_match or try DAT lookup
-                let rom_name = get_target_rom_name(app, &folder_name, entry);
+                // Determine target names from existing dat_match or try DAT lookup
+                let target_names = get_target_names(app, &folder_name, entry);
 
-                match rom_name {
-                    Some(dat_rom_name) => {
+                match target_names {
+                    Some((dat_game_name, dat_rom_name)) => {
                         let source = entry.game_entry.analysis_path().to_path_buf();
                         jobs.push(RenameJob {
                             entry_id: i,
                             entry_name,
                             source,
+                            dat_game_name,
                             dat_rom_name,
                         });
                     }
@@ -303,6 +307,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 // Detect actual format extension from file content
                 let detected_ext = sniff_detected_extension(&job.source, &context, platform);
                 let target_name = retro_junk_lib::rename::target_filename_for_rename(
+                    &job.dat_game_name,
                     &job.dat_rom_name,
                     &job.source,
                     &detected_ext,
@@ -386,6 +391,7 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                             file_path: d.file_path.clone(),
                             game_name: d.game_name.clone(),
                             target_filename: retro_junk_lib::rename::target_filename_for_rename(
+                                &d.game_name,
                                 &d.target_filename,
                                 &d.file_path,
                                 &detected_ext,
@@ -477,6 +483,14 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                         entry_id: m3u_job.entry_id,
                         entry_name: m3u_job.entry_name.clone(),
                         outcome: RenameOutcome::M3uRenamed {
+                            source_folder: m3u_job
+                                .files
+                                .first()
+                                .and_then(|disc| disc.parent())
+                                .map_or_else(
+                                    || m3u_result.final_folder.clone(),
+                                    std::path::Path::to_path_buf,
+                                ),
                             target_folder: m3u_result.final_folder,
                             discs_renamed: m3u_result.discs_renamed,
                             playlist_written: m3u_result.playlist_written,
@@ -671,19 +685,19 @@ fn describe_set_failure(cue: &Path, outcome: &DiscSetOutcome) -> String {
 ///
 /// Priority:
 /// 1. Cached `dat_match.rom_name` (already resolved)
-/// 2. Hash lookup against the SQLite catalog
-/// 3. Serial lookup against the SQLite catalog
-fn get_target_rom_name(
+/// 2. Hash lookup against the `SQLite` catalog
+/// 3. Serial lookup against the `SQLite` catalog
+fn get_target_names(
     app: &RetroJunkApp,
     folder_name: &str,
     entry: &crate::state::LibraryEntry,
-) -> Option<String> {
+) -> Option<(String, String)> {
     // 1. Use cached rom_name from dat_match if available (skip cross-region matches)
     if let Some(ref dm) = entry.dat_match
         && !dm.rom_name.is_empty()
         && !dm.cross_region
     {
-        return Some(dm.rom_name.clone());
+        return Some((dm.game_name.clone(), dm.rom_name.clone()));
     }
 
     let conn = app.catalog_db.as_ref()?;
@@ -728,7 +742,10 @@ fn get_target_rom_name(
             entry.hashes.as_ref(),
         )
     {
-        return Some(candidate.media.rom_name.clone());
+        return Some((
+            candidate.media.dat_name.clone(),
+            candidate.media.rom_name.clone(),
+        ));
     }
 
     None

@@ -114,3 +114,49 @@ fn an_unusable_artwork_list_falls_back_to_the_default_set() {
         retro_junk_frontend::AssetSelection::default().types
     );
 }
+
+/// Adoption repairs the archive's record of a file that already exists, so
+/// none of the "may the daemon produce this?" switches apply to it. With every
+/// switch off, a playable that was renamed outside the archive still finds its
+/// way back to the carrier that built it; nothing else runs.
+#[test]
+fn adoption_is_not_gated_by_the_production_switches() {
+    use retro_junk_db::convergence::ActionKind;
+
+    let all_off = AutomationPolicy {
+        auto_verify: false,
+        auto_build: false,
+        auto_scrape: false,
+        ..AutomationPolicy::default()
+    };
+    assert!(crate::worker::daemon_may_run(
+        ActionKind::AdoptPlayable,
+        &all_off
+    ));
+    for kind in [
+        ActionKind::VerifyIntegrity,
+        ActionKind::VerifyCatalog,
+        ActionKind::AuditRedumper,
+        ActionKind::BuildPlayable,
+        ActionKind::ProjectAssets,
+        ActionKind::SyncGamelist,
+        ActionKind::Scrape,
+    ] {
+        assert!(
+            !crate::worker::daemon_may_run(kind, &all_off),
+            "{} produces something and must stay gated",
+            kind.as_str()
+        );
+    }
+
+    // And the switches still mean what they say for everything else.
+    let defaults = AutomationPolicy::default();
+    assert!(crate::worker::daemon_may_run(
+        ActionKind::BuildPlayable,
+        &defaults
+    ));
+    assert!(!crate::worker::daemon_may_run(
+        ActionKind::Scrape,
+        &defaults
+    ));
+}

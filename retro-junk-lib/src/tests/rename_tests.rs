@@ -152,3 +152,43 @@ fn single_rename_moves_media_transactionally() {
             .is_file()
     );
 }
+
+/// A CHD holds the whole disc. Matching it hashes the data track, so the
+/// matched ROM entry is `… (Track 1).bin` — and taking that entry's stem named
+/// the container after one of its own members. Reported against the Saturn
+/// disc "Tenchi Muyou! Ryououki Gokuraku CD-ROM".
+#[test]
+fn a_whole_disc_container_is_not_renamed_after_the_track_it_matched() {
+    let source = Path::new("/roms/saturn/dump.chd");
+    assert_eq!(
+        target_filename_for_rename(
+            "Tenchi Muyou! Ryououki Gokuraku CD-ROM for Sega Saturn (Japan) (1M)",
+            "Tenchi Muyou! Ryououki Gokuraku CD-ROM for Sega Saturn (Japan) (1M) (Track 1).bin",
+            source,
+            "chd",
+        ),
+        "Tenchi Muyou! Ryououki Gokuraku CD-ROM for Sega Saturn (Japan) (1M).chd"
+    );
+}
+
+/// The counterpart: a loose `.bin` really is that member track, and renaming
+/// it to the disc name would break the cue that references it.
+#[test]
+fn a_member_track_keeps_its_track_name() {
+    let source = Path::new("/roms/saturn/track01.bin");
+    assert_eq!(
+        target_filename_for_rename("Game (Japan)", "Game (Japan) (Track 1).bin", source, "bin"),
+        "Game (Japan) (Track 1).bin"
+    );
+}
+
+/// Single-file media keep the DAT ROM name: for N64 it is the only thing
+/// distinguishing the `.z64` and `.v64` records under one game name.
+#[test]
+fn single_file_media_still_take_their_rom_name() {
+    let source = Path::new("/roms/n64/dump.n64");
+    assert_eq!(
+        target_filename_for_rename("Game (USA)", "Game (USA) (Byte Swapped).v64", source, "v64"),
+        "Game (USA) (Byte Swapped).v64"
+    );
+}

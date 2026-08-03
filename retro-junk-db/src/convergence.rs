@@ -16,7 +16,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::library::{
     ArchivedPlayableGap, ArchivedScrapeIdentity, GapScope, LibraryError, ScrapeIdentityTier,
-    query_playable_gaps,
+    query_forced_playable_gap, query_playable_gaps,
 };
 
 /// What a proposed action would do. `#[non_exhaustive]`: miximage staleness
@@ -34,6 +34,11 @@ pub enum ActionKind {
     VerifyCatalog,
     /// Reproduce a Redumper raw master and bind its complete track set.
     AuditRedumper,
+    /// Find a playable output that moved out from under its build evidence and
+    /// record where it now lives. Ordered before [`Self::BuildPlayable`] on
+    /// purpose: a moved file that is not re-adopted first reads as a build gap
+    /// and gets rebuilt beside itself.
+    AdoptPlayable,
     /// Build the preferred playable representation for a release (includes
     /// the playlist when the set completes, plus asset/gamelist projection).
     BuildPlayable,
@@ -52,6 +57,7 @@ impl ActionKind {
             Self::VerifyIntegrity => "verify_integrity",
             Self::VerifyCatalog => "verify_catalog",
             Self::AuditRedumper => "audit_redumper",
+            Self::AdoptPlayable => "adopt_playable",
             Self::BuildPlayable => "build",
             Self::Scrape => "scrape",
             Self::ProjectAssets => "project_assets",
@@ -67,6 +73,7 @@ impl ActionKind {
             Self::VerifyIntegrity,
             Self::VerifyCatalog,
             Self::AuditRedumper,
+            Self::AdoptPlayable,
             Self::BuildPlayable,
             Self::Scrape,
             Self::ProjectAssets,
@@ -83,6 +90,7 @@ impl std::str::FromStr for ActionKind {
             "verify_integrity" | "verify-integrity" | "integrity" => Ok(Self::VerifyIntegrity),
             "verify_catalog" | "verify-catalog" | "catalog" => Ok(Self::VerifyCatalog),
             "audit_redumper" | "audit-redumper" | "audit" => Ok(Self::AuditRedumper),
+            "adopt_playable" | "adopt-playable" | "adopt" => Ok(Self::AdoptPlayable),
             "build" | "build_playable" => Ok(Self::BuildPlayable),
             "scrape" | "artwork" => Ok(Self::Scrape),
             "project_assets" | "project" => Ok(Self::ProjectAssets),
@@ -192,6 +200,7 @@ pub fn derive_convergence(
     let mut actions = Vec::new();
     for profile_id in profiles_in_scope(conn, scope)? {
         derive_dump_actions(conn, &profile_id, &mut actions)?;
+        derive_adoption_actions(conn, &profile_id, &mut actions)?;
         derive_build_actions(conn, &profile_id, &mut actions)?;
         derive_scrape_actions(conn, &profile_id, expected_assets, &mut actions)?;
         derive_projection_actions(conn, &profile_id, &mut actions)?;
@@ -272,6 +281,33 @@ pub fn errors_by_release(
         };
         if let Some(release_id) = release_for_target(conn, &target) {
             grouped.entry(release_id).or_default().push((kind, error));
+        }
+    }
+    Ok(grouped)
+}
+
+/// Every blocked action, grouped by the archive release it belongs to.
+///
+/// [`BlockedReason`]'s own doc comment says blocked actions are reported,
+/// never silently dropped — this is what lets a UI honor that: the worker
+/// already skips a blocked action before it ever reaches the executor, so
+/// without this a click on one produces no error and no effect, and the
+/// reason `derive_convergence` computed is never seen by anyone.
+pub fn blocked_by_release(
+    conn: &Connection,
+    scope: &Scope,
+    expected_assets: &AssetSelection,
+) -> Result<BTreeMap<String, Vec<(ActionKind, BlockedReason)>>, LibraryError> {
+    let mut grouped: BTreeMap<String, Vec<_>> = BTreeMap::new();
+    for action in derive_convergence(conn, scope, expected_assets)? {
+        let Some(reason) = action.blocked.clone() else {
+            continue;
+        };
+        if let Some(release_id) = action.release_id(conn) {
+            grouped
+                .entry(release_id)
+                .or_default()
+                .push((action.kind, reason));
         }
     }
     Ok(grouped)
@@ -370,12 +406,89 @@ fn derive_dump_actions(
             actions.push(base(ActionKind::VerifyIntegrity));
         }
         let redumper_raw = format == "redumper_raw";
-        if redumper_raw && (catalog_media_id.is_empty() || catalog_state != "verified") {
+        let identify =
+            crate::archive::needs_catalog_identification(&catalog_state, &catalog_media_id);
+        if redumper_raw && identify {
             actions.push(base(ActionKind::AuditRedumper));
         }
-        if !redumper_raw && file_count == 1 && catalog_state != "verified" {
+        if !redumper_raw && file_count == 1 && identify {
             actions.push(base(ActionKind::VerifyCatalog));
         }
+    }
+    Ok(())
+}
+
+/// Releases whose playable files and the archive's record of them disagree, in
+/// the two ways a content match can settle.
+///
+/// First: a recorded playable whose file is not there. `missing` is
+/// deliberately narrower than "not present" — a `stale` output belongs to
+/// superseded evidence and a `modified` one is an integrity question, neither
+/// of which re-adoption answers.
+///
+/// Second: a carrier with *no* playable at all, beside an unbound library file
+/// carrying that carrier's catalog digests. That is a collection assembled
+/// before the archive existed — the file was never built here, so there is no
+/// output digest to search for, but the catalog medium the carrier verified
+/// against identifies it just as well.
+const ORPHANED_PLAYABLE_SQL: &str = "
+    SELECT DISTINCT ar.id, ar.platform_id, ar.region, ar.title
+    FROM archive_releases ar
+    JOIN physical_copies pc ON pc.archive_release_id=ar.id
+    JOIN carriers c ON c.physical_copy_id=pc.id
+    JOIN representations rep ON rep.carrier_id=c.id
+    WHERE ar.profile_id=?1
+      AND rep.role='playable' AND rep.presence_state='missing'
+    UNION
+    SELECT DISTINCT ar.id, ar.platform_id, ar.region, ar.title
+    FROM archive_releases ar
+    JOIN archive_profiles ap ON ap.id=ar.profile_id
+    JOIN physical_copies pc ON pc.archive_release_id=ar.id
+    JOIN carriers c ON c.physical_copy_id=pc.id
+    JOIN media m ON m.id=c.catalog_media_id
+    JOIN library_roots lr ON lr.root_path=ap.playable_root
+    JOIN library_consoles lc ON lc.root_id=lr.id
+    JOIN library_entries le ON le.console_id=lc.id AND le.data_size=m.file_size
+    WHERE ar.profile_id=?1
+      AND NOT EXISTS(
+          SELECT 1 FROM representations rep
+          WHERE rep.carrier_id=c.id AND rep.role='playable')
+      AND ((le.sha1<>'' AND m.sha1<>'' AND le.sha1=m.sha1)
+           OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))
+      AND NOT EXISTS(
+          SELECT 1 FROM library_entry_media_bindings b
+          WHERE b.library_entry_id=le.id AND b.carrier_id IS NOT NULL)";
+
+fn derive_adoption_actions(
+    conn: &Connection,
+    profile_id: &str,
+    actions: &mut Vec<ProposedAction>,
+) -> Result<(), LibraryError> {
+    let mut statement = conn.prepare(ORPHANED_PLAYABLE_SQL)?;
+    let rows = statement
+        .query_map([profile_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (release_id, platform_id, region, title) in rows {
+        actions.push(ProposedAction {
+            kind: ActionKind::AdoptPlayable,
+            target: WorkTarget::Release(release_id),
+            profile_id: profile_id.to_owned(),
+            playable_platform_id: retro_junk_frontend::esde::system_directory(
+                &platform_id,
+                Some(&region),
+            ),
+            platform_id,
+            label: dump_label(&title, &region, 0),
+            blocked: None,
+            build: None,
+        });
     }
     Ok(())
 }
@@ -425,6 +538,66 @@ fn derive_build_actions(
         });
     }
     Ok(())
+}
+
+/// Force a rebuild of one release's playable representation, regardless of
+/// whether it currently reads as satisfied.
+///
+/// The normal derivation above skips a release once its preferred playable
+/// looks present, off of caches — a projected representation row, a bound
+/// library entry — that can go stale without the archive knowing: a moved
+/// or regenerated file `AdoptPlayable` could not relink, or a scan binding
+/// left over from before the file changed. This is the escape hatch: it
+/// bypasses only the "already satisfied" belief, not a genuine blocker.
+/// [`BlockedReason`] still applies the same way — forcing cannot build
+/// without a preferred format or a complete archive, only skip the belief
+/// that nothing is owed.
+pub fn forced_build_action(
+    conn: &Connection,
+    archive_release_id: &str,
+) -> Result<Option<ProposedAction>, LibraryError> {
+    let Some((profile_id, platform_id, region)) = conn
+        .query_row(
+            "SELECT profile_id, platform_id, region FROM archive_releases WHERE id=?1",
+            [archive_release_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let Some(gap) = query_forced_playable_gap(conn, &profile_id, archive_release_id)? else {
+        return Ok(None);
+    };
+    let blocked = if gap.preferred_format.is_none() {
+        Some(BlockedReason::NoPolicy)
+    } else if !gap.buildable {
+        Some(BlockedReason::IncompleteArchive {
+            have: gap.archived_disc_count,
+            need: gap.expected_disc_count,
+        })
+    } else {
+        None
+    };
+    Ok(Some(ProposedAction {
+        kind: ActionKind::BuildPlayable,
+        target: WorkTarget::Release(archive_release_id.to_owned()),
+        profile_id,
+        playable_platform_id: retro_junk_frontend::esde::system_directory(
+            &platform_id,
+            Some(&region),
+        ),
+        platform_id,
+        label: dump_label(&gap.title, &gap.region, 0),
+        blocked,
+        build: Some(gap),
+    }))
 }
 
 /// Releases with archived artwork and a present playable output owe current
@@ -660,6 +833,13 @@ pub struct KindCounts {
     pub blocked: u64,
     pub errored: u64,
     pub running: u64,
+    /// Tried against these exact bytes and settled on no single catalog
+    /// medium — nothing matched, or several did.
+    ///
+    /// These are deliberately not `pending`: re-deriving the same answer costs
+    /// a full reproduction of the dump. Counted separately so they stay visible
+    /// instead of vanishing from the backlog as though they never existed.
+    pub unresolved: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -723,13 +903,15 @@ pub fn summarize_convergence(
                     .or_default()
                     .done += 1;
             }
-            if catalog_state == "verified" {
-                let kind = if format == "redumper_raw" {
-                    ActionKind::AuditRedumper
-                } else {
-                    ActionKind::VerifyCatalog
-                };
-                summary.per_kind.entry(kind).or_default().done += 1;
+            let catalog_kind = if format == "redumper_raw" {
+                ActionKind::AuditRedumper
+            } else {
+                ActionKind::VerifyCatalog
+            };
+            if catalog_state == crate::archive::CATALOG_VERIFIED {
+                summary.per_kind.entry(catalog_kind).or_default().done += 1;
+            } else if catalog_state == crate::archive::CATALOG_UNRESOLVED {
+                summary.per_kind.entry(catalog_kind).or_default().unresolved += 1;
             } else if format != "redumper_raw" && file_count != 1 {
                 // Multi-file non-redumper dumps have no automated catalog
                 // path; they are neither done nor pending.
@@ -748,6 +930,15 @@ pub fn summarize_convergence(
         summary
             .per_kind
             .entry(ActionKind::BuildPlayable)
+            .or_default()
+            .done += satisfied;
+        // Adoption is repair, not a stage every release passes through: a
+        // release whose playables are all where their evidence says needs no
+        // adoption and counts as done, so the chip reads 0 pending rather
+        // than an empty backlog of nothing.
+        summary
+            .per_kind
+            .entry(ActionKind::AdoptPlayable)
             .or_default()
             .done += satisfied;
         let fully_scraped = scrape_gaps(conn, &profile_id, expected_assets)?

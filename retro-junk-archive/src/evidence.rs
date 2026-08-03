@@ -41,12 +41,32 @@ pub fn dump_catalog_evidence(dump: &IndexedDump) -> Option<&CatalogEvidence> {
         {
             return None;
         }
-        verification
-            .evidence
-            .catalog
-            .as_ref()
-            .filter(|catalog| catalog.complete_track_set)
+        verification.evidence.catalog.as_ref().filter(|catalog| {
+            catalog.complete_track_set || cartridge_set_is_trivially_complete(dump)
+        })
     })
+}
+
+/// Whether this dump has no track set that a match could be incomplete about.
+///
+/// A cartridge is one file and one "track". The verification path that matched
+/// it predates the `complete_track_set` flag and left it `false` — 244 records
+/// on the reference archive, every one of them a `rom`-format single-file
+/// master. Because the flag gates catalog-verification entirely, those dumps
+/// read as unverified, which in turn blocked carrier re-resolution and hash
+/// adoption behind them.
+///
+/// Deriving it from the dump's shape upgrades them without rewriting a single
+/// evidence file: the archive is append-only history, and rewriting 244 records
+/// to state something their shape already proves is churn, not evidence.
+///
+/// Deliberately narrow. `Iso` is excluded even when single-file, because a
+/// data-track-only image of a multi-track disc is precisely the case where a
+/// match *is* incomplete — the one non-`rom` record in that population is
+/// exactly such a dump.
+fn cartridge_set_is_trivially_complete(dump: &IndexedDump) -> bool {
+    dump.manifest.format == crate::manifest::RepresentationFormat::Rom
+        && dump.manifest.files.len() == 1
 }
 
 /// Whether the dump is catalog-verified by current evidence covering the
@@ -54,4 +74,35 @@ pub fn dump_catalog_evidence(dump: &IndexedDump) -> Option<&CatalogEvidence> {
 #[must_use]
 pub fn dump_catalog_verified(dump: &IndexedDump) -> bool {
     dump_catalog_evidence(dump).is_some()
+}
+
+/// Whether identification already reached a conclusion about these exact bytes.
+///
+/// A match, "nothing in the catalog matches", and "several catalog media match"
+/// are all conclusions. Only the first binds a carrier, but all three are
+/// answers, and re-deriving them costs a full copy-and-split of the raw dump.
+/// Without this, every convergence run would redo that work for any disc the
+/// catalog cannot resolve — forever, because failing to match is exactly what
+/// leaves a dump looking unidentified.
+///
+/// A `Failed` outcome is deliberately *not* a conclusion: it means the
+/// reproduction itself broke (redumper missing, scratch disk full, cancelled
+/// mid-run), so the next run should try again.
+///
+/// Conclusions are tied to `input_manifest_sha256`, so re-ingesting or
+/// repairing the dump makes it eligible again. When the *catalog* is what
+/// changed — a newly imported DAT that might now match — ask for a full pass
+/// instead of a stale-only one.
+#[must_use]
+pub fn dump_catalog_attempted(dump: &IndexedDump) -> bool {
+    dump.verifications.iter().any(|verification| {
+        verification.evidence.kind == VerificationKind::Catalog
+            && verification.evidence.input_manifest_sha256 == dump.manifest_sha256
+            && matches!(
+                verification.evidence.outcome,
+                VerificationOutcome::Verified
+                    | VerificationOutcome::Unmatched
+                    | VerificationOutcome::Ambiguous
+            )
+    })
 }

@@ -71,6 +71,51 @@ fn archive_lock_respects_a_live_existence_holder() {
     ));
 }
 
+/// A network share is shared: another machine's lock record must never be
+/// PID-probed here. Its PID numbers mean nothing on this host, and a
+/// dead-looking foreign holder may be very much alive — deleting its lock
+/// opens the archive to two concurrent writers, the exact corruption the
+/// lock exists to prevent. Only the conservative age window may reclaim it.
+#[cfg(unix)]
+#[test]
+fn archive_lock_never_pid_probes_another_hosts_record() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    initialize_archive(&root, &ArchiveRootManifest::new("Foreign holder test")).unwrap();
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    let dead_pid = child.id();
+    std::fs::write(
+        root.join(".retro-junk/archive.lock"),
+        format!("pid={dead_pid} host=some-other-machine started_at=2026-07-29T12:00:00+00:00\n"),
+    )
+    .unwrap();
+    assert!(matches!(
+        crate::ArchiveLock::acquire(&root),
+        Err(crate::ArchiveLockError::Busy(_))
+    ));
+}
+
+/// The complement: a record that names this host reclaims immediately on a
+/// demonstrably dead PID, exactly like an unattributed local record.
+#[cfg(unix)]
+#[test]
+fn archive_lock_reclaims_this_hosts_dead_holder_by_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    initialize_archive(&root, &ArchiveRootManifest::new("Named dead holder test")).unwrap();
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    child.wait().unwrap();
+    let dead_pid = child.id();
+    let host = retro_junk_io::local_host_id().expect("unix hosts can name themselves");
+    std::fs::write(
+        root.join(".retro-junk/archive.lock"),
+        format!("pid={dead_pid} host={host} started_at=2026-07-29T12:00:00+00:00\n"),
+    )
+    .unwrap();
+    crate::ArchiveLock::acquire(&root).unwrap();
+}
+
 /// Diagnostics left behind by an OS-mode holder that crashed (its lock was
 /// released by the kernel) must never block a new acquisition.
 #[test]
@@ -98,7 +143,7 @@ fn empty_lock_file_is_stale_only_after_the_write_window() {
         .write(true)
         .open(&lock_path)
         .unwrap();
-    let backdated = std::time::SystemTime::now() - std::time::Duration::from_secs(120);
+    let backdated = std::time::SystemTime::now() - std::time::Duration::from_mins(2);
     file.set_times(std::fs::FileTimes::new().set_modified(backdated))
         .unwrap();
     assert!(crate::lock::lock_is_stale(&lock_path));
@@ -593,22 +638,24 @@ echo '<rom name="disc (Track 01).bin" size="5" crc="AABBCCDD" md5="0011" sha1="1
     assert_eq!(std::fs::read_dir(&work).unwrap().count(), 0);
     let mut phases = Vec::new();
     let prepared = redumper
-        .prepare_with_phase_progress(
+        .prepare_with_progress(
             &raw,
             &work,
             &AtomicBool::new(false),
-            |phase, current, total| phases.push((phase.to_owned(), current, total)),
+            |phase, unit, current, total| phases.push((phase.to_owned(), unit, current, total)),
         )
         .unwrap();
-    assert!(
-        phases
-            .iter()
-            .any(|(phase, _, total)| { phase == "Copying Redumper source files" && *total > 0 })
-    );
-    assert!(phases.iter().any(|(phase, current, total)| {
+    // The copy is what makes a disc audit slow, so it has to report bytes: a
+    // caller that cannot tell bytes from item counts renders "0 B / 1 B".
+    assert!(phases.iter().any(|(phase, unit, _, total)| {
+        phase == crate::redumper::COPY_PHASE
+            && *unit == retro_junk_io::ProgressUnit::Bytes
+            && *total > 0
+    }));
+    assert!(phases.iter().any(|(phase, _, current, total)| {
         phase == "Running Redumper split" && *current == 0 && *total == 0
     }));
-    assert!(phases.iter().any(|(phase, current, total)| {
+    assert!(phases.iter().any(|(phase, _, current, total)| {
         phase == "Running Redumper hash" && *current == 0 && *total == 0
     }));
     let retained = temp.path().join("intermediate");
@@ -936,7 +983,7 @@ fn a_scanned_manifest_digest_matches_the_file_on_disk() {
     );
 }
 
-/// An archive mirrored onto exFAT or SMB arrives with an AppleDouble sidecar
+/// An archive mirrored onto exFAT or SMB arrives with an `AppleDouble` sidecar
 /// beside every dump file. Those are host metadata, not dump content: counting
 /// them would report the whole mirror as corrupt, and ingesting them would
 /// bake this device's filesystem into a preservation manifest.
@@ -1015,4 +1062,92 @@ fn image_name_discovery_reports_a_raw_set_that_is_only_sidecars() {
         crate::redumper::find_image_name(&raw),
         Err(crate::RedumperError::MissingRawImage(_))
     ));
+}
+
+/// A busy-lock message has to be readable without doing timezone arithmetic.
+/// The record stores RFC 3339 UTC, and printing it raw made a lock taken 34
+/// minutes earlier read as "held since 02:06 this morning" to a reader nine
+/// hours ahead of UTC — indistinguishable from a wedged archive.
+#[test]
+fn a_busy_lock_reports_how_long_it_has_been_held_not_a_utc_timestamp() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    initialize_archive(&root, &ArchiveRootManifest::new("Busy message")).unwrap();
+    let started = chrono::Utc::now() - chrono::Duration::minutes(95);
+    std::fs::write(
+        root.join(".retro-junk/archive.lock"),
+        format!(
+            "pid={} started_at={}\n",
+            std::process::id(),
+            started.to_rfc3339()
+        ),
+    )
+    .unwrap();
+
+    let message = match crate::ArchiveLock::acquire(&root) {
+        Err(crate::ArchiveLockError::Busy(details)) => details,
+        Err(other) => panic!("expected a busy lock, got {other}"),
+        Ok(_) => panic!("expected a busy lock, acquired it instead"),
+    };
+    assert!(
+        message.contains("held 1h35m"),
+        "elapsed time, not a timestamp: {message}"
+    );
+    assert!(
+        message.contains(&format!("pid {}", std::process::id())),
+        "and who holds it: {message}"
+    );
+    assert!(
+        !message.contains("started_at"),
+        "the raw record is what misled: {message}"
+    );
+}
+
+/// A catalog name is written by people for people, and is used verbatim as a
+/// playable's filename — but a name is not a filename. The reference archive
+/// lives on exFAT, where a colon is illegal, so a title carrying one could not
+/// be written at all; a slash would be worse, silently meaning a directory.
+#[test]
+fn a_catalog_name_is_made_safe_to_write_without_being_mangled() {
+    use crate::safe_file_stem;
+
+    // The overwhelmingly common case: nothing to do.
+    assert_eq!(
+        safe_file_stem("Castlevania - Symphony of the Night (USA)"),
+        "Castlevania - Symphony of the Night (USA)"
+    );
+
+    // A colon reads as a subtitle break, which is what No-Intro and Redump
+    // already write as " - ".
+    assert_eq!(
+        safe_file_stem("Harvest Moon: Boy Meets Girl (Japan)"),
+        "Harvest Moon - Boy Meets Girl (Japan)"
+    );
+
+    // A separator must never survive: it would place the file somewhere else
+    // entirely, or fail.
+    assert_eq!(safe_file_stem("Either/Or (USA)"), "Either-Or (USA)");
+    assert_eq!(safe_file_stem(r"Back\Slash (USA)"), "Back-Slash (USA)");
+
+    // Windows drops trailing dots and spaces silently, which would make the
+    // recorded path and the real one differ by something nobody can see.
+    assert_eq!(safe_file_stem("Mr. Do! (USA)."), "Mr. Do! (USA)");
+    assert_eq!(
+        safe_file_stem("Trailing space (USA)   "),
+        "Trailing space (USA)"
+    );
+
+    // Periods inside a name are ordinary and must be kept — `Dr. Mario` is not
+    // an extension.
+    assert_eq!(safe_file_stem("Dr. Mario (USA)"), "Dr. Mario (USA)");
+
+    // Illegal characters are replaced, not deleted, so a name made only of
+    // them still names something writable rather than collapsing to a shared
+    // placeholder that two different titles would collide on.
+    assert_eq!(safe_file_stem("///"), "---");
+
+    // A name with nothing left after trimming has to produce a usable
+    // filename rather than an empty one.
+    assert_eq!(safe_file_stem("   "), "untitled");
+    assert_eq!(safe_file_stem("\u{7}\u{1}"), "untitled");
 }

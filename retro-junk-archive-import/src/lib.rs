@@ -154,6 +154,10 @@ pub struct CatalogCandidate {
     pub variant: String,
     pub serial: String,
     pub sequence_number: u32,
+    /// The release's total numbered-disc count per the catalog, at least 1.
+    /// Zero until plan finalization fills it in; consumers clamp with
+    /// `.max(1)` so an unfilled value degrades to single-disc behavior.
+    pub release_disc_count: u32,
     pub source: String,
     pub source_version: String,
 }
@@ -186,6 +190,20 @@ pub struct PlanningProgress {
     pub kind: PlanningProgressKind,
     pub current: u64,
     pub total: u64,
+}
+
+/// Translate a shared progress report into this module's display kind.
+///
+/// The reporting operation says what its numbers count; a total of zero still
+/// means "no measurable extent", whatever the unit, so it shows as a busy
+/// indicator rather than a proportion of nothing.
+#[must_use]
+pub fn progress_kind(unit: retro_junk_io::ProgressUnit, total: u64) -> PlanningProgressKind {
+    match (unit, total) {
+        (_, 0) => PlanningProgressKind::Indeterminate,
+        (retro_junk_io::ProgressUnit::Bytes, _) => PlanningProgressKind::Bytes,
+        (retro_junk_io::ProgressUnit::Items, _) => PlanningProgressKind::Items,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -642,6 +660,17 @@ pub fn plan_import(
             intermediate_source,
         });
         report_analysis_complete((analysis_index + 1) as u64);
+    }
+    // The plan is all `execute_import` gets — no catalog connection crosses
+    // that boundary — so the release's total disc count is captured here.
+    // Playable builds need the total (playlist layout, "(Disc N)" naming);
+    // the medium's own sequence number only says which disc this one is.
+    for candidate in &mut candidates {
+        if let Some(selected) = candidate.selected_match.as_mut() {
+            selected.release_disc_count =
+                retro_junk_db::release_disc_count(catalog, &selected.release_id)
+                    .map_err(|error| ImportError::Catalog(error.to_string()))?;
+        }
     }
     let total_source_bytes = candidates
         .iter()
@@ -1233,47 +1262,20 @@ fn named_physical_platform(catalog_platform: &str, value: &str) -> Option<&'stat
 }
 
 fn regional_physical_platform(catalog_platform: &str, region: &str) -> Option<&'static str> {
-    let region = region.trim().to_ascii_lowercase();
-    match catalog_platform {
-        "nes" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("famicom"),
-        "nes" => Some("nes"),
-        "snes" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("super-famicom"),
-        "snes"
-            if matches!(
-                region.as_str(),
-                "usa" | "us" | "canada" | "north america" | "north-america"
-            ) =>
-        {
-            Some("snesna")
-        }
-        "pcecd" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("pcenginecd"),
-        "pcecd"
-            if matches!(
-                region.as_str(),
-                "usa" | "us" | "north america" | "north-america"
-            ) =>
-        {
-            Some("tg-cd")
-        }
-        "snes" => Some("snes"),
-        "genesis" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("megadrivejp"),
-        "genesis"
-            if matches!(
-                region.as_str(),
-                "europe" | "eur" | "australia" | "brazil" | "asia"
-            ) =>
-        {
-            Some("megadrive")
-        }
-        "genesis" => Some("genesis"),
-        "pce" if matches!(region.as_str(), "usa" | "us" | "canada" | "europe" | "eur") => {
-            Some("tg16")
-        }
-        "pce" => Some("pce"),
-        "saturn" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("saturnjp"),
-        "saturn" => Some("saturn"),
-        _ => None,
-    }
+    // The regional mapping itself is the archive crate's, shared with the
+    // legacy-directory migration so the two can never drift. This wrapper
+    // adds only the import-time question: a platform whose family is known
+    // but whose region needs no regional directory keeps its own name.
+    retro_junk_archive::regional_physical_platform(catalog_platform, region).or(
+        match catalog_platform {
+            "nes" => Some("nes"),
+            "snes" => Some("snes"),
+            "genesis" => Some("genesis"),
+            "pce" => Some("pce"),
+            "saturn" => Some("saturn"),
+            _ => None,
+        },
+    )
 }
 
 fn is_known_cartridge_catalog_platform(platform: &str) -> bool {
@@ -2059,19 +2061,14 @@ fn append_playable_adoption(
             }
         }
     }
-    std::fs::create_dir_all(&evidence_directory).map_err(|source| ImportError::Io {
-        path: evidence_directory.display().to_string(),
-        source,
-    })?;
     let (_, input_manifest_sha256) =
         retro_junk_archive::sha256_file(&dump_directory.join("dump.toml"), &AtomicBool::new(false))
             .map_err(|error| ImportError::Archive(error.to_string()))?;
-    let build_id = retro_junk_archive::BuildId::new();
-    retro_junk_archive::write_json_new(
-        &evidence_directory.join(format!("build-{build_id}.json")),
+    retro_junk_archive::write_build_evidence(
+        dump_directory,
         &retro_junk_archive::BuildEvidence {
             schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
-            build_id,
+            build_id: retro_junk_archive::BuildId::new(),
             parent_representation_id: manifest.representation_id,
             child_representation_id: retro_junk_archive::RepresentationId::new(),
             performed_at: chrono::Utc::now().to_rfc3339(),
@@ -2088,6 +2085,7 @@ fn append_playable_adoption(
             canonical_intermediate: None,
         },
     )
+    .map(|_| ())
     .map_err(|error| ImportError::Archive(error.to_string()))
 }
 
@@ -2135,6 +2133,7 @@ impl From<retro_junk_db::CompleteCatalogMediaMatch> for CatalogCandidate {
             variant: value.variant,
             serial: value.serial,
             sequence_number: value.sequence_number,
+            release_disc_count: 0,
             source: value.source,
             source_version: value.source_version,
         }
@@ -2550,6 +2549,7 @@ mod tests {
             variant: String::new(),
             serial: String::new(),
             sequence_number: 0,
+            release_disc_count: 1,
             source: "no-intro".to_owned(),
             source_version: String::new(),
         };
@@ -3051,18 +3051,14 @@ fn build_imported_playable(
                 &candidate.archive_platform_id,
                 &selected.region,
             ),
-            expected_disc_count: selected.sequence_number.max(1),
+            expected_disc_count: selected.release_disc_count.max(1),
             canonical_output_stem: selected.title.clone(),
             canonical_release_name: selected.title.clone(),
         },
-        &|description, current, total| {
+        &|description, unit, current, total| {
             on_phase(PlanningProgress {
                 description: description.to_owned(),
-                kind: if total == 0 {
-                    PlanningProgressKind::Indeterminate
-                } else {
-                    PlanningProgressKind::Bytes
-                },
+                kind: progress_kind(unit, total),
                 current,
                 total,
             });

@@ -86,7 +86,7 @@ fn setup(entries: &[LibraryEntryRow]) -> (Connection, LibraryRootId, LibraryCons
         )
         .unwrap();
         if !source.tag.is_empty() {
-            set_entry_tag(&mut conn, detail.id, Some(&source.tag)).unwrap();
+            set_entry_tag(&mut conn, detail.id, Some(&source.tag), None).unwrap();
         }
     }
     (conn, root, console)
@@ -342,7 +342,7 @@ fn unchanged_and_changed_scans_preserve_identity_but_invalidate_only_when_needed
     .unwrap()
     .rows[0]
         .clone();
-    set_entry_tag(&mut conn, original.id, Some("homebrew")).unwrap();
+    set_entry_tag(&mut conn, original.id, Some("homebrew"), None).unwrap();
     let token = begin_console_scan(&conn, console).unwrap();
     reconcile_console_scan(
         &mut conn,
@@ -402,7 +402,7 @@ fn reconciliation_persists_completed_analysis_for_new_and_changed_sources() {
     assert_eq!(first.row.dat_game_name, "Catalog Game");
     assert!(first.row.identification_json.is_some());
 
-    set_entry_tag(&mut conn, first.id, Some("homebrew")).unwrap();
+    set_entry_tag(&mut conn, first.id, Some("homebrew"), None).unwrap();
     set_entry_region_override(&mut conn, first.id, Some("US")).unwrap();
     let token = begin_console_scan(&conn, console).unwrap();
     let mut changed = analyzed_scanned("game.nes", "renamed.nes", "source-2");
@@ -446,7 +446,7 @@ fn unchanged_source_reconciliation_refreshes_analysis_and_preserves_user_fields(
     let before = load_entry_details_for_console(&conn, console)
         .unwrap()
         .remove(0);
-    set_entry_tag(&mut conn, before.id, Some("homebrew")).unwrap();
+    set_entry_tag(&mut conn, before.id, Some("homebrew"), None).unwrap();
     set_entry_region_override(&mut conn, before.id, Some("JP")).unwrap();
 
     let mut rescanned = scanned("game.nes", "game.nes", "");
@@ -596,6 +596,7 @@ fn catalog_creation_and_library_tagging_are_one_transaction() {
             "Test Homebrew",
             "missing-platform",
             "us",
+            None,
         )
         .is_err()
     );

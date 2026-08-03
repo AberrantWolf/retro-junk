@@ -959,6 +959,32 @@ fn show_archive_context_menu(
             ui.close();
         }
     }
+
+    ui.separator();
+    // Deliberately always available, even when the release reads as
+    // satisfied above (or has no `action` at all): a moved or regenerated
+    // playable whose evidence points nowhere findable, or a stale library
+    // binding left over from before the file changed, both make convergence
+    // believe nothing is owed. This is the way out of that belief.
+    if ui
+        .button(icons::labeled(
+            icons::BUILD_PLAYABLE,
+            "Force Rebuild Playable",
+        ))
+        .on_hover_text(
+            "Build a fresh playable copy even if the archive currently reads this release as \
+             satisfied — use when a moved or regenerated file could not be relinked automatically.",
+        )
+        .clicked()
+    {
+        backend::convergence::force_rebuild_playable(
+            app,
+            release.summary.archive_release_id.clone(),
+            release.summary.title.clone(),
+            ctx,
+        );
+        ui.close();
+    }
 }
 
 fn show_multi_row_context_menu(
@@ -1396,7 +1422,11 @@ fn aggregate_asset_status(statuses: impl Iterator<Item = AssetStatus>) -> AssetS
             _ => AssetStatus::Unknown,
         };
     }
-    saw_status.then_some(best).unwrap_or(AssetStatus::Unknown)
+    if saw_status {
+        best
+    } else {
+        AssetStatus::Unknown
+    }
 }
 
 fn archive_asset_status(assets: &[retro_junk_db::ArchivedReleaseAsset]) -> AssetStatus {

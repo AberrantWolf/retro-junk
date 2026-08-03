@@ -39,7 +39,8 @@ pub fn screenscraper_system_id(platform: Platform) -> Option<u32> {
         // Microsoft
         Platform::Xbox => Some(32),
         Platform::Xbox360 => Some(33),
-        Platform::PceCd => None,
+        // NEC PC Engine CD, per .claude/skills/game-scraping/ScreenScraperAPI.md.
+        Platform::PceCd => Some(114),
     }
 }
 

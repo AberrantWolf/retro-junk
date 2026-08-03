@@ -735,13 +735,7 @@ fn check_cue_compat_for_entry(entry: &scanner::GameEntry) -> Vec<CueCompatIssue>
             .and_then(|n| n.to_str())
             .unwrap_or("?")
             .to_string();
-        if !report.is_standard() {
-            issues.push(CueCompatIssue {
-                file_name,
-                summary: report.summary(),
-                can_auto_fix: report.can_auto_fix(),
-            });
-        } else {
+        if report.is_standard() {
             let layout = retro_junk_disc::cue::parse_cue(&content).and_then(|sheet| {
                 retro_junk_disc::track_layout::cue_track_spans(
                     &sheet,
@@ -755,6 +749,12 @@ fn check_cue_compat_for_entry(entry: &scanner::GameEntry) -> Vec<CueCompatIssue>
                     can_auto_fix: false,
                 });
             }
+        } else {
+            issues.push(CueCompatIssue {
+                file_name,
+                summary: report.summary(),
+                can_auto_fix: report.can_auto_fix(),
+            });
         }
     }
     issues

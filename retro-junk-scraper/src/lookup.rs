@@ -47,7 +47,7 @@ pub struct LookupResult {
 ///
 /// The API's hash tier needs CRC32, MD5, and SHA1 together, so partial
 /// combinations are unrepresentable by construction.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RomHashes {
     /// CRC32 hash (uppercase hex)
     pub crc32: String,
@@ -55,6 +55,23 @@ pub struct RomHashes {
     pub md5: String,
     /// SHA1 hash (lowercase hex)
     pub sha1: String,
+}
+
+impl RomHashes {
+    /// The triple, or nothing at all.
+    ///
+    /// The hash tier matches on CRC32, MD5, and SHA-1 together, so a partial
+    /// set is worth exactly as much as a filename — and offering one spends a
+    /// request to be told so. Every caller that assembles hashes from a
+    /// catalog row or a library entry asks this rather than restating it.
+    #[must_use]
+    pub fn complete(crc32: &str, md5: &str, sha1: &str) -> Option<Self> {
+        (!crc32.is_empty() && !md5.is_empty() && !sha1.is_empty()).then(|| Self {
+            crc32: crc32.to_owned(),
+            md5: md5.to_owned(),
+            sha1: sha1.to_owned(),
+        })
+    }
 }
 
 /// Information about a ROM file for lookup purposes.
@@ -339,11 +356,23 @@ async fn try_filename_lookup(
     let mut params = HashMap::new();
     params.insert("systemeid", system_id.to_string());
     params.insert("romnom", filename.to_string());
-    params.insert("romtaille", file_size.to_string());
+    insert_file_size(&mut params, file_size);
     params.insert("romtype", "rom".to_string());
 
     let resp = client.lookup_game(params).await?;
     Ok(resp.response.jeu)
+}
+
+/// Send the file size only when one is known.
+///
+/// `romtaille` narrows a name match to files of that size, which is exactly
+/// wrong when the size belongs to a different file than the name does — a mod
+/// asked about as its parent knows the parent's name but not its size. Sending
+/// `0` would claim an empty file.
+fn insert_file_size(params: &mut HashMap<&'static str, String>, file_size: u64) {
+    if file_size > 0 {
+        params.insert("romtaille", file_size.to_string());
+    }
 }
 
 /// Build a deduped list of serial strings to try, scraper serial first.
@@ -378,7 +407,7 @@ async fn try_hash_lookup(
     params.insert("md5", hashes.md5.clone());
     params.insert("sha1", hashes.sha1.clone());
     params.insert("romnom", filename.to_string());
-    params.insert("romtaille", file_size.to_string());
+    insert_file_size(&mut params, file_size);
     params.insert("romtype", "rom".to_string());
 
     let resp = client.lookup_game(params).await?;

@@ -98,7 +98,7 @@ pub struct LibraryBrowserState {
     pub entry_counts: HashMap<retro_junk_db::LibraryConsoleId, u64>,
     /// Worst effective entry status for each console, retained when pages are evicted.
     pub console_statuses: HashMap<retro_junk_db::LibraryConsoleId, EntryStatus>,
-    /// Consoles explicitly marked stale by SQLite and requiring a correctness rebuild.
+    /// Consoles explicitly marked stale by `SQLite` and requiring a correctness rebuild.
     pub stale_consoles: HashSet<retro_junk_db::LibraryConsoleId>,
     /// Entry IDs with filesystem media discovery currently in flight.
     pub asset_discovery_in_flight: HashSet<retro_junk_db::LibraryEntryId>,
@@ -405,6 +405,81 @@ pub struct FragileMountPrompt {
     pub kind: &'static str,
 }
 
+// -- Review inbox --
+
+/// How the inbox is currently being filtered, sorted, and browsed.
+///
+/// Kept apart from the loaded rows so a reload — which happens after every
+/// decision — does not throw away the filter someone typed or collapse the
+/// group they were working through.
+#[derive(Default)]
+pub struct InboxUiState {
+    /// The path pattern in the filter box.
+    pub filter_text: String,
+    /// The kind chip currently selected, if any.
+    pub filter_kind: Option<String>,
+    pub sort: crate::backend::inbox::InboxSort,
+    /// Groups the user has folded away. Collapsed state is remembered by
+    /// group name so it survives reloads and re-sorts.
+    pub collapsed: std::collections::HashSet<String>,
+    /// Rows showing their full detail.
+    pub expanded: std::collections::HashSet<i64>,
+    /// The row the keyboard is on.
+    pub cursor: Option<i64>,
+    /// Scroll the cursor into view on the next frame, after a key moved it.
+    pub scroll_to_cursor: bool,
+    /// What the last bulk dismissal closed, so it can be put back. Cleared
+    /// when the user acts again — an undo that reaches back through several
+    /// decisions would be a worse promise than none.
+    pub undo: Option<InboxUndo>,
+    /// A bulk action waiting for confirmation.
+    pub confirm: Option<InboxConfirm>,
+    /// An ignore rule being written.
+    pub ignore_draft: Option<InboxIgnoreDraft>,
+    /// A review whose candidates are being chosen between.
+    pub choice: Option<InboxChoice>,
+    /// Whether the ignore-rule list is open.
+    pub show_ignore_rules: bool,
+}
+
+/// What a bulk dismissal closed.
+pub struct InboxUndo {
+    pub ids: Vec<i64>,
+    pub label: String,
+}
+
+/// A bulk action the user has asked for but not yet confirmed.
+pub struct InboxConfirm {
+    pub kind: InboxConfirmKind,
+    pub ids: Vec<i64>,
+    /// What the filter said, for the confirmation to quote back.
+    pub description: String,
+}
+
+pub enum InboxConfirmKind {
+    Dismiss,
+    Apply,
+}
+
+/// An ignore rule being written, pre-filled from the current filter.
+///
+/// How many reviews it covers is deliberately not stored: the pattern is
+/// editable in the dialog, so a count captured when it opened would go stale
+/// the moment someone typed — and this is the one dialog whose whole job is to
+/// say truthfully what the button is about to do.
+pub struct InboxIgnoreDraft {
+    pub pattern: String,
+    pub note: String,
+}
+
+/// A review with several candidates, waiting for one to be chosen.
+pub struct InboxChoice {
+    pub id: i64,
+    pub label: String,
+    pub candidates: Vec<retro_junk_work::AdoptionCandidate>,
+    pub selected: Option<usize>,
+}
+
 // -- Tag dialog --
 
 /// State for the homebrew/modded tagging dialogs.
@@ -450,6 +525,9 @@ pub enum RenameOutcome {
         message: String,
     },
     M3uRenamed {
+        /// Folder the set lived in before the rename, so its library row's
+        /// identity can follow it to the new `set:` key.
+        source_folder: PathBuf,
         target_folder: PathBuf,
         discs_renamed: usize,
         playlist_written: bool,
@@ -619,6 +697,26 @@ pub enum ProgressDisplay {
     Percent,
 }
 
+impl ProgressDisplay {
+    /// How to render what a running operation just reported.
+    ///
+    /// The operation says whether its numbers are bytes or work items, so this
+    /// never has to guess. Guessing was a real bug: identifying a single disc
+    /// reports "0 of 1 dumps", and reading that as bytes rendered "0 B / 1 B"
+    /// beside a progress bar that then sat still for the several minutes the
+    /// disc actually took.
+    #[must_use]
+    pub fn for_report(unit: retro_junk_io::ProgressUnit, total: u64) -> Self {
+        match (total, unit) {
+            // A byte count with a real total is the only case that renders as
+            // "412 MB / 1.1 GB"; everything else, zero total included, reads
+            // better as a plain fraction.
+            (0, _) | (_, retro_junk_io::ProgressUnit::Items) => Self::Count,
+            (_, retro_junk_io::ProgressUnit::Bytes) => Self::Bytes,
+        }
+    }
+}
+
 pub struct BackgroundOperation {
     pub id: u64,
     pub description: String,
@@ -769,8 +867,11 @@ pub enum AppMessage {
         op_id: u64,
         result: Result<String, String>,
     },
-    /// Backlog summary + open errors for the current scope (B5/B4).
+    /// Backlog summary + open errors for one scope (B5/B4). The scope rides
+    /// along because the user may have moved on while the query ran; the
+    /// handler must not file one console's backlog under another's name.
     BacklogReady {
+        scope: retro_junk_db::convergence::Scope,
         result: Result<crate::backend::convergence::Backlog, String>,
     },
     /// Loaded review-inbox contents.
@@ -779,7 +880,12 @@ pub enum AppMessage {
     },
     /// Something resolved or created a reviewable item; reload the inbox.
     InboxChanged,
-    /// Result of a ScreenScraper "Test login" attempt.
+    /// A dismissal closed exactly these rows, so the view can offer to put
+    /// exactly them back.
+    InboxDismissed {
+        ids: Vec<i64>,
+    },
+    /// Result of a `ScreenScraper` "Test login" attempt.
     ScraperLoginTested {
         result: Result<String, String>,
     },
@@ -1012,6 +1118,54 @@ impl AppMessage {
                 | Self::CueFixComplete { .. }
                 | Self::ChdCompressComplete { .. }
         )
+    }
+}
+
+/// Move each renamed row's library identity to its new path.
+///
+/// Library entries are keyed by path, so a rename plus a rescan looks exactly
+/// like "one file vanished, another appeared" — and the new row starts with no
+/// digests, no DAT match, and no identification. A rename cannot change
+/// content, so the identity follows the file instead of being re-derived.
+///
+/// Best-effort: a row that cannot be re-keyed (its destination already exists,
+/// or the path is outside the console) simply gets re-read by the rescan, which
+/// is the old behaviour.
+fn carry_identity_across_renames(
+    app: &crate::app::RetroJunkApp,
+    target: &crate::backend::scan::ConsoleScanTarget,
+    results: &[RenameResult],
+) {
+    let (Some(console_id), Some(conn)) = (target.console_id, app.catalog_db.as_ref()) else {
+        return;
+    };
+    let key = |path: &std::path::Path, directory: bool| {
+        let relative = path.strip_prefix(&target.folder_path).ok()?;
+        let key = if directory {
+            retro_junk_db::set_source_key(relative)
+        } else {
+            retro_junk_db::file_source_key(relative)
+        };
+        key.ok().map(|value| value.as_str().to_owned())
+    };
+    for result in results {
+        let (from, to, directory) = match &result.outcome {
+            RenameOutcome::Renamed { source, target } => (source, target, false),
+            RenameOutcome::M3uRenamed {
+                source_folder,
+                target_folder,
+                ..
+            } => (source_folder, target_folder, true),
+            _ => continue,
+        };
+        let (Some(old_key), Some(new_key)) = (key(from, directory), key(to, directory)) else {
+            continue;
+        };
+        match retro_junk_db::rekey_library_entry(conn, console_id, &old_key, &new_key) {
+            Ok(true) => log::debug!("Carried library identity {old_key} -> {new_key}"),
+            Ok(false) => {}
+            Err(error) => log::warn!("Could not carry library identity for {old_key}: {error}"),
+        }
     }
 }
 
@@ -1417,19 +1571,16 @@ pub(crate) fn apply_single_analysis_result(
     result: Result<RomIdentification, AnalysisError>,
     catalog_matches: &[retro_junk_db::CatalogMediaMatch],
 ) {
-    match result {
-        Ok(identification) => {
-            entry.identification = Some(identification);
-            entry.disc_identifications = None;
-            apply_catalog_resolution(entry, catalog_matches);
-        }
-        Err(_) => {
-            entry.identification = None;
-            entry.disc_identifications = None;
-            apply_catalog_resolution(entry, catalog_matches);
-            if entry.status == EntryStatus::Unknown {
-                entry.status = EntryStatus::Unrecognized;
-            }
+    if let Ok(identification) = result {
+        entry.identification = Some(identification);
+        entry.disc_identifications = None;
+        apply_catalog_resolution(entry, catalog_matches);
+    } else {
+        entry.identification = None;
+        entry.disc_identifications = None;
+        apply_catalog_resolution(entry, catalog_matches);
+        if entry.status == EntryStatus::Unknown {
+            entry.status = EntryStatus::Unrecognized;
         }
     }
 }
@@ -2211,6 +2362,14 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             log::info!(
                 "Rename {folder_name}: {renamed} renamed, {already} already correct, {failed} failed"
             );
+            // Carry each renamed row's identity to its new path *before* the
+            // rescan. Entries are keyed by path, so without this the rescan
+            // meets the new name as a file it has never seen and the row comes
+            // back with no digests and no DAT match — asking the user to
+            // re-read bytes a rename cannot have changed.
+            if let Some(target) = rescan_target.as_ref() {
+                carry_identity_across_renames(app, target, &results);
+            }
             app.ui_state.results_dialog = crate::app::ResultsDialog::Rename(results);
 
             if renamed > 0 {
@@ -2410,8 +2569,19 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
         }
 
-        AppMessage::BacklogReady { result } => {
+        AppMessage::BacklogReady { scope, result } => {
             app.ui_state.backlog_loading = false;
+            // The user may have switched consoles while this query ran; the
+            // load for the new scope was skipped because this one was in
+            // flight. Storing the reply anyway would label one console's
+            // backlog with another's name — discard it and run the load the
+            // current scope is still owed.
+            if app.ui_state.backlog_scope.as_ref() != Some(&scope) {
+                if let Some(current) = app.ui_state.backlog_scope.clone() {
+                    crate::backend::convergence::load_backlog(app, current, ctx);
+                }
+                return;
+            }
             match result {
                 Ok(backlog) => {
                     app.ui_state.open_suggestion_count = backlog.summary.open_suggestions;
@@ -2429,9 +2599,32 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             match result {
                 Ok(contents) => {
                     app.ui_state.open_suggestion_count = contents.items.len() as u64;
+                    // A row that resolved while the cursor was on it must not
+                    // leave the keyboard pointing at nothing.
+                    if let Some(cursor) = app.ui_state.inbox_ui.cursor
+                        && !contents
+                            .items
+                            .iter()
+                            .any(|item| item.suggestion.id == cursor)
+                    {
+                        app.ui_state.inbox_ui.cursor = None;
+                    }
                     app.ui_state.inbox = contents;
                 }
                 Err(error) => log::warn!("inbox unavailable: {error}"),
+            }
+        }
+
+        AppMessage::InboxDismissed { ids } => {
+            if ids.is_empty() {
+                app.ui_state.inbox_ui.undo = None;
+            } else {
+                let label = if ids.len() == 1 {
+                    "Dismissed 1 review".to_owned()
+                } else {
+                    format!("Dismissed {} reviews", ids.len())
+                };
+                app.ui_state.inbox_ui.undo = Some(crate::state::InboxUndo { ids, label });
             }
         }
 
@@ -2476,8 +2669,7 @@ fn refresh_library_availability(app: &mut RetroJunkApp, ctx: &egui::Context) {
     if let Some(connection) = app.catalog_db.as_ref() {
         app.ui_state.open_suggestion_count =
             retro_junk_db::work::list_open_suggestions(connection, None)
-                .map(|open| open.len() as u64)
-                .unwrap_or(0);
+                .map_or(0, |open| open.len() as u64);
     }
 }
 
@@ -2705,7 +2897,7 @@ impl Default for DataToolsState {
     }
 }
 
-/// ScreenScraper account fields being edited in Settings, plus the state of
+/// `ScreenScraper` account fields being edited in Settings, plus the state of
 /// the last login test.
 ///
 /// The values start from whatever `Credentials::load` resolves, so the

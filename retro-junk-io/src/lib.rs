@@ -1,12 +1,14 @@
 //! Network-friendly local staging and single-pass content hashing.
 
+pub mod glob;
 pub mod mount;
 pub mod noise;
 pub mod process;
 
+pub use glob::Pattern;
 pub use mount::{RemoteMountKind, remote_mount_kind};
 pub use noise::{is_noise_file_name, is_noise_path};
-pub use process::process_alive;
+pub use process::{local_host_id, process_alive};
 
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
@@ -21,6 +23,28 @@ use uuid::Uuid;
 
 const COPY_BUFFER_SIZE: usize = 8 * 1024 * 1024;
 const MINIMUM_FREE_SPACE_RESERVE: u64 = 64 * 1024 * 1024;
+
+/// What the `current`/`total` pair of a progress report counts.
+///
+/// Frontends need this to render "412 MB / 1.1 GB" for a copy but "3 / 10" for
+/// a run over ten dumps. Guessing from the numbers alone cannot work — a
+/// one-dump run reports `0, 1`, which read as bytes says "0 B / 1 B" — so the
+/// unit travels with every report instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProgressUnit {
+    /// Discrete work items: dumps, files, releases.
+    #[default]
+    Items,
+    /// Bytes read, written, or hashed.
+    Bytes,
+}
+
+/// The progress contract every long-running operation accepts: a phase label,
+/// the unit its numbers are in, and how far through that phase it is.
+///
+/// A `total` of zero means "no measurable extent" — show a busy indicator, not
+/// a proportion.
+pub type PhaseProgressFn<'a> = dyn Fn(&str, ProgressUnit, u64, u64) + 'a;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentDigests {

@@ -178,7 +178,7 @@ pub fn run(
             projections,
             None,
             None,
-            &|phase, current, total| {
+            &|phase, _unit, current, total| {
                 if total > 0 {
                     log::debug!("{phase}: {current}/{total}");
                 } else {
