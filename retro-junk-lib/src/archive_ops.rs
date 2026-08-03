@@ -1431,12 +1431,9 @@ fn verify_track_set(
             },
         );
     };
-    let matches = retro_junk_db::match_complete_catalog_media(
-        conn,
-        &release.manifest.platform_id,
-        &tracks,
-    )
-    .map_err(ArchiveOpsError::msg)?;
+    let matches =
+        retro_junk_db::match_complete_catalog_media(conn, &release.manifest.platform_id, &tracks)
+            .map_err(ArchiveOpsError::msg)?;
     let (outcome, catalog, detail) = match matches.as_slice() {
         [catalog_match] => {
             bind_carrier(release, carrier, catalog_match, &tracks)?;
@@ -1525,7 +1522,10 @@ fn ordered_track_digests(dump: &IndexedDump) -> Option<Vec<retro_junk_archive::T
             file.path.to_ascii_lowercase().rsplit('/').next() == Some(wanted.as_str())
         })?;
         tracks.push(retro_junk_archive::TrackDigest {
-            number: entry.tracks.first().map_or(0, |track| u32::from(track.number)),
+            number: entry
+                .tracks
+                .first()
+                .map_or(0, |track| u32::from(track.number)),
             size: file.size,
             crc32: file.crc32.clone(),
             md5: file.md5.clone(),

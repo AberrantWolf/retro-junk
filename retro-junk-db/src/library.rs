@@ -1858,6 +1858,7 @@ fn empty_facts(summary: &crate::archive::ArchiveReleaseSummary) -> crate::facts:
         satisfied_playables: 0,
         missing_playables: 0,
         archived_asset_types: Vec::new(),
+        playable_names: Vec::new(),
     }
 }
 

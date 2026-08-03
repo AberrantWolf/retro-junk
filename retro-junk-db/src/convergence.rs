@@ -42,6 +42,12 @@ pub enum ActionKind {
     /// Build the preferred playable representation for a release (includes
     /// the playlist when the set completes, plus asset/gamelist projection).
     BuildPlayable,
+    /// Rename a built playable whose name is no longer what the catalog
+    /// calls it — the usual cause is a playable built before the naming
+    /// rule was corrected, or a DAT that has since renamed the game.
+    /// Ordered after building so a file is never renamed and then rebuilt
+    /// under its old name in the same pass.
+    RenamePlayable,
     /// Fetch missing artwork from `ScreenScraper` into the archive.
     Scrape,
     /// Project archived artwork originals to the frontend media tree.
@@ -59,6 +65,7 @@ impl ActionKind {
             Self::AuditRedumper => "audit_redumper",
             Self::AdoptPlayable => "adopt_playable",
             Self::BuildPlayable => "build",
+            Self::RenamePlayable => "rename_playable",
             Self::Scrape => "scrape",
             Self::ProjectAssets => "project_assets",
             Self::SyncGamelist => "sync_gamelist",
@@ -75,6 +82,7 @@ impl ActionKind {
             Self::AuditRedumper,
             Self::AdoptPlayable,
             Self::BuildPlayable,
+            Self::RenamePlayable,
             Self::Scrape,
             Self::ProjectAssets,
             Self::SyncGamelist,
@@ -92,6 +100,7 @@ impl std::str::FromStr for ActionKind {
             "audit_redumper" | "audit-redumper" | "audit" => Ok(Self::AuditRedumper),
             "adopt_playable" | "adopt-playable" | "adopt" => Ok(Self::AdoptPlayable),
             "build" | "build_playable" => Ok(Self::BuildPlayable),
+            "rename_playable" | "rename-playable" | "rename" => Ok(Self::RenamePlayable),
             "scrape" | "artwork" => Ok(Self::Scrape),
             "project_assets" | "project" => Ok(Self::ProjectAssets),
             "sync_gamelist" | "gamelist" => Ok(Self::SyncGamelist),

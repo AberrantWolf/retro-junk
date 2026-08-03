@@ -354,6 +354,7 @@ fn archive_detail_owns_grouped_playable_assets() {
                 satisfied_playables: 1,
                 missing_playables: 0,
                 archived_asset_types: Vec::new(),
+                playable_names: Vec::new(),
             },
         }],
         offset: 0,

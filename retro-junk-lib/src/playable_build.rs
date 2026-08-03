@@ -1,6 +1,5 @@
 //! Builds disposable playable projections from authoritative archive dumps.
 
-use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -810,26 +809,36 @@ pub(crate) fn find_input(
 /// Both paths go through [`retro_junk_archive::safe_file_stem`] here rather
 /// than at their sources, so a catalog name that is not a legal filename
 /// cannot reach the filesystem by either route.
+/// Name inputs for one carrier's output, in the shape the one rule takes.
+///
+/// The caller resolved the catalog name already (it has the connection); an
+/// empty one leaves the archive manifest to name the file.
+fn name_inputs<'a>(
+    request: &'a PlayableBuildRequest,
+    release: &'a IndexedRelease,
+    carrier: &'a IndexedCarrier,
+) -> crate::naming::NameInputs<'a> {
+    crate::naming::NameInputs {
+        // A resolved catalog stem is already whole-medium-corrected, so it is
+        // passed as the name itself rather than re-derived from a rom_name.
+        dat_name: request.canonical_output_stem.trim(),
+        rom_name: "",
+        medium_has_tracks: false,
+        title: &release.manifest.title,
+        region: &release.manifest.region,
+        revision: &release.manifest.revision,
+        variant: &release.manifest.variant,
+        disc_number: carrier.manifest.sequence_number,
+        disc_count: request.expected_disc_count,
+    }
+}
+
 fn playable_output_stem(
     request: &PlayableBuildRequest,
     release: &IndexedRelease,
     carrier: &IndexedCarrier,
 ) -> String {
-    let mut name = if request.canonical_output_stem.trim().is_empty() {
-        release_output_name(release)
-    } else {
-        request.canonical_output_stem.clone()
-    };
-    // A disc number belongs to the carrier, not to the catalog medium, so it
-    // is appended to either form. A supplied stem that already names its disc
-    // keeps it — the catalog's own name carries `(Disc N)` when the DAT does.
-    if request.expected_disc_count > 1
-        && carrier.manifest.sequence_number > 0
-        && !name.contains("(Disc ")
-    {
-        let _ = write!(name, " (Disc {})", carrier.manifest.sequence_number);
-    }
-    retro_junk_archive::safe_file_stem(&name)
+    crate::naming::canonical_stem(&name_inputs(request, release, carrier)).0
 }
 
 fn playable_output_directory(
@@ -852,43 +861,20 @@ fn playable_output_directory(
     }
 }
 
-/// The archive's own name for a release, in the shape a DAT would write it.
-///
-/// Region is stored lowercased for comparison and written back out the way a
-/// catalog writes it — `(USA)`, not `(usa)` — so a carrier that never resolved
-/// to a catalog medium still produces the name that medium would have given
-/// it. An unrecognized region is passed through rather than dropped: a name
-/// the tool does not understand is still the user's.
-fn release_output_name(release: &IndexedRelease) -> String {
-    let mut name = release.manifest.title.clone();
-    let region = retro_junk_core::Region::from_slug(&release.manifest.region).map_or_else(
-        || release.manifest.region.clone(),
-        |region| region.name().to_owned(),
-    );
-    for value in [
-        &region,
-        &release.manifest.revision,
-        &release.manifest.variant,
-    ] {
-        if !value.is_empty() {
-            let _ = write!(name, " ({value})");
-        }
-    }
-    name
-}
-
-/// What a multi-disc set's `.m3u` directory is called.
-///
-/// The same unification as [`playable_output_stem`], for the same reason: a
-/// set whose carriers are unbound must not land in a differently-named folder
-/// from one whose carriers are bound.
+/// What a multi-disc set's `.m3u` directory is called: the release's name
+/// with no disc suffix, since the folder holds every disc.
 fn canonical_release_name(request: &PlayableBuildRequest, release: &IndexedRelease) -> String {
-    let name = if request.canonical_release_name.trim().is_empty() {
-        release_output_name(release)
-    } else {
-        request.canonical_release_name.clone()
-    };
-    retro_junk_archive::safe_file_stem(&name)
+    crate::naming::canonical_release_stem(&crate::naming::NameInputs {
+        dat_name: request.canonical_release_name.trim(),
+        rom_name: "",
+        medium_has_tracks: false,
+        title: &release.manifest.title,
+        region: &release.manifest.region,
+        revision: &release.manifest.revision,
+        variant: &release.manifest.variant,
+        disc_number: 0,
+        disc_count: 0,
+    })
 }
 
 fn project_selected_playlist(

@@ -17,7 +17,7 @@ use retro_junk_backend::{
 use retro_junk_db::convergence::{ActionKind, Scope, derive_convergence, summarize_convergence};
 
 use crate::CliError;
-use crate::cli_types::{RebuildPlayableArgs, StatusArgs, SyncArgs};
+use crate::cli_types::{RebuildPlayableArgs, RenamePlayablesArgs, StatusArgs, SyncArgs};
 
 /// Resolve the target profile: `--profile` selector, explicit roots, or the
 /// active settings profile.
@@ -269,6 +269,72 @@ pub(crate) fn run_rebuild_playable(args: RebuildPlayableArgs) -> Result<(), CliE
             }
             Ok(())
         }
+    }
+}
+
+/// Rename built playables whose name the catalog disagrees with.
+///
+/// The list comes from the same completion fold the GUI renders, so a dry run
+/// here shows exactly the renames the Details panel offers.
+pub(crate) fn run_rename_playables(args: RenamePlayablesArgs) -> Result<(), CliError> {
+    let profile = resolve_target(
+        args.profile.as_deref(),
+        args.archive_root,
+        args.playable_root,
+        None,
+    )?;
+    let db_path = match args.db {
+        Some(path) => path,
+        None => retro_junk_lib::settings::ensure_catalog_database_location()?,
+    };
+    let expected_assets = AutomationPolicy::load().scrape_selection();
+    if args.dry_run {
+        let conn = retro_junk_db::open_database(&db_path)
+            .map_err(|error| CliError::database(error.to_string()))?;
+        let stale = retro_junk_backend::ops::rename_playable::stale_playable_names(
+            &conn,
+            &profile.profile_id.to_string(),
+            &expected_assets,
+        )
+        .map_err(CliError::other)?;
+        if stale.is_empty() {
+            log::info!("Every built playable already has its catalog name");
+            return Ok(());
+        }
+        for (current, canonical) in &stale {
+            log::info!("{current}  ->  {canonical}");
+        }
+        log::info!("{} playable(s) would be renamed", stale.len());
+        return Ok(());
+    }
+    let media_root = args.media_root.unwrap_or_else(|| {
+        retro_junk_lib::archive_ops::FrontendRoots::from_settings(&profile.playable_root, "", "")
+            .media_root
+    });
+    let cancelled = Arc::new(AtomicBool::new(false));
+    retro_junk_backend::daemon::install_signal_handlers(&cancelled);
+    let report = retro_junk_backend::ops::rename_playable::rename_stale_playables(
+        &profile,
+        &db_path,
+        Some(&media_root),
+        &expected_assets,
+        &retro_junk_backend::ops::OpCtx::new(&cancelled, &crate::commands::archive::log_progress),
+    )
+    .map_err(CliError::other)?;
+    for renamed in &report.renamed {
+        log::info!("{}  ->  {}", renamed.from, renamed.to);
+    }
+    for failure in &report.failures {
+        log::warn!("{failure}");
+    }
+    log::info!("Renamed {} playable(s)", report.renamed.len());
+    if report.failures.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::other(format!(
+            "{} playable(s) could not be renamed",
+            report.failures.len()
+        )))
     }
 }
 

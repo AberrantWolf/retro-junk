@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-use crate::layout::normalize_relative_path;
 use crate::MANIFEST_SCHEMA_VERSION;
+use crate::layout::normalize_relative_path;
 use crate::manifest::{
     ArchivedFile, DumpManifest, ManifestError, VerificationEvidence, VerificationId,
     VerificationKind, VerificationOutcome, write_json_new, write_toml_atomic,

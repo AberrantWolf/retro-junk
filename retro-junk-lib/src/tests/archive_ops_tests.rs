@@ -88,8 +88,11 @@ fn a_multi_track_master_is_catalog_verified_from_its_stored_tracks() {
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO works(id,canonical_name) VALUES('w','Game')", [])
-        .unwrap();
+    conn.execute(
+        "INSERT INTO works(id,canonical_name) VALUES('w','Game')",
+        [],
+    )
+    .unwrap();
     conn.execute(
         "INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('r','w','faketest','usa','Game')",
         [],
@@ -122,8 +125,12 @@ fn a_multi_track_master_is_catalog_verified_from_its_stored_tracks() {
 
     let ctx = crate::create_default_context();
     let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
-    let report = verify_catalog_files(&snapshot, &conn, &ctx, None, &noop_progress, &cancel).unwrap();
-    assert_eq!(report.identified, 1, "multi-track master was not identified");
+    let report =
+        verify_catalog_files(&snapshot, &conn, &ctx, None, &noop_progress, &cancel).unwrap();
+    assert_eq!(
+        report.identified, 1,
+        "multi-track master was not identified"
+    );
 
     let rescanned = retro_junk_archive::scan_archive(&archive).unwrap();
     let carrier = &rescanned.releases[0].physical_copies[0].carriers[0];

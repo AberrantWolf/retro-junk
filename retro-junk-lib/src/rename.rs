@@ -131,10 +131,19 @@ pub fn target_filename_for_rename(
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
+    // A container holding the whole medium takes the disc-level name; a file
+    // that really is the track keeps the catalog's filename for it.
     let whole_medium = retro_junk_dat::tracks::is_track_member(dat_rom_name)
         && !ext.eq_ignore_ascii_case(rom_extension);
-    let stem = retro_junk_dat::tracks::whole_medium_stem(dat_game_name, dat_rom_name, whole_medium);
-    format!("{stem}.{ext}")
+    crate::naming::canonical_filename(
+        &crate::naming::NameInputs {
+            dat_name: dat_game_name,
+            rom_name: dat_rom_name,
+            medium_has_tracks: whole_medium,
+            ..crate::naming::NameInputs::default()
+        },
+        ext,
+    )
 }
 
 /// A planned M3U folder rename + playlist write for a multi-disc set.

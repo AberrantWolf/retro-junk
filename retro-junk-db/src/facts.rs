@@ -50,6 +50,25 @@ pub struct CarrierFacts {
     pub catalog_verified: bool,
 }
 
+/// A built playable, with everything the naming rule needs to say whether
+/// its name is still the right one.
+///
+/// The comparison itself is not made here: naming is a rule about what a
+/// file should be called, and this module only reports what is true.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayableNameFacts {
+    pub representation_id: String,
+    /// Path relative to the playable root, as the projection recorded it.
+    pub relative_path: String,
+    /// The catalog's name for the game, empty when the carrier is unbound.
+    pub dat_name: String,
+    /// The catalog's filename for the medium (or its largest track).
+    pub rom_name: String,
+    /// Whether the catalog stores this medium as separate track files.
+    pub medium_has_tracks: bool,
+    pub disc_number: u32,
+}
+
 /// Everything the completion fold needs to know about one archive release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseFacts {
@@ -75,6 +94,8 @@ pub struct ReleaseFacts {
     pub missing_playables: u64,
     /// Artwork/video asset types archived for this release.
     pub archived_asset_types: Vec<String>,
+    /// Built playables and their naming inputs, for the conformance check.
+    pub playable_names: Vec<PlayableNameFacts>,
 }
 
 /// How many of a release's expected discs one physical copy covers.
@@ -283,6 +304,7 @@ pub fn release_facts_in_scope(
                 satisfied_playables: 0,
                 missing_playables: 0,
                 archived_asset_types: Vec::new(),
+                playable_names: Vec::new(),
             })
         })? {
             let facts = row?;
@@ -394,6 +416,46 @@ pub fn release_facts_in_scope(
                 releases[index].desired_playables = desired;
                 releases[index].satisfied_playables = satisfied;
                 releases[index].missing_playables = missing;
+            }
+        }
+    }
+
+    // Built playables, with the catalog's naming inputs for each.
+    {
+        let mut statement = conn.prepare(
+            "SELECT pc.archive_release_id,rep.id,rep.relative_path,
+                    COALESCE(m.dat_name,''),COALESCE(m.rom_name,''),
+                    EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),
+                    COALESCE(c.sequence_number,0)
+             FROM representations rep
+             JOIN carriers c ON c.id=rep.carrier_id
+             JOIN physical_copies pc ON pc.id=c.physical_copy_id
+             JOIN archive_releases ar ON ar.id=pc.archive_release_id
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             LEFT JOIN media m ON m.id=c.catalog_media_id
+             WHERE (?1='' OR ar.profile_id=?1)
+               AND (?2='' OR ap.playable_root=?2)
+               AND rep.role='playable'
+               AND rep.presence_state='present'
+               AND rep.relative_path<>''
+             ORDER BY pc.archive_release_id,rep.id",
+        )?;
+        for row in statement.query_map([profile_id, playable_root], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                PlayableNameFacts {
+                    representation_id: row.get(1)?,
+                    relative_path: row.get(2)?,
+                    dat_name: row.get(3)?,
+                    rom_name: row.get(4)?,
+                    medium_has_tracks: row.get(5)?,
+                    disc_number: row.get::<_, i64>(6)?.try_into().unwrap_or(0),
+                },
+            ))
+        })? {
+            let (id, playable) = row?;
+            if let Some(&index) = index_of.get(&id) {
+                releases[index].playable_names.push(playable);
             }
         }
     }

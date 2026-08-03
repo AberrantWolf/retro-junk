@@ -12,5 +12,6 @@ pub mod library_store;
 pub mod organize;
 pub mod playable_build;
 pub mod rename;
+pub mod rename_playable;
 pub mod scan;
 pub mod worker;

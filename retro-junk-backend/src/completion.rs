@@ -380,6 +380,7 @@ impl Completion {
                 count: facts.missing_playables,
             });
         }
+        attention.extend(stale_names(facts));
 
         Self {
             identity,
@@ -391,4 +392,48 @@ impl Completion {
             attention,
         }
     }
+}
+
+/// Built playables whose name is no longer what the catalog calls them.
+///
+/// This is the check that makes a playable built under an older naming rule
+/// findable. It only ever speaks when the catalog does: an unidentified
+/// release has no authority to call its own file misnamed, which
+/// `naming::name_conforms` enforces.
+fn stale_names(facts: &retro_junk_db::facts::ReleaseFacts) -> Vec<Attention> {
+    let disc_count = facts
+        .expected_discs
+        .map_or(0, |expected| u32::try_from(expected.count).unwrap_or(0));
+    facts
+        .playable_names
+        .iter()
+        .filter_map(|playable| {
+            let current = std::path::Path::new(&playable.relative_path)
+                .file_name()
+                .and_then(|name| name.to_str())?;
+            let inputs = retro_junk_lib::naming::NameInputs {
+                dat_name: &playable.dat_name,
+                rom_name: &playable.rom_name,
+                medium_has_tracks: playable.medium_has_tracks,
+                title: &facts.title,
+                region: &facts.region,
+                revision: &facts.revision,
+                variant: "",
+                disc_number: playable.disc_number,
+                disc_count,
+            };
+            if retro_junk_lib::naming::name_conforms(current, &inputs) {
+                return None;
+            }
+            let extension = std::path::Path::new(current)
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            Some(Attention::StaleName {
+                representation_id: playable.representation_id.clone(),
+                current: current.to_owned(),
+                canonical: retro_junk_lib::naming::canonical_filename(&inputs, extension),
+            })
+        })
+        .collect()
 }

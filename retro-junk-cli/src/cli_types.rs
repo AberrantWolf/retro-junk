@@ -333,6 +333,31 @@ pub(crate) struct RebuildPlayableArgs {
     pub db: Option<PathBuf>,
 }
 
+/// Rename built playables whose name is no longer what the catalog calls
+/// them — the usual cause is a playable built before the naming rule was
+/// corrected, or a DAT that has since renamed the game.
+#[derive(clap::Args)]
+pub(crate) struct RenamePlayablesArgs {
+    /// Collection profile id or display name (default: the active profile)
+    #[arg(long)]
+    pub profile: Option<String>,
+    /// Archive root (with --playable-root, overrides profile resolution)
+    #[arg(long)]
+    pub archive_root: Option<PathBuf>,
+    /// Playable library root
+    #[arg(long)]
+    pub playable_root: Option<PathBuf>,
+    /// List what would be renamed without renaming anything
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Frontend media root, so artwork named after a playable follows it
+    #[arg(long)]
+    pub media_root: Option<PathBuf>,
+    /// Catalog database path
+    #[arg(long)]
+    pub db: Option<PathBuf>,
+}
+
 /// Summarize convergence state, daemon liveness, and open suggestions.
 #[derive(clap::Args)]
 pub(crate) struct StatusArgs {
@@ -364,6 +389,9 @@ pub(crate) enum Commands {
     /// Force a fresh playable build for one release, even if convergence
     /// currently reads it as already satisfied
     RebuildPlayable(RebuildPlayableArgs),
+
+    /// Rename built playables to the names the catalog gives them
+    RenamePlayables(RenamePlayablesArgs),
 
     /// Show convergence counts, daemon liveness, and open suggestions
     Status(StatusArgs),
