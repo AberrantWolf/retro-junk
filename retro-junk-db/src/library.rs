@@ -1104,12 +1104,32 @@ pub fn mark_console_stale(
     })
 }
 
+/// Set or clear a row's region correction, and keep the collection's durable
+/// marks in step.
+///
+/// A region override is a decision no DAT records, so a copy kept only in
+/// this database is lost the moment the row is — which an external rename
+/// does, because a renamed file is indistinguishable from a delete plus a
+/// create. `collection_root` is where the portable form lives; it is optional
+/// only because a profile-less library has nowhere to put one.
 pub fn set_entry_region_override(
     conn: &mut Connection,
     id: LibraryEntryId,
     value: Option<&str>,
+    collection_root: Option<&std::path::Path>,
 ) -> Result<LibraryChangeSet, LibraryError> {
-    set_user_field(conn, id, "region_override", value.unwrap_or(""))
+    let change = set_user_field(conn, id, "region_override", value.unwrap_or(""))?;
+    if let Some(collection_root) = collection_root {
+        let decision = match value {
+            None | Some("") => crate::derivation::MarkDecision::Cleared,
+            Some(region) => crate::derivation::MarkDecision::RegionOverride { region },
+        };
+        if let Err(error) = crate::derivation::record_entry_mark(conn, id, collection_root, decision)
+        {
+            log::warn!("Could not record the durable region mark: {error}");
+        }
+    }
+    Ok(change)
 }
 /// Set or clear a row's tag, and keep the collection's durable marks in step.
 ///

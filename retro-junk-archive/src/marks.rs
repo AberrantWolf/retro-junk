@@ -63,6 +63,11 @@ pub enum MarkKind {
     Homebrew,
     /// A file derived from a catalogued work, which it inherits identity from.
     Modded,
+    /// The user corrected which region this file is from. Unlike the other
+    /// kinds this mints nothing in the catalog — it only overrides what the
+    /// scan concluded, which is exactly the kind of decision no DAT records
+    /// and therefore the kind most easily lost.
+    RegionOverride,
 }
 
 impl MarkKind {
@@ -71,6 +76,7 @@ impl MarkKind {
         match self {
             Self::Homebrew => "homebrew",
             Self::Modded => "modded",
+            Self::RegionOverride => "region_override",
         }
     }
 }

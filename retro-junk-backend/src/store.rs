@@ -42,9 +42,13 @@ pub enum LibraryStoreRequest {
     EntryDetail(LibraryEntryId),
     EntryDetails(Vec<LibraryEntryId>),
     ConsoleEntryDetails(LibraryConsoleId),
+    /// Region corrections carry the collection root for the same reason
+    /// tagging does: the decision has to be recorded beside the files, or an
+    /// external rename loses it with the row.
     SetRegionOverride {
         entry_id: LibraryEntryId,
         value: Option<String>,
+        collection_root: Option<std::path::PathBuf>,
     },
     /// Every tagging request carries the collection root, because the
     /// decision has to be recorded beside the files as well as in the row:
@@ -350,9 +354,16 @@ fn execute(
                 conn, console_id,
             )?,
         },
-        R::SetRegionOverride { entry_id, value } => LibraryStoreValue::ChangeSet(
-            retro_junk_db::set_entry_region_override(conn, entry_id, value.as_deref())?,
-        ),
+        R::SetRegionOverride {
+            entry_id,
+            value,
+            collection_root,
+        } => LibraryStoreValue::ChangeSet(retro_junk_db::set_entry_region_override(
+            conn,
+            entry_id,
+            value.as_deref(),
+            collection_root.as_deref(),
+        )?),
         R::SetTag {
             entry_id,
             value,

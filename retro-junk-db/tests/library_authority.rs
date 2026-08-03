@@ -403,7 +403,7 @@ fn reconciliation_persists_completed_analysis_for_new_and_changed_sources() {
     assert!(first.row.identification_json.is_some());
 
     set_entry_tag(&mut conn, first.id, Some("homebrew"), None).unwrap();
-    set_entry_region_override(&mut conn, first.id, Some("US")).unwrap();
+    set_entry_region_override(&mut conn, first.id, Some("US"), None).unwrap();
     let token = begin_console_scan(&conn, console).unwrap();
     let mut changed = analyzed_scanned("game.nes", "renamed.nes", "source-2");
     changed.row.crc32 = "changed".into();
@@ -447,7 +447,7 @@ fn unchanged_source_reconciliation_refreshes_analysis_and_preserves_user_fields(
         .unwrap()
         .remove(0);
     set_entry_tag(&mut conn, before.id, Some("homebrew"), None).unwrap();
-    set_entry_region_override(&mut conn, before.id, Some("JP")).unwrap();
+    set_entry_region_override(&mut conn, before.id, Some("JP"), None).unwrap();
 
     let mut rescanned = scanned("game.nes", "game.nes", "");
     rescanned.row.status = "likely".into();
@@ -792,4 +792,89 @@ fn v9_migration_preserves_rows_and_ids_without_merging_collisions() {
         )
         .unwrap();
     assert_eq!(state, "stale");
+}
+
+/// A region correction is a decision no DAT records, so a copy kept only in
+/// this database dies with the row. A rename performed outside the app is
+/// indistinguishable from a delete plus a create, so the row *is* deleted —
+/// which is how the correction used to be lost. The durable mark is content-
+/// keyed, so it re-applies to the same bytes under any name.
+#[test]
+fn a_region_correction_survives_a_rename_made_outside_the_app() {
+    let collection = tempfile::tempdir().unwrap();
+    let mut hashed = row("/roms/nes/game.nes", "game.nes");
+    hashed.crc32 = "aabbccdd".into();
+    hashed.sha1 = "a".repeat(40);
+    hashed.data_size = 4096;
+    let (mut conn, _root, console) = setup(&[hashed.clone()]);
+    let entry = load_entry_details_for_console(&conn, console).unwrap()[0].id;
+
+    set_entry_region_override(&mut conn, entry, Some("Japan"), Some(collection.path())).unwrap();
+    // The decision is on disk, keyed by content rather than by filename.
+    let marks = retro_junk_archive::load_marks(collection.path()).unwrap();
+    assert_eq!(marks.len(), 1);
+    assert_eq!(marks[0].kind, retro_junk_archive::MarkKind::RegionOverride);
+    assert_eq!(marks[0].region, "Japan");
+
+    // The file is renamed outside the app: the old row goes, a new one
+    // arrives with nothing carried over.
+    let mut renamed = row("/roms/nes/Game (Japan).nes", "Game (Japan).nes");
+    renamed.crc32 = hashed.crc32.clone();
+    renamed.sha1 = hashed.sha1.clone();
+    renamed.data_size = hashed.data_size;
+    let scanned = ScannedLibraryEntry {
+        entry_key: source_key_from_game_entry_json(
+            renamed.game_entry_json.as_str(),
+            Path::new("/roms/nes"),
+        )
+        .unwrap(),
+        source_fingerprint: "fp".into(),
+        row: renamed,
+    };
+    let token = begin_console_scan(&conn, console).unwrap();
+    reconcile_console_scan(&mut conn, token, "folder-2", &[scanned]).unwrap();
+    let after_scan: String = conn
+        .query_row(
+            "SELECT region_override FROM library_entries WHERE console_id=?1",
+            [console.0],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after_scan, "", "the row genuinely lost the correction");
+
+    // Re-applying the collection's marks restores it, by content.
+    retro_junk_db::archive::apply_collection_marks(&conn, collection.path()).unwrap();
+    let restored: String = conn
+        .query_row(
+            "SELECT region_override FROM library_entries WHERE console_id=?1",
+            [console.0],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(restored, "Japan");
+}
+
+/// Clearing the correction removes the mark, so it does not come back on the
+/// next scan.
+#[test]
+fn clearing_a_region_correction_forgets_it_durably() {
+    let collection = tempfile::tempdir().unwrap();
+    let mut hashed = row("/roms/nes/game.nes", "game.nes");
+    hashed.crc32 = "aabbccdd".into();
+    hashed.sha1 = "b".repeat(40);
+    hashed.data_size = 2048;
+    let (mut conn, _root, console) = setup(&[hashed]);
+    let entry = load_entry_details_for_console(&conn, console).unwrap()[0].id;
+
+    set_entry_region_override(&mut conn, entry, Some("Europe"), Some(collection.path())).unwrap();
+    assert_eq!(
+        retro_junk_archive::load_marks(collection.path()).unwrap().len(),
+        1
+    );
+    set_entry_region_override(&mut conn, entry, None, Some(collection.path())).unwrap();
+    assert!(
+        retro_junk_archive::load_marks(collection.path())
+            .unwrap()
+            .is_empty()
+    );
 }

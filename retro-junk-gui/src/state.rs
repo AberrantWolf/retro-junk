@@ -158,7 +158,7 @@ pub enum ScanStatus {
 // hash operations share one implementation. Re-exported here so existing
 // `crate::state::` paths keep working.
 pub use retro_junk_backend::library::{
-    DatMatchInfo, DiscIdentification, DiscVerification, EntryHashResult, EntryStatus, LibraryEntry,
+    DiscVerification, EntryHashResult, EntryStatus, LibraryEntry,
     apply_entry_hash_results,
 };
 #[cfg(test)]

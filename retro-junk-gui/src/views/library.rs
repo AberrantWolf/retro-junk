@@ -438,9 +438,6 @@ pub fn switch_to_root_unchecked(
 
     app.browser = crate::state::LibraryBrowserState::default();
     app.ui_state.loading_library = true;
-    if let Some(conn) = app.catalog_db.as_mut() {
-        crate::cache::migrate_json_cache(conn, &new_root, &app.context);
-    }
     app.open_browser_root(&new_root, ctx);
 
     // Always scan disk to discover new/removed console folders.

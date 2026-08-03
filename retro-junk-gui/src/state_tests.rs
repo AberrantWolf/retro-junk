@@ -1,6 +1,7 @@
 //! Unit tests for state.rs: entry lookups, the CHD-compression completion
 //! handler (D4), and the multi-disc file refresh (D5).
 
+use retro_junk_backend::library::DiscIdentification;
 use std::collections::HashSet;
 
 use retro_junk_dat::{FileHashes, MatchMethod};

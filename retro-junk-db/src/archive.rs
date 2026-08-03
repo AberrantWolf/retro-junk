@@ -2319,6 +2319,23 @@ pub fn apply_collection_marks(
         .map_err(|error| OperationError::InvalidField(error.to_string()))?;
     let mut report = MarkReport::default();
     for mark in &marks {
+        // A region correction names no catalog entry to create; it is applied
+        // straight to the rows holding those bytes.
+        if mark.kind == retro_junk_archive::MarkKind::RegionOverride {
+            report.applied += 1;
+            conn.execute(
+                "UPDATE library_entries SET region_override=?1,revision=revision+1
+                 WHERE region_override<>?1 AND data_size=?2
+                   AND ((sha1<>'' AND sha1=?3) OR (crc32<>'' AND crc32=?4))",
+                params![
+                    mark.region,
+                    i64::try_from(mark.content.size).unwrap_or(0),
+                    mark.content.sha1,
+                    mark.content.crc32,
+                ],
+            )?;
+            continue;
+        }
         let Some(applied) = crate::operations::apply_collection_mark(conn, mark)? else {
             report.deferred += 1;
             continue;

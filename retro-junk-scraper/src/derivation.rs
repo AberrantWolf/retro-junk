@@ -71,6 +71,9 @@ impl Derivation {
     pub fn from_mark(mark: &retro_junk_archive::CollectionMark) -> Self {
         match mark.kind {
             retro_junk_archive::MarkKind::Homebrew => Self::Standalone,
+            // A region correction says nothing about whose identity to ask
+            // for — the file is still itself.
+            retro_junk_archive::MarkKind::RegionOverride => Self::Own,
             retro_junk_archive::MarkKind::Modded => {
                 let parent = ParentIdentity {
                     filename: mark.parent_dat_name.clone(),

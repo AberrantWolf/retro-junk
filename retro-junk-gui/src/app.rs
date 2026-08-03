@@ -389,7 +389,6 @@ impl RetroJunkApp {
         // turns out to be required.
         let tx = app.message_tx.clone();
         let ctx = cc.egui_ctx.clone();
-        let analysis_context = app.context.clone();
         let configured_root = app.settings.library.current_root.clone();
         let configured_profile = app.settings.library.active_profile().cloned();
         std::thread::spawn(move || {
@@ -417,7 +416,6 @@ impl RetroJunkApp {
                 .and_then(|path| {
                     retro_junk_db::open_database(&path).map_err(|error| error.to_string())
                 });
-            let database_ready = database.is_ok();
             log::info!("startup: catalog database ready in {:?}", stage.elapsed());
 
             // Refresh the archive projection at startup only when it has
@@ -459,19 +457,6 @@ impl RetroJunkApp {
                 log::info!("Settings current_root: {}", root.display());
                 if root.is_dir() {
                     fragile_mount_kind = crate::util::fragile_mount_kind(&root);
-                    if fragile_mount_kind.is_none()
-                        && database_ready
-                        && crate::cache::has_legacy_cache(&root)
-                        && let Ok(mut connection) = retro_junk_db::open_database(
-                            &retro_junk_lib::settings::catalog_database_path(),
-                        )
-                    {
-                        crate::cache::migrate_json_cache(
-                            &mut connection,
-                            &root,
-                            analysis_context.as_ref(),
-                        );
-                    }
                     restored_root = Some(root);
                 } else {
                     log::warn!("current_root is not a directory, skipping auto-load");
@@ -1418,12 +1403,17 @@ impl RetroJunkApp {
         ctx: &egui::Context,
     ) {
         let value = value.map(|region| region.name().to_owned());
+        // Recorded beside the files as well as in the row: a region
+        // correction is a decision no DAT holds, so a copy kept only in the
+        // database dies with the row an external rename deletes.
+        let collection_root = self.collection_root();
         let requests = entry_ids
             .into_iter()
             .map(
                 |entry_id| crate::backend::library_store::LibraryStoreRequest::SetRegionOverride {
                     entry_id,
                     value: value.clone(),
+                    collection_root: collection_root.clone(),
                 },
             )
             .collect();

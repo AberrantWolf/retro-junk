@@ -219,6 +219,8 @@ pub enum MarkDecision<'a> {
         parent_work_id: &'a str,
         region: &'a str,
     },
+    /// The user corrected which region this file is from.
+    RegionOverride { region: &'a str },
     /// The user took the tag off.
     Cleared,
 }
@@ -252,6 +254,9 @@ pub fn record_entry_mark(
             parent_work_id,
             region,
         } => (retro_junk_archive::MarkKind::Modded, region, parent_work_id),
+        MarkDecision::RegionOverride { region } => {
+            (retro_junk_archive::MarkKind::RegionOverride, region, "")
+        }
         // Removal only needs the file's identity: a mark's path is its
         // platform and digest, never its kind.
         MarkDecision::Cleared => (retro_junk_archive::MarkKind::Homebrew, "", ""),

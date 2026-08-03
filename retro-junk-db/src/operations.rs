@@ -1222,6 +1222,9 @@ pub fn apply_collection_mark(
         file_size: i64::try_from(mark.content.size).unwrap_or(0),
     };
     match mark.kind {
+        // A region correction creates nothing: it is applied directly to the
+        // rows whose content it names, by the caller.
+        retro_junk_archive::MarkKind::RegionOverride => Ok(None),
         retro_junk_archive::MarkKind::Homebrew => {
             let work_id = create_homebrew_work(conn, &mark.name, &mark.platform_id, &mark.region)?;
             // `create_homebrew_work` mints the row but records no digests, so
