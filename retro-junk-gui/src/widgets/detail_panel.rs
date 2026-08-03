@@ -850,8 +850,12 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui,
             "Present",
             &format!(
-                "{} / {} indexed representation(s)",
-                summary.playable_present_count, summary.playable_count
+                "{} indexed representation(s)",
+                retro_junk_backend::completion::Fraction::known(
+                    summary.playable_present_count,
+                    summary.playable_count,
+                )
+                .describe()
             ),
         );
         if !release.playable_library_entries.is_empty() {
@@ -895,10 +899,7 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             detail_row(
                 ui,
                 "Preferred policy",
-                &format!(
-                    "{} / {} disc(s) satisfied",
-                    summary.satisfied_playable_count, summary.desired_playable_count
-                ),
+                &format!("{} disc(s) satisfied", completion.playable.describe()),
             );
         } else {
             detail_row(ui, "Preferred policy", "Not configured");
