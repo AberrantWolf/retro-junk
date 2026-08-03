@@ -829,7 +829,7 @@ enum RecentAction {
 }
 
 fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
-    use retro_junk_work::{AutoImportMode, BindConfidence};
+    use retro_junk_backend::{AutoImportMode, BindConfidence};
 
     ui.strong("Automation");
     ui.add_space(4.0);
@@ -840,7 +840,7 @@ fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     let policy = app
         .ui_state
         .automation_policy
-        .get_or_insert_with(retro_junk_work::AutomationPolicy::load);
+        .get_or_insert_with(retro_junk_backend::AutomationPolicy::load);
     let mut changed = false;
     changed |= ui
         .checkbox(
@@ -951,7 +951,7 @@ fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 /// saying so on screen.
 fn show_expected_artwork(
     ui: &mut egui::Ui,
-    policy: &mut retro_junk_work::AutomationPolicy,
+    policy: &mut retro_junk_backend::AutomationPolicy,
 ) -> bool {
     use retro_junk_frontend::AssetSelection;
 

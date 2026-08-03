@@ -21,7 +21,7 @@ fn raw_dat_loading_is_confined_to_catalog_imports() {
     rust_files(root, &mut files);
     let allowed = [
         "retro-junk-cli/src/commands/catalog/import.rs",
-        "retro-junk-gui/src/backend/catalog_ops.rs",
+        "retro-junk-backend/src/ops/catalog_ops.rs",
         "retro-junk-dat/src/cache.rs",
     ];
     let loader_call = ["cache::", "load_dats"].concat();

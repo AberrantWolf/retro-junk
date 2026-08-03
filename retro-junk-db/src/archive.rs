@@ -995,21 +995,31 @@ pub fn reconcile_archive_snapshot(
                 &release.manifest.catalog_binding.catalog_work_id,
             )?
         };
+        let claimed_release = release.manifest.catalog_binding.catalog_release_id.as_str();
+        let claimed_work = release.manifest.catalog_binding.catalog_work_id.as_str();
+        // "unresolved" is reserved for a real claim the catalog cannot
+        // resolve — the fix is a catalog import. A release whose manifest
+        // claims nothing is "unbound" — the fix is identification. The old
+        // projection collapsed both into "unresolved" by erasing the claim.
         let binding_state = if catalog_release.is_some() {
             "resolved"
         } else if catalog_work.is_some() {
             "carrier_resolved"
-        } else {
+        } else if !claimed_release.is_empty() || !claimed_work.is_empty() {
             "unresolved"
+        } else {
+            "unbound"
         };
         tx.execute(
-            "INSERT INTO archive_releases(id,profile_id,catalog_work_id,catalog_release_id,platform_id,title,region,revision,variant,manifest_path,manifest_sha256,binding_state)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            "INSERT INTO archive_releases(id,profile_id,catalog_work_id,catalog_release_id,claimed_work_id,claimed_release_id,platform_id,title,region,revision,variant,manifest_path,manifest_sha256,binding_state)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![
                 release.manifest.archive_release_id.to_string(),
                 profile_id,
                 catalog_work,
                 catalog_release,
+                claimed_work,
+                claimed_release,
                 release.manifest.platform_id,
                 release.manifest.title,
                 release.manifest.region,
@@ -1091,23 +1101,26 @@ pub fn reconcile_archive_snapshot(
                 // unbound, re-resolve it from the digests the archive itself
                 // recorded — the same complete-track rule the binding used in
                 // the first place, so this can only reach the same answer.
+                let claimed_media = carrier.manifest.catalog_binding.catalog_media_id.as_str();
                 let (catalog_media, media_binding) = match recorded {
                     Some(id) => (Some(id), "resolved"),
                     None => {
                         match rederived_catalog_media(&tx, &release.manifest.platform_id, carrier)?
                         {
                             Some(id) => (Some(id), "rederived"),
-                            None => (None, "unresolved"),
+                            None if !claimed_media.is_empty() => (None, "unresolved"),
+                            None => (None, "unbound"),
                         }
                     }
                 };
                 tx.execute(
-                    "INSERT INTO carriers(id,physical_copy_id,catalog_media_id,kind,serial,sequence_number,label,manifest_path,manifest_sha256,binding_state)
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                    "INSERT INTO carriers(id,physical_copy_id,catalog_media_id,claimed_media_id,kind,serial,sequence_number,label,manifest_path,manifest_sha256,binding_state)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
                     params![
                         carrier.manifest.carrier_id.to_string(),
                         physical_copy.manifest.physical_copy_id.to_string(),
                         catalog_media,
+                        claimed_media,
                         carrier_kind_key(&carrier.manifest.kind),
                         carrier.manifest.serial,
                         carrier.manifest.sequence_number,

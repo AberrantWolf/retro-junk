@@ -20,7 +20,7 @@ pub enum SchemaError {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 25;
+pub const CURRENT_VERSION: i32 = 26;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -293,6 +293,8 @@ const TABLES: &[(&str, &str)] = &[
           profile_id TEXT NOT NULL REFERENCES archive_profiles(id) ON DELETE CASCADE,
           catalog_work_id TEXT REFERENCES works(id) ON DELETE SET NULL,
           catalog_release_id TEXT REFERENCES releases(id) ON DELETE SET NULL,
+          claimed_work_id TEXT NOT NULL DEFAULT '',
+          claimed_release_id TEXT NOT NULL DEFAULT '',
           platform_id TEXT NOT NULL,
           title TEXT NOT NULL,
           region TEXT NOT NULL DEFAULT '',
@@ -322,6 +324,7 @@ const TABLES: &[(&str, &str)] = &[
         "(id TEXT PRIMARY KEY,
           physical_copy_id TEXT NOT NULL REFERENCES physical_copies(id) ON DELETE CASCADE,
           catalog_media_id TEXT REFERENCES media(id) ON DELETE SET NULL,
+          claimed_media_id TEXT NOT NULL DEFAULT '',
           kind TEXT NOT NULL DEFAULT 'unknown',
           serial TEXT NOT NULL DEFAULT '',
           sequence_number INTEGER NOT NULL DEFAULT 0,
@@ -1299,6 +1302,42 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                            )
                          );",
                     )?;
+                }
+            }
+            25 => {
+                // The projection must be faithful: when an archive manifest
+                // names a catalog id this database cannot resolve, the claim
+                // is preserved in its own columns instead of being erased to
+                // NULL. "Never identified" and "your catalog import is out of
+                // date" are different states, and the UI needs both.
+                // Each table is guarded separately: a database this old may
+                // predate some of the archive projection tables entirely, and
+                // the missing ones are created from the canonical definitions
+                // (claims included) rather than altered.
+                for (table, additions) in [
+                    (
+                        "archive_releases",
+                        "ALTER TABLE archive_releases ADD COLUMN claimed_work_id TEXT NOT NULL DEFAULT '';
+                         ALTER TABLE archive_releases ADD COLUMN claimed_release_id TEXT NOT NULL DEFAULT '';",
+                    ),
+                    (
+                        "carriers",
+                        "ALTER TABLE carriers ADD COLUMN claimed_media_id TEXT NOT NULL DEFAULT '';",
+                    ),
+                ] {
+                    let exists: bool = conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                        [table],
+                        |row| row.get(0),
+                    )?;
+                    let missing_claims = exists
+                        && conn
+                            .prepare(&format!("SELECT claimed_{} FROM {table} LIMIT 0",
+                                if table == "carriers" { "media_id" } else { "release_id" }))
+                            .is_err();
+                    if missing_claims {
+                        conn.execute_batch(additions)?;
+                    }
                 }
             }
             _ => {}

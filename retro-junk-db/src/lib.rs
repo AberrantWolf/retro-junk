@@ -7,6 +7,7 @@ pub mod archive;
 pub mod convergence;
 pub mod deduplicate;
 pub mod derivation;
+pub mod facts;
 pub mod library;
 pub mod operations;
 pub mod queries;

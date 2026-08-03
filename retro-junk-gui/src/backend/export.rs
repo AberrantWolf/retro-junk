@@ -1,9 +1,11 @@
-use retro_junk_frontend::esde::EsDeFrontend;
-use retro_junk_frontend::{Frontend, ScrapedGame};
+//! Thin dispatch to `retro_junk_backend::ops::export`. Scheduling and
+//! message delivery only — the export itself lives in the backend.
+
+use retro_junk_backend::ops::OpCtx;
 
 use crate::app::RetroJunkApp;
 use crate::backend::worker::spawn_background_op;
-use crate::state::{self, AppMessage, OperationKind, ProgressDisplay};
+use crate::state::{AppMessage, OperationKind, ProgressDisplay};
 
 /// Generate a gamelist.xml (ES-DE format) for a console on a background thread.
 pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::Context) {
@@ -38,44 +40,16 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
         folder_name.clone(),
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
-            let result = (|| {
-                let conn = retro_junk_db::open_database(&db_path).map_err(|e| e.to_string())?;
-                let rows = retro_junk_db::load_export_entries_for_console(&conn, console_id)
-                    .map_err(|e| e.to_string())?;
-                let entry_data = rows
-                    .into_iter()
-                    .map(|row| {
-                        let game_entry: retro_junk_lib::scanner::GameEntry =
-                            serde_json::from_str(&row.game_entry_json)
-                                .map_err(|e| format!("Invalid library entry: {e}"))?;
-                        Ok(EntrySnapshot {
-                            rom_stem: game_entry.rom_stem().to_owned(),
-                            rom_filename: game_entry.display_name().to_owned(),
-                            name: if row.dat_game_name.is_empty() {
-                                game_entry.display_name().to_owned()
-                            } else {
-                                row.dat_game_name
-                            },
-                            cover_title: row.cover_title,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, String>>()?;
-                if entry_data.is_empty() {
-                    return Err("The console has no committed entries to export".to_owned());
-                }
-                if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                    return Err("Export cancelled".to_owned());
-                }
-                do_generate(
-                    &root_path,
-                    &folder_name,
-                    &entry_data,
-                    &metadata_dir_setting,
-                    &media_dir_setting,
-                    &cancel,
-                )
-            })();
-
+            let progress = crate::backend::worker::forward_phases(op_id, tx.clone());
+            let result = retro_junk_backend::ops::export::generate_gamelist(
+                &root_path,
+                &folder_name,
+                &db_path,
+                console_id,
+                &metadata_dir_setting,
+                &media_dir_setting,
+                &OpCtx::new(&cancel, &progress),
+            );
             let _ = tx.send(AppMessage::ExportComplete {
                 folder_name,
                 result,
@@ -84,69 +58,4 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
             ctx.request_repaint();
         },
     );
-}
-
-/// Snapshot of the entry data needed for export (avoids sending non-Send types).
-struct EntrySnapshot {
-    rom_stem: String,
-    rom_filename: String,
-    name: String,
-    /// Box/cover title from the catalog DB. Empty = absent.
-    cover_title: String,
-}
-
-fn do_generate(
-    root_path: &std::path::Path,
-    folder_name: &str,
-    entries: &[EntrySnapshot],
-    metadata_dir_setting: &str,
-    media_dir_setting: &str,
-    cancel: &std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> Result<String, String> {
-    let rom_dir = root_path.join(folder_name);
-    let media_dir =
-        retro_junk_lib::util::asset_dir_for_console(root_path, folder_name, media_dir_setting)
-            .ok_or_else(|| "Could not determine media directory".to_string())?;
-    let metadata_dir = retro_junk_lib::util::metadata_dir_for_console(
-        root_path,
-        folder_name,
-        metadata_dir_setting,
-    );
-
-    let games: Vec<ScrapedGame> = entries
-        .iter()
-        .map(|e| {
-            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err("Export cancelled".to_owned());
-            }
-            let assets = state::collect_existing_assets(&media_dir, &e.rom_stem);
-            // Convert HashMap<AssetType, PathBuf> — already the right type
-            Ok(ScrapedGame {
-                rom_stem: e.rom_stem.clone(),
-                rom_filename: e.rom_filename.clone(),
-                name: e.name.clone(),
-                description: String::new(),
-                developer: String::new(),
-                publisher: String::new(),
-                genre: String::new(),
-                players: String::new(),
-                rating: None,
-                release_date: String::new(),
-                assets,
-                cover_title: e.cover_title.clone(),
-            })
-        })
-        .collect::<Result<_, String>>()?;
-
-    if cancel.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err("Export cancelled".to_owned());
-    }
-
-    let frontend = EsDeFrontend;
-    frontend
-        .write_metadata(&games, &rom_dir, &metadata_dir, &media_dir)
-        .map_err(|e| e.to_string())?;
-
-    let output_path = metadata_dir.join("gamelist.xml");
-    Ok(output_path.display().to_string())
 }

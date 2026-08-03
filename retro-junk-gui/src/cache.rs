@@ -3,43 +3,24 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use retro_junk_catalog::CatalogTag;
-use retro_junk_dat::MatchMethod;
 use retro_junk_db::{Connection, LibraryEntryRow};
 use retro_junk_lib::{AnalysisContext, Platform, Region};
 
 use crate::state::{
-    ConsoleState, DatMatchInfo, DiscVerification, EntryStatus, LibraryBrowserState, LibraryEntry,
-    ScanStatus,
+    ConsoleState, DatMatchInfo, EntryStatus, LibraryBrowserState, LibraryEntry, ScanStatus,
 };
 
-// ── Error Type ──────────────────────────────────────────────────────────────
-
-#[derive(Debug)]
-pub enum CacheError {
-    Db(retro_junk_db::LibraryError),
-    Json(serde_json::Error),
-}
-
-impl From<retro_junk_db::LibraryError> for CacheError {
-    fn from(e: retro_junk_db::LibraryError) -> Self {
-        CacheError::Db(e)
-    }
-}
-
-impl From<serde_json::Error> for CacheError {
-    fn from(e: serde_json::Error) -> Self {
-        CacheError::Json(e)
-    }
-}
-
-impl std::fmt::Display for CacheError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CacheError::Db(e) => write!(f, "database error: {e}"),
-            CacheError::Json(e) => write!(f, "serialization error: {e}"),
-        }
-    }
-}
+// The row ↔ entry conversions (and their error type) live in the backend's
+// `library` module beside the entry model itself; re-exported so existing
+// `crate::cache::` callers keep working. This file keeps only what is bound
+// to GUI state: the legacy JSON cache migration.
+pub use retro_junk_backend::library::CacheError;
+#[cfg(test)]
+pub(crate) use retro_junk_backend::library::row_to_entry;
+pub(crate) use retro_junk_backend::library::{
+    detail_to_entry, entry_analysis_update, entry_hash_update, entry_to_row,
+    scanned_entry_for_folder,
+};
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
@@ -85,36 +66,7 @@ pub fn scanned_entry(
     console: &ConsoleState,
     entry: &LibraryEntry,
 ) -> Result<retro_junk_db::ScannedLibraryEntry, CacheError> {
-    let row = entry_to_row(entry)?;
-    Ok(retro_junk_db::ScannedLibraryEntry {
-        entry_key: retro_junk_db::source_key_from_game_entry_json(
-            &row.game_entry_json,
-            &console.folder_path,
-        )?,
-        source_fingerprint: retro_junk_db::source_fingerprint_from_game_entry_json(
-            &row.game_entry_json,
-            &console.folder_path,
-        )?,
-        row,
-    })
-}
-
-pub(crate) fn scanned_entry_for_folder(
-    folder_path: &Path,
-    entry: &LibraryEntry,
-) -> Result<retro_junk_db::ScannedLibraryEntry, CacheError> {
-    let row = entry_to_row(entry)?;
-    Ok(retro_junk_db::ScannedLibraryEntry {
-        entry_key: retro_junk_db::source_key_from_game_entry_json(
-            &row.game_entry_json,
-            folder_path,
-        )?,
-        source_fingerprint: retro_junk_db::source_fingerprint_from_game_entry_json(
-            &row.game_entry_json,
-            folder_path,
-        )?,
-        row,
-    })
+    scanned_entry_for_folder(&console.folder_path, entry)
 }
 
 // ── JSON Migration ──────────────────────────────────────────────────────────
@@ -412,320 +364,10 @@ fn import_legacy_console(
     Ok(())
 }
 
-// ── Row ↔ Domain Conversion ─────────────────────────────────────────────────
-
-pub(crate) fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json::Error> {
-    let display_name = entry.game_entry.display_name().to_string();
-    let game_entry_json = serde_json::to_string(&entry.game_entry)?;
-
-    let (status_str, tag_str) = status_to_str(entry.effective_status());
-
-    let (crc32, sha1, md5, data_size) = match &entry.hashes {
-        Some(h) => (
-            h.crc32.clone(),
-            h.sha1.clone().unwrap_or_default(),
-            h.md5.clone().unwrap_or_default(),
-            h.data_size as i64,
-        ),
-        None => (String::new(), String::new(), String::new(), 0),
-    };
-    let hash_warnings_json = entry
-        .hashes
-        .as_ref()
-        .filter(|hashes| !hashes.warnings.is_empty())
-        .map(|hashes| serde_json::to_string(&hashes.warnings))
-        .transpose()?;
-
-    let (dat_game_name, dat_rom_name, dat_match_method) = match &entry.dat_match {
-        Some(dm) => (
-            dm.game_name.clone(),
-            dm.rom_name.clone(),
-            match_method_to_str(&dm.method).to_string(),
-        ),
-        None => (String::new(), String::new(), String::new()),
-    };
-
-    let region_override = entry
-        .region_override
-        .map(|r| r.name().to_string())
-        .unwrap_or_default();
-
-    let identification_json = entry
-        .identification
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-
-    let disc_identifications_json = entry
-        .disc_identifications
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-
-    let broken_references_json = entry
-        .broken_references
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-
-    let cue_compat_issues_json = entry
-        .cue_compat_issues
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-
-    let ambiguous_candidates_json = if entry.ambiguous_candidates.is_empty() {
-        None
-    } else {
-        Some(serde_json::to_string(&entry.ambiguous_candidates)?)
-    };
-
-    Ok(LibraryEntryRow {
-        display_name,
-        game_entry_json,
-        status: status_str.to_string(),
-        tag: tag_str.unwrap_or("").to_string(),
-        crc32,
-        sha1,
-        md5,
-        data_size,
-        hash_warnings_json,
-        disc_verification: disc_verification_to_str(entry.disc_verification).to_string(),
-        dat_game_name,
-        dat_rom_name,
-        dat_match_method,
-        region_override,
-        cover_title: entry.cover_title.clone(),
-        screen_title: entry.screen_title.clone(),
-        identification_json,
-        disc_identifications_json,
-        broken_references_json,
-        ambiguous_candidates_json,
-        cue_compat_issues_json,
-    })
-}
-
-/// Build the intent-specific database payload for derived analysis fields.
-/// Source identity and user-owned fields are deliberately excluded.
-pub(crate) fn entry_analysis_update(
-    entry: &LibraryEntry,
-) -> Result<retro_junk_db::EntryAnalysisUpdate, serde_json::Error> {
-    let row = entry_to_row(entry)?;
-    Ok(retro_junk_db::EntryAnalysisUpdate {
-        status: row.status,
-        crc32: row.crc32,
-        sha1: row.sha1,
-        md5: row.md5,
-        data_size: row.data_size,
-        hash_warnings_json: row.hash_warnings_json,
-        disc_verification: row.disc_verification,
-        dat_game_name: row.dat_game_name,
-        dat_rom_name: row.dat_rom_name,
-        dat_match_method: row.dat_match_method,
-        cover_title: row.cover_title,
-        screen_title: row.screen_title,
-        identification_json: row.identification_json,
-        disc_identifications_json: row.disc_identifications_json,
-        broken_references_json: row.broken_references_json,
-        ambiguous_candidates_json: row.ambiguous_candidates_json,
-        cue_compat_issues_json: row.cue_compat_issues_json,
-    })
-}
-
-/// Build the narrow payload written by an explicit hash operation. This must
-/// not include diagnostics or identification fields which may have changed
-/// independently while a large disc was hashing.
-pub(crate) fn entry_hash_update(
-    entry: &LibraryEntry,
-) -> Result<retro_junk_db::EntryHashUpdate, serde_json::Error> {
-    let row = entry_to_row(entry)?;
-    Ok(retro_junk_db::EntryHashUpdate {
-        status: row.status,
-        crc32: row.crc32,
-        sha1: row.sha1,
-        md5: row.md5,
-        data_size: row.data_size,
-        hash_warnings_json: row.hash_warnings_json,
-        disc_verification: row.disc_verification,
-        dat_game_name: row.dat_game_name,
-        dat_rom_name: row.dat_rom_name,
-        dat_match_method: row.dat_match_method,
-        cover_title: row.cover_title,
-        screen_title: row.screen_title,
-        disc_identifications_json: row.disc_identifications_json,
-        ambiguous_candidates_json: row.ambiguous_candidates_json,
-    })
-}
-
-pub(crate) fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
-    let game_entry = serde_json::from_str(&row.game_entry_json).ok()?;
-
-    let status = str_to_status(&row.status);
-    let tag = str_to_tag(&row.tag);
-    let hash_warnings = row
-        .hash_warnings_json
-        .as_deref()
-        .and_then(|json| serde_json::from_str(json).ok())
-        .unwrap_or_default();
-    let disc_verification = str_to_disc_verification(&row.disc_verification);
-
-    // Empty string in the row means "not set" — map back to the GUI's Option fields.
-    let hashes = if row.crc32.is_empty() {
-        None
-    } else {
-        Some(retro_junk_dat::FileHashes {
-            crc32: row.crc32,
-            sha1: (!row.sha1.is_empty()).then_some(row.sha1),
-            md5: (!row.md5.is_empty()).then_some(row.md5),
-            data_size: row.data_size as u64,
-            warnings: hash_warnings,
-        })
-    };
-
-    let dat_match = if row.dat_game_name.is_empty() {
-        None
-    } else {
-        Some(DatMatchInfo {
-            game_name: row.dat_game_name,
-            rom_name: row.dat_rom_name,
-            method: str_to_match_method(&row.dat_match_method),
-            region: String::new(),
-            cross_region: false,
-        })
-    };
-
-    let region_override = Region::ALL
-        .iter()
-        .find(|r| r.name() == row.region_override)
-        .copied();
-
-    let identification = row
-        .identification_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok());
-
-    let disc_identifications = row
-        .disc_identifications_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok());
-
-    let broken_references = row
-        .broken_references_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok());
-
-    let cue_compat_issues = row
-        .cue_compat_issues_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok());
-
-    let ambiguous_candidates: Vec<String> = row
-        .ambiguous_candidates_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
-
-    Some(LibraryEntry {
-        id: None,
-        revision: 0,
-        source_revision: 0,
-        game_entry,
-        identification,
-        hashes,
-        disc_verification,
-        dat_match,
-        status,
-        ambiguous_candidates,
-        asset_paths: None, // re-discovered lazily
-        region_override,
-        cover_title: row.cover_title,
-        screen_title: row.screen_title,
-        disc_identifications,
-        broken_references,
-        cue_compat_issues,
-        tag,
-    })
-}
-
-pub(crate) fn detail_to_entry(detail: retro_junk_db::LibraryEntryDetail) -> Option<LibraryEntry> {
-    let mut entry = row_to_entry(detail.row)?;
-    entry.id = Some(detail.id);
-    entry.revision = detail.revision;
-    entry.source_revision = detail.source_revision;
-    Some(entry)
-}
-
-fn status_to_str(status: EntryStatus) -> (&'static str, Option<&'static str>) {
-    match status {
-        EntryStatus::Unknown => ("unknown", None),
-        EntryStatus::Unrecognized => ("unrecognized", None),
-        EntryStatus::Ambiguous => ("ambiguous", None),
-        EntryStatus::LikelyMatched => ("likely", None),
-        EntryStatus::Matched => ("matched", None),
-        EntryStatus::Tagged(CatalogTag::Homebrew) => ("tagged", Some("homebrew")),
-        EntryStatus::Tagged(CatalogTag::Modded) => ("tagged", Some("modded")),
-    }
-}
-
-fn str_to_status(s: &str) -> EntryStatus {
-    match s {
-        "unrecognized" => EntryStatus::Unrecognized,
-        "ambiguous" => EntryStatus::Ambiguous,
-        "likely" => EntryStatus::LikelyMatched,
-        "matched" => EntryStatus::Matched,
-        // "unknown", "tagged" (tag column provides the real tag), and anything else
-        _ => EntryStatus::Unknown,
-    }
-}
-
-fn str_to_tag(s: &str) -> Option<CatalogTag> {
-    match s {
-        "homebrew" => Some(CatalogTag::Homebrew),
-        "modded" => Some(CatalogTag::Modded),
-        _ => None,
-    }
-}
-
-fn match_method_to_str(m: &MatchMethod) -> &'static str {
-    match m {
-        MatchMethod::Serial => "serial",
-        MatchMethod::Crc32 => "crc32",
-        MatchMethod::Sha1 => "sha1",
-        MatchMethod::ArchiveEvidence => "archive_evidence",
-    }
-}
-
-fn str_to_match_method(s: &str) -> MatchMethod {
-    match s {
-        "serial" => MatchMethod::Serial,
-        "sha1" => MatchMethod::Sha1,
-        "archive_evidence" => MatchMethod::ArchiveEvidence,
-        // "crc32" and anything else default to CRC32
-        _ => MatchMethod::Crc32,
-    }
-}
-
-fn disc_verification_to_str(verification: DiscVerification) -> &'static str {
-    match verification {
-        DiscVerification::NotApplicable => "not_applicable",
-        DiscVerification::Complete => "complete",
-        DiscVerification::Incomplete => "incomplete",
-        DiscVerification::InvalidLayout => "invalid_layout",
-    }
-}
-
-fn str_to_disc_verification(value: &str) -> DiscVerification {
-    match value {
-        "complete" => DiscVerification::Complete,
-        "incomplete" => DiscVerification::Incomplete,
-        "invalid_layout" => DiscVerification::InvalidLayout,
-        _ => DiscVerification::NotApplicable,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::DiscVerification;
 
     #[test]
     fn standalone_disc_integrity_and_warnings_survive_row_round_trip() {

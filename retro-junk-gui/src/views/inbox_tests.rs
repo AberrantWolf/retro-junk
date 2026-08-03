@@ -165,7 +165,7 @@ fn only_the_visible_rows_are_drawn() {
 /// be the same set the list is showing, or "dismiss 412" means nothing.
 #[test]
 fn the_filter_selects_what_a_bulk_action_would_take() {
-    use retro_junk_work::suggestions::SuggestionFilter;
+    use retro_junk_backend::suggestions::SuggestionFilter;
 
     let (_directory, path) = database_with_suggestions(4);
     let harness = app_with(&path);
@@ -200,7 +200,7 @@ fn the_filter_selects_what_a_bulk_action_would_take() {
 /// under hundreds of old rows that were already decided against.
 #[test]
 fn the_default_order_puts_new_arrivals_on_top() {
-    use retro_junk_work::suggestions::SuggestionFilter;
+    use retro_junk_backend::suggestions::SuggestionFilter;
 
     let (_directory, path) = database_with_suggestions(3);
     let harness = app_with(&path);

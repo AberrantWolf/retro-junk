@@ -111,7 +111,7 @@ pub struct UiState {
     pub startup_status: Option<String>,
     /// Automation policy being edited in Settings; loaded on first show,
     /// saved surgically on change.
-    pub automation_policy: Option<retro_junk_work::AutomationPolicy>,
+    pub automation_policy: Option<retro_junk_backend::AutomationPolicy>,
     /// Artwork a release is expected to hold, from policy. Read on every
     /// badge paint, so it is resolved once at startup and whenever Settings
     /// changes it rather than re-parsed per row.
@@ -191,7 +191,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             current_view: View::Library,
-            expected_assets: retro_junk_work::AutomationPolicy::load().scrape_selection(),
+            expected_assets: retro_junk_backend::AutomationPolicy::load().scrape_selection(),
             selected_console: None,
             scroll_to_console: None,
             focused_entry: None,

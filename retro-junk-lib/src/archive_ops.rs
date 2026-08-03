@@ -837,7 +837,7 @@ pub struct AdoptionReport {
 ///
 /// This runs unattended regardless of the automation policy — it produces
 /// nothing, it only corrects where the archive believes an existing file is.
-/// See `retro_junk_work::worker::daemon_may_run`.
+/// See `retro_junk_backend::worker::daemon_may_run`.
 ///
 /// The caller owns the archive lock and the reconcile that follows.
 pub fn adopt_moved_playables(

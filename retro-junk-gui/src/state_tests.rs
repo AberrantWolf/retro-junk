@@ -3,6 +3,8 @@
 
 use std::collections::HashSet;
 
+use retro_junk_dat::{FileHashes, MatchMethod};
+use retro_junk_lib::RomIdentification;
 use retro_junk_lib::scanner::GameEntry;
 
 use super::*;

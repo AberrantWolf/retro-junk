@@ -76,7 +76,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
     // Built once per frame from the loaded rows; the borrow ends before any
     // action runs.
-    let filter = retro_junk_work::suggestions::SuggestionFilter::new(
+    let filter = retro_junk_backend::suggestions::SuggestionFilter::new(
         app.ui_state.inbox_ui.filter_kind.as_deref(),
         &app.ui_state.inbox_ui.filter_text,
     );
@@ -143,7 +143,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
 
 /// The heading, the filter, the sort, and the bulk buttons.
 fn header(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
-    let filter = retro_junk_work::suggestions::SuggestionFilter::new(
+    let filter = retro_junk_backend::suggestions::SuggestionFilter::new(
         app.ui_state.inbox_ui.filter_kind.as_deref(),
         &app.ui_state.inbox_ui.filter_text,
     );
@@ -617,7 +617,7 @@ fn package_row(
 fn empty_state(
     ui: &mut egui::Ui,
     inbox: &crate::backend::inbox::InboxContents,
-    filter: &retro_junk_work::suggestions::SuggestionFilter,
+    filter: &retro_junk_backend::suggestions::SuggestionFilter,
 ) {
     ui.add_space(24.0);
     ui.vertical_centered(|ui| {
@@ -734,7 +734,7 @@ fn ignore_dialog(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context)
             .items
             .iter()
             .filter(|item| {
-                item.suggestion.kind == retro_junk_work::ADOPT_SUGGESTION_KIND
+                item.suggestion.kind == retro_junk_backend::ADOPT_SUGGESTION_KIND
                     && matcher.matches(&item.suggestion.target_id)
             })
             .count()
@@ -861,7 +861,7 @@ fn choice_dialog(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context)
 fn keyboard(
     ui: &mut egui::Ui,
     app: &mut RetroJunkApp,
-    filter: &retro_junk_work::suggestions::SuggestionFilter,
+    filter: &retro_junk_backend::suggestions::SuggestionFilter,
     ctx: &egui::Context,
 ) {
     if ui.memory(egui::Memory::focused).is_some()

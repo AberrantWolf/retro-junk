@@ -1,13 +1,12 @@
+//! Thin dispatch to `retro_junk_backend::ops::playable_build`. The backend
+//! translates the user's release + format pick into a derived action;
+//! execution goes through [`crate::backend::convergence`], the same
+//! claim → archive-lock → shared-implementation path the CLI and daemon
+//! take.
+
 use crate::app::RetroJunkApp;
 
 /// Queue one release's build as a derived convergence action.
-///
-/// This is only the translation from "the user picked this release and this
-/// format" into a [`ProposedAction`]; execution, claiming, locking, and the
-/// projection refresh all belong to [`crate::backend::convergence`], which
-/// the CLI and daemon reach through the same executor.
-///
-/// [`ProposedAction`]: retro_junk_db::convergence::ProposedAction
 pub fn start(
     app: &mut RetroJunkApp,
     release: retro_junk_db::ArchivedPlayableGap,
@@ -24,29 +23,11 @@ pub fn start(
         app.push_error("Archive action", "No active collection profile".to_owned());
         return;
     };
-    let release_label = if release.region.trim().is_empty() {
-        release.title.clone()
-    } else {
-        format!("{} ({})", release.title, release.region)
-    };
-    let description = if release.needs_playable {
-        format!("Queued playable build for {release_label}")
-    } else {
-        format!("Queued archive verification for {release_label}")
-    };
-    // The user's explicit format choice overrides the stored policy for
-    // this run; the executor reads the format from the gap.
-    let mut gap = release;
-    gap.preferred_format = Some(format.key().to_owned());
-    let action = retro_junk_db::convergence::ProposedAction {
-        kind: retro_junk_db::convergence::ActionKind::BuildPlayable,
-        target: retro_junk_db::convergence::WorkTarget::Release(gap.archive_release_id.clone()),
-        profile_id,
-        platform_id: String::new(),
+    let (action, description) = retro_junk_backend::ops::playable_build::queue_release_build(
+        release,
+        format,
         playable_platform_id,
-        label: release_label,
-        blocked: None,
-        build: Some(gap),
-    };
+        profile_id,
+    );
     crate::backend::convergence::run_action(app, action, description, ctx);
 }

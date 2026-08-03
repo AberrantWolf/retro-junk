@@ -4919,6 +4919,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "retro-junk-backend"
+version = "0.4.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "image",
+ "log",
+ "notify",
+ "retro-junk-archive",
+ "retro-junk-archive-import",
+ "retro-junk-catalog",
+ "retro-junk-core",
+ "retro-junk-dat",
+ "retro-junk-db",
+ "retro-junk-disc",
+ "retro-junk-frontend",
+ "retro-junk-import",
+ "retro-junk-io",
+ "retro-junk-lib",
+ "retro-junk-scraper",
+ "retro-junk-sony",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.2",
+]
+
+[[package]]
 name = "retro-junk-catalog"
 version = "0.4.0"
 dependencies = [
@@ -4940,6 +4971,7 @@ dependencies = [
  "owo-colors",
  "retro-junk-archive",
  "retro-junk-archive-import",
+ "retro-junk-backend",
  "retro-junk-catalog",
  "retro-junk-core",
  "retro-junk-dat",
@@ -4954,7 +4986,6 @@ dependencies = [
  "retro-junk-scraper",
  "retro-junk-sega",
  "retro-junk-sony",
- "retro-junk-work",
  "serde",
  "serde_json",
  "strip-ansi-escapes",
@@ -5058,6 +5089,7 @@ dependencies = [
  "pathdiff",
  "retro-junk-archive",
  "retro-junk-archive-import",
+ "retro-junk-backend",
  "retro-junk-catalog",
  "retro-junk-core",
  "retro-junk-dat",
@@ -5072,7 +5104,6 @@ dependencies = [
  "retro-junk-scraper",
  "retro-junk-sega",
  "retro-junk-sony",
- "retro-junk-work",
  "rfd",
  "serde",
  "serde_json",
@@ -5207,30 +5238,6 @@ dependencies = [
  "retro-junk-core",
  "retro-junk-disc",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "retro-junk-work"
-version = "0.4.0"
-dependencies = [
- "chrono",
- "dirs",
- "log",
- "notify",
- "retro-junk-archive",
- "retro-junk-archive-import",
- "retro-junk-core",
- "retro-junk-db",
- "retro-junk-frontend",
- "retro-junk-io",
- "retro-junk-lib",
- "retro-junk-scraper",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.8.2",
 ]
 
 [[package]]

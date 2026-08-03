@@ -1,61 +1,22 @@
-//! The GUI's one entry point to the shared convergence machinery.
-//!
-//! Everything the GUI knows about pending work goes through here:
-//! [`exec_context`] builds the executor context from settings once instead
-//! of at every call site, [`run_action`] dispatches any derived
-//! [`ProposedAction`] through `retro_junk_work::execute_action` — the same
-//! claim → archive-lock → shared-implementation path the CLI and daemon
-//! take — and [`load_backlog`] reads the backlog summary and open-error set
-//! off the render thread.
-//!
-//! The executor is the only writer; this module adds no behaviour of its
-//! own, so a build started from a row badge, from the context menu, from
-//! `retro-junk sync`, or by the daemon is literally the same work.
+//! Thin dispatch to `retro_junk_backend::ops::convergence`. Scheduling,
+//! progress forwarding, and message delivery only — running actions,
+//! converging a scope, and reading the backlog all live in the backend, on
+//! the same claim → archive-lock → shared-implementation path the CLI and
+//! daemon take. A build started from a row badge, from the context menu,
+//! from `retro-junk sync`, or by the daemon is literally the same work.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use retro_junk_db::convergence::{
-    ActionKind, BlockedReason, ConvergenceSummary, ProposedAction, Scope,
-};
-use retro_junk_db::work::WorkError;
+use retro_junk_backend::ops::OpCtx;
+use retro_junk_db::convergence::{ActionKind, ProposedAction, Scope};
 
 use crate::app::RetroJunkApp;
 use crate::state::{AppMessage, OperationKind, ProgressDisplay};
 
-/// The backlog for one scope: per-kind counts plus every open error and
-/// blocked action, grouped by the archive release each belongs to, loaded
-/// together so a refresh is one background pass rather than several.
-#[derive(Default)]
-pub struct Backlog {
-    pub summary: ConvergenceSummary,
-    pub errors: BTreeMap<String, Vec<(ActionKind, WorkError)>>,
-    pub blocked: BTreeMap<String, Vec<(ActionKind, BlockedReason)>>,
-}
-
-impl Backlog {
-    /// Open errors recorded against one archive release, verification
-    /// failures on its dumps included.
-    #[must_use]
-    pub fn release_errors(&self, archive_release_id: &str) -> &[(ActionKind, WorkError)] {
-        self.errors
-            .get(archive_release_id)
-            .map_or(&[][..], Vec::as_slice)
-    }
-
-    /// Actions derived for one archive release that cannot run unattended
-    /// right now, with why — the worker skips these before the executor ever
-    /// sees them, so this is the only place their reason is visible.
-    #[must_use]
-    pub fn release_blocked(&self, archive_release_id: &str) -> &[(ActionKind, BlockedReason)] {
-        self.blocked
-            .get(archive_release_id)
-            .map_or(&[][..], Vec::as_slice)
-    }
-}
+pub use retro_junk_backend::ops::convergence::{Backlog, kind_label};
 
 /// Build the executor context from the app's settings and active profile.
-pub fn exec_context(app: &RetroJunkApp) -> Result<retro_junk_work::ExecContext, String> {
+pub fn exec_context(app: &RetroJunkApp) -> Result<retro_junk_backend::ExecContext, String> {
     let profile = app
         .settings
         .library
@@ -66,7 +27,7 @@ pub fn exec_context(app: &RetroJunkApp) -> Result<retro_junk_work::ExecContext, 
         .db_path
         .clone()
         .ok_or_else(|| "Catalog database is unavailable".to_owned())?;
-    Ok(retro_junk_work::ExecContext {
+    Ok(retro_junk_backend::ExecContext {
         roots: retro_junk_lib::archive_ops::FrontendRoots::from_settings(
             &profile.playable_root,
             &app.settings.general.assets_dir,
@@ -74,18 +35,18 @@ pub fn exec_context(app: &RetroJunkApp) -> Result<retro_junk_work::ExecContext, 
         ),
         profile,
         db_path,
-        tools: retro_junk_work::ToolPaths {
+        tools: retro_junk_backend::ToolPaths {
             chdman: PathBuf::from(app.settings.general.chdman_path.trim()),
             redumper: PathBuf::new(),
             dolphin_tool: PathBuf::new(),
         },
-        scrape: retro_junk_work::AutomationPolicy::load().scrape_settings(),
+        scrape: retro_junk_backend::AutomationPolicy::load().scrape_settings(),
         analyzers: app.context.clone(),
-        owner: retro_junk_work::ExecContext::owner_string("gui"),
+        owner: retro_junk_backend::ExecContext::owner_string("gui"),
         // A human clicked: wait for the lock rather than fail fast, and keep
         // the projection current so the row updates as soon as it finishes.
-        lock: retro_junk_work::LockEtiquette::InteractiveWait,
-        reconcile: retro_junk_work::ReconcileMode::PerAction,
+        lock: retro_junk_backend::LockEtiquette::InteractiveWait,
+        reconcile: retro_junk_backend::ReconcileMode::PerAction,
     })
 }
 
@@ -114,53 +75,28 @@ pub fn run_action(
         "archive".to_owned(),
         ProgressDisplay::Count,
         move |op_id, cancel, sender| {
-            let progress_sender = sender.clone();
-            let outcome = retro_junk_work::execute_action(
+            let progress = crate::backend::worker::forward_phases(op_id, sender.clone());
+            let result = retro_junk_backend::ops::convergence::run_action(
                 &exec,
                 &action,
-                &crate::backend::worker::forward_phases(op_id, progress_sender),
-                &cancel,
+                &OpCtx::new(&cancel, &progress),
             );
-            let result = match outcome {
-                Ok(retro_junk_work::ActionOutcome::Completed { mut outputs }) => Ok(outputs.pop()),
-                Ok(retro_junk_work::ActionOutcome::ClaimHeld(held)) => Err(format!(
-                    "{} is already being handled by {} (since {})",
-                    action.label, held.owner, held.since
-                )),
-                Ok(retro_junk_work::ActionOutcome::ArchiveBusy) => Err(format!(
-                    "the archive is busy; {} will be retried",
-                    action.label
-                )),
-                Ok(retro_junk_work::ActionOutcome::Blocked(reason)) => Err(reason),
-                Ok(retro_junk_work::ActionOutcome::Cancelled) => {
-                    Err(format!("{} was cancelled", action.label))
-                }
-                Err(error) => Err(error.to_string()),
-            };
             let _ = sender.send(AppMessage::PlayableBuildComplete { op_id, result });
         },
     );
     ctx.request_repaint_after(std::time::Duration::from_millis(20));
 }
 
-/// Run every currently derivable action in `scope`, stage by stage.
-///
-/// This is `retro-junk sync` with the GUI as the caller: same `run_once`,
-/// same `RunMode::Explicit` (a click is consent, so policy gates and error
-/// backoff do not apply), same executor underneath. Reconciling once at the
-/// end rather than per action keeps a large run to one archive scan.
+/// Run every currently derivable action in `scope`, stage by stage — a click
+/// is consent, so this is `retro-junk sync` with the GUI as the caller.
 pub fn run_scope(app: &mut RetroJunkApp, scope: Scope, ctx: &egui::Context) {
     let exec = match exec_context(app) {
-        Ok(exec) => retro_junk_work::ExecContext {
-            reconcile: retro_junk_work::ReconcileMode::AtBatchEnd,
-            ..exec
-        },
+        Ok(exec) => exec,
         Err(error) => {
             app.push_error("Convergence", error);
             return;
         }
     };
-    let policy = retro_junk_work::AutomationPolicy::load();
     crate::backend::worker::spawn_background_op(
         app,
         "Converging the archive".to_owned(),
@@ -168,26 +104,12 @@ pub fn run_scope(app: &mut RetroJunkApp, scope: Scope, ctx: &egui::Context) {
         "archive".to_owned(),
         ProgressDisplay::Count,
         move |op_id, cancel, sender| {
-            let progress_sender = sender.clone();
-            let result = retro_junk_work::run_once(
-                &exec,
-                &policy,
+            let progress = crate::backend::worker::forward_phases(op_id, sender.clone());
+            let result = retro_junk_backend::ops::convergence::run_scope(
+                exec,
                 &scope,
-                retro_junk_work::RunMode::Explicit,
-                retro_junk_work::ProjectionPass::Always,
-                None,
-                None,
-                &crate::backend::worker::forward_phases(op_id, progress_sender),
-                &cancel,
+                &OpCtx::new(&cancel, &progress),
             );
-            let result = result
-                .map(|stats| {
-                    format!(
-                        "Converged: {} completed, {} failed, {} blocked, {} busy",
-                        stats.completed, stats.failed, stats.blocked, stats.skipped_busy
-                    )
-                })
-                .map_err(|error| error.to_string());
             let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
         },
     );
@@ -196,10 +118,6 @@ pub fn run_scope(app: &mut RetroJunkApp, scope: Scope, ctx: &egui::Context) {
 
 /// Re-run one action kind for one archive release — the badge popover's
 /// "run this again".
-///
-/// Derivation, not construction: asking `run_once` for a release-scoped run
-/// restricted to one kind means the GUI never has to know that integrity
-/// verification targets a dump while a build targets the release.
 pub fn run_release_kind(
     app: &mut RetroJunkApp,
     archive_release_id: String,
@@ -214,8 +132,6 @@ pub fn run_release_kind(
             return;
         }
     };
-    let policy = retro_junk_work::AutomationPolicy::load();
-    let scope = Scope::Release { archive_release_id };
     crate::backend::worker::spawn_background_op(
         app,
         format!("{} for {label}", kind_label(kind)),
@@ -223,43 +139,14 @@ pub fn run_release_kind(
         "archive".to_owned(),
         ProgressDisplay::Count,
         move |op_id, cancel, sender| {
-            let progress_sender = sender.clone();
-            let result = retro_junk_work::run_once(
+            let progress = crate::backend::worker::forward_phases(op_id, sender.clone());
+            let result = retro_junk_backend::ops::convergence::run_release_kind(
                 &exec,
-                &policy,
-                &scope,
-                retro_junk_work::RunMode::Explicit,
-                retro_junk_work::ProjectionPass::Always,
-                Some(&[kind]),
-                None,
-                &crate::backend::worker::forward_phases(op_id, progress_sender),
-                &cancel,
+                archive_release_id,
+                kind,
+                &label,
+                &OpCtx::new(&cancel, &progress),
             );
-            let result = result
-                .map(|stats| {
-                    // `completed == 0` is not one outcome — it also covers a
-                    // run that failed or that never reached the executor at
-                    // all, and those need to say so, not read as "nothing was
-                    // pending" beside a dot that is visibly red or gray.
-                    if stats.completed > 0 {
-                        format!("{} finished for {label}", kind_label(kind))
-                    } else if stats.failed > 0 {
-                        format!(
-                            "{} failed for {label} — see the evidence dot for why",
-                            kind_label(kind)
-                        )
-                    } else if stats.blocked > 0 {
-                        format!(
-                            "{} is blocked for {label} — see the evidence dot for why",
-                            kind_label(kind)
-                        )
-                    } else if stats.skipped_busy > 0 {
-                        format!("{label} is already being worked on")
-                    } else {
-                        format!("Nothing to do: {label} is already current")
-                    }
-                })
-                .map_err(|error| error.to_string());
             let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
         },
     );
@@ -267,17 +154,9 @@ pub fn run_release_kind(
 }
 
 /// Force a release's playable representation into a good state — the
-/// archive context menu's "Force Rebuild Playable".
-///
-/// Unlike [`run_release_kind`], this does not derive from what convergence
-/// currently believes is owed: a release whose evidence points at bytes
-/// that moved, were regenerated, or were adopted against a file that turned
-/// out not to be there reads as satisfied and never reaches derivation at
-/// all, so the ordinary build action never even appears for it. This routes
-/// straight to [`retro_junk_work::force_rebuild_playable`], which tries
-/// adoption before forcing a build — the CLI's `rebuild-playable` goes
-/// through the identical function, so "force" means the same thing from
-/// either surface.
+/// archive context menu's "Force Rebuild Playable". Adoption is tried before
+/// forcing a build; the CLI's `rebuild-playable` goes through the identical
+/// backend function, so "force" means the same thing from either surface.
 pub fn force_rebuild_playable(
     app: &mut RetroJunkApp,
     archive_release_id: String,
@@ -298,22 +177,13 @@ pub fn force_rebuild_playable(
         "archive".to_owned(),
         ProgressDisplay::Count,
         move |op_id, cancel, sender| {
-            let progress_sender = sender.clone();
-            let outcome = retro_junk_work::force_rebuild_playable(
+            let progress = crate::backend::worker::forward_phases(op_id, sender.clone());
+            let result = retro_junk_backend::ops::convergence::force_rebuild(
                 &exec,
                 &archive_release_id,
-                &crate::backend::worker::forward_phases(op_id, progress_sender),
-                &cancel,
+                &label,
+                &OpCtx::new(&cancel, &progress),
             );
-            let result = match outcome {
-                Ok(retro_junk_work::ForceRebuildOutcome::Adopted(found_label)) => {
-                    Ok(format!("{found_label} was already there — adopted it"))
-                }
-                Ok(retro_junk_work::ForceRebuildOutcome::Built(_)) => {
-                    Ok(format!("Rebuilt {label}"))
-                }
-                Err(error) => Err(error.to_string()),
-            };
             let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
         },
     );
@@ -358,9 +228,6 @@ pub fn ensure_backlog_loaded(app: &mut RetroJunkApp, ctx: &egui::Context) {
 }
 
 /// Load the backlog for `scope` off the render thread.
-///
-/// Derivation is pure SQL over the projection, but the projection lives on
-/// whatever filesystem the catalog database does, so it never runs inline.
 pub fn load_backlog(app: &mut RetroJunkApp, scope: Scope, ctx: &egui::Context) {
     let Some(db_path) = app.db_path.clone() else {
         return;
@@ -371,49 +238,9 @@ pub fn load_backlog(app: &mut RetroJunkApp, scope: Scope, ctx: &egui::Context) {
     app.ui_state.backlog_loading = true;
     let sender = app.message_tx.clone();
     let repaint = ctx.clone();
-    let expected = retro_junk_work::AutomationPolicy::load().scrape_selection();
-    let reply_scope = scope.clone();
     std::thread::spawn(move || {
-        let result = retro_junk_db::open_database(&db_path)
-            .map_err(|error| error.to_string())
-            .and_then(|connection| {
-                let summary = retro_junk_db::convergence::summarize_convergence(
-                    &connection,
-                    &scope,
-                    &expected,
-                )
-                .map_err(|error| error.to_string())?;
-                let errors = retro_junk_db::convergence::errors_by_release(&connection)
-                    .map_err(|error| error.to_string())?;
-                let blocked =
-                    retro_junk_db::convergence::blocked_by_release(&connection, &scope, &expected)
-                        .map_err(|error| error.to_string())?;
-                Ok(Backlog {
-                    summary,
-                    errors,
-                    blocked,
-                })
-            });
-        let _ = sender.send(AppMessage::BacklogReady {
-            scope: reply_scope,
-            result,
-        });
+        let result = retro_junk_backend::ops::convergence::load_backlog(&db_path, &scope);
+        let _ = sender.send(AppMessage::BacklogReady { scope, result });
         repaint.request_repaint();
     });
-}
-
-/// Human label for a backlog chip.
-#[must_use]
-pub fn kind_label(kind: ActionKind) -> &'static str {
-    match kind {
-        ActionKind::VerifyIntegrity => "integrity",
-        ActionKind::VerifyCatalog => "catalog",
-        ActionKind::AuditRedumper => "raw audit",
-        ActionKind::AdoptPlayable => "moved",
-        ActionKind::BuildPlayable => "playable",
-        ActionKind::Scrape => "scrape",
-        ActionKind::ProjectAssets => "artwork",
-        ActionKind::SyncGamelist => "gamelist",
-        _ => "other",
-    }
 }

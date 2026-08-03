@@ -1,18 +1,25 @@
-//! Convergence executor, worker, and automation policy.
+//! The backend: every capability of retro-junk, behind one API.
 //!
-//! The daemon, CLI `sync`, and GUI queue actions are three callers of one
-//! derivation (`retro_junk_db::convergence`) and one executor
-//! ([`executor::execute_action`]). This crate adds coordination — claims,
-//! locking etiquette, stage ordering, policy gates — and no archive logic;
-//! that lives in `retro_junk_lib::archive_ops` and below.
+//! Frontends (CLI, GUI) parse input and render output; this crate does the
+//! work. It owns the convergence executor, worker, daemon runtime, automation
+//! policy, the serialized projection store ([`store`]), and the command
+//! surface ([`ops`]) that both frontends call. No frontend opens a database,
+//! walks a filesystem, or decides a status on its own.
 
 pub mod adoption;
+pub mod assets;
+pub mod completion;
 pub mod daemon;
 pub mod executor;
+pub mod fingerprint;
 pub mod incoming;
+pub mod library;
+pub mod ops;
 pub mod policy;
 pub mod profiles;
+pub mod queries;
 pub mod scrape;
+pub mod store;
 pub mod suggestions;
 pub mod watch;
 pub mod worker;

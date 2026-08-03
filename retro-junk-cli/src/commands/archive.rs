@@ -7,7 +7,7 @@ use retro_junk_archive::{
     ArchiveRootManifest, BuildId, NewCarrierDump, RepresentationFormat, ingest_new_carrier_dump,
     initialize_archive, scan_archive, write_toml_atomic,
 };
-use retro_junk_work::adoption::{
+use retro_junk_backend::adoption::{
     AdoptionCandidate, AdoptionCandidateKind, AdoptionSuggestionPayload,
 };
 
@@ -1182,7 +1182,7 @@ fn run_adopt_playable(
             suggested += 1;
             continue;
         }
-        let platform = retro_junk_work::adoption::platform_of(&relative);
+        let platform = retro_junk_backend::adoption::platform_of(&relative);
         // Format-aware hashing so a headered cartridge compares against the
         // catalog the way the catalog stores it. A file this platform's
         // analyzer cannot read is not a reason to abandon the run — the whole
@@ -1308,7 +1308,7 @@ fn suggest_adoption_review(
         );
         return Ok(());
     }
-    retro_junk_work::adoption::open_adoption_suggestion(
+    retro_junk_backend::adoption::open_adoption_suggestion(
         connection,
         payload,
         confidence,

@@ -11,10 +11,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use retro_junk_db::convergence::{ActionKind, Scope, derive_convergence, summarize_convergence};
-use retro_junk_work::{
+use retro_junk_backend::{
     AutomationPolicy, ExecContext, LockEtiquette, ReconcileMode, RunMode, ToolPaths, run_once,
 };
+use retro_junk_db::convergence::{ActionKind, Scope, derive_convergence, summarize_convergence};
 
 use crate::CliError;
 use crate::cli_types::{RebuildPlayableArgs, StatusArgs, SyncArgs};
@@ -43,7 +43,7 @@ pub(crate) fn resolve_target(
         target.network_mode = false;
         return Ok(target);
     }
-    retro_junk_work::profiles::resolve_profile(profile).ok_or_else(|| {
+    retro_junk_backend::profiles::resolve_profile(profile).ok_or_else(|| {
         CliError::config(
             "no collection profile found; pass --profile, or --archive-root with \
              --playable-root",
@@ -168,14 +168,14 @@ pub(crate) fn run_sync(args: SyncArgs) -> Result<(), CliError> {
     // The executor checks cancellation at operation boundaries, so Ctrl-C
     // stops between actions with everything completed so far persisted.
     let cancelled = Arc::new(AtomicBool::new(false));
-    retro_junk_work::daemon::install_signal_handlers(&cancelled);
+    retro_junk_backend::daemon::install_signal_handlers(&cancelled);
     let policy = AutomationPolicy::load();
     let stats = run_once(
         &exec,
         &policy,
         &scope,
         RunMode::Explicit,
-        retro_junk_work::ProjectionPass::Always,
+        retro_junk_backend::ProjectionPass::Always,
         only.as_deref(),
         args.limit,
         &crate::commands::archive::log_progress,
@@ -208,7 +208,7 @@ pub(crate) fn run_sync(args: SyncArgs) -> Result<(), CliError> {
 /// all. `--dry-run` previews via `forced_build_action` alone (adoption is
 /// never a preview — it only ever links a file to evidence by matching
 /// content, so there is nothing unsafe about just running it); a real run
-/// goes through `retro_junk_work::force_rebuild_playable`, the identical
+/// goes through `retro_junk_backend::force_rebuild_playable`, the identical
 /// function the GUI's "Force Rebuild Playable" uses, so "force" means the
 /// same thing from either surface.
 pub(crate) fn run_rebuild_playable(args: RebuildPlayableArgs) -> Result<(), CliError> {
@@ -250,8 +250,8 @@ pub(crate) fn run_rebuild_playable(args: RebuildPlayableArgs) -> Result<(), CliE
         return Ok(());
     }
     let cancelled = Arc::new(AtomicBool::new(false));
-    retro_junk_work::daemon::install_signal_handlers(&cancelled);
-    let outcome = retro_junk_work::force_rebuild_playable(
+    retro_junk_backend::daemon::install_signal_handlers(&cancelled);
+    let outcome = retro_junk_backend::force_rebuild_playable(
         &exec,
         &args.release_id,
         &crate::commands::archive::log_progress,
@@ -259,11 +259,11 @@ pub(crate) fn run_rebuild_playable(args: RebuildPlayableArgs) -> Result<(), CliE
     )
     .map_err(|error| CliError::other(error.to_string()))?;
     match outcome {
-        retro_junk_work::ForceRebuildOutcome::Adopted(label) => {
+        retro_junk_backend::ForceRebuildOutcome::Adopted(label) => {
             log::info!("{label} was already there — adopted it");
             Ok(())
         }
-        retro_junk_work::ForceRebuildOutcome::Built(outputs) => {
+        retro_junk_backend::ForceRebuildOutcome::Built(outputs) => {
             for output in &outputs {
                 log::info!("Rebuilt {}", output.display());
             }

@@ -16,11 +16,14 @@ use egui_kittest::Harness;
 
 use crate::app::RetroJunkApp;
 
-/// Collect candidate UI characters from every `.rs` file under `src/`.
+/// Collect candidate UI characters from every `.rs` file under this crate's
+/// `src/` — and the backend's, because the GUI renders backend-produced
+/// strings (operation results, phase descriptions, status lines) verbatim.
 fn ui_chars_from_source() -> BTreeSet<char> {
     let mut chars = BTreeSet::new();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    visit(&src, &mut chars);
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    visit(&manifest.join("src"), &mut chars);
+    visit(&manifest.join("../retro-junk-backend/src"), &mut chars);
     chars
 }
 

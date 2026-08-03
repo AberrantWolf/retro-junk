@@ -8,62 +8,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use retro_junk_catalog::CatalogTag;
-use retro_junk_dat::{FileHashes, MatchMethod};
-use retro_junk_frontend::{AssetType, DISPLAY_ASSET_TYPES};
-use retro_junk_lib::rename::BrokenReference;
+use retro_junk_frontend::AssetType;
 
 // -- Asset status --
 
-/// The 5 scrapeable asset types that `rescrape_media_for_selection` downloads
-/// (matches `AssetSelection::default()` minus Video, which `collect_existing_assets` skips).
-pub const SCRAPEABLE_ASSET_TYPES: &[AssetType] = &[
-    AssetType::Cover,
-    AssetType::Cover3D,
-    AssetType::Screenshot,
-    AssetType::Marquee,
-    AssetType::PhysicalMedia,
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssetStatus {
-    /// Filesystem availability has not been discovered yet.
-    Unknown,
-    /// Discovered, no scrapeable assets found
-    None,
-    /// Some but not all scrapeable asset types present
-    Partial { found: u8, total: u8 },
-    /// All scrapeable asset types present
-    Complete,
-}
-
-fn asset_status_from_paths(media: &HashMap<AssetType, PathBuf>) -> AssetStatus {
-    let total = SCRAPEABLE_ASSET_TYPES.len() as u8;
-    let found = SCRAPEABLE_ASSET_TYPES
-        .iter()
-        .filter(|mt| media.contains_key(mt))
-        .count() as u8;
-    match found {
-        0 => AssetStatus::None,
-        n if n == total => AssetStatus::Complete,
-        n => AssetStatus::Partial { found: n, total },
-    }
-}
-
-pub fn asset_availability(media: &HashMap<AssetType, PathBuf>) -> (AssetStatus, bool) {
-    (
-        asset_status_from_paths(media),
-        media.contains_key(&AssetType::Miximage),
-    )
-}
+pub use retro_junk_backend::assets::{AssetStatus, SCRAPEABLE_ASSET_TYPES, asset_availability};
 
 /// URI used by egui's file loader. Unlike `include_bytes`, this lets us evict
 /// all decoded data and textures when the detail selection changes.
 pub fn asset_image_uri(path: &Path) -> String {
     format!("file://{}", path.display())
 }
-use retro_junk_lib::scanner::GameEntry;
-use retro_junk_lib::{AnalysisError, Platform, Region, RomIdentification};
+use retro_junk_lib::Platform;
+#[cfg(test)]
+use retro_junk_lib::Region;
 
 use crate::app::RetroJunkApp;
 
@@ -195,179 +153,28 @@ pub enum ScanStatus {
     Scanned,
 }
 
-/// Discover media files on disk for a given ROM entry, in display order.
-pub fn collect_existing_assets(media_dir: &Path, rom_stem: &str) -> HashMap<AssetType, PathBuf> {
-    retro_junk_frontend::collect_existing_assets(DISPLAY_ASSET_TYPES, media_dir, rom_stem)
-}
+// The library-entry domain model — `LibraryEntry`, its statuses, catalog
+// resolution, and hash-result application — lives in the backend so scan and
+// hash operations share one implementation. Re-exported here so existing
+// `crate::state::` paths keep working.
+pub use retro_junk_backend::library::{
+    DatMatchInfo, DiscIdentification, DiscVerification, EntryHashResult, EntryStatus, LibraryEntry,
+    apply_entry_hash_results,
+};
+#[cfg(test)]
+pub(crate) use retro_junk_backend::library::{apply_catalog_resolution, regions_match_dat};
 
-/// Per-disc identification data for multi-disc entries.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DiscIdentification {
-    pub path: PathBuf,
-    pub identification: RomIdentification,
-    #[serde(default)]
-    pub hashes: Option<FileHashes>,
-    #[serde(default)]
-    pub dat_match: Option<DatMatchInfo>,
-    #[serde(default)]
-    pub ambiguous_candidates: Vec<String>,
-    /// Whether a disc container was verified as a complete DAT track set.
-    #[serde(default)]
-    pub disc_verification: DiscVerification,
-}
-
-/// One successfully completed file/disc checksum from a batched entry job.
-#[derive(Clone)]
-pub struct EntryHashResult {
-    pub disc_path: Option<PathBuf>,
-    pub hashes: FileHashes,
-    pub catalog_matches: Vec<retro_junk_db::CatalogMediaMatch>,
-    pub disc_verification: DiscVerification,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DiscVerification {
-    /// Ordinary flat-file hashing, or legacy data created before disc-set
-    /// verification existed.
-    #[default]
-    NotApplicable,
-    /// Every logical track matched one catalog media entry.
-    Complete,
-    /// The disc was identified, but one or more tracks were absent or wrong.
-    Incomplete,
-    /// The descriptor did not define a safe, coherent logical track layout.
-    InvalidLayout,
-}
-
-impl DiscVerification {
-    fn permits_verified_status(self) -> bool {
-        matches!(self, Self::NotApplicable | Self::Complete)
-    }
-}
-
-#[derive(Clone)]
-pub struct LibraryEntry {
-    /// Durable database identity; absent only for not-yet-reconciled scan rows.
-    pub id: Option<retro_junk_db::LibraryEntryId>,
-    pub revision: u64,
-    pub source_revision: u64,
-    pub game_entry: GameEntry,
-    pub identification: Option<RomIdentification>,
-    pub hashes: Option<FileHashes>,
-    /// Complete-disc verification for a standalone disc container. Multi-disc
-    /// entries store this on each [`DiscIdentification`].
-    pub disc_verification: DiscVerification,
-    pub dat_match: Option<DatMatchInfo>,
-    pub status: EntryStatus,
-    /// When status is Ambiguous, holds the candidate game names from the DAT.
-    pub ambiguous_candidates: Vec<String>,
-    /// Discovered media files on disk. `None` = not yet scanned, `Some(empty)` = scanned but none found.
-    pub asset_paths: Option<HashMap<AssetType, PathBuf>>,
-    /// User-set region override. When set, takes precedence over detected regions.
-    pub region_override: Option<Region>,
-    /// Box/cover title from catalog DB (e.g., the title printed on the game box).
-    /// Empty = absent.
-    pub cover_title: String,
-    /// Screen title from catalog DB (e.g., the title shown on the title screen).
-    /// Empty = absent.
-    pub screen_title: String,
-    /// Per-disc identification data for multi-disc entries. `None` for single-file entries.
-    pub disc_identifications: Option<Vec<DiscIdentification>>,
-    /// Broken CUE/M3U references. `None` = not yet checked, `Some(empty)` = checked and clean.
-    pub broken_references: Option<Vec<BrokenReference>>,
-    /// CUE sheet compatibility issues. `None` = not yet checked, `Some(empty)` = checked and clean.
-    pub cue_compat_issues: Option<Vec<CueCompatIssue>>,
-    /// User-applied tag (homebrew or modded).
-    pub tag: Option<CatalogTag>,
-}
-
-/// A CUE sheet compatibility issue detected during scan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CueCompatIssue {
-    pub file_name: String,
-    pub summary: String,
-    pub can_auto_fix: bool,
-}
-
-impl LibraryEntry {
-    /// Returns the effective status, accounting for user-applied tags.
-    ///
-    /// When a tag is set, the entry always shows as `Tagged` regardless
-    /// of DAT matching status.
-    pub fn effective_status(&self) -> EntryStatus {
-        match self.tag {
-            Some(tag) => EntryStatus::Tagged(tag),
-            None => self.status,
-        }
-    }
-
-    /// Returns the effective region list: the override if set, otherwise the detected regions.
-    pub fn effective_regions(&self) -> Vec<Region> {
-        if let Some(r) = self.region_override {
-            vec![r]
-        } else if let Some(ref id) = self.identification {
-            id.regions.clone()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Whether this entry has detected CUE sheet compatibility issues.
-    pub fn has_cue_compat_issues(&self) -> bool {
-        self.cue_compat_issues
-            .as_ref()
-            .is_some_and(|issues| !issues.is_empty())
-    }
-}
-
-/// Deserialize a JSON `null` (or missing field) as the type's default.
+/// Badge color for an entry status.
 ///
-/// Cached `DiscIdentification` JSON written before the empty-string
-/// convention serializes absent fields as `null`; this keeps those caches
-/// loadable. (Mirrors the private helper in `retro-junk-core`.)
-fn null_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Default + serde::Deserialize<'de>,
-{
-    use serde::Deserialize;
-    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+/// An extension trait because [`EntryStatus`] lives in the backend crate,
+/// which must stay free of egui; only the presentation of a status belongs
+/// here.
+pub trait EntryStatusColor {
+    fn color(self) -> egui::Color32;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DatMatchInfo {
-    pub game_name: String,
-    /// Individual ROM filename from the DAT (e.g., "Game Name (USA).chd").
-    #[serde(default)]
-    pub rom_name: String,
-    pub method: MatchMethod,
-    /// Region string from the DAT entry (e.g., "USA", "Japan"). Empty = unknown.
-    #[serde(default, deserialize_with = "null_default")]
-    pub region: String,
-    /// True when the DAT match's region differs from the file's detected region.
-    #[serde(default)]
-    pub cross_region: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EntryStatus {
-    /// Not yet analyzed / DAT not loaded
-    Unknown,
-    /// Analyzed but no serial and no hash match
-    Unrecognized,
-    /// Serial found but no DAT confirmation (or ambiguous)
-    Ambiguous,
-    /// A unique DAT entry was identified, but it is not completely verified
-    /// (for example, serial-only or a disc with missing/mismatched tracks).
-    LikelyMatched,
-    /// Definitively matched to a DAT fingerprint by hash.
-    Matched,
-    /// User-tagged as homebrew or modded
-    Tagged(CatalogTag),
-}
-
-impl EntryStatus {
-    pub fn color(self) -> egui::Color32 {
+impl EntryStatusColor for EntryStatus {
+    fn color(self) -> egui::Color32 {
         match self {
             EntryStatus::Unknown => egui::Color32::GRAY,
             EntryStatus::Unrecognized => crate::theme::STATUS_ERR,
@@ -375,21 +182,6 @@ impl EntryStatus {
             EntryStatus::LikelyMatched => crate::theme::STATUS_INFO,
             EntryStatus::Matched => crate::theme::STATUS_OK,
             EntryStatus::Tagged(_) => egui::Color32::from_rgb(100, 150, 220),
-        }
-    }
-
-    /// Human-readable tooltip explaining this status.
-    pub fn tooltip(self) -> &'static str {
-        match self {
-            EntryStatus::Unknown => "Not yet analyzed",
-            EntryStatus::Unrecognized => "Not recognized \u{2013} no serial or hash match found",
-            EntryStatus::Ambiguous => "Possible match \u{2013} hash verification needed to confirm",
-            EntryStatus::LikelyMatched => {
-                "Likely match \u{2013} identity is known, but the complete content is not hash-verified"
-            }
-            EntryStatus::Matched => "Verified match in database",
-            EntryStatus::Tagged(CatalogTag::Homebrew) => "Homebrew game",
-            EntryStatus::Tagged(CatalogTag::Modded) => "Modded ROM",
         }
     }
 }
@@ -476,7 +268,7 @@ pub struct InboxIgnoreDraft {
 pub struct InboxChoice {
     pub id: i64,
     pub label: String,
-    pub candidates: Vec<retro_junk_work::AdoptionCandidate>,
+    pub candidates: Vec<retro_junk_backend::AdoptionCandidate>,
     pub selected: Option<usize>,
 }
 
@@ -506,113 +298,23 @@ pub enum TagDialog {
 
 // -- Rename results --
 
-pub struct RenameResult {
-    pub entry_id: retro_junk_db::LibraryEntryId,
-    pub entry_name: String,
-    pub outcome: RenameOutcome,
-}
-
-pub enum RenameOutcome {
-    Renamed {
-        source: PathBuf,
-        target: PathBuf,
-    },
-    AlreadyCorrect,
-    NoMatch {
-        reason: String,
-    },
-    Error {
-        message: String,
-    },
-    M3uRenamed {
-        /// Folder the set lived in before the rename, so its library row's
-        /// identity can follow it to the new `set:` key.
-        source_folder: PathBuf,
-        target_folder: PathBuf,
-        discs_renamed: usize,
-        playlist_written: bool,
-        folder_renamed: bool,
-        errors: Vec<String>,
-    },
-}
+// Re-export shim: these moved to the backend; keep them visible at the old
+// path for the app-level results dialog and completion handlers.
+pub use retro_junk_backend::ops::rename::{RenameOutcome, RenameResult};
 
 // -- CUE fix results --
 
-pub struct CueFixResult {
-    pub file_name: String,
-    pub outcome: CueFixOutcome,
-}
-
-pub enum CueFixOutcome {
-    Fixed { summary: String },
-    AlreadyStandard,
-    Unfixable { reason: String },
-    Error { message: String },
-}
+pub use retro_junk_backend::ops::fix_cue::{CueFixOutcome, CueFixResult};
 
 // -- CHD compression --
 
-/// One disc queued in the CHD-compression confirmation dialog.
-pub struct ChdCompressItem {
-    pub job: retro_junk_lib::chd_convert::CompressionJob,
-    /// Precomputed at plan time (D8): "{input} ({size}) -> {output}". Avoids
-    /// re-deriving file-name strings and byte formatting every frame the
-    /// confirmation dialog is open.
-    pub display_line: String,
-}
-
-/// A selected disc that cannot be compressed, with the reason shown to the user.
-pub struct ChdCompressSkip {
-    pub entry_name: String,
-    pub reason: String,
-}
-
-/// State backing the "Compress to CHD" confirmation dialog.
-///
-/// Also carries the chdman probe result: when chdman is missing the dialog
-/// becomes the explanation of why compression is unavailable and how to
-/// install it, instead of silently hiding the feature.
-pub struct ChdCompressPrompt {
-    pub folder_name: String,
-    pub items: Vec<ChdCompressItem>,
-    pub skipped: Vec<ChdCompressSkip>,
-    pub chdman:
-        Result<retro_junk_lib::chd_convert::Chdman, retro_junk_lib::chd_convert::ChdmanUnavailable>,
-    /// Delete original files after a verified compression.
-    pub delete_sources: bool,
-}
-
-pub struct ChdCompressResult {
-    /// The chdman input this result is for (one entry can hold several discs).
-    pub input_name: String,
-    /// The planned job this result came from — carries `input`/`output`/
-    /// `source_files` so the completion handler can look up the affected
-    /// library entry by path (rename-proof) instead of by display name, and
-    /// know exactly which files were deleted.
-    pub job: retro_junk_lib::chd_convert::CompressionJob,
-    pub outcome: ChdCompressOutcome,
-}
-
-pub enum ChdCompressOutcome {
-    /// Compressed and round-trip verified. The output path is available via
-    /// the sibling `ChdCompressResult::job.output` — not duplicated here.
-    Compressed {
-        input_bytes: u64,
-        output_bytes: u64,
-        tracks: usize,
-        sources_deleted: bool,
-        delete_failures: Vec<String>,
-    },
-    /// Round-trip verification failed; the .chd was removed and the original
-    /// files were kept.
-    VerifyFailed {
-        detail: String,
-    },
-    Error {
-        message: String,
-    },
-    Cancelled,
-}
+// Re-export shim: these moved to the backend; keep the whole set visible at
+// the old path (`state` is a private module, so members only tests or dialogs
+// touch would otherwise warn as unused).
+#[allow(unused_imports)]
+pub use retro_junk_backend::ops::chd_compress::{
+    ChdCompressItem, ChdCompressOutcome, ChdCompressPrompt, ChdCompressResult, ChdCompressSkip,
+};
 
 // -- Background operations --
 
@@ -763,25 +465,6 @@ impl BackgroundOperation {
 }
 
 // -- Catalog enrichment --
-
-/// Describe the format of an M3U folder, e.g. "M3U folder (3x CHD)" or "M3U folder (2x CHD, 1x CUE)".
-fn describe_m3u_format(files: &[PathBuf]) -> String {
-    let mut ext_counts: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
-    for f in files {
-        let ext = f
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("bin")
-            .to_uppercase();
-        *ext_counts.entry(ext).or_default() += 1;
-    }
-    let parts: Vec<String> = ext_counts
-        .iter()
-        .map(|(ext, count)| format!("{count}x {ext}"))
-        .collect();
-    format!("M3U folder ({})", parts.join(", "))
-}
 
 /// An error that should be shown to the user in a modal dialog.
 #[derive(Debug, Clone)]
@@ -1299,388 +982,6 @@ fn refresh_multidisc_files(
     }
 
     *files = new_files;
-}
-
-/// Check whether detected regions match the DAT entry's region string.
-/// Returns `true` if any detected region name appears in the DAT region string.
-fn regions_match_dat(detected: &[Region], dat_region: &str) -> bool {
-    retro_junk_lib::catalog_match::regions_match_catalog(detected, dat_region)
-}
-
-enum CatalogUiResolution {
-    Match {
-        info: DatMatchInfo,
-        cover_title: String,
-        screen_title: String,
-    },
-    Ambiguous(Vec<String>),
-    NotFound,
-}
-
-fn resolve_catalog_candidates(
-    matches: &[retro_junk_db::CatalogMediaMatch],
-    identification: Option<&RomIdentification>,
-    hashes: Option<&FileHashes>,
-    disc_verification: DiscVerification,
-) -> CatalogUiResolution {
-    let resolution =
-        retro_junk_lib::catalog_match::resolve_catalog_match(matches, identification, hashes);
-    match resolution {
-        retro_junk_lib::catalog_match::CatalogMatchResolution::Match {
-            candidate,
-            mut method,
-        } => {
-            if disc_verification == DiscVerification::Complete
-                && matches!(method, MatchMethod::Serial)
-            {
-                // Complete per-track verification is definitive even when the
-                // catalog's representative media hash is not the data track.
-                method = MatchMethod::Crc32;
-            }
-            let detected_regions = identification.map_or(&[][..], |id| id.regions.as_slice());
-            CatalogUiResolution::Match {
-                info: DatMatchInfo {
-                    game_name: candidate.media.dat_name.clone(),
-                    rom_name: candidate.media.rom_name.clone(),
-                    method,
-                    region: candidate.region.clone(),
-                    cross_region: !candidate.region.is_empty()
-                        && !regions_match_dat(detected_regions, &candidate.region),
-                },
-                cover_title: candidate.cover_title.clone(),
-                screen_title: candidate.screen_title.clone(),
-            }
-        }
-        retro_junk_lib::catalog_match::CatalogMatchResolution::Ambiguous { candidates } => {
-            CatalogUiResolution::Ambiguous(candidates)
-        }
-        retro_junk_lib::catalog_match::CatalogMatchResolution::NotFound
-            if disc_verification == DiscVerification::Complete && matches.len() == 1 =>
-        {
-            let candidate = &matches[0];
-            let detected_regions = identification.map_or(&[][..], |id| id.regions.as_slice());
-            CatalogUiResolution::Match {
-                info: DatMatchInfo {
-                    game_name: candidate.media.dat_name.clone(),
-                    rom_name: candidate.media.rom_name.clone(),
-                    method: MatchMethod::Crc32,
-                    region: candidate.region.clone(),
-                    cross_region: !candidate.region.is_empty()
-                        && !regions_match_dat(detected_regions, &candidate.region),
-                },
-                cover_title: candidate.cover_title.clone(),
-                screen_title: candidate.screen_title.clone(),
-            }
-        }
-        retro_junk_lib::catalog_match::CatalogMatchResolution::NotFound => {
-            CatalogUiResolution::NotFound
-        }
-    }
-}
-
-fn apply_catalog_resolution(
-    entry: &mut LibraryEntry,
-    matches: &[retro_junk_db::CatalogMediaMatch],
-) {
-    match resolve_catalog_candidates(
-        matches,
-        entry.identification.as_ref(),
-        entry.hashes.as_ref(),
-        entry.disc_verification,
-    ) {
-        CatalogUiResolution::Match {
-            info,
-            cover_title,
-            screen_title,
-        } => {
-            entry.status = match info.method {
-                MatchMethod::Serial => EntryStatus::LikelyMatched,
-                // Recorded archive evidence already names a complete,
-                // catalog-verified dump; there is no local track set to judge.
-                MatchMethod::ArchiveEvidence => EntryStatus::Matched,
-                MatchMethod::Crc32 | MatchMethod::Sha1
-                    if entry.disc_verification.permits_verified_status() =>
-                {
-                    EntryStatus::Matched
-                }
-                MatchMethod::Crc32 | MatchMethod::Sha1 => EntryStatus::LikelyMatched,
-            };
-            entry.dat_match = Some(info);
-            entry.ambiguous_candidates.clear();
-            if !cover_title.is_empty() {
-                entry.cover_title = cover_title;
-            }
-            if !screen_title.is_empty() {
-                entry.screen_title = screen_title;
-            }
-        }
-        CatalogUiResolution::Ambiguous(candidates) => {
-            entry.status = EntryStatus::Ambiguous;
-            entry.dat_match = None;
-            entry.ambiguous_candidates = candidates;
-        }
-        CatalogUiResolution::NotFound => {
-            entry.status = if entry.identification.is_some() {
-                EntryStatus::Unrecognized
-            } else {
-                EntryStatus::Unknown
-            };
-            entry.dat_match = None;
-            entry.ambiguous_candidates.clear();
-        }
-    }
-}
-
-fn apply_multi_disc_resolution(entry: &mut LibraryEntry) {
-    let Some(discs) = entry.disc_identifications.as_ref() else {
-        return;
-    };
-    let mut ambiguous_candidates: Vec<String> = discs
-        .iter()
-        .flat_map(|disc| disc.ambiguous_candidates.iter().cloned())
-        .collect();
-    ambiguous_candidates.sort();
-    ambiguous_candidates.dedup();
-
-    let matched: Vec<_> = discs
-        .iter()
-        .filter_map(|disc| disc.dat_match.as_ref())
-        .collect();
-    if matched.is_empty() {
-        entry.dat_match = retro_junk_core::disc::candidates_are_same_game(&ambiguous_candidates)
-            .map(|game_name| DatMatchInfo {
-                game_name,
-                rom_name: String::new(),
-                method: MatchMethod::Serial,
-                region: String::new(),
-                cross_region: false,
-            });
-        if entry.dat_match.is_some() {
-            entry.status = EntryStatus::LikelyMatched;
-            entry.ambiguous_candidates.clear();
-        } else if ambiguous_candidates.is_empty() {
-            entry.status = EntryStatus::Unrecognized;
-            entry.ambiguous_candidates.clear();
-        } else {
-            entry.status = EntryStatus::Ambiguous;
-            entry.ambiguous_candidates = ambiguous_candidates;
-        }
-        return;
-    }
-
-    if !ambiguous_candidates.is_empty()
-        && retro_junk_core::disc::candidates_are_same_game(&ambiguous_candidates).is_none()
-    {
-        entry.dat_match = None;
-        entry.status = EntryStatus::Ambiguous;
-        entry.ambiguous_candidates = ambiguous_candidates;
-        return;
-    }
-
-    let names: Vec<_> = matched
-        .iter()
-        .map(|matched| matched.game_name.as_str())
-        .collect();
-    let first = matched[0];
-    let all_hash_verified = !discs.is_empty()
-        && discs.iter().all(|disc| {
-            disc.disc_verification.permits_verified_status()
-                && disc
-                    .dat_match
-                    .as_ref()
-                    .is_some_and(|matched| !matches!(matched.method, MatchMethod::Serial))
-        });
-    entry.dat_match = Some(DatMatchInfo {
-        game_name: retro_junk_core::disc::derive_base_game_name(&names),
-        rom_name: first.rom_name.clone(),
-        method: if all_hash_verified {
-            first.method.clone()
-        } else {
-            MatchMethod::Serial
-        },
-        region: first.region.clone(),
-        cross_region: matched.iter().any(|matched| matched.cross_region),
-    });
-    entry.status = if all_hash_verified {
-        EntryStatus::Matched
-    } else {
-        EntryStatus::LikelyMatched
-    };
-    entry.ambiguous_candidates.clear();
-}
-
-/// Apply every successful checksum for one library entry as a unit. This is
-/// shared by the durable snapshot and the optional live UI projection, so
-/// navigation cannot change matching behavior.
-fn apply_entry_hash_results(entry: &mut LibraryEntry, results: &[EntryHashResult]) {
-    if entry.disc_identifications.is_none() {
-        if let Some(result) = results.iter().find(|result| result.disc_path.is_none()) {
-            entry.hashes = Some(result.hashes.clone());
-            entry.disc_verification = result.disc_verification;
-            apply_catalog_resolution(entry, &result.catalog_matches);
-        }
-        return;
-    }
-
-    if let Some(discs) = entry.disc_identifications.as_mut() {
-        for result in results {
-            let Some(disc_path) = result.disc_path.as_ref() else {
-                continue;
-            };
-            let Some(disc) = discs.iter_mut().find(|disc| &disc.path == disc_path) else {
-                continue;
-            };
-            disc.hashes = Some(result.hashes.clone());
-            disc.disc_verification = result.disc_verification;
-            match resolve_catalog_candidates(
-                &result.catalog_matches,
-                Some(&disc.identification),
-                disc.hashes.as_ref(),
-                disc.disc_verification,
-            ) {
-                CatalogUiResolution::Match {
-                    info,
-                    cover_title,
-                    screen_title,
-                } => {
-                    disc.dat_match = Some(info);
-                    disc.ambiguous_candidates.clear();
-                    if entry.cover_title.is_empty() && !cover_title.is_empty() {
-                        entry.cover_title = cover_title;
-                    }
-                    if entry.screen_title.is_empty() && !screen_title.is_empty() {
-                        entry.screen_title = screen_title;
-                    }
-                }
-                CatalogUiResolution::Ambiguous(candidates) => {
-                    disc.dat_match = None;
-                    disc.ambiguous_candidates = candidates;
-                }
-                CatalogUiResolution::NotFound => {
-                    disc.dat_match = None;
-                    disc.ambiguous_candidates.clear();
-                }
-            }
-        }
-    }
-    apply_multi_disc_resolution(entry);
-}
-
-pub(crate) fn apply_single_analysis_result(
-    entry: &mut LibraryEntry,
-    result: Result<RomIdentification, AnalysisError>,
-    catalog_matches: &[retro_junk_db::CatalogMediaMatch],
-) {
-    if let Ok(identification) = result {
-        entry.identification = Some(identification);
-        entry.disc_identifications = None;
-        apply_catalog_resolution(entry, catalog_matches);
-    } else {
-        entry.identification = None;
-        entry.disc_identifications = None;
-        apply_catalog_resolution(entry, catalog_matches);
-        if entry.status == EntryStatus::Unknown {
-            entry.status = EntryStatus::Unrecognized;
-        }
-    }
-}
-
-pub(crate) fn apply_multi_disc_analysis_results(
-    entry: &mut LibraryEntry,
-    disc_results: &[(PathBuf, Result<RomIdentification, AnalysisError>)],
-    catalog_matches: &[Vec<retro_junk_db::CatalogMediaMatch>],
-) {
-    let old_disc_data: HashMap<
-        PathBuf,
-        (
-            Option<FileHashes>,
-            Option<DatMatchInfo>,
-            Vec<String>,
-            DiscVerification,
-        ),
-    > = entry
-        .disc_identifications
-        .as_ref()
-        .map(|discs| {
-            discs
-                .iter()
-                .map(|disc| {
-                    (
-                        disc.path.clone(),
-                        (
-                            disc.hashes.clone(),
-                            disc.dat_match.clone(),
-                            disc.ambiguous_candidates.clone(),
-                            disc.disc_verification,
-                        ),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut disc_ids = Vec::new();
-    for ((path, result), candidates) in disc_results.iter().zip(catalog_matches) {
-        match result {
-            Ok(identification) => {
-                let (cached_hashes, cached_dat_match, cached_candidates, cached_disc_verification) =
-                    old_disc_data.get(path).cloned().unwrap_or_default();
-                let mut disc = DiscIdentification {
-                    path: path.clone(),
-                    identification: identification.clone(),
-                    hashes: cached_hashes,
-                    dat_match: cached_dat_match,
-                    ambiguous_candidates: cached_candidates,
-                    disc_verification: cached_disc_verification,
-                };
-                match resolve_catalog_candidates(
-                    candidates,
-                    Some(&disc.identification),
-                    disc.hashes.as_ref(),
-                    disc.disc_verification,
-                ) {
-                    CatalogUiResolution::Match { info, .. } => {
-                        disc.dat_match = Some(info);
-                        disc.ambiguous_candidates.clear();
-                    }
-                    CatalogUiResolution::Ambiguous(candidates) => {
-                        disc.dat_match = None;
-                        disc.ambiguous_candidates = candidates;
-                    }
-                    CatalogUiResolution::NotFound => {
-                        disc.dat_match = None;
-                        disc.ambiguous_candidates.clear();
-                    }
-                }
-                disc_ids.push(disc);
-            }
-            Err(error) => log::warn!("Disc analysis failed for {}: {error}", path.display()),
-        }
-    }
-
-    let mut regions = Vec::new();
-    for disc in &disc_ids {
-        for region in &disc.identification.regions {
-            if !regions.contains(region) {
-                regions.push(*region);
-            }
-        }
-    }
-    let disc_files: Vec<_> = disc_results.iter().map(|(path, _)| path.clone()).collect();
-    let mut game_id = RomIdentification::new();
-    game_id.regions = regions;
-    game_id
-        .extra
-        .insert("format".to_owned(), describe_m3u_format(&disc_files));
-    game_id
-        .extra
-        .insert("disc_count".to_owned(), disc_results.len().to_string());
-    entry.identification = Some(game_id);
-    entry.disc_identifications = Some(disc_ids);
-    entry.status = EntryStatus::Unrecognized;
-    entry.dat_match = None;
-    entry.ambiguous_candidates.clear();
-    apply_multi_disc_resolution(entry);
 }
 
 // -- Message handler --

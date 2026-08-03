@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use retro_junk_work::daemon;
-use retro_junk_work::{ExecContext, LockEtiquette, ReconcileMode, ToolPaths};
+use retro_junk_backend::daemon;
+use retro_junk_backend::{ExecContext, LockEtiquette, ReconcileMode, ToolPaths};
 
 use crate::CliError;
 use crate::cli_types::DaemonAction;
@@ -68,7 +68,7 @@ fn run_start(
              launchd/systemd/tmux for backgrounding",
         ));
     }
-    let profile = retro_junk_work::profiles::resolve_profile(profile).ok_or_else(|| {
+    let profile = retro_junk_backend::profiles::resolve_profile(profile).ok_or_else(|| {
         CliError::config("no collection profile found; configure one in the GUI or settings.toml")
     })?;
     if !retro_junk_archive::root_manifest_path(&profile.archive_root).is_file() {
@@ -81,7 +81,7 @@ fn run_start(
         Some(path) => path,
         None => retro_junk_lib::settings::ensure_catalog_database_location()?,
     };
-    let general = retro_junk_work::profiles::load_general();
+    let general = retro_junk_backend::profiles::load_general();
     let roots = retro_junk_lib::archive_ops::FrontendRoots::from_settings(
         &profile.playable_root,
         &general.assets_dir,
@@ -95,7 +95,7 @@ fn run_start(
             redumper: redumper.unwrap_or_default(),
             dolphin_tool: dolphin_tool.unwrap_or_default(),
         },
-        scrape: retro_junk_work::AutomationPolicy::load().scrape_settings(),
+        scrape: retro_junk_backend::AutomationPolicy::load().scrape_settings(),
         roots,
         analyzers: Arc::new(retro_junk_lib::create_default_context()),
         owner: ExecContext::owner_string("daemon"),

@@ -6,15 +6,15 @@
 //!
 //! Everything the GUI's Inbox can do is here too, and by the same calls: the
 //! filter, the bulk dismiss, the undo, and the ignore rules all come from
-//! `retro_junk_work`, so a decision taken at the terminal and one taken in the
+//! `retro_junk_backend`, so a decision taken at the terminal and one taken in the
 //! Inbox are the same decision made the same way.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use retro_junk_work::suggestions::SuggestionFilter;
-use retro_junk_work::{ExecContext, LockEtiquette, ReconcileMode, ToolPaths};
+use retro_junk_backend::suggestions::SuggestionFilter;
+use retro_junk_backend::{ExecContext, LockEtiquette, ReconcileMode, ToolPaths};
 
 use crate::CliError;
 use crate::cli_types::SuggestionsAction;
@@ -72,7 +72,7 @@ fn run_list(
         return Ok(());
     }
     for suggestion in &shown {
-        let actions = retro_junk_work::offered_actions(suggestion);
+        let actions = retro_junk_backend::offered_actions(suggestion);
         let note = if actions.choices.is_empty() {
             String::new()
         } else {
@@ -118,7 +118,7 @@ fn run_show(id: i64, db: Option<PathBuf>) -> Result<(), CliError> {
         ),
         Err(_) => log::info!("{}", suggestion.payload_json),
     }
-    let actions = retro_junk_work::offered_actions(&suggestion);
+    let actions = retro_junk_backend::offered_actions(&suggestion);
     for candidate in &actions.choices {
         log::info!(
             "  candidate --choice {}  ({}) {}",
@@ -138,8 +138,8 @@ fn run_apply(
 ) -> Result<(), CliError> {
     let ctx = exec_context(profile, db)?;
     let cancelled = Arc::new(AtomicBool::new(false));
-    retro_junk_work::daemon::install_signal_handlers(&cancelled);
-    let summary = retro_junk_work::apply_suggestion_choice(&ctx, id, choice, &cancelled)
+    retro_junk_backend::daemon::install_signal_handlers(&cancelled);
+    let summary = retro_junk_backend::apply_suggestion_choice(&ctx, id, choice, &cancelled)
         .map_err(|error| CliError::other(error.to_string()))?;
     log::info!("Applied suggestion #{id}: {summary}");
     Ok(())
@@ -172,7 +172,7 @@ fn run_ignore(
     db: Option<PathBuf>,
 ) -> Result<(), CliError> {
     let ctx = exec_context(profile, db)?;
-    let outcome = retro_junk_work::ignore_playables(&ctx, pattern, note)
+    let outcome = retro_junk_backend::ignore_playables(&ctx, pattern, note)
         .map_err(|error| CliError::other(error.to_string()))?;
     log::info!(
         "Ignoring '{}' from now on; closed {} open review(s) it covers",
@@ -188,8 +188,8 @@ fn run_ignore(
 
 fn run_ignores(profile: Option<&str>, db: Option<PathBuf>) -> Result<(), CliError> {
     let ctx = exec_context(profile, db)?;
-    let rules =
-        retro_junk_work::ignore_rules(&ctx).map_err(|error| CliError::other(error.to_string()))?;
+    let rules = retro_junk_backend::ignore_rules(&ctx)
+        .map_err(|error| CliError::other(error.to_string()))?;
     if rules.is_empty() {
         log::info!("No ignore rules; every unaccounted playable file is filed for review");
         return Ok(());
@@ -206,7 +206,7 @@ fn run_ignores(profile: Option<&str>, db: Option<PathBuf>) -> Result<(), CliErro
 
 fn run_unignore(pattern: &str, profile: Option<&str>, db: Option<PathBuf>) -> Result<(), CliError> {
     let ctx = exec_context(profile, db)?;
-    let removed = retro_junk_work::unignore_playables(&ctx, pattern)
+    let removed = retro_junk_backend::unignore_playables(&ctx, pattern)
         .map_err(|error| CliError::other(error.to_string()))?;
     if removed {
         log::info!("Revoked '{pattern}'; the next adoption sweep files those files again");
@@ -303,14 +303,14 @@ fn open(db: Option<PathBuf>) -> Result<retro_junk_db::Connection, CliError> {
 }
 
 fn exec_context(profile: Option<&str>, db: Option<PathBuf>) -> Result<ExecContext, CliError> {
-    let profile = retro_junk_work::profiles::resolve_profile(profile).ok_or_else(|| {
+    let profile = retro_junk_backend::profiles::resolve_profile(profile).ok_or_else(|| {
         CliError::config("no collection profile found; pass --profile or configure one")
     })?;
     let db_path = match db {
         Some(path) => path,
         None => retro_junk_lib::settings::ensure_catalog_database_location()?,
     };
-    let general = retro_junk_work::profiles::load_general();
+    let general = retro_junk_backend::profiles::load_general();
     let roots = retro_junk_lib::archive_ops::FrontendRoots::from_settings(
         &profile.playable_root,
         &general.assets_dir,
@@ -324,7 +324,7 @@ fn exec_context(profile: Option<&str>, db: Option<PathBuf>) -> Result<ExecContex
             redumper: PathBuf::new(),
             dolphin_tool: PathBuf::new(),
         },
-        scrape: retro_junk_work::AutomationPolicy::load().scrape_settings(),
+        scrape: retro_junk_backend::AutomationPolicy::load().scrape_settings(),
         roots,
         analyzers: Arc::new(retro_junk_lib::create_default_context()),
         owner: ExecContext::owner_string("cli"),

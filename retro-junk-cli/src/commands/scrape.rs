@@ -253,7 +253,7 @@ pub(crate) fn run_scrape(
     // Ctrl-C stops at the next target boundary instead of orphaning a
     // half-downloaded asset in the archive scratch directory.
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    retro_junk_work::daemon::install_signal_handlers(&cancel);
+    retro_junk_backend::daemon::install_signal_handlers(&cancel);
 
     rt.block_on(async {
         let (client, max_workers) = connect_screenscraper(threads, quiet).await?;

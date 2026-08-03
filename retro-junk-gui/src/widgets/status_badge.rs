@@ -1,4 +1,4 @@
-use crate::state::{AssetStatus, EntryStatus};
+use crate::state::{AssetStatus, EntryStatus, EntryStatusColor};
 
 /// Draw a small colored circle indicating the entry's status.
 /// Returns the response for tooltip handling.
