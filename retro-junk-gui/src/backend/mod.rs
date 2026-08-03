@@ -13,5 +13,6 @@ pub mod organize;
 pub mod playable_build;
 pub mod rename;
 pub mod rename_playable;
+pub mod repair;
 pub mod scan;
 pub mod worker;

@@ -158,8 +158,7 @@ pub enum ScanStatus {
 // hash operations share one implementation. Re-exported here so existing
 // `crate::state::` paths keep working.
 pub use retro_junk_backend::library::{
-    DiscVerification, EntryHashResult, EntryStatus, LibraryEntry,
-    apply_entry_hash_results,
+    DiscVerification, EntryHashResult, EntryStatus, LibraryEntry, apply_entry_hash_results,
 };
 #[cfg(test)]
 pub(crate) use retro_junk_backend::library::{apply_catalog_resolution, regions_match_dat};
@@ -229,6 +228,51 @@ impl RowStatus {
                     .to_owned()
             }
         }
+    }
+}
+
+/// What a repair would do, shown before anything is written.
+///
+/// A repair rewrites files in place, so the user answers first. Only counts
+/// and a short sample are kept: a console can hold thousands of files, and
+/// the dialog exists to convey scale and let the user say no.
+#[derive(Debug, Clone, Default)]
+pub struct RepairPrompt {
+    pub repairable: usize,
+    pub already_correct: usize,
+    pub no_match: usize,
+    /// A few file names, so the user can see what kind of thing this is.
+    pub sample: Vec<String>,
+    /// Consoles that could not be checked, with the reason.
+    pub skipped: Vec<String>,
+}
+
+impl RepairPrompt {
+    #[must_use]
+    pub fn from_report(report: &retro_junk_backend::ops::repair::RepairPlanReport) -> Self {
+        let mut prompt = Self {
+            repairable: report.repairable_count(),
+            skipped: report.skipped.clone(),
+            ..Self::default()
+        };
+        for console in &report.consoles {
+            prompt.already_correct += console.plan.already_correct.len();
+            prompt.no_match += console.plan.no_match.len();
+            for action in console.plan.repairable.iter().take(8) {
+                if prompt.sample.len() >= 8 {
+                    break;
+                }
+                prompt.sample.push(format!(
+                    "{} — {}",
+                    action
+                        .file_path
+                        .file_name()
+                        .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+                    action.method.description()
+                ));
+            }
+        }
+        prompt
     }
 }
 
@@ -761,6 +805,18 @@ pub enum AppMessage {
         results: Vec<CueFixResult>,
     },
 
+    // -- Repair --
+    /// A repair plan is ready for the user to accept or decline.
+    RepairPlanReady {
+        folder_name: String,
+        prompt: Box<RepairPrompt>,
+    },
+    RepairComplete {
+        folder_name: String,
+        repaired: usize,
+        failed: usize,
+    },
+
     // -- CHD compression --
     /// Background planning (D1) finished: chdman probed + `plan_batch` run for
     /// every selected entry, off the UI thread. Stores the prompt so the
@@ -850,16 +906,9 @@ impl AppMessage {
     }
 }
 
-/// Move each renamed row's library identity to its new path.
-///
-/// Library entries are keyed by path, so a rename plus a rescan looks exactly
-/// like "one file vanished, another appeared" — and the new row starts with no
-/// digests, no DAT match, and no identification. A rename cannot change
-/// content, so the identity follows the file instead of being re-derived.
-///
-/// Best-effort: a row that cannot be re-keyed (its destination already exists,
-/// or the path is outside the console) simply gets re-read by the rescan, which
-/// is the old behaviour.
+/// Move each renamed row's library identity to its new path, so the rescan
+/// does not have to re-derive digests and matches for files whose bytes never
+/// changed. Does nothing when there is no console or no open catalog.
 fn carry_identity_across_renames(
     app: &crate::app::RetroJunkApp,
     target: &crate::backend::scan::ConsoleScanTarget,
@@ -868,34 +917,12 @@ fn carry_identity_across_renames(
     let (Some(console_id), Some(conn)) = (target.console_id, app.catalog_db.as_ref()) else {
         return;
     };
-    let key = |path: &std::path::Path, directory: bool| {
-        let relative = path.strip_prefix(&target.folder_path).ok()?;
-        let key = if directory {
-            retro_junk_db::set_source_key(relative)
-        } else {
-            retro_junk_db::file_source_key(relative)
-        };
-        key.ok().map(|value| value.as_str().to_owned())
-    };
-    for result in results {
-        let (from, to, directory) = match &result.outcome {
-            RenameOutcome::Renamed { source, target } => (source, target, false),
-            RenameOutcome::M3uRenamed {
-                source_folder,
-                target_folder,
-                ..
-            } => (source_folder, target_folder, true),
-            _ => continue,
-        };
-        let (Some(old_key), Some(new_key)) = (key(from, directory), key(to, directory)) else {
-            continue;
-        };
-        match retro_junk_db::rekey_library_entry(conn, console_id, &old_key, &new_key) {
-            Ok(true) => log::debug!("Carried library identity {old_key} -> {new_key}"),
-            Ok(false) => {}
-            Err(error) => log::warn!("Could not carry library identity for {old_key}: {error}"),
-        }
-    }
+    retro_junk_backend::ops::rename::carry_identity_across_renames(
+        conn,
+        console_id,
+        &target.folder_path,
+        results,
+    );
 }
 
 // -- Helpers --
@@ -1992,6 +2019,51 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             app.ui_state.chd_compress_prompt = Some(prompt);
         }
 
+        AppMessage::RepairPlanReady {
+            folder_name,
+            prompt,
+        } => {
+            if prompt.repairable == 0 {
+                app.push_error(
+                    "Repair",
+                    if prompt.no_match == 0 {
+                        "Every file already matches the catalog".to_owned()
+                    } else {
+                        format!(
+                            "Nothing here can be repaired ({} file(s) match no catalog entry)",
+                            prompt.no_match
+                        )
+                    },
+                );
+            } else {
+                app.ui_state.repair_prompt = Some((folder_name, prompt));
+            }
+        }
+
+        AppMessage::RepairComplete {
+            folder_name,
+            repaired,
+            failed,
+        } => {
+            log::info!("Repaired {repaired} file(s) in {folder_name}, {failed} failed");
+            if failed > 0 {
+                app.push_error(
+                    "Repair",
+                    format!("{failed} file(s) could not be repaired; see the log"),
+                );
+            }
+            // Repair rewrote bytes, so the cached hashes and match verdicts
+            // for those files describe something that is no longer there.
+            if let Some(index) = app
+                .browser
+                .consoles
+                .iter()
+                .position(|console| console.folder_name == folder_name)
+            {
+                crate::backend::scan::quick_scan_console(app, index, ctx);
+            }
+        }
+
         AppMessage::ChdmanProbeResult { key, result } => {
             // Only apply if the setting hasn't changed since this probe was
             // kicked off — otherwise a slow probe for a since-abandoned path
@@ -2015,8 +2087,7 @@ fn refresh_library_availability(app: &mut RetroJunkApp, ctx: &egui::Context) {
     }
     if let Some(connection) = app.catalog_db.as_ref() {
         app.ui_state.open_suggestion_count =
-            retro_junk_db::work::list_open_suggestions(connection, None)
-                .map_or(0, |open| open.len() as u64);
+            retro_junk_backend::queries::work::open_suggestion_count(connection);
     }
 }
 
@@ -2045,10 +2116,7 @@ pub const DISAGREEMENT_FIELDS: &[&str] = &[
 ];
 
 /// Context about the entity referenced by the selected disagreement.
-pub struct DisagreementContext {
-    pub entity_title: String,
-    pub platform_name: String,
-}
+pub use retro_junk_backend::queries::catalog::DisagreementContext;
 
 /// Active tab in the Tools view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

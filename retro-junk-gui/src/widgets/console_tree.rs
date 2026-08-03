@@ -274,6 +274,31 @@ fn show_console_context_menu(
         }
     }
 
+    // Repair: restore files whose bytes differ from the catalog only in
+    // padding. Offered wherever the platform has catalog support at all,
+    // because whether anything is actually repairable is what the planning
+    // pass exists to answer.
+    if app
+        .context
+        .get_by_platform(app.browser.consoles[console_idx].platform)
+        .is_some_and(|registered| registered.analyzer.has_dat_support())
+    {
+        if ui
+            .add_enabled(
+                is_scanned && entry_count > 0,
+                egui::Button::new("Repair Padded Files…"),
+            )
+            .on_hover_text(
+                "Finds files that differ from the catalog only in leading or trailing \
+                 padding, and offers to restore the exact expected bytes",
+            )
+            .clicked()
+        {
+            backend::repair::plan_console_repairs(app, console_idx);
+            ui.close();
+        }
+    }
+
     // Compress to CHD: only for consoles whose analyzer supports it. Gated
     // (advisory — start_compression and the D1 planning op hold the actual
     // guarantee) while a compression is already running for this console.

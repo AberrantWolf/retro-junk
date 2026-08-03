@@ -97,6 +97,14 @@ pub struct UiState {
     pub results_dialog: ResultsDialog,
     /// Pending CHD compression awaiting user confirmation.
     pub chd_compress_prompt: Option<crate::state::ChdCompressPrompt>,
+    /// A pending repair plan awaiting the user's answer, with the console it
+    /// belongs to. Repairs rewrite files in place, so nothing runs until it
+    /// is accepted.
+    pub repair_prompt: Option<(String, Box<crate::state::RepairPrompt>)>,
+    /// Whether a repair keeps a `.bak` copy first. On by default: a repair
+    /// exists because the file is nearly right, and an unrecoverable mistake
+    /// would cost the dump.
+    pub repair_create_backup: bool,
     /// Cached chdman detection for the Settings view.
     pub chdman_probe: ChdmanProbe,
     /// Cached `ScreenScraper` credential provenance for the Settings view.
@@ -202,6 +210,8 @@ impl Default for UiState {
             detail_panel_open: true,
             results_dialog: ResultsDialog::None,
             chd_compress_prompt: None,
+            repair_prompt: None,
+            repair_create_backup: true,
             chdman_probe: ChdmanProbe::Idle,
             credential_status: None,
             scraper_account: None,
@@ -397,7 +407,7 @@ impl RetroJunkApp {
                 retro_junk_lib::settings::catalog_database_needs_location_migration()
                     .unwrap_or(true);
             let schema_migration = target_db_path.is_file()
-                && retro_junk_db::database_needs_migration(&target_db_path).unwrap_or(true);
+                && retro_junk_backend::queries::catalog_needs_migration(&target_db_path);
             if location_migration || schema_migration {
                 let status = if location_migration {
                     "Moving and validating the catalog database…".to_owned()
@@ -413,9 +423,7 @@ impl RetroJunkApp {
             let stage = std::time::Instant::now();
             let database = retro_junk_lib::settings::ensure_catalog_database_location()
                 .map_err(|error| error.to_string())
-                .and_then(|path| {
-                    retro_junk_db::open_database(&path).map_err(|error| error.to_string())
-                });
+                .and_then(|path| retro_junk_backend::queries::open_catalog(&path));
             log::info!("startup: catalog database ready in {:?}", stage.elapsed());
 
             // Refresh the archive projection at startup only when it has
@@ -428,7 +436,10 @@ impl RetroJunkApp {
                 && retro_junk_archive::root_manifest_path(&profile.archive_root).is_file()
             {
                 let profile_id = profile.profile_id.to_string();
-                match retro_junk_db::archive_profile_indexed_at(connection, &profile_id) {
+                match retro_junk_backend::queries::collection::projection_indexed_at(
+                    connection,
+                    &profile_id,
+                ) {
                     Ok(Some(indexed_at)) => {
                         log::info!(
                             "startup: archive projection committed at {indexed_at}; \
@@ -572,17 +583,14 @@ impl RetroJunkApp {
         let Some(connection) = self.catalog_db.as_ref() else {
             return;
         };
-        let Ok(runtime) = retro_junk_db::work::read_runtime_state(connection) else {
+        let Some(tick) = retro_junk_backend::queries::work::dirty_tick(connection) else {
             return;
         };
-        let previous = self.ui_state.dirty_tick.replace(runtime.dirty_tick);
-        if previous.is_none_or(|previous| previous == runtime.dirty_tick) {
+        let previous = self.ui_state.dirty_tick.replace(tick);
+        if previous.is_none_or(|previous| previous == tick) {
             return;
         }
-        log::debug!(
-            "another process wrote (tick {}); refreshing",
-            runtime.dirty_tick
-        );
+        log::debug!("another process wrote (tick {tick}); refreshing");
         self.library_controller.invalidate_lists();
         self.refresh_console_summaries(ctx);
         if let Some(console_id) = self.ui_state.selected_console {
@@ -1698,6 +1706,7 @@ impl eframe::App for RetroJunkApp {
 
         // Compress-to-CHD confirmation dialog
         widgets::chd_compress_dialog::show(ctx, self);
+        widgets::repair_dialog::show(ctx, self);
 
         views::collection::show_import_modal(ctx, self);
 
