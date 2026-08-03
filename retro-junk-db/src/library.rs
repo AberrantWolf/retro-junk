@@ -2632,7 +2632,6 @@ fn gap_query_sql(scope: &GapScope) -> String {
     )
 }
 
-
 fn playable_format(entry_key: &str, game_entry_json: &str) -> String {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(game_entry_json)
         && let Some(files) = value

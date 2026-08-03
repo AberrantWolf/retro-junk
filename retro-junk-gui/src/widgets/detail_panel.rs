@@ -1168,7 +1168,9 @@ fn show_archived_media(ui: &mut egui::Ui, assets: &[retro_junk_db::ArchivedRelea
 fn describe_attention(attention: &retro_junk_backend::completion::Attention) -> String {
     use retro_junk_backend::completion::Attention;
     match attention {
-        Attention::StaleName { current, canonical, .. } => format!(
+        Attention::StaleName {
+            current, canonical, ..
+        } => format!(
             "\"{current}\" is no longer what the catalog calls this — rename it to \"{canonical}\""
         ),
         Attention::PlayableMissing { count } => format!(

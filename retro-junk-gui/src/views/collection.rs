@@ -191,7 +191,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                             let completion = &release.completion;
                             let text = match completion.catalog {
                                 Fraction::Known { have, want } => {
-                                    format!("{} ({have}/{want})", completion.overall().short_label())
+                                    format!(
+                                        "{} ({have}/{want})",
+                                        completion.overall().short_label()
+                                    )
                                 }
                                 Fraction::Unknown(reason) => {
                                     format!(

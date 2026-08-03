@@ -294,9 +294,7 @@ pub fn release_facts_in_scope(
     // Expected discs from the catalog: directly for release-bound rows, via
     // the natural key for work-bound rows.
     {
-        let mut statement = conn.prepare(
-            EXPECTED_DISCS_SQL,
-        )?;
+        let mut statement = conn.prepare(EXPECTED_DISCS_SQL)?;
         for row in statement.query_map([profile_id, playable_root], |row| {
             Ok((
                 row.get::<_, String>(0)?,

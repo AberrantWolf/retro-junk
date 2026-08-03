@@ -4,7 +4,7 @@
 //! `CREATE TABLE` statements and migration table-rebuilds always share one
 //! canonical definition.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -17,6 +17,79 @@ pub enum SchemaError {
     UnknownTable(&'static str),
     #[error("Library migration error: {0}")]
     LibraryMigration(String),
+}
+
+/// Tables that are a rebuildable projection of what is on disk.
+///
+/// The archive's TOML manifests and evidence files are authoritative; these
+/// rows are an index over them, kept only so the UI can ask questions in SQL.
+/// Nothing here is ever migrated: on a version change the whole set is
+/// dropped and rebuilt by the next archive reconcile, which is both simpler
+/// and more honest than teaching a migration to reshape derived data.
+///
+/// Order matters — children first, so the drops respect foreign keys.
+pub const PROJECTION_TABLES: &[&str] = &[
+    "library_entry_media_bindings",
+    "playable_policies",
+    "derivations",
+    "verification_events",
+    "representation_files",
+    "representations",
+    "dump_events",
+    "physical_copy_files",
+    "archive_release_files",
+    "carriers",
+    "physical_copies",
+    "archive_releases",
+    "archive_profiles",
+];
+
+/// Bumped whenever a projection table's shape changes. Unlike
+/// [`CURRENT_VERSION`], this never needs a migration arm.
+pub const PROJECTION_VERSION: i32 = 1;
+
+/// Drop and rebuild the projection when its recorded shape is not the one
+/// this build expects.
+///
+/// The rebuild leaves the tables empty; the next `reconcile_archive_snapshot`
+/// refills them from the manifests on disk. That pass runs on archive
+/// refresh, on daemon startup, and after any command that touches the
+/// archive, so an upgraded database converges without the user asking.
+pub fn ensure_projection_shape(conn: &Connection) -> Result<(), SchemaError> {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS projection_version(version INTEGER NOT NULL);")?;
+    let recorded: Option<i32> = conn
+        .query_row("SELECT MAX(version) FROM projection_version", [], |row| {
+            row.get(0)
+        })
+        .optional()?
+        .flatten();
+    if recorded == Some(PROJECTION_VERSION) {
+        return Ok(());
+    }
+    conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN;")?;
+    let result = (|| -> Result<(), SchemaError> {
+        for name in PROJECTION_TABLES {
+            conn.execute_batch(&format!("DROP TABLE IF EXISTS {name};"))?;
+        }
+        // Recreate parents first: the drop order above is children-first.
+        for name in PROJECTION_TABLES.iter().rev() {
+            let body = table_body(name)?;
+            conn.execute_batch(&format!("CREATE TABLE {name} {body};"))?;
+        }
+        conn.execute_batch(ARCHIVE_INDEXES_SQL)?;
+        conn.execute_batch("DELETE FROM projection_version;")?;
+        conn.execute(
+            "INSERT INTO projection_version(version) VALUES(?1)",
+            [PROJECTION_VERSION],
+        )?;
+        conn.execute_batch("COMMIT;")?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK;");
+    }
+    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
+    result
 }
 
 /// Current schema version. Increment when adding migrations.
@@ -650,6 +723,7 @@ pub fn create_schema(conn: &Connection) -> Result<(), SchemaError> {
     )?;
     seed_runtime_state(conn)?;
     set_schema_version(conn, CURRENT_VERSION)?;
+    ensure_projection_shape(conn)?;
     Ok(())
 }
 
@@ -661,8 +735,14 @@ pub fn open_database(path: &std::path::Path) -> Result<Connection, SchemaError> 
     let version = get_schema_version(&conn)?;
     if version == 0 {
         create_schema(&conn)?;
-    } else if version < CURRENT_VERSION {
-        migrate(&conn, version)?;
+    } else {
+        // Shape the projection first: a catalog migration may touch derived
+        // rows (deduplication rewrites carrier bindings), and it can only do
+        // that if the tables are already in their current form.
+        ensure_projection_shape(&conn)?;
+        if version < CURRENT_VERSION {
+            migrate(&conn, version)?;
+        }
     }
 
     Ok(conn)
@@ -767,32 +847,6 @@ fn rebuild_table(
 }
 
 /// Add columns that a legacy database is missing, skipping the table entirely
-/// when it does not exist yet (partial databases are migrated by later arms).
-fn add_missing_columns(
-    conn: &Connection,
-    table: &str,
-    columns: &[(&str, &str)],
-) -> Result<(), SchemaError> {
-    let has_table: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-        [table],
-        |row| row.get(0),
-    )?;
-    if !has_table {
-        return Ok(());
-    }
-    for (column, definition) in columns {
-        if conn
-            .prepare(&format!("SELECT {column} FROM {table} LIMIT 0"))
-            .is_err()
-        {
-            conn.execute_batch(&format!(
-                "ALTER TABLE {table} ADD COLUMN {column} {definition};"
-            ))?;
-        }
-    }
-    Ok(())
-}
 
 /// Run migrations from `from_version` up to `CURRENT_VERSION`.
 #[allow(clippy::too_many_lines)]
@@ -996,138 +1050,12 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 }
             }
             16 => {
-                for name in [
-                    "archive_profiles",
-                    "archive_releases",
-                    "physical_copies",
-                    "carriers",
-                    "dump_events",
-                    "representations",
-                    "representation_files",
-                    "verification_events",
-                    "derivations",
-                    "playable_policies",
-                    "library_entry_media_bindings",
-                    "catalog_source_snapshots",
-                    "physical_copy_files",
-                    "archive_release_files",
-                ] {
-                    let body = table_body(name)?;
-                    conn.execute_batch(&format!("CREATE TABLE IF NOT EXISTS {name} {body};"))?;
-                }
-                conn.execute_batch(ARCHIVE_INDEXES_SQL)?;
-            }
-            17 => {
-                let has_representations: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='representations')",
-                    [],
-                    |row| row.get(0),
-                )?;
-                if has_representations {
-                    if conn
-                        .prepare("SELECT catalog_verified FROM representations LIMIT 0")
-                        .is_err()
-                    {
-                        conn.execute_batch(
-                            "ALTER TABLE representations ADD COLUMN catalog_verified BOOLEAN NOT NULL DEFAULT 0;",
-                        )?;
-                    }
-                    if conn
-                        .prepare("SELECT round_trip_verified FROM representations LIMIT 0")
-                        .is_err()
-                    {
-                        conn.execute_batch(
-                            "ALTER TABLE representations ADD COLUMN round_trip_verified BOOLEAN NOT NULL DEFAULT 0;",
-                        )?;
-                    }
-                }
-                let has_verifications: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='verification_events')",
-                    [],
-                    |row| row.get(0),
-                )?;
-                if has_verifications
-                    && conn
-                        .prepare("SELECT input_manifest_sha256 FROM verification_events LIMIT 0")
-                        .is_err()
-                {
-                    conn.execute_batch(
-                        "ALTER TABLE verification_events ADD COLUMN input_manifest_sha256 TEXT NOT NULL DEFAULT '';",
-                    )?;
-                }
-            }
-            18 => {
-                // The 0.4 archive prototype was explicitly superseded before release.
-                // Its SQLite state is only a rebuildable projection, so replace it
-                // without touching catalog or playable-library rows.
-                conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN;")?;
-                let result = (|| -> Result<(), SchemaError> {
-                    conn.execute_batch(
-                        "DROP TABLE IF EXISTS library_entry_media_bindings;
-                         DROP TABLE IF EXISTS playable_policies;
-                         DROP TABLE IF EXISTS derivations;
-                         DROP TABLE IF EXISTS verification_events;
-                         DROP TABLE IF EXISTS representation_files;
-                         DROP TABLE IF EXISTS representations;
-                         DROP TABLE IF EXISTS dump_events;
-                         DROP TABLE IF EXISTS physical_copy_files;
-                         DROP TABLE IF EXISTS archive_release_files;
-                         DROP TABLE IF EXISTS carriers;
-                         DROP TABLE IF EXISTS physical_copies;
-                         DROP TABLE IF EXISTS collection_item_assets;
-                         DROP TABLE IF EXISTS archive_release_assets;
-                         DROP TABLE IF EXISTS collection_item_media;
-                         DROP TABLE IF EXISTS collection_items;
-                         DROP TABLE IF EXISTS archive_releases;
-                         DROP TABLE IF EXISTS archive_profiles;",
-                    )?;
-                    for name in [
-                        "archive_profiles",
-                        "archive_releases",
-                        "physical_copies",
-                        "carriers",
-                        "dump_events",
-                        "representations",
-                        "representation_files",
-                        "verification_events",
-                        "derivations",
-                        "playable_policies",
-                        "library_entry_media_bindings",
-                        "physical_copy_files",
-                        "archive_release_files",
-                    ] {
-                        let body = table_body(name)?;
-                        conn.execute_batch(&format!("CREATE TABLE {name} {body};"))?;
-                    }
-                    conn.execute_batch(ARCHIVE_INDEXES_SQL)?;
-                    conn.execute_batch("COMMIT;")?;
-                    Ok(())
-                })();
-                if result.is_err() {
-                    let _ = conn.execute_batch("ROLLBACK;");
-                }
-                conn.execute_batch("PRAGMA foreign_keys=ON;")?;
-                result?;
-                conn.execute_batch("PRAGMA foreign_key_check;")?;
-            }
-            19 => {
-                let has_archive_releases: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_releases')",
-                    [],
-                    |row| row.get(0),
-                )?;
-                if has_archive_releases
-                    && conn
-                        .prepare("SELECT catalog_work_id FROM archive_releases LIMIT 0")
-                        .is_err()
-                {
-                    conn.execute_batch(
-                        "ALTER TABLE archive_releases
-                         ADD COLUMN catalog_work_id TEXT REFERENCES works(id) ON DELETE SET NULL;
-                         CREATE INDEX IF NOT EXISTS idx_archive_releases_work
-                         ON archive_releases(catalog_work_id, platform_id, region);",
-                    )?;
-                }
+                // `catalog_source_snapshots` is catalog data, not projection,
+                // so it is created here rather than rebuilt from disk.
+                let body = table_body("catalog_source_snapshots")?;
+                conn.execute_batch(&format!(
+                    "CREATE TABLE IF NOT EXISTS catalog_source_snapshots {body};"
+                ))?;
             }
             20 => {
                 // Losslessly collapse only media rows with complete, identical
@@ -1159,111 +1087,6 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 }
                 conn.execute_batch(WORK_INDEXES_SQL)?;
                 seed_runtime_state(conn)?;
-            }
-            22 => {
-                // Materialize the catalog identity the archive's own evidence
-                // agreed on, so a library entry can be identified from archive
-                // evidence alone on a machine with no catalog imported. The
-                // archive projection is rebuildable: existing rows stay empty
-                // until the next reindex fills them.
-                add_missing_columns(
-                    conn,
-                    "representations",
-                    &[("catalog_game", "TEXT NOT NULL DEFAULT ''")],
-                )?;
-            }
-            23 => {
-                // The dump manifest records CRC32/MD5/SHA-1 beside SHA-256 for
-                // every archived file, but the projection kept only SHA-256, so
-                // the catalog-relevant digests the archive already proved had to
-                // be recomputed by reading every file again. Carry them across,
-                // and record where a library row's hashes came from.
-                add_missing_columns(
-                    conn,
-                    "representation_files",
-                    &[
-                        ("crc32", "TEXT NOT NULL DEFAULT ''"),
-                        ("md5", "TEXT NOT NULL DEFAULT ''"),
-                        ("sha1", "TEXT NOT NULL DEFAULT ''"),
-                    ],
-                )?;
-                add_missing_columns(
-                    conn,
-                    "library_entries",
-                    &[("hash_source", "TEXT NOT NULL DEFAULT ''")],
-                )?;
-            }
-            24 => {
-                // A playable file belongs to the archived carrier whose build
-                // evidence produced it. Keying that on the carrier's catalog
-                // medium meant an archive that is unbound — or bound to a
-                // catalog id an import has since re-slugged — could not own its
-                // own playable, so the Library listed the very same file twice:
-                // once inside the archived release and once as an unarchived
-                // "playable only" row.
-                let has_bindings: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table'
-                                   AND name='library_entry_media_bindings')
-                         AND EXISTS(SELECT 1 FROM sqlite_master WHERE type='table'
-                                    AND name='carriers')",
-                    [],
-                    |row| row.get(0),
-                )?;
-                if has_bindings
-                    && conn
-                        .prepare("SELECT carrier_id FROM library_entry_media_bindings LIMIT 0")
-                        .is_err()
-                {
-                    let body = table_body("library_entry_media_bindings")?;
-                    conn.execute_batch("PRAGMA foreign_keys=OFF; BEGIN;")?;
-                    let result = (|| -> Result<(), SchemaError> {
-                        // The copy must collapse duplicates itself: the unique
-                        // indexes are only created after it, so `OR IGNORE`
-                        // has nothing to ignore against, and two old rows
-                        // landing on one (entry, carrier) pair — different
-                        // catalog media ids resolving through the same
-                        // representation — would make the index creation
-                        // fail and the database refuse to open. Which row of
-                        // a group survives is immaterial; the re-derivation
-                        // below rebuilds the archive-owned bindings anyway.
-                        conn.execute_batch(&format!(
-                            "CREATE TABLE library_entry_media_bindings_new {body};
-                             INSERT OR IGNORE INTO library_entry_media_bindings_new(
-                                 library_entry_id,carrier_id,catalog_media_id,
-                                 representation_id,match_method)
-                             SELECT library_entry_id,carrier_id,catalog_media_id,
-                                    representation_id,match_method
-                             FROM (SELECT old.library_entry_id AS library_entry_id,
-                                          (SELECT c.id FROM representations rep
-                                           JOIN carriers c ON c.id=rep.carrier_id
-                                           WHERE rep.id=old.representation_id) AS carrier_id,
-                                          old.catalog_media_id AS catalog_media_id,
-                                          old.representation_id AS representation_id,
-                                          old.match_method AS match_method
-                                   FROM library_entry_media_bindings old)
-                             GROUP BY library_entry_id,
-                                      CASE WHEN carrier_id IS NULL
-                                           THEN 'm:'||catalog_media_id
-                                           ELSE 'c:'||carrier_id END;
-                             DROP TABLE library_entry_media_bindings;
-                             ALTER TABLE library_entry_media_bindings_new
-                                 RENAME TO library_entry_media_bindings;"
-                        ))?;
-                        conn.execute_batch(ARCHIVE_INDEXES_SQL)?;
-                        conn.execute_batch("COMMIT;")?;
-                        Ok(())
-                    })();
-                    if result.is_err() {
-                        let _ = conn.execute_batch("ROLLBACK;");
-                    }
-                    conn.execute_batch("PRAGMA foreign_keys=ON;")?;
-                    result?;
-                    // Re-derive the archive-owned bindings from the committed
-                    // projection, so an upgraded database is correct without
-                    // waiting for the next archive rescan.
-                    crate::archive::rebuild_library_entry_bindings(conn)
-                        .map_err(|error| SchemaError::LibraryMigration(error.to_string()))?;
-                }
             }
             14 => {
                 let has_match_state: bool = conn.query_row(
@@ -1302,42 +1125,6 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                            )
                          );",
                     )?;
-                }
-            }
-            25 => {
-                // The projection must be faithful: when an archive manifest
-                // names a catalog id this database cannot resolve, the claim
-                // is preserved in its own columns instead of being erased to
-                // NULL. "Never identified" and "your catalog import is out of
-                // date" are different states, and the UI needs both.
-                // Each table is guarded separately: a database this old may
-                // predate some of the archive projection tables entirely, and
-                // the missing ones are created from the canonical definitions
-                // (claims included) rather than altered.
-                for (table, additions) in [
-                    (
-                        "archive_releases",
-                        "ALTER TABLE archive_releases ADD COLUMN claimed_work_id TEXT NOT NULL DEFAULT '';
-                         ALTER TABLE archive_releases ADD COLUMN claimed_release_id TEXT NOT NULL DEFAULT '';",
-                    ),
-                    (
-                        "carriers",
-                        "ALTER TABLE carriers ADD COLUMN claimed_media_id TEXT NOT NULL DEFAULT '';",
-                    ),
-                ] {
-                    let exists: bool = conn.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-                        [table],
-                        |row| row.get(0),
-                    )?;
-                    let missing_claims = exists
-                        && conn
-                            .prepare(&format!("SELECT claimed_{} FROM {table} LIMIT 0",
-                                if table == "carriers" { "media_id" } else { "release_id" }))
-                            .is_err();
-                    if missing_claims {
-                        conn.execute_batch(additions)?;
-                    }
                 }
             }
             _ => {}

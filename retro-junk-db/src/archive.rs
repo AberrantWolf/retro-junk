@@ -2091,8 +2091,6 @@ pub fn list_archive_release_summaries(
     Ok(summaries)
 }
 
-
-
 pub fn load_archive_collection_details(
     conn: &Connection,
     archive_release_id: &str,
