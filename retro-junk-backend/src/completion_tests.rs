@@ -33,8 +33,20 @@ fn an_unmeasurable_fraction_never_renders_as_a_ratio() {
 fn zero_expected_is_nothing_expected_not_zero_of_zero() {
     let none_wanted = Fraction::known(0, 0);
     assert_eq!(none_wanted.describe(), "nothing expected");
+    // It does not hold back the overall state...
     assert!(none_wanted.is_complete());
-    assert_eq!(none_wanted.level(), FractionLevel::Complete);
+    // ...but it must not be painted as gathered evidence either. A cartridge
+    // release asks for no disc conversion; a green dot would claim a
+    // verification nobody ever ran.
+    assert_eq!(none_wanted.level(), FractionLevel::NotApplicable);
+    assert_eq!(Fraction::known(3, 0).level(), FractionLevel::NotApplicable);
+}
+
+#[test]
+fn extra_evidence_beyond_what_is_expected_still_reads_complete() {
+    // A second physical copy verified is not an error state.
+    assert_eq!(Fraction::known(3, 2).level(), FractionLevel::Complete);
+    assert!(Fraction::known(3, 2).is_complete());
 }
 
 #[test]

@@ -2382,9 +2382,16 @@ mod tests {
             &verified_snapshot.manifest.profile_id.to_string(),
         )
         .unwrap();
-        assert_eq!(summaries[0].expected_disc_count, 2);
-        assert_eq!(summaries[0].verified_disc_count, 2);
-        assert!(summaries[0].archive_complete);
+        let facts = retro_junk_db::facts::release_facts_by_id(
+            &catalog,
+            &retro_junk_db::facts::FactsScope::profile(
+                &verified_snapshot.manifest.profile_id.to_string(),
+            ),
+        )
+        .unwrap();
+        let release_facts = &facts[&summaries[0].archive_release_id];
+        assert_eq!(release_facts.expected_discs.unwrap().count, 2);
+        assert_eq!(retro_junk_db::facts::verified_disc_count(release_facts), 2);
     }
 
     #[test]

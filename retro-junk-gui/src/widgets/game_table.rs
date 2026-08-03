@@ -180,11 +180,13 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 entry_id: None,
                 bound_entry_ids: bound_entry_ids.clone(),
                 archive_release_id: Some(summary.archive_release_id.clone()),
-                status: if summary.archive_complete {
-                    EntryStatus::Matched
-                } else {
-                    EntryStatus::Unknown
-                },
+                status: crate::state::RowStatus::Archive(
+                    retro_junk_backend::completion::Completion::for_release(
+                        &release.facts,
+                        &app.ui_state.expected_assets,
+                    )
+                    .overall(),
+                ),
                 has_broken_refs: false,
                 has_hash_warnings: false,
                 has_cue_compat_issues: false,
@@ -221,7 +223,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     entry_id: Some(projection.id),
                     bound_entry_ids: Vec::new(),
                     archive_release_id: None,
-                    status: projection_status(&projection.status, &projection.tag),
+                    status: crate::state::RowStatus::Entry(projection_status(
+                        &projection.status,
+                        &projection.tag,
+                    )),
                     has_broken_refs: projection.has_broken_references,
                     has_hash_warnings: projection.has_hash_warnings,
                     has_cue_compat_issues: projection.has_cue_compat_issues,
@@ -541,13 +546,14 @@ fn cell_frame<R>(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui) -> R) {
 fn show_status_cell(ui: &mut egui::Ui, data: &RowData) {
     let response = status_badge::show_with_warning(
         ui,
-        data.status,
+        data.status.clone(),
         data.has_broken_refs,
         data.has_hash_warnings,
         data.has_cue_compat_issues,
         data.asset_status,
     );
-    let mut tip = data.status.tooltip().to_string();
+    let mut tip = data.status.tooltip();
+
     if data.has_broken_refs {
         let _ = write!(tip, "\n{} Broken file references", icons::WARNING);
     }
@@ -1261,7 +1267,7 @@ struct RowData {
     /// Ordinary playable rows grouped under an archival release.
     bound_entry_ids: Vec<retro_junk_db::LibraryEntryId>,
     archive_release_id: Option<String>,
-    status: EntryStatus,
+    status: crate::state::RowStatus,
     has_broken_refs: bool,
     has_hash_warnings: bool,
     has_cue_compat_issues: bool,
@@ -1290,7 +1296,13 @@ impl AvailabilityState {
         let playable =
             summary.playable_present_count > 0 || !release.playable_library_entries.is_empty();
         let actual = archive_playable_formats(release);
-        if summary.archive_complete {
+        // "Complete" here means the same thing it means everywhere else: the
+        // catalog's expected discs are all verified in one copy.
+        let archive_complete = release.facts.expected_discs.is_some_and(|expected| {
+            expected.count > 0
+                && retro_junk_db::facts::verified_disc_count(&release.facts) == expected.count
+        });
+        if archive_complete {
             if release
                 .action
                 .as_ref()

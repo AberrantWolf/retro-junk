@@ -16,8 +16,12 @@ pub struct ReleaseOverview {
     pub region: String,
     pub revision: String,
     pub completion: Completion,
-    /// The raw facts behind the completion, for views that show counts
-    /// (carriers, copies) rather than status.
+    /// Physical copies held of this release.
+    pub physical_copy_count: u64,
+    /// Carriers (individual discs or cartridges) across those copies.
+    pub carrier_count: u64,
+    /// The raw facts behind the completion, for views that need detail the
+    /// rollup does not carry.
     pub facts: ReleaseFacts,
 }
 
@@ -31,14 +35,23 @@ pub fn release_overviews(
         .map_err(|error| error.to_string())?;
     Ok(all_facts
         .into_iter()
-        .map(|facts| ReleaseOverview {
-            archive_release_id: facts.archive_release_id.clone(),
-            platform_id: facts.platform_id.clone(),
-            title: facts.title.clone(),
-            region: facts.region.clone(),
-            revision: facts.revision.clone(),
-            completion: Completion::for_release(&facts, expected_assets),
-            facts,
+        .map(|facts| {
+            let copies = facts
+                .carriers
+                .iter()
+                .map(|carrier| carrier.physical_copy_id.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            ReleaseOverview {
+                archive_release_id: facts.archive_release_id.clone(),
+                platform_id: facts.platform_id.clone(),
+                title: facts.title.clone(),
+                region: facts.region.clone(),
+                revision: facts.revision.clone(),
+                completion: Completion::for_release(&facts, expected_assets),
+                physical_copy_count: copies.len() as u64,
+                carrier_count: facts.carriers.len() as u64,
+                facts,
+            }
         })
         .collect())
 }

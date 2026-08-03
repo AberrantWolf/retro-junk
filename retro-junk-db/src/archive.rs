@@ -36,13 +36,6 @@ pub struct ArchiveReleaseSummary {
     pub reproduction_verified_count: u64,
     pub catalog_verified_count: u64,
     pub round_trip_verified_count: u64,
-    /// Logical catalog discs expected for this release. Zero means the
-    /// release is not sufficiently catalog-bound to claim completeness.
-    pub expected_disc_count: u64,
-    /// Expected discs which have a present preservation master and current,
-    /// complete catalog verification in the best matching physical copy.
-    pub verified_disc_count: u64,
-    pub archive_complete: bool,
 }
 
 /// A playable representation's path, relative to the profile's playable root.
@@ -2092,130 +2085,13 @@ pub fn list_archive_release_summaries(
             reproduction_verified_count: row.get(17)?,
             catalog_verified_count: row.get(18)?,
             round_trip_verified_count: row.get(19)?,
-            expected_disc_count: 0,
-            verified_disc_count: 0,
-            archive_complete: false,
         })
     })?;
-    let mut summaries = rows.collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    let completeness = archive_release_completeness(conn, profile_id, "")?;
-    for summary in &mut summaries {
-        if let Some((expected, verified)) = completeness
-            .get(&summary.archive_release_id)
-            .map(|(expected, verified)| (*expected, *verified))
-        {
-            summary.expected_disc_count = expected;
-            summary.verified_disc_count = verified;
-            summary.archive_complete = expected > 0 && verified == expected;
-        }
-    }
+    let summaries = rows.collect::<Result<Vec<_>, _>>()?;
     Ok(summaries)
 }
 
-const ARCHIVE_RELEASE_COMPLETENESS_SQL: &str = "WITH candidate_media AS (
-             SELECT ar.id AS archive_release_id,m.id AS media_id,m.disc_number
-             FROM archive_releases ar
-             JOIN archive_profiles ap ON ap.id=ar.profile_id
-             JOIN media m ON m.release_id=ar.catalog_release_id
-             WHERE (?1='' OR ar.profile_id=?1)
-               AND (?2='' OR ap.playable_root=?2)
-               AND ar.catalog_release_id IS NOT NULL
-             UNION ALL
-             SELECT ar.id,m.id,m.disc_number
-             FROM archive_releases ar
-             JOIN archive_profiles ap ON ap.id=ar.profile_id
-             CROSS JOIN releases r INDEXED BY idx_releases_natural
-             JOIN media m ON m.release_id=r.id
-             WHERE (?1='' OR ar.profile_id=?1)
-               AND (?2='' OR ap.playable_root=?2)
-               AND ar.catalog_release_id IS NULL
-               AND ar.catalog_work_id IS NOT NULL
-               AND r.work_id=ar.catalog_work_id
-               AND r.platform_id=ar.platform_id
-               AND r.region=ar.region
-         ),
-         release_expected AS (
-             SELECT archive_release_id AS id,
-                    CASE WHEN MAX(disc_number)>0
-                         THEN COUNT(DISTINCT CASE WHEN disc_number>0 THEN disc_number END)
-                         ELSE 1 END AS expected_count,
-                    MAX(disc_number)>0 AS numbered
-             FROM candidate_media
-             GROUP BY archive_release_id
-         ),
-         per_copy AS (
-             SELECT re.id AS archive_release_id,pc.id AS physical_copy_id,
-                    COUNT(DISTINCT CASE WHEN ve.id IS NOT NULL THEN
-                         CASE WHEN re.numbered
-                              THEN CASE WHEN m.disc_number>0 THEN m.disc_number END
-                              ELSE 0 END
-                    END) AS verified_count
-             FROM release_expected re
-             JOIN physical_copies pc ON pc.archive_release_id=re.id
-             LEFT JOIN carriers c ON c.physical_copy_id=pc.id
-             LEFT JOIN candidate_media cm
-                ON cm.archive_release_id=re.id AND cm.media_id=c.catalog_media_id
-             LEFT JOIN media m ON m.id=cm.media_id
-             LEFT JOIN representations rep ON rep.carrier_id=c.id
-                AND rep.role='preservation_master' AND rep.presence_state='present'
-             LEFT JOIN verification_events ve ON ve.representation_id=rep.id
-                AND ve.kind='catalog' AND ve.outcome='verified'
-                AND ve.input_manifest_sha256=rep.input_manifest_sha256
-                AND (ve.complete_track_set=1 OR NOT EXISTS(
-                     SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id))
-             GROUP BY re.id,pc.id
-         )
-         SELECT re.id,re.expected_count,COALESCE(MAX(pc.verified_count),0)
-         FROM release_expected re
-         LEFT JOIN per_copy pc ON pc.archive_release_id=re.id
-         GROUP BY re.id,re.expected_count";
 
-pub(crate) fn archive_release_completeness(
-    conn: &Connection,
-    profile_id: &str,
-    playable_root: &str,
-) -> Result<std::collections::HashMap<String, (u64, u64)>, OperationError> {
-    let mut statement = conn.prepare(ARCHIVE_RELEASE_COMPLETENESS_SQL)?;
-    statement
-        .query_map(params![profile_id, playable_root], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                (row.get::<_, u64>(1)?, row.get::<_, u64>(2)?),
-            ))
-        })?
-        .collect::<Result<_, _>>()
-        .map_err(Into::into)
-}
-
-#[cfg(test)]
-mod query_plan_tests {
-    use super::*;
-
-    #[test]
-    fn work_level_completeness_never_scans_the_catalog_media_table() {
-        let connection = crate::schema::open_memory().unwrap();
-        let explain = format!("EXPLAIN QUERY PLAN {ARCHIVE_RELEASE_COMPLETENESS_SQL}");
-        let mut statement = connection.prepare(&explain).unwrap();
-        let details = statement
-            .query_map(params!["profile", ""], |row| row.get::<_, String>(3))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap();
-        assert!(
-            details
-                .iter()
-                .any(|detail| detail.contains("idx_releases_natural")),
-            "work lookup lost its catalog release index: {details:#?}"
-        );
-        assert!(
-            details
-                .iter()
-                .all(|detail| detail != "SCAN m" && !detail.starts_with("SCAN m ")),
-            "completeness regressed to a full media scan: {details:#?}"
-        );
-    }
-}
 
 pub fn load_archive_collection_details(
     conn: &Connection,

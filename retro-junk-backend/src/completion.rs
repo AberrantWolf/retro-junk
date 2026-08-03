@@ -104,12 +104,19 @@ pub enum Fraction {
 /// one-to-one onto dot colors / cell text; no frontend re-derives them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FractionLevel {
-    /// Everything expected is there (including "nothing was expected").
+    /// Everything expected is there.
     Complete,
     /// Some, not all.
     Partial,
     /// Expected, and none of it is there.
     Empty,
+    /// Nothing is expected of this aspect, so there is nothing to show.
+    ///
+    /// Distinct from `Complete` on purpose: a cartridge release asks for no
+    /// disc conversion, and painting its playable dot bright green would
+    /// claim evidence that was never gathered. It still does not *block*
+    /// completion — see [`Fraction::is_complete`].
+    NotApplicable,
     /// Cannot be measured; carries the reason.
     Unknown(UnknownReason),
 }
@@ -120,9 +127,11 @@ impl Fraction {
         Self::Known { have, want }
     }
 
-    /// Complete means "nothing expected is missing". An unknown fraction is
-    /// never complete — not knowing what to expect is not the same as
-    /// having everything.
+    /// Complete means "nothing expected is missing", so a fraction that
+    /// expects nothing does not hold back the overall state. An unknown
+    /// fraction is never complete — not knowing what to expect is not the
+    /// same as having everything. (For display, "expects nothing" is its own
+    /// level; see [`Fraction::level`].)
     #[must_use]
     pub fn is_complete(self) -> bool {
         match self {
@@ -134,6 +143,7 @@ impl Fraction {
     #[must_use]
     pub fn level(self) -> FractionLevel {
         match self {
+            Self::Known { want: 0, .. } => FractionLevel::NotApplicable,
             Self::Known { have, want } => {
                 if have >= want {
                     FractionLevel::Complete
@@ -217,6 +227,32 @@ pub enum Overall {
     Incomplete,
     /// Identified, no problems, every aspect complete.
     Complete,
+}
+
+impl Overall {
+    /// The one label for an overall state. Frontends render this rather than
+    /// writing their own wording, so the table, the detail panel, and the
+    /// CLI cannot describe the same release differently.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Complete => "Complete and catalog-verified",
+            Self::Incomplete => "Incomplete",
+            Self::NeedsAttention => "Needs attention",
+            Self::Unidentified => "Not identified",
+        }
+    }
+
+    /// A one-word form for narrow table cells.
+    #[must_use]
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Complete => "Complete",
+            Self::Incomplete => "Incomplete",
+            Self::NeedsAttention => "Attention",
+            Self::Unidentified => "Unidentified",
+        }
+    }
 }
 
 impl Completion {

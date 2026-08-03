@@ -77,65 +77,196 @@ pub struct ReleaseFacts {
     pub archived_asset_types: Vec<String>,
 }
 
+/// How many of a release's expected discs one physical copy covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyDiscCoverage {
+    pub physical_copy_id: String,
+    /// Discs whose preservation master is present on disk.
+    pub archived: u64,
+    /// Discs that are catalog-verified *and* whose master is present. A
+    /// verification of bytes that are no longer there proves nothing about
+    /// what the collection currently holds.
+    pub verified: u64,
+}
+
 /// The one disc-counting rule.
 ///
-/// Counts catalog-verified discs from a release's facts: the best physical
-/// copy wins, a disc counts once no matter how many carriers hold it, and
-/// only a carrier whose master is present on disk can vouch for its disc.
-/// Both the completion fold (display) and convergence derivation (what to
-/// build, and why something is blocked) call this — there is no second
-/// definition anywhere.
+/// A release is complete when a *single* physical copy covers every expected
+/// disc — discs from different copies do not pool, because half of one boxed
+/// set plus half of another is not a playable game. A disc counts once no
+/// matter how many carriers hold it, and a carrier whose master is missing
+/// from disk cannot vouch for its disc.
+///
+/// Everything that needs disc counts calls this: the completion fold that
+/// decides what the UI shows, and the convergence derivation that decides
+/// what to build and why a build is blocked. There is no second definition.
 #[must_use]
-pub fn verified_disc_count(facts: &ReleaseFacts) -> u64 {
+pub fn copy_disc_coverage(facts: &ReleaseFacts) -> Vec<CopyDiscCoverage> {
     let Some(expected) = facts.expected_discs else {
-        return 0;
+        return Vec::new();
     };
-    let mut best = 0_u64;
-    let mut copies: HashMap<&str, std::collections::HashSet<i64>> = HashMap::new();
+    // Ordered so the result is stable for callers that compare or display it.
+    let mut order: Vec<&str> = Vec::new();
+    let mut archived: HashMap<&str, std::collections::HashSet<i64>> = HashMap::new();
+    let mut verified: HashMap<&str, std::collections::HashSet<i64>> = HashMap::new();
     for carrier in &facts.carriers {
-        if !(carrier.catalog_verified && carrier.masters_present > 0) {
+        if carrier.masters_present == 0 {
             continue;
         }
         let disc_key = if expected.numbered {
             match carrier.disc_number {
                 Some(number) if number > 0 => number,
-                // A verified carrier bound to an unnumbered medium in a
-                // numbered set cannot say which disc it is.
+                // A carrier bound to an unnumbered medium in a numbered set
+                // cannot say which disc it is.
                 _ => continue,
             }
         } else {
             0
         };
-        copies
-            .entry(carrier.physical_copy_id.as_str())
-            .or_default()
-            .insert(disc_key);
+        let copy = carrier.physical_copy_id.as_str();
+        if !archived.contains_key(copy) {
+            order.push(copy);
+        }
+        archived.entry(copy).or_default().insert(disc_key);
+        if carrier.catalog_verified {
+            verified.entry(copy).or_default().insert(disc_key);
+        }
     }
-    for discs in copies.values() {
-        best = best.max(discs.len() as u64);
+    order
+        .into_iter()
+        .map(|copy| CopyDiscCoverage {
+            physical_copy_id: copy.to_owned(),
+            archived: archived.get(copy).map_or(0, |discs| discs.len() as u64),
+            verified: verified.get(copy).map_or(0, |discs| discs.len() as u64),
+        })
+        .collect()
+}
+
+/// Expected discs covered by the best single physical copy.
+#[must_use]
+pub fn archived_disc_count(facts: &ReleaseFacts) -> u64 {
+    copy_disc_coverage(facts)
+        .into_iter()
+        .map(|copy| copy.archived)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Catalog-verified discs held by the best single physical copy.
+#[must_use]
+pub fn verified_disc_count(facts: &ReleaseFacts) -> u64 {
+    copy_disc_coverage(facts)
+        .into_iter()
+        .map(|copy| copy.verified)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Expected discs per release: direct for release-bound rows, through the
+/// natural key for work-bound ones.
+const EXPECTED_DISCS_SQL: &str = "SELECT ar.id,
+                    CASE WHEN MAX(m.disc_number)>0
+                         THEN COUNT(DISTINCT CASE WHEN m.disc_number>0 THEN m.disc_number END)
+                         ELSE 1 END,
+                    MAX(m.disc_number)>0
+             FROM archive_releases ar
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             JOIN media m ON m.release_id=ar.catalog_release_id
+             WHERE (?1='' OR ar.profile_id=?1)
+               AND (?2='' OR ap.playable_root=?2)
+               AND ar.catalog_release_id IS NOT NULL
+             GROUP BY ar.id
+             UNION ALL
+             SELECT ar.id,
+                    CASE WHEN MAX(m.disc_number)>0
+                         THEN COUNT(DISTINCT CASE WHEN m.disc_number>0 THEN m.disc_number END)
+                         ELSE 1 END,
+                    MAX(m.disc_number)>0
+             FROM archive_releases ar
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             CROSS JOIN releases r INDEXED BY idx_releases_natural
+             JOIN media m ON m.release_id=r.id
+             WHERE r.work_id=ar.catalog_work_id
+               AND r.platform_id=ar.platform_id
+               AND r.region=ar.region
+               AND (?1='' OR ar.profile_id=?1)
+               AND (?2='' OR ap.playable_root=?2)
+               AND ar.catalog_release_id IS NULL
+               AND ar.catalog_work_id IS NOT NULL
+             GROUP BY ar.id";
+
+/// Which archive releases to gather facts for.
+///
+/// Both selectors are matched as "empty means any", so a profile scope and a
+/// playable-root scope compose: the Library page asks by playable root (it
+/// knows the console's root, not the profile id), while the Collection page
+/// and convergence ask by profile.
+#[derive(Debug, Clone, Default)]
+pub struct FactsScope {
+    pub profile_id: String,
+    pub playable_root: String,
+}
+
+impl FactsScope {
+    #[must_use]
+    pub fn profile(profile_id: &str) -> Self {
+        Self {
+            profile_id: profile_id.to_owned(),
+            playable_root: String::new(),
+        }
     }
-    best
+
+    #[must_use]
+    pub fn playable_root(playable_root: &str) -> Self {
+        Self {
+            profile_id: String::new(),
+            playable_root: playable_root.to_owned(),
+        }
+    }
 }
 
 /// Fetch completion facts for every archive release in a profile.
-#[allow(clippy::too_many_lines)]
 pub fn release_completion_facts(
     conn: &Connection,
     profile_id: &str,
 ) -> Result<Vec<ReleaseFacts>, OperationError> {
+    release_facts_in_scope(conn, &FactsScope::profile(profile_id))
+}
+
+/// Fetch completion facts for the releases a scope selects, keyed by
+/// archive release id.
+pub fn release_facts_by_id(
+    conn: &Connection,
+    scope: &FactsScope,
+) -> Result<HashMap<String, ReleaseFacts>, OperationError> {
+    Ok(release_facts_in_scope(conn, scope)?
+        .into_iter()
+        .map(|facts| (facts.archive_release_id.clone(), facts))
+        .collect())
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn release_facts_in_scope(
+    conn: &Connection,
+    scope: &FactsScope,
+) -> Result<Vec<ReleaseFacts>, OperationError> {
+    let profile_id = scope.profile_id.as_str();
+    let playable_root = scope.playable_root.as_str();
     // Base rows.
     let mut releases: Vec<ReleaseFacts> = Vec::new();
     let mut index_of: HashMap<String, usize> = HashMap::new();
     {
         let mut statement = conn.prepare(
-            "SELECT id,platform_id,title,region,revision,
-                    catalog_release_id,catalog_work_id,
-                    claimed_release_id,claimed_work_id
-             FROM archive_releases
-             WHERE profile_id=?1
-             ORDER BY platform_id,title COLLATE NOCASE,id",
+            "SELECT ar.id,ar.platform_id,ar.title,ar.region,ar.revision,
+                    ar.catalog_release_id,ar.catalog_work_id,
+                    ar.claimed_release_id,ar.claimed_work_id
+             FROM archive_releases ar
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             WHERE (?1='' OR ar.profile_id=?1)
+               AND (?2='' OR ap.playable_root=?2)
+             ORDER BY ar.platform_id,ar.title COLLATE NOCASE,ar.id",
         )?;
-        for row in statement.query_map([profile_id], |row| {
+        for row in statement.query_map([profile_id, playable_root], |row| {
             Ok(ReleaseFacts {
                 archive_release_id: row.get(0)?,
                 platform_id: row.get(1)?,
@@ -164,32 +295,9 @@ pub fn release_completion_facts(
     // the natural key for work-bound rows.
     {
         let mut statement = conn.prepare(
-            "SELECT ar.id,
-                    CASE WHEN MAX(m.disc_number)>0
-                         THEN COUNT(DISTINCT CASE WHEN m.disc_number>0 THEN m.disc_number END)
-                         ELSE 1 END,
-                    MAX(m.disc_number)>0
-             FROM archive_releases ar
-             JOIN media m ON m.release_id=ar.catalog_release_id
-             WHERE ar.profile_id=?1 AND ar.catalog_release_id IS NOT NULL
-             GROUP BY ar.id
-             UNION ALL
-             SELECT ar.id,
-                    CASE WHEN MAX(m.disc_number)>0
-                         THEN COUNT(DISTINCT CASE WHEN m.disc_number>0 THEN m.disc_number END)
-                         ELSE 1 END,
-                    MAX(m.disc_number)>0
-             FROM archive_releases ar
-             JOIN releases r ON r.work_id=ar.catalog_work_id
-                            AND r.platform_id=ar.platform_id
-                            AND r.region=ar.region
-             JOIN media m ON m.release_id=r.id
-             WHERE ar.profile_id=?1
-               AND ar.catalog_release_id IS NULL
-               AND ar.catalog_work_id IS NOT NULL
-             GROUP BY ar.id",
+            EXPECTED_DISCS_SQL,
         )?;
-        for row in statement.query_map([profile_id], |row| {
+        for row in statement.query_map([profile_id, playable_root], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, u64>(1)?,
@@ -219,12 +327,14 @@ pub fn release_completion_facts(
                            WHERE de.carrier_id=c.id AND de.catalog_state='verified')
              FROM physical_copies pc
              JOIN archive_releases ar ON ar.id=pc.archive_release_id
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
              JOIN carriers c ON c.physical_copy_id=pc.id
              LEFT JOIN media m ON m.id=c.catalog_media_id
-             WHERE ar.profile_id=?1
+             WHERE (?1='' OR ar.profile_id=?1)
+               AND (?2='' OR ap.playable_root=?2)
              ORDER BY pc.archive_release_id,pc.id,c.sequence_number,c.id",
         )?;
-        for row in statement.query_map([profile_id], |row| {
+        for row in statement.query_map([profile_id, playable_root], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 CarrierFacts {
@@ -264,14 +374,16 @@ pub fn release_completion_facts(
                        AND mrep.role='playable' AND mrep.presence_state='missing')
              FROM physical_copies pc
              JOIN archive_releases ar ON ar.id=pc.archive_release_id
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
              JOIN carriers c ON c.physical_copy_id=pc.id
              JOIN playable_policies pp
                ON pp.scope_type='carrier' AND pp.scope_id=c.id
              LEFT JOIN representations rep ON rep.carrier_id=c.id
-             WHERE ar.profile_id=?1
+             WHERE (?1='' OR ar.profile_id=?1)
+               AND (?2='' OR ap.playable_root=?2)
              GROUP BY pc.archive_release_id",
         )?;
-        for row in statement.query_map([profile_id], |row| {
+        for row in statement.query_map([profile_id, playable_root], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, u64>(1)?,
@@ -294,10 +406,13 @@ pub fn release_completion_facts(
             "SELECT f.archive_release_id,f.asset_type
              FROM archive_release_files f
              JOIN archive_releases ar ON ar.id=f.archive_release_id
-             WHERE ar.profile_id=?1 AND f.category IN ('artwork','video')
+             JOIN archive_profiles ap ON ap.id=ar.profile_id
+             WHERE (?1='' OR ar.profile_id=?1)
+               AND (?2='' OR ap.playable_root=?2)
+               AND f.category IN ('artwork','video')
              ORDER BY f.archive_release_id,f.asset_type",
         )?;
-        for row in statement.query_map([profile_id], |row| {
+        for row in statement.query_map([profile_id, playable_root], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })? {
             let (id, asset_type) = row?;
@@ -308,4 +423,39 @@ pub fn release_completion_facts(
     }
 
     Ok(releases)
+}
+
+#[cfg(test)]
+mod query_plan_tests {
+    use super::*;
+
+    /// The work-level arm resolves through the natural-key index. Without
+    /// the explicit index choice the planner picks a full media scan, which
+    /// on a real catalog is the difference between a page that opens and one
+    /// that hangs.
+    #[test]
+    fn work_level_expectation_never_scans_the_catalog_media_table() {
+        let connection = crate::schema::open_memory().unwrap();
+        let explain = format!("EXPLAIN QUERY PLAN {EXPECTED_DISCS_SQL}");
+        let mut statement = connection.prepare(&explain).unwrap();
+        let details = statement
+            .query_map(rusqlite::params!["profile", ""], |row| {
+                row.get::<_, String>(3)
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("idx_releases_natural")),
+            "work lookup lost its catalog release index: {details:#?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|detail| detail != "SCAN m" && !detail.starts_with("SCAN m ")),
+            "expected-disc lookup regressed to a full media scan: {details:#?}"
+        );
+    }
 }

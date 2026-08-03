@@ -1,4 +1,4 @@
-use crate::state::{AssetStatus, EntryStatus, EntryStatusColor};
+use crate::state::{AssetStatus, EntryStatus, EntryStatusColor, RowStatus};
 
 /// Draw a small colored circle indicating the entry's status.
 /// Returns the response for tooltip handling.
@@ -15,7 +15,7 @@ pub fn show(ui: &mut egui::Ui, status: EntryStatus) -> egui::Response {
 /// and/or hash warnings, and a small colored square indicating media status.
 pub fn show_with_warning(
     ui: &mut egui::Ui,
-    status: EntryStatus,
+    status: RowStatus,
     has_broken_refs: bool,
     has_hash_warnings: bool,
     has_cue_compat_issues: bool,

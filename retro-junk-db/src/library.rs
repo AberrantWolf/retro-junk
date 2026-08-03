@@ -601,6 +601,10 @@ pub struct ArchivedLibraryListItem {
     /// Compact catalog identity used to scrape an archive-only release without
     /// first manufacturing a playable file.
     pub scrape_identity: Option<ArchivedScrapeIdentity>,
+    /// Semantics-free inputs to the one completion fold. Frontends never
+    /// read these directly — they pass them to `Completion::for_release`,
+    /// which is the single place a status is decided.
+    pub facts: crate::facts::ReleaseFacts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1545,7 +1549,8 @@ pub fn query_entry_list(
     let (archived_playable_gaps, completeness) = query_availability(conn, q.console_id)?;
     let mut archived_releases =
         query_archived_library_releases(conn, q.console_id, &archived_playable_gaps)?;
-    let availability_counts = unified_availability_counts(conn, q.console_id, &archived_releases)?;
+    let availability_counts =
+        unified_availability_counts(conn, q.console_id, &archived_releases, &completeness)?;
     let archive_search = q.search.trim().to_ascii_lowercase();
     if !archive_search.is_empty() {
         archived_releases.retain(|row| {
@@ -1612,6 +1617,7 @@ pub fn query_entry_list(
         let selected = select_logical_page(
             candidates,
             &archived_releases,
+            &completeness,
             q.offset,
             page_limit,
             q.sort,
@@ -1754,6 +1760,7 @@ struct LogicalPageCandidate {
 fn select_logical_page(
     mut candidates: Vec<LogicalPageCandidate>,
     archived: &[ArchivedLibraryListItem],
+    complete_releases: &HashSet<String>,
     offset: u64,
     limit: u64,
     sort: LibraryEntrySortField,
@@ -1762,7 +1769,7 @@ fn select_logical_page(
     candidates.extend(archived.iter().map(|release| LogicalPageCandidate {
         identity: LogicalPageIdentity::Archive(release.summary.archive_release_id.clone()),
         display_name: release.summary.title.to_ascii_lowercase(),
-        status: if release.summary.archive_complete {
+        status: if complete_releases.contains(&release.summary.archive_release_id) {
             "matched".to_owned()
         } else {
             "unknown".to_owned()
@@ -1796,6 +1803,7 @@ fn unified_availability_counts(
     conn: &Connection,
     console_id: LibraryConsoleId,
     archived: &[ArchivedLibraryListItem],
+    complete_releases: &HashSet<String>,
 ) -> Result<LibraryAvailabilityCounts, LibraryError> {
     let mut counts = LibraryAvailabilityCounts {
         playable_only: conn.query_row(
@@ -1815,7 +1823,7 @@ fn unified_availability_counts(
             summary.playable_present_count > 0 || !release.playable_library_entries.is_empty();
         if !playable {
             counts.archived_not_playable += 1;
-        } else if !summary.archive_complete {
+        } else if !complete_releases.contains(&summary.archive_release_id) {
             counts.incomplete_archive_and_playable += 1;
         } else if release
             .action
@@ -1828,6 +1836,29 @@ fn unified_availability_counts(
         }
     }
     Ok(counts)
+}
+
+/// Facts for a release the facts query did not return — a release with no
+/// carriers at all. Its identity still comes from the projected row, so the
+/// fold reports "unidentified" rather than inventing a measurement.
+fn empty_facts(summary: &crate::archive::ArchiveReleaseSummary) -> crate::facts::ReleaseFacts {
+    crate::facts::ReleaseFacts {
+        archive_release_id: summary.archive_release_id.clone(),
+        platform_id: summary.platform_id.clone(),
+        title: summary.title.clone(),
+        region: summary.region.clone(),
+        revision: summary.revision.clone(),
+        catalog_release_id: summary.catalog_release_id.clone(),
+        catalog_work_id: None,
+        claimed_release_id: String::new(),
+        claimed_work_id: String::new(),
+        expected_discs: None,
+        carriers: Vec::new(),
+        desired_playables: 0,
+        satisfied_playables: 0,
+        missing_playables: 0,
+        archived_asset_types: Vec::new(),
+    }
 }
 
 fn query_archived_library_releases(
@@ -1858,6 +1889,9 @@ fn query_archived_library_releases(
         query_archived_playable_entries(conn, &profile_id, console_id)?;
     let mut assets_by_release = query_archived_release_assets(conn, &profile_id)?;
     let mut scrape_identity_by_release = query_archived_scrape_identities(conn, &profile_id)?;
+    let mut facts_by_release =
+        crate::facts::release_facts_by_id(conn, &crate::facts::FactsScope::profile(&profile_id))
+            .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?;
     let archive_platform = archive_platform_scope(&folder_name, &platform);
     let mut rows = summaries
         .into_iter()
@@ -1877,6 +1911,9 @@ fn query_archived_library_releases(
                 .remove(&summary.archive_release_id)
                 .unwrap_or_default();
             let scrape_identity = scrape_identity_by_release.remove(&summary.archive_release_id);
+            let facts = facts_by_release
+                .remove(&summary.archive_release_id)
+                .unwrap_or_else(|| empty_facts(&summary));
             ArchivedLibraryListItem {
                 summary,
                 action,
@@ -1884,6 +1921,7 @@ fn query_archived_library_releases(
                 playable_library_entries,
                 archived_assets,
                 scrape_identity,
+                facts,
             }
         })
         .collect::<Vec<_>>();
@@ -2297,33 +2335,39 @@ fn query_playable_gaps_with_force(
     scope: &GapScope,
     force_release_id: Option<&str>,
 ) -> Result<(Vec<ArchivedPlayableGap>, std::collections::HashSet<String>), LibraryError> {
-    let completeness = match scope {
-        GapScope::Console(console_id) => archive_completeness_for_console(conn, *console_id)?,
-        GapScope::Profile { profile_id } => {
-            let playable_root: String = conn
-                .query_row(
-                    "SELECT playable_root FROM archive_profiles WHERE id=?1",
-                    [profile_id.as_str()],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .unwrap_or_default();
-            crate::archive::archive_release_completeness(conn, profile_id, &playable_root)
-                .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?
-                .into_iter()
-                .filter_map(|(release_id, (expected, verified))| {
-                    (expected > 0 && expected == verified).then_some(release_id)
-                })
-                .collect()
+    // Disc counts come from the one rule in `facts`, so what the Library
+    // page calls complete and what convergence decides to build cannot drift
+    // apart the way two SQL definitions of the same count did.
+    let facts_scope = match scope {
+        GapScope::Console(console_id) => {
+            let playable_root: String = conn.query_row(
+                "SELECT lr.root_path FROM library_roots lr
+                 JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=?1",
+                [console_id.0],
+                |row| row.get(0),
+            )?;
+            crate::facts::FactsScope::playable_root(&playable_root)
         }
+        GapScope::Profile { profile_id } => crate::facts::FactsScope::profile(profile_id),
     };
+    let facts = crate::facts::release_facts_by_id(conn, &facts_scope)
+        .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?;
+    let completeness = facts
+        .values()
+        .filter(|release| {
+            release.expected_discs.is_some_and(|expected| {
+                expected.count > 0 && crate::facts::verified_disc_count(release) == expected.count
+            })
+        })
+        .map(|release| release.archive_release_id.clone())
+        .collect::<std::collections::HashSet<_>>();
     let sql = gap_query_sql(scope);
     let mut statement = conn.prepare(&sql)?;
     let map_row = |row: &rusqlite::Row<'_>| {
         let source_format: Option<String> = row.get(7)?;
         let preferred_format: Option<String> = row.get(8)?;
         let file_count: u64 = row.get(12)?;
-        let needs_playable = !row.get::<_, bool>(16)? && !row.get::<_, bool>(17)?;
+        let needs_playable = !row.get::<_, bool>(13)? && !row.get::<_, bool>(14)?;
         let buildable = match (source_format.as_deref(), preferred_format.as_deref()) {
             (Some("redumper_raw" | "cue_bin" | "iso"), Some("chd"))
             | (Some("iso"), Some("rvz")) => true,
@@ -2337,11 +2381,8 @@ fn query_playable_gaps_with_force(
             preferred_format,
             row.get::<_, bool>(9)?,
             row.get::<_, bool>(10)?,
-            u32::try_from(row.get::<_, i64>(13)?).unwrap_or(0),
-            u32::try_from(row.get::<_, i64>(14)?).unwrap_or(0),
-            u32::try_from(row.get::<_, i64>(15)?).unwrap_or(0),
-            row.get::<_, String>(18)?,
-            row.get::<_, bool>(19)?,
+            row.get::<_, String>(15)?,
+            row.get::<_, bool>(16)?,
             ArchivedPlayableCarrier {
                 carrier_id: row.get(1)?,
                 dump_id: row.get(2)?,
@@ -2378,9 +2419,6 @@ fn query_playable_gaps_with_force(
         preferred_format,
         allow_unverified,
         retain_intermediate,
-        expected_disc_count,
-        archived_disc_count,
-        verified_disc_count,
         physical_copy_id,
         has_playlist,
         mut carrier,
@@ -2390,6 +2428,21 @@ fn query_playable_gaps_with_force(
         if forced {
             carrier.needs_playable = true;
         }
+        let release_facts = facts.get(&archive_release_id);
+        let expected_disc_count = release_facts
+            .and_then(|release| release.expected_discs)
+            .map_or(0, |expected| u32::try_from(expected.count).unwrap_or(0));
+        // Per-copy coverage, because a build draws its discs from one copy.
+        let coverage = release_facts
+            .map(crate::facts::copy_disc_coverage)
+            .unwrap_or_default();
+        let this_copy = coverage
+            .iter()
+            .find(|copy| copy.physical_copy_id == physical_copy_id);
+        let archived_disc_count =
+            this_copy.map_or(0, |copy| u32::try_from(copy.archived).unwrap_or(0));
+        let verified_disc_count =
+            this_copy.map_or(0, |copy| u32::try_from(copy.verified).unwrap_or(0));
         let needs_playlist = expected_disc_count > 1 && !has_playlist;
         if !forced && !carrier.needs_playable && carrier.catalog_verified && !needs_playlist {
             continue;
@@ -2464,23 +2517,8 @@ fn query_playable_gaps_with_force(
 fn gap_query_sql(scope: &GapScope) -> String {
     // Fragments that differ per scope. Console params: ?1 archive platform,
     // ?2 catalog platform, ?3 console id. Profile params: ?1 profile id.
-    let (
-        candidate_release_filter,
-        candidate_work_filter,
-        work_platform,
-        outer_filter,
-        adopted_scope,
-        playlist_scope,
-        playlist_platform,
-    ) = match scope {
+    let (outer_filter, adopted_scope, playlist_scope, playlist_platform) = match scope {
         GapScope::Console(_) => (
-            "ap.playable_root=(SELECT lr.root_path FROM library_roots lr
-                                     JOIN library_consoles lc ON lc.root_id=lr.id
-                                     WHERE lc.id=?3)",
-            "ap.playable_root=(SELECT lr.root_path FROM library_roots lr
-                                     JOIN library_consoles lc ON lc.root_id=lr.id
-                                     WHERE lc.id=?3)",
-            "lower(r.platform_id)=lower(?2)",
             "lower(ar.platform_id)=lower(?1)
            AND ap.playable_root=(SELECT lr.root_path FROM library_roots lr
                                 JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=?3)",
@@ -2489,9 +2527,6 @@ fn gap_query_sql(scope: &GapScope) -> String {
             "lower(playlist_release.platform_id)=lower(?2)",
         ),
         GapScope::Profile { .. } => (
-            "ap.id=?1",
-            "ap.id=?1",
-            "lower(r.platform_id)=lower(ar.platform_id)",
             "ap.id=?1",
             "EXISTS(SELECT 1 FROM library_roots lr_scope
                                 WHERE lr_scope.id=lc.root_id
@@ -2503,66 +2538,7 @@ fn gap_query_sql(scope: &GapScope) -> String {
         ),
     };
     format!(
-        "WITH candidate_media AS (
-             SELECT ar.id AS archive_release_id,m.id AS media_id,m.disc_number
-             FROM archive_releases ar
-             JOIN archive_profiles ap ON ap.id=ar.profile_id
-             JOIN media m ON m.release_id=ar.catalog_release_id
-             WHERE {candidate_release_filter}
-               AND ar.catalog_release_id IS NOT NULL
-             UNION ALL
-             SELECT ar.id,m.id,m.disc_number
-             FROM archive_releases ar
-             JOIN archive_profiles ap ON ap.id=ar.profile_id
-             CROSS JOIN releases r INDEXED BY idx_releases_natural
-             JOIN media m ON m.release_id=r.id
-             WHERE {candidate_work_filter}
-               AND ar.catalog_release_id IS NULL
-               AND ar.catalog_work_id IS NOT NULL
-               AND r.work_id=ar.catalog_work_id
-               AND {work_platform}
-               AND r.region=ar.region
-         ),
-         release_expected AS (
-             SELECT archive_release_id,
-                    CASE WHEN MAX(disc_number)>0
-                         THEN COUNT(DISTINCT CASE WHEN disc_number>0 THEN disc_number END)
-                         ELSE 1 END AS expected_count,
-                    MAX(disc_number)>0 AS numbered
-             FROM candidate_media
-             GROUP BY archive_release_id
-         ),
-         copy_counts AS (
-             SELECT pc2.id AS physical_copy_id,
-                    COUNT(DISTINCT CASE WHEN de2.id IS NOT NULL THEN
-                         CASE WHEN re2.numbered
-                              THEN CASE WHEN scoped.disc_number>0
-                                        THEN scoped.disc_number END
-                              ELSE c2.id END
-                    END) AS present_count,
-                    COUNT(DISTINCT CASE WHEN ve2.id IS NOT NULL THEN
-                         CASE WHEN re2.numbered
-                              THEN CASE WHEN scoped.disc_number>0
-                                        THEN scoped.disc_number END
-                              ELSE c2.id END
-                    END) AS verified_count
-             FROM physical_copies pc2
-             JOIN release_expected re2 ON re2.archive_release_id=pc2.archive_release_id
-             LEFT JOIN carriers c2 ON c2.physical_copy_id=pc2.id
-             LEFT JOIN candidate_media scoped
-               ON scoped.archive_release_id=pc2.archive_release_id
-              AND scoped.media_id=c2.catalog_media_id
-             LEFT JOIN dump_events de2 ON de2.carrier_id=c2.id
-             LEFT JOIN verification_events ve2
-               ON ve2.representation_id=de2.representation_id
-              AND ve2.kind='catalog' AND ve2.outcome='verified'
-              AND ve2.input_manifest_sha256=de2.manifest_sha256
-              AND (ve2.complete_track_set=1 OR NOT EXISTS(
-                   SELECT 1 FROM media_tracks mt
-                   WHERE mt.media_id=c2.catalog_media_id))
-             GROUP BY pc2.id
-         )
-         SELECT ar.id,c.id,
+        "SELECT ar.id,c.id,
                 (SELECT de.id FROM dump_events de WHERE de.carrier_id=c.id
                  ORDER BY de.captured_at DESC,de.id DESC LIMIT 1),
                 c.catalog_media_id,ar.title,ar.region,c.sequence_number,
@@ -2580,9 +2556,6 @@ fn gap_query_sql(scope: &GapScope) -> String {
                  JOIN dump_events de ON de.representation_id=rf.representation_id
                  WHERE de.id=(SELECT newest.id FROM dump_events newest WHERE newest.carrier_id=c.id
                               ORDER BY newest.captured_at DESC,newest.id DESC LIMIT 1)),
-                COALESCE(re.expected_count,0),
-                COALESCE(cc.present_count,0),
-                COALESCE(cc.verified_count,0),
                 EXISTS(SELECT 1 FROM representations rep
                        WHERE rep.carrier_id=c.id AND rep.role='playable'
                          AND rep.presence_state='present'
@@ -2654,33 +2627,11 @@ fn gap_query_sql(scope: &GapScope) -> String {
          JOIN physical_copies pc ON pc.archive_release_id=ar.id
          JOIN carriers c ON c.physical_copy_id=pc.id
          LEFT JOIN playable_policies pp ON pp.scope_type='carrier' AND pp.scope_id=c.id
-         LEFT JOIN release_expected re ON re.archive_release_id=ar.id
-         LEFT JOIN copy_counts cc ON cc.physical_copy_id=pc.id
          WHERE {outer_filter}
          ORDER BY ar.title COLLATE NOCASE,c.sequence_number,c.id"
     )
 }
 
-fn archive_completeness_for_console(
-    conn: &Connection,
-    console_id: LibraryConsoleId,
-) -> Result<std::collections::HashSet<String>, LibraryError> {
-    let playable_root: String = conn.query_row(
-        "SELECT lr.root_path FROM library_roots lr
-         JOIN library_consoles lc ON lc.root_id=lr.id WHERE lc.id=?1",
-        [console_id.0],
-        |row| row.get(0),
-    )?;
-    Ok(
-        crate::archive::archive_release_completeness(conn, "", &playable_root)
-            .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?
-            .into_iter()
-            .filter_map(|(release_id, (expected, verified))| {
-                (expected > 0 && expected == verified).then_some(release_id)
-            })
-            .collect(),
-    )
-}
 
 fn playable_format(entry_key: &str, game_entry_json: &str) -> String {
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(game_entry_json)

@@ -384,9 +384,16 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     assert_eq!(summary.preservation_count, 1);
     assert_eq!(summary.preservation_present_count, 1);
     assert_eq!(summary.integrity_verified_count, 0);
-    assert_eq!(summary.expected_disc_count, 1);
-    assert_eq!(summary.verified_disc_count, 0);
-    assert!(!summary.archive_complete);
+    // Disc expectations and verification are facts now, counted by the one
+    // rule rather than by a second SQL definition on the summary row.
+    let facts = retro_junk_db::facts::release_facts_by_id(
+        &conn,
+        &retro_junk_db::facts::FactsScope::profile(&root_manifest.profile_id.to_string()),
+    )
+    .unwrap();
+    let release_facts = &facts[&summary.archive_release_id];
+    assert_eq!(release_facts.expected_discs.unwrap().count, 1);
+    assert_eq!(retro_junk_db::facts::verified_disc_count(release_facts), 0);
     let details =
         retro_junk_db::load_archive_collection_details(&conn, &summary.archive_release_id)
             .unwrap()

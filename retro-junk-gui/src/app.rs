@@ -147,7 +147,7 @@ pub struct UiState {
     /// Selected physical item and playable-policy editor in Collection.
     pub collection_editor: Option<crate::state::PhysicalCopyEditor>,
     /// In-memory Collection projection; populated off the render thread.
-    pub collection_summaries: Arc<Vec<retro_junk_db::ArchiveReleaseSummary>>,
+    pub collection_summaries: Arc<Vec<retro_junk_backend::queries::releases::ReleaseOverview>>,
     pub collection_profile_id: Option<String>,
     pub collection_summaries_loading: bool,
     pub collection_editor_loading: Option<String>,

@@ -640,11 +640,12 @@ fn show_multi_selection(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     let archive_states = selected_releases
         .iter()
         .map(|release| {
-            if release.summary.archive_complete {
-                "Complete"
-            } else {
-                "Incomplete"
-            }
+            retro_junk_backend::completion::Completion::for_release(
+                &release.facts,
+                &app.ui_state.expected_assets,
+            )
+            .overall()
+            .short_label()
         })
         .collect::<Vec<_>>();
     if archive_states.len() == count
@@ -796,6 +797,10 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             .clone()
     });
     let summary = &release.summary;
+    let completion = retro_junk_backend::completion::Completion::for_release(
+        &release.facts,
+        &app.ui_state.expected_assets,
+    );
     let mut requested_build = None;
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.label(egui::RichText::new(&summary.title).strong().size(18.0));
@@ -812,22 +817,13 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.add_space(8.0);
         ui.separator();
         ui.label(egui::RichText::new("Archive").strong());
-        let archive_state = if summary.archive_complete {
-            "Complete and catalog-verified"
-        } else if summary.expected_disc_count == 0 {
-            "Not catalog-bound; completeness is unknown"
-        } else {
-            "Incomplete"
-        };
-        detail_row(ui, "State", archive_state);
-        detail_row(
-            ui,
-            "Verified discs",
-            &format!(
-                "{} / {}",
-                summary.verified_disc_count, summary.expected_disc_count
-            ),
-        );
+        detail_row(ui, "State", completion.overall().label());
+        detail_row(ui, "Verified discs", &completion.catalog.describe());
+        detail_row(ui, "Stored masters", &completion.presence.describe());
+        detail_row(ui, "Integrity", &completion.integrity.describe());
+        for attention in &completion.attention {
+            detail_row(ui, "Needs", &describe_attention(attention));
+        }
         detail_row(
             ui,
             "Physical copies",
@@ -1164,6 +1160,28 @@ fn show_archived_media(ui: &mut egui::Ui, assets: &[retro_junk_db::ArchivedRelea
             .maintain_aspect_ratio(true)
             .corner_radius(4.0);
         ui.add(image).on_hover_text(&asset.absolute_path);
+    }
+}
+
+/// Say what an actionable problem is, and name the fix. The variants carry
+/// the fix as data, so no view has to infer one from a status string.
+fn describe_attention(attention: &retro_junk_backend::completion::Attention) -> String {
+    use retro_junk_backend::completion::Attention;
+    match attention {
+        Attention::StaleName { current, canonical, .. } => format!(
+            "\"{current}\" is no longer what the catalog calls this — rename it to \"{canonical}\""
+        ),
+        Attention::PlayableMissing { count } => format!(
+            "{count} built playable(s) are not where their evidence says — adopt them by content \
+             before building again"
+        ),
+        Attention::BindingUnresolved { claimed } => format!(
+            "The archive names catalog entry {claimed}, which this machine does not have — \
+             import the catalog for this platform"
+        ),
+        Attention::MasterMissing { .. } => {
+            "A preservation master the manifest records is missing from disk".to_owned()
+        }
     }
 }
 

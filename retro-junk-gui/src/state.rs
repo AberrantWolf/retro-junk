@@ -186,6 +186,52 @@ impl EntryStatusColor for EntryStatus {
     }
 }
 
+/// What a row's status circle means.
+///
+/// A playable file's status answers "do we know what this file is"; an
+/// archived release's answers "is this release complete". They are different
+/// questions with different vocabularies, and the old table used one enum
+/// for both — which is why an archived release with nothing missing could
+/// still draw the same gray dot as an unidentified file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowStatus {
+    Entry(EntryStatus),
+    Archive(retro_junk_backend::completion::Overall),
+}
+
+impl RowStatus {
+    pub fn color(&self) -> egui::Color32 {
+        use retro_junk_backend::completion::Overall;
+        match self {
+            Self::Entry(status) => (*status).color(),
+            Self::Archive(Overall::Complete) => crate::theme::STATUS_OK,
+            Self::Archive(Overall::Incomplete) => crate::theme::STATUS_INFO,
+            Self::Archive(Overall::NeedsAttention) => crate::theme::STATUS_WARN,
+            Self::Archive(Overall::Unidentified) => egui::Color32::GRAY,
+        }
+    }
+
+    pub fn tooltip(&self) -> String {
+        use retro_junk_backend::completion::Overall;
+        match self {
+            Self::Entry(status) => status.tooltip().to_owned(),
+            Self::Archive(Overall::Complete) => {
+                "Every expected disc is stored and catalog-verified".to_owned()
+            }
+            Self::Archive(Overall::Incomplete) => {
+                "Identified, but something expected is still missing".to_owned()
+            }
+            Self::Archive(Overall::NeedsAttention) => {
+                "Something needs a decision or a repair — open the release for details".to_owned()
+            }
+            Self::Archive(Overall::Unidentified) => {
+                "Nothing hash-verified says what this is — identify it against the catalog"
+                    .to_owned()
+            }
+        }
+    }
+}
+
 // -- Fragile mount prompt --
 
 /// A pending library-root switch awaiting user confirmation because the path
@@ -574,7 +620,7 @@ pub enum AppMessage {
     },
     CollectionSummariesReady {
         profile_id: String,
-        result: Result<Vec<retro_junk_db::ArchiveReleaseSummary>, String>,
+        result: Result<Vec<retro_junk_backend::queries::releases::ReleaseOverview>, String>,
     },
     CollectionEditorReady {
         release_id: String,

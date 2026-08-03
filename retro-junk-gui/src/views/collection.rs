@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use egui_extras::{Column, TableBuilder};
+use retro_junk_backend::completion::{Fraction, FractionLevel};
 
 use crate::app::RetroJunkApp;
 use crate::state::{
@@ -187,48 +188,45 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                             );
                         });
                         row.col(|ui| {
-                            let text = if release.archive_complete {
-                                format!(
-                                    "Complete ({}/{})",
-                                    release.verified_disc_count, release.expected_disc_count
-                                )
-                            } else if release.expected_disc_count > 0 {
-                                format!(
-                                    "Incomplete ({}/{})",
-                                    release.verified_disc_count, release.expected_disc_count
-                                )
-                            } else {
-                                "Unknown (not catalog-bound)".to_owned()
+                            let completion = &release.completion;
+                            let text = match completion.catalog {
+                                Fraction::Known { have, want } => {
+                                    format!("{} ({have}/{want})", completion.overall().short_label())
+                                }
+                                Fraction::Unknown(reason) => {
+                                    format!(
+                                        "{} — {}",
+                                        completion.overall().short_label(),
+                                        reason.explain()
+                                    )
+                                }
                             };
                             paint_cell_text(ui, &text);
                         });
                         row.col(|ui| {
-                            paint_cell_text(
-                                ui,
-                                &format!(
-                                    "{}/{} present",
-                                    release.playable_present_count, release.playable_count
-                                ),
-                            );
+                            paint_cell_text(ui, &release.completion.playable.describe());
                         });
-                        let desired =
-                            if release.desired_playable_count > release.satisfied_playable_count {
-                                "pending"
-                            } else if release.desired_playable_count > 0 {
-                                "satisfied"
-                            } else {
-                                "—"
-                            };
+                        // The shared level vocabulary: nothing asked for and
+                        // nothing measurable both read as "—", because in
+                        // neither case is a playable owed.
+                        let desired = match release.completion.playable.level() {
+                            FractionLevel::NotApplicable | FractionLevel::Unknown(_) => "—",
+                            FractionLevel::Complete => "satisfied",
+                            FractionLevel::Partial | FractionLevel::Empty => "pending",
+                        };
                         row.col(|ui| paint_cell_text(ui, desired));
                         row.col(|ui| {
+                            // Presence and integrity, from the same fold the
+                            // catalog column above uses. The old row printed a
+                            // second, looser catalog-verified count here, which
+                            // is how a release could read "Catalog 2" beside
+                            // "0 verified discs".
                             paint_cell_text(
                                 ui,
                                 &format!(
-                                    "I {} · Repro {} · Catalog {} · RT {}",
-                                    release.integrity_verified_count,
-                                    release.reproduction_verified_count,
-                                    release.catalog_verified_count,
-                                    release.round_trip_verified_count
+                                    "Stored {} · Integrity {}",
+                                    release.completion.presence.describe(),
+                                    release.completion.integrity.describe()
                                 ),
                             );
                         });
@@ -257,12 +255,16 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 }
 
 fn start_collection_summary_load(app: &mut RetroJunkApp, profile_id: String, ctx: &egui::Context) {
+    let expected_assets = app.ui_state.expected_assets.clone();
     let Some(db_path) = app.db_path.clone() else {
         let result = app.catalog_db.as_ref().map_or_else(
             || Err("Catalog database is unavailable".to_owned()),
             |connection| {
-                retro_junk_db::list_archive_release_summaries(connection, &profile_id)
-                    .map_err(|error| error.to_string())
+                retro_junk_backend::queries::releases::release_overviews(
+                    connection,
+                    &profile_id,
+                    &expected_assets,
+                )
             },
         );
         match result {
@@ -281,8 +283,11 @@ fn start_collection_summary_load(app: &mut RetroJunkApp, profile_id: String, ctx
         let result = retro_junk_db::open_database(&db_path)
             .map_err(|error| error.to_string())
             .and_then(|connection| {
-                retro_junk_db::list_archive_release_summaries(&connection, &profile_id)
-                    .map_err(|error| error.to_string())
+                retro_junk_backend::queries::releases::release_overviews(
+                    &connection,
+                    &profile_id,
+                    &expected_assets,
+                )
             });
         let _ = sender.send(AppMessage::CollectionSummariesReady { profile_id, result });
         ctx.request_repaint();
@@ -1284,7 +1289,9 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-fn release_display_title(release: &retro_junk_db::ArchiveReleaseSummary) -> String {
+fn release_display_title(
+    release: &retro_junk_backend::queries::releases::ReleaseOverview,
+) -> String {
     let suffix = match (release.region.is_empty(), release.revision.is_empty()) {
         (true, true) => String::new(),
         (false, true) => format!(" ({})", release.region),
