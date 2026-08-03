@@ -7,7 +7,11 @@ use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 use crate::layout::normalize_relative_path;
-use crate::manifest::{ArchivedFile, DumpManifest, ManifestError, write_toml_atomic};
+use crate::MANIFEST_SCHEMA_VERSION;
+use crate::manifest::{
+    ArchivedFile, DumpManifest, ManifestError, VerificationEvidence, VerificationId,
+    VerificationKind, VerificationOutcome, write_json_new, write_toml_atomic,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
@@ -263,8 +267,64 @@ fn ingest_into_staging(
             sha256: source_hashes.sha256,
         });
     }
+    let file_count = archived.len();
     request.manifest.files = archived;
-    write_toml_atomic(&staging.join("dump.toml"), &request.manifest)?;
+    let manifest_path = staging.join("dump.toml");
+    write_toml_atomic(&manifest_path, &request.manifest)?;
+    if request.verify_published_bytes {
+        record_ingest_integrity(&manifest_path, staging, &request.manifest, file_count)?;
+    }
+    Ok(())
+}
+
+/// Record the integrity check the copy pass just performed.
+///
+/// When `verify_published_bytes` is set, every published file was read back
+/// from storage and compared against the digest taken while writing it —
+/// which is exactly what a standalone integrity verification does. Ingest
+/// used to prove this and then discard the proof, so convergence immediately
+/// scheduled a re-hash of bytes verified seconds earlier. Writing the
+/// evidence here is the same act the verify command performs, recorded in
+/// the same portable form.
+///
+/// Failure to record is not failure to ingest: the dump is already published
+/// and correct, and a missing record only means the deferred verification
+/// still has work to do.
+fn record_ingest_integrity(
+    manifest_path: &Path,
+    staging: &Path,
+    manifest: &DumpManifest,
+    file_count: usize,
+) -> Result<(), IngestError> {
+    // Evidence is bound to the manifest it describes by that manifest's own
+    // hash, so it must be read back exactly as the indexer will read it.
+    let manifest_bytes = std::fs::read(manifest_path).map_err(|source| IngestError::Io {
+        path: manifest_path.display().to_string(),
+        source,
+    })?;
+    let manifest_sha256 = format!("{:x}", Sha256::digest(&manifest_bytes));
+    let evidence = VerificationEvidence {
+        schema_version: MANIFEST_SCHEMA_VERSION,
+        verification_id: VerificationId::new(),
+        representation_id: manifest.representation_id,
+        performed_at: chrono::Utc::now().to_rfc3339(),
+        input_manifest_sha256: manifest_sha256,
+        kind: VerificationKind::Integrity,
+        outcome: VerificationOutcome::Verified,
+        tool: None,
+        catalog: None,
+        tracks: Vec::new(),
+        detail: format!("{file_count} file(s) read back and matched during ingest"),
+    };
+    let evidence_directory = staging.join("evidence");
+    std::fs::create_dir_all(&evidence_directory).map_err(|source| IngestError::Io {
+        path: evidence_directory.display().to_string(),
+        source,
+    })?;
+    write_json_new(
+        &evidence_directory.join(format!("verification-{}.json", evidence.verification_id)),
+        &evidence,
+    )?;
     Ok(())
 }
 

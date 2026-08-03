@@ -444,9 +444,17 @@ pub fn verify_catalog_files(
     progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<IdentifyReport, ArchiveOpsError> {
+    // Every stored master is a candidate. A single-file master matches on
+    // its own digests; a cue/bin master matches on its complete ordered track
+    // set, read from the digests the dump manifest already records. Only a
+    // raw redumper image is excluded, because its tracks do not exist as
+    // files until the image is reproduced — that is what `identify` is for.
     let candidates = all_dumps(snapshot)
         .filter(|(_, _, dump)| only_dump.is_none_or(|id| dump.manifest.dump_id.to_string() == id))
-        .filter(|(_, _, dump)| dump.manifest.files.len() == 1)
+        .filter(|(_, _, dump)| {
+            !dump.manifest.files.is_empty()
+                && dump.manifest.format != RepresentationFormat::RedumperRaw
+        })
         .collect::<Vec<_>>();
     let mut report = IdentifyReport {
         selected: candidates.len(),
@@ -463,8 +471,18 @@ pub fn verify_catalog_files(
         if cancelled.load(Ordering::Relaxed) {
             return Err(ArchiveOpsError::Cancelled);
         }
+        if dump.manifest.files.len() > 1 {
+            verify_track_set(dump, release, carrier, conn, &mut report)?;
+            progress(
+                "Catalog-verifying file masters",
+                ProgressUnit::Items,
+                (index + 1) as u64,
+                total,
+            );
+            continue;
+        }
         let [file] = dump.manifest.files.as_slice() else {
-            unreachable!("filtered to single-file dumps");
+            unreachable!("filtered to non-empty dumps, and multi-file handled above");
         };
         let input_path = dump.directory.join("raw").join(&file.path);
         let raw = retro_junk_archive::hash_file_digests(&input_path, cancelled)
@@ -1377,6 +1395,144 @@ fn append_reproduction_evidence(
                 .to_owned(),
         },
     )
+}
+
+/// Catalog-verify a master that is already stored as separate tracks.
+///
+/// A cue/bin master needs no reproduction: its tracks are files, and the dump
+/// manifest recorded their digests at ingest. Ordering comes from the cue
+/// sheet, which is the only authority on it — sorting by filename puts track
+/// 10 before track 2, and a track set in the wrong order simply fails to
+/// match, which would read as "not in the catalog".
+fn verify_track_set(
+    dump: &IndexedDump,
+    release: &IndexedRelease,
+    carrier: &IndexedCarrier,
+    conn: &retro_junk_db::Connection,
+    report: &mut IdentifyReport,
+) -> Result<(), ArchiveOpsError> {
+    let Some(tracks) = ordered_track_digests(dump) else {
+        report.unmatched += 1;
+        return append_evidence(
+            dump,
+            &VerificationEvidence {
+                schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+                verification_id: VerificationId::new(),
+                representation_id: dump.manifest.representation_id,
+                performed_at: chrono::Utc::now().to_rfc3339(),
+                input_manifest_sha256: dump.manifest_sha256.clone(),
+                kind: VerificationKind::Catalog,
+                outcome: VerificationOutcome::Unmatched,
+                tool: None,
+                catalog: None,
+                tracks: Vec::new(),
+                detail: "Multi-file master has no readable cue sheet to order its tracks"
+                    .to_owned(),
+            },
+        );
+    };
+    let matches = retro_junk_db::match_complete_catalog_media(
+        conn,
+        &release.manifest.platform_id,
+        &tracks,
+    )
+    .map_err(ArchiveOpsError::msg)?;
+    let (outcome, catalog, detail) = match matches.as_slice() {
+        [catalog_match] => {
+            bind_carrier(release, carrier, catalog_match, &tracks)?;
+            report.identified += 1;
+            (
+                VerificationOutcome::Verified,
+                // The whole ordered set matched, so this is a complete match
+                // in the sense the evidence flag means.
+                Some(catalog_evidence(
+                    catalog_match,
+                    &release.manifest.platform_id,
+                    true,
+                )),
+                format!(
+                    "Complete track set matched catalog media {}",
+                    catalog_match.media_id
+                ),
+            )
+        }
+        [] => {
+            report.unmatched += 1;
+            (
+                VerificationOutcome::Unmatched,
+                None,
+                "No catalog medium matched the stored track set".to_owned(),
+            )
+        }
+        _ => {
+            report.ambiguous += 1;
+            (
+                VerificationOutcome::Ambiguous,
+                None,
+                format!("Stored track set matched {} catalog media", matches.len()),
+            )
+        }
+    };
+    let unique = matches.len() == 1;
+    append_evidence(
+        dump,
+        &VerificationEvidence {
+            schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+            verification_id: VerificationId::new(),
+            representation_id: dump.manifest.representation_id,
+            performed_at: chrono::Utc::now().to_rfc3339(),
+            input_manifest_sha256: dump.manifest_sha256.clone(),
+            kind: VerificationKind::Catalog,
+            outcome,
+            tool: None,
+            catalog,
+            tracks: tracks
+                .iter()
+                .map(|track| TrackVerification {
+                    number: track.number,
+                    size: track.size,
+                    expected_sha1: if unique {
+                        track.sha1.clone()
+                    } else {
+                        String::new()
+                    },
+                    actual_sha1: track.sha1.clone(),
+                    matched: unique,
+                })
+                .collect(),
+            detail,
+        },
+    )
+}
+
+/// The dump's tracks in cue order, with the digests recorded at ingest.
+///
+/// Returns nothing when the master has no cue sheet, or when the cue names a
+/// file the dump does not contain — an unordered guess is worse than an
+/// honest "could not tell".
+fn ordered_track_digests(dump: &IndexedDump) -> Option<Vec<retro_junk_archive::TrackDigest>> {
+    let cue = dump
+        .manifest
+        .files
+        .iter()
+        .find(|file| file.path.to_ascii_lowercase().ends_with(".cue"))?;
+    let contents = std::fs::read_to_string(dump.directory.join("raw").join(&cue.path)).ok()?;
+    let sheet = retro_junk_disc::cue::parse_cue(&contents).ok()?;
+    let mut tracks = Vec::new();
+    for entry in &sheet.files {
+        let wanted = entry.filename.to_ascii_lowercase();
+        let file = dump.manifest.files.iter().find(|file| {
+            file.path.to_ascii_lowercase().rsplit('/').next() == Some(wanted.as_str())
+        })?;
+        tracks.push(retro_junk_archive::TrackDigest {
+            number: entry.tracks.first().map_or(0, |track| u32::from(track.number)),
+            size: file.size,
+            crc32: file.crc32.clone(),
+            md5: file.md5.clone(),
+            sha1: file.sha1.clone(),
+        });
+    }
+    (!tracks.is_empty()).then_some(tracks)
 }
 
 fn append_evidence(

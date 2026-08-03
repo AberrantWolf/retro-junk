@@ -385,8 +385,10 @@ fn portable_hierarchy_and_append_only_evidence_are_scannable() {
     )
     .unwrap();
     let verification_id = VerificationId::new();
+    // Ingest already recorded its own read-back verification here, so this
+    // record is appended alongside it.
     let evidence_dir = ingested.dump_directory.join("evidence");
-    std::fs::create_dir(&evidence_dir).unwrap();
+    std::fs::create_dir_all(&evidence_dir).unwrap();
     write_json_new(
         &evidence_dir.join(format!("verification-{verification_id}.json")),
         &VerificationEvidence {
@@ -407,11 +409,13 @@ fn portable_hierarchy_and_append_only_evidence_are_scannable() {
 
     let snapshot = scan_archive(&archive).unwrap();
     assert_eq!(snapshot.releases.len(), 1);
+    // Evidence is append-only: ingest's own record plus the one written
+    // above, both scanned back.
     assert_eq!(
         snapshot.releases[0].physical_copies[0].carriers[0].dumps[0]
             .verifications
             .len(),
-        1
+        2
     );
 }
 

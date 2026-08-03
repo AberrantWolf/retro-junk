@@ -52,6 +52,131 @@ fn ingest(
 
 fn noop_progress(_: &str, _: retro_junk_io::ProgressUnit, _: u64, _: u64) {}
 
+/// A cue/bin master is stored as separate track files, so it needs no
+/// reproduction to be catalog-verified — its digests were recorded at ingest.
+/// This case previously matched neither identification path: `identify` only
+/// looked at raw redumper images, and catalog verification only at
+/// single-file masters, so a multi-track disc could never be bound at all.
+#[test]
+fn a_multi_track_master_is_catalog_verified_from_its_stored_tracks() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    let package = temp.path().join("package");
+    std::fs::create_dir(&package).unwrap();
+    // Track 10 exists so filename order and cue order genuinely disagree:
+    // sorted as text, "(Track 10)" comes before "(Track 2)".
+    let track1 = package.join("Game (Track 1).bin");
+    let track2 = package.join("Game (Track 2).bin");
+    let track10 = package.join("Game (Track 10).bin");
+    std::fs::write(&track1, b"first track payload").unwrap();
+    std::fs::write(&track2, b"second track payload!!").unwrap();
+    std::fs::write(&track10, b"tenth track payload").unwrap();
+    std::fs::write(
+        package.join("Game.cue"),
+        "FILE \"Game (Track 1).bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n\
+         FILE \"Game (Track 2).bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n\
+         FILE \"Game (Track 10).bin\" BINARY\n  TRACK 10 AUDIO\n    INDEX 01 00:00:00\n",
+    )
+    .unwrap();
+    init_archive(&archive);
+    ingest(&archive, &package, "faketest", "Game");
+
+    let conn = retro_junk_db::open_memory().unwrap();
+    conn.execute(
+        "INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform)
+         VALUES('faketest','Fake','Fake','Nobody',1,'cd',1994,'','Psx')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO works(id,canonical_name) VALUES('w','Game')", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('r','w','faketest','usa','Game')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO media(id,release_id,dat_source,dat_name,rom_name) \
+         VALUES('m1','r','redump','Game (USA)','Game (USA).cue')",
+        [],
+    )
+    .unwrap();
+    // The catalog stores the medium as its ordered track set.
+    let cancel = AtomicBool::new(false);
+    for (number, path) in [(1, &track1), (2, &track2), (10, &track10)] {
+        let digests = retro_junk_archive::hash_file_digests(path, &cancel).unwrap();
+        conn.execute(
+            "INSERT INTO media_tracks(media_id,track_number,track_name,file_size,crc32,md5,sha1)
+             VALUES('m1',?1,?2,?3,?4,?5,?6)",
+            (
+                number,
+                format!("Game (USA) (Track {number}).bin"),
+                i64::try_from(digests.size).unwrap(),
+                digests.crc32.as_str(),
+                digests.md5.as_str(),
+                digests.sha1.as_str(),
+            ),
+        )
+        .unwrap();
+    }
+
+    let ctx = crate::create_default_context();
+    let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+    let report = verify_catalog_files(&snapshot, &conn, &ctx, None, &noop_progress, &cancel).unwrap();
+    assert_eq!(report.identified, 1, "multi-track master was not identified");
+
+    let rescanned = retro_junk_archive::scan_archive(&archive).unwrap();
+    let carrier = &rescanned.releases[0].physical_copies[0].carriers[0];
+    assert_eq!(carrier.manifest.catalog_binding.catalog_media_id, "m1");
+    // Verified against the whole ordered set, so it counts as a complete
+    // match rather than "one track happened to line up".
+    let evidence = retro_junk_archive::dump_catalog_evidence(&carrier.dumps[0]).unwrap();
+    assert!(evidence.complete_track_set);
+}
+
+/// Ingest reads every published file back and compares it against the digest
+/// taken while writing. That is an integrity verification, and it must be
+/// recorded as one — otherwise convergence immediately schedules a re-hash of
+/// bytes that were verified seconds earlier.
+#[test]
+fn ingest_records_the_integrity_check_it_performs() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    let source = temp.path().join("game.nes");
+    std::fs::write(&source, b"freshly dumped bytes").unwrap();
+    init_archive(&archive);
+    ingest(&archive, &source, "nes", "Game");
+
+    let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+    let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
+    assert!(
+        retro_junk_archive::dump_has_current_evidence(
+            dump,
+            retro_junk_archive::VerificationKind::Integrity
+        ),
+        "ingest verified the published bytes but recorded no evidence"
+    );
+}
+
+/// The recorded evidence is bound to the manifest it describes. If the dump
+/// is later repaired or re-ingested, the manifest hash changes and the old
+/// record stops counting — exactly as it does for a standalone verification.
+#[test]
+fn ingest_evidence_is_bound_to_the_manifest_it_describes() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    let source = temp.path().join("game.nes");
+    std::fs::write(&source, b"freshly dumped bytes").unwrap();
+    init_archive(&archive);
+    ingest(&archive, &source, "nes", "Game");
+
+    let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+    let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
+    let evidence = &dump.verifications[0].evidence;
+    assert_eq!(evidence.input_manifest_sha256, dump.manifest_sha256);
+    assert_eq!(evidence.representation_id, dump.manifest.representation_id);
+}
+
 #[test]
 fn integrity_verification_appends_evidence_and_flags_corruption() {
     let temp = tempfile::tempdir().unwrap();

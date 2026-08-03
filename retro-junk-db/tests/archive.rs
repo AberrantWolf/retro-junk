@@ -383,7 +383,9 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     .unwrap()[0];
     assert_eq!(summary.preservation_count, 1);
     assert_eq!(summary.preservation_present_count, 1);
-    assert_eq!(summary.integrity_verified_count, 0);
+    // Ingest read the published bytes back and recorded that verification,
+    // so the master arrives integrity-verified without a separate pass.
+    assert_eq!(summary.integrity_verified_count, 1);
     // Disc expectations and verification are facts now, counted by the one
     // rule rather than by a second SQL definition on the summary row.
     let facts = retro_junk_db::facts::release_facts_by_id(
@@ -1488,8 +1490,16 @@ fn stale_or_absent_catalog_evidence_names_nothing() {
     // Rewrite the verification against a manifest hash the dump no longer has.
     let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
     let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
-    let verification_path = dump.verifications[0].path.clone();
-    let mut evidence = dump.verifications[0].evidence.clone();
+    // Specifically the catalog record: ingest also files an integrity one.
+    let catalog_record = dump
+        .verifications
+        .iter()
+        .find(|verification| {
+            verification.evidence.kind == retro_junk_archive::VerificationKind::Catalog
+        })
+        .expect("catalog evidence was written above");
+    let verification_path = catalog_record.path.clone();
+    let mut evidence = catalog_record.evidence.clone();
     evidence.input_manifest_sha256 = "0".repeat(64);
     std::fs::write(
         &verification_path,

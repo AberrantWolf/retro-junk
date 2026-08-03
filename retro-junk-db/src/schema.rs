@@ -846,8 +846,6 @@ fn rebuild_table(
     Ok(())
 }
 
-/// Add columns that a legacy database is missing, skipping the table entirely
-
 /// Run migrations from `from_version` up to `CURRENT_VERSION`.
 #[allow(clippy::too_many_lines)]
 fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
