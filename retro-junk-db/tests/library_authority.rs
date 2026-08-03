@@ -868,7 +868,9 @@ fn clearing_a_region_correction_forgets_it_durably() {
 
     set_entry_region_override(&mut conn, entry, Some("Europe"), Some(collection.path())).unwrap();
     assert_eq!(
-        retro_junk_archive::load_marks(collection.path()).unwrap().len(),
+        retro_junk_archive::load_marks(collection.path())
+            .unwrap()
+            .len(),
         1
     );
     set_entry_region_override(&mut conn, entry, None, Some(collection.path())).unwrap();

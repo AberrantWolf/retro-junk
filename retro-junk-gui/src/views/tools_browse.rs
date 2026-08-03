@@ -1,4 +1,5 @@
 use egui_extras::{Column, TableBuilder};
+use retro_junk_backend::queries::catalog;
 
 use crate::app::RetroJunkApp;
 use crate::state::{BrowseTable, TableViewState};
@@ -9,8 +10,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // Load platforms if not yet loaded (shared with Dashboard)
     if app.ui_state.tools_state.platforms.is_empty() {
         let conn = app.catalog_db.as_ref().unwrap();
-        app.ui_state.tools_state.platforms =
-            retro_junk_db::list_platforms(conn).unwrap_or_default();
+        app.ui_state.tools_state.platforms = retro_junk_backend::queries::catalog::platforms(conn);
     }
 
     // Toolbar: table selector + search + platform filter
@@ -232,47 +232,41 @@ fn run_query(app: &mut RetroJunkApp) {
 
     match browse.active_table {
         BrowseTable::Releases => {
-            ts.total_count = retro_junk_db::count_releases_search(conn, query, pid).unwrap_or(0);
-            browse.releases = retro_junk_db::search_releases_paged(conn, query, pid, limit, offset)
-                .unwrap_or_default();
+            let page = catalog::releases_page(conn, query, pid, limit, offset);
+            ts.total_count = page.total;
+            browse.releases = page.rows;
         }
         BrowseTable::Media => {
-            ts.total_count = retro_junk_db::count_media_search(conn, query, pid).unwrap_or(0);
-            browse.media_rows =
-                retro_junk_db::search_media(conn, query, pid, limit, offset).unwrap_or_default();
+            let page = catalog::media_page(conn, query, pid, limit, offset);
+            ts.total_count = page.total;
+            browse.media_rows = page.rows;
         }
         BrowseTable::Works => {
-            ts.total_count = retro_junk_db::count_works_search(conn, query).unwrap_or(0);
-            // search_works doesn't return release_count; use WorkRow and wrap
-            let work_rows =
-                retro_junk_db::search_works(conn, query, limit, offset).unwrap_or_default();
-            browse.works = work_rows
-                .into_iter()
-                .map(|w| retro_junk_db::WorkWithCount {
-                    id: w.id,
-                    canonical_name: w.canonical_name,
-                    release_count: 0,
-                })
-                .collect();
+            let page = catalog::works_page(conn, query, limit, offset);
+            ts.total_count = page.total;
+            browse.works = page.rows;
         }
         BrowseTable::Companies => {
-            ts.total_count = retro_junk_db::count_companies_search(conn, query).unwrap_or(0);
-            browse.companies =
-                retro_junk_db::search_companies(conn, query, limit, offset).unwrap_or_default();
+            let page = catalog::companies_page(conn, query, limit, offset);
+            ts.total_count = page.total;
+            browse.companies = page.rows;
         }
         BrowseTable::Collection => {
-            ts.total_count = retro_junk_db::count_collection(conn, pid).unwrap_or(0);
-            browse.collection =
-                retro_junk_db::list_collection_paged(conn, pid, limit, offset).unwrap_or_default();
+            let page = catalog::collection_page(conn, pid, limit, offset);
+            ts.total_count = page.total;
+            browse.collection = page.rows;
         }
         BrowseTable::ImportLog => {
-            // Import log doesn't paginate heavily; just load all
-            browse.import_logs =
-                retro_junk_db::list_import_logs(conn, Some(500)).unwrap_or_default();
-            ts.total_count = browse.import_logs.len() as i64;
+            // The import log is short enough to read whole rather than page.
+            let page = catalog::import_log_page(conn, IMPORT_LOG_LIMIT);
+            ts.total_count = page.total;
+            browse.import_logs = page.rows;
         }
     }
 }
+
+/// How many import-log entries the browser reads at once.
+const IMPORT_LOG_LIMIT: u32 = 500;
 
 // ── Table Renderers ─────────────────────────────────────────────────────────
 

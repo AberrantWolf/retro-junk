@@ -3,19 +3,6 @@ use crate::backend;
 use crate::widgets;
 use crate::widgets::icons;
 
-fn same_platform(left: &str, right: &str) -> bool {
-    if left.eq_ignore_ascii_case(right) {
-        return true;
-    }
-    match (
-        left.parse::<retro_junk_core::Platform>(),
-        right.parse::<retro_junk_core::Platform>(),
-    ) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
-}
-
 /// Render the three-pane library view.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
     if app.root_path.is_none() {
@@ -71,17 +58,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         if app.root_path.as_ref() != Some(&profile.playable_root) {
             return None;
         }
-        let current = profile
-            .platform_defaults
-            .iter()
-            .find(|default| default.platform_id.eq_ignore_ascii_case(&platform_id))
-            .or_else(|| {
-                profile
-                    .platform_defaults
-                    .iter()
-                    .find(|default| same_platform(&default.platform_id, &platform_id))
-            })
-            .map(|default| default.policy.format.clone());
+        let current = retro_junk_backend::ops::playable_policy::existing_default(
+            &profile.platform_defaults,
+            &platform_id,
+        )
+        .map(|default| default.policy.format.clone());
         Some((platform_id, platform, current))
     });
     let mut policy_change = None;
@@ -274,64 +255,12 @@ fn set_preferred_playable_format(
     ));
     let sender = app.message_tx.clone();
     let handle = std::thread::spawn(move || {
-        let result = (|| {
-            let policy = format.map(|format| {
-                let mut policy = profile
-                    .platform_defaults
-                    .iter()
-                    .find(|default| default.platform_id.eq_ignore_ascii_case(&platform_id))
-                    .or_else(|| {
-                        profile
-                            .platform_defaults
-                            .iter()
-                            .find(|default| same_platform(&default.platform_id, &platform_id))
-                    })
-                    .map_or(
-                        retro_junk_archive::DesiredPlayablePolicy {
-                            format: format.clone(),
-                            retain_canonical_intermediate: false,
-                            allow_unverified: false,
-                            options: std::collections::BTreeMap::new(),
-                        },
-                        |default| default.policy.clone(),
-                    );
-                policy.format = format;
-                policy
-            });
-            let manifest = retro_junk_archive::set_platform_playable_default(
-                &profile.archive_root,
-                &platform_id,
-                policy,
-            )
-            .map_err(|error| error.to_string())?;
-            let projected_policy = manifest
-                .platform_defaults
-                .iter()
-                .find(|default| default.platform_id.eq_ignore_ascii_case(&platform_id))
-                .or_else(|| {
-                    manifest
-                        .platform_defaults
-                        .iter()
-                        .find(|default| same_platform(&default.platform_id, &platform_id))
-                })
-                .map(|default| &default.policy);
-            let (_, manifest_sha256) = retro_junk_archive::sha256_file(
-                &retro_junk_archive::root_manifest_path(&profile.archive_root),
-                &std::sync::atomic::AtomicBool::new(false),
-            )
-            .map_err(|error| error.to_string())?;
-            let mut connection =
-                retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
-            retro_junk_db::update_projected_platform_policy(
-                &mut connection,
-                &profile.profile_id.to_string(),
-                &platform_id,
-                projected_policy,
-                &manifest_sha256,
-            )
-            .map_err(|error| error.to_string())?;
-            Ok(manifest)
-        })();
+        let result = retro_junk_backend::ops::playable_policy::set_preferred_format(
+            &profile,
+            &db_path,
+            &platform_id,
+            format,
+        );
         let _ = sender.send(crate::state::AppMessage::PlayablePolicyUpdated { op_id, result });
     });
     app.op_threads.insert(op_id, handle);

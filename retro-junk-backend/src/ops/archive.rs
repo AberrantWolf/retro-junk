@@ -56,6 +56,45 @@ pub fn refresh_archive(
     })
 }
 
+/// Bring the projection back in step with the archive after something wrote
+/// to it: rescan the archive, pull any artwork that already sits beside the
+/// playable files into the archive, and reconcile.
+///
+/// Adopting artwork adds files to the archive, so the snapshot taken before it
+/// is already out of date — hence the second scan before reconciling.
+///
+/// The caller is expected to already hold the archive lock if it needs the
+/// whole surrounding operation serialized; this function does not take it.
+pub fn reindex_after_change(
+    profile: &CollectionProfile,
+    db_path: &Path,
+    media_dir_setting: &str,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<(), String> {
+    let mut snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+        .map_err(|error| error.to_string())?;
+    let mut connection = crate::queries::open_catalog(db_path)?;
+    let adopted = super::assets::adopt_playable_artwork(
+        &connection,
+        &snapshot,
+        profile,
+        media_dir_setting,
+        cancel,
+    )?;
+    if adopted > 0 {
+        log::info!("Adopted {adopted} existing playable artwork file(s) into the archive");
+        snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
+            .map_err(|error| error.to_string())?;
+    }
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut connection,
+        &snapshot,
+        &profile.playable_root,
+        &profile.workspace_root,
+    )
+    .map_err(|error| error.to_string())
+}
+
 /// Resolve archived carriers against the current catalog and persist exact
 /// carrier identities. Compatible carriers from different mastering records
 /// remain grouped under a work-level parent.

@@ -132,16 +132,11 @@ fn run_duplicate_cleanup(app: &mut RetroJunkApp, apply: bool) {
         );
         return;
     };
-    let result = retro_junk_db::open_database(&path)
-        .map_err(|error| error.to_string())
-        .and_then(|connection| {
-            if apply {
-                retro_junk_db::deduplicate_catalog(&connection, None)
-            } else {
-                retro_junk_db::analyze_catalog_duplicates(&connection, None)
-            }
-            .map_err(|error| error.to_string())
-        });
+    let result = if apply {
+        retro_junk_backend::ops::catalog_ops::deduplicate(&path)
+    } else {
+        retro_junk_backend::ops::catalog_ops::analyze_duplicates(&path)
+    };
     match result {
         Ok(report) => app.ui_state.tools_state.data.deduplication_report = Some(report),
         Err(error) => app.push_error("Catalog cleanup", error),

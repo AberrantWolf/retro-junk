@@ -1124,7 +1124,8 @@ pub fn set_entry_region_override(
             None | Some("") => crate::derivation::MarkDecision::Cleared,
             Some(region) => crate::derivation::MarkDecision::RegionOverride { region },
         };
-        if let Err(error) = crate::derivation::record_entry_mark(conn, id, collection_root, decision)
+        if let Err(error) =
+            crate::derivation::record_entry_mark(conn, id, collection_root, decision)
         {
             log::warn!("Could not record the durable region mark: {error}");
         }

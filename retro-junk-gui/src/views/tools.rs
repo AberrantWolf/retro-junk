@@ -1,7 +1,7 @@
 use egui_extras::{Column, TableBuilder};
 
 use crate::app::RetroJunkApp;
-use crate::state::{DISAGREEMENT_FIELDS, DisagreementContext, ToolsState, ToolsTab};
+use crate::state::{DISAGREEMENT_FIELDS, ToolsState, ToolsTab};
 
 /// Render the Tools (catalog management) view.
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -77,17 +77,14 @@ fn show_no_database(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 fn refresh_data(state: &mut ToolsState, conn: &retro_junk_db::Connection) {
     state.needs_refresh = false;
 
-    state.stats = retro_junk_db::catalog_stats(conn).ok();
-    state.platforms = retro_junk_db::list_platforms(conn).unwrap_or_default();
-
-    let filter = retro_junk_db::DisagreementFilter {
-        platform_id: state.filter_platform.as_deref(),
-        field: state.filter_field.as_deref(),
-        limit: Some(500),
-        ..Default::default()
-    };
-    state.disagreements =
-        retro_junk_db::list_unresolved_disagreements(conn, &filter).unwrap_or_default();
+    let dashboard = retro_junk_backend::queries::catalog::dashboard(
+        conn,
+        state.filter_platform.as_deref(),
+        state.filter_field.as_deref(),
+    );
+    state.stats = dashboard.stats;
+    state.platforms = dashboard.platforms;
+    state.disagreements = dashboard.disagreements;
 
     // Clamp or clear selection
     if let Some(idx) = state.selected_idx
@@ -369,45 +366,10 @@ fn show_disagreement_table(ui: &mut egui::Ui, state: &ToolsState) -> Option<usiz
 
 /// Load entity context (title + platform) for the selected disagreement.
 fn load_disagreement_context(state: &mut ToolsState, conn: &retro_junk_db::Connection, idx: usize) {
-    let d = &state.disagreements[idx];
-
-    let (entity_title, platform_id) = match d.entity_type.as_str() {
-        "release" => {
-            if let Ok(Some(rel)) = retro_junk_db::get_release_by_id(conn, &d.entity_id) {
-                (rel.title, rel.platform_id)
-            } else {
-                (d.entity_id.clone(), String::new())
-            }
-        }
-        "media" => {
-            if let Ok(Some(media)) = retro_junk_db::get_media_by_id(conn, &d.entity_id) {
-                if let Ok(Some(rel)) = retro_junk_db::get_release_by_id(conn, &media.release_id) {
-                    (rel.title, rel.platform_id)
-                } else if media.dat_name.is_empty() {
-                    (d.entity_id.clone(), String::new())
-                } else {
-                    (media.dat_name, String::new())
-                }
-            } else {
-                (d.entity_id.clone(), String::new())
-            }
-        }
-        _ => (d.entity_id.clone(), String::new()),
-    };
-
-    let platform_name = if platform_id.is_empty() {
-        String::new()
-    } else {
-        retro_junk_db::get_platform_display_name(conn, &platform_id)
-            .ok()
-            .flatten()
-            .unwrap_or(platform_id)
-    };
-
-    state.selected_context = Some(DisagreementContext {
-        entity_title,
-        platform_name,
-    });
+    state.selected_context = Some(retro_junk_backend::queries::catalog::disagreement_context(
+        conn,
+        &state.disagreements[idx],
+    ));
 }
 
 fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -509,22 +471,17 @@ fn show_resolver(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     // Apply resolution
     if let Some((resolution_str, chosen_value)) = resolution {
         let conn = app.catalog_db.as_ref().unwrap();
-
-        // Step 1: Apply the value to the entity
-        if let Some(value) = chosen_value
-            && let Err(e) = retro_junk_db::apply_disagreement_resolution(
-                conn,
-                &entity_type,
-                &entity_id,
-                &field,
-                value,
-            )
-        {
-            log::warn!("Failed to apply resolution: {e}");
-        }
-
-        // Step 2: Mark disagreement as resolved
-        if let Err(e) = retro_junk_db::resolve_disagreement(conn, disagreement_id, resolution_str) {
+        if let Err(e) = retro_junk_backend::ops::catalog_ops::resolve_disagreement(
+            conn,
+            &retro_junk_backend::ops::catalog_ops::DisagreementResolution {
+                disagreement_id,
+                entity_type: &entity_type,
+                entity_id: &entity_id,
+                field: &field,
+                resolution: resolution_str,
+                chosen_value,
+            },
+        ) {
             log::warn!("Failed to resolve disagreement: {e}");
         }
 

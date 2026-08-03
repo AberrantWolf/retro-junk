@@ -283,15 +283,13 @@ fn start_collection_summary_load(app: &mut RetroJunkApp, profile_id: String, ctx
     let sender = app.message_tx.clone();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let result = retro_junk_db::open_database(&db_path)
-            .map_err(|error| error.to_string())
-            .and_then(|connection| {
-                retro_junk_backend::queries::releases::release_overviews(
-                    &connection,
-                    &profile_id,
-                    &expected_assets,
-                )
-            });
+        let result = retro_junk_backend::queries::open_catalog(&db_path).and_then(|connection| {
+            retro_junk_backend::queries::releases::release_overviews(
+                &connection,
+                &profile_id,
+                &expected_assets,
+            )
+        });
         let _ = sender.send(AppMessage::CollectionSummariesReady { profile_id, result });
         ctx.request_repaint();
     });
@@ -322,8 +320,7 @@ fn start_collection_editor_load(
     let sender = app.message_tx.clone();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let result = retro_junk_db::open_database(&db_path)
-            .map_err(|error| error.to_string())
+        let result = retro_junk_backend::queries::open_catalog(&db_path)
             .and_then(|connection| load_editor(&connection, &archive_root, &release_id));
         let _ = sender.send(AppMessage::CollectionEditorReady { release_id, result });
         ctx.request_repaint();
@@ -335,9 +332,9 @@ fn load_editor(
     root: &std::path::Path,
     release_id: &str,
 ) -> Result<PhysicalCopyEditor, String> {
-    let details = retro_junk_db::load_archive_collection_details(connection, release_id)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "release is no longer present in the archive index".to_owned())?;
+    let details =
+        retro_junk_backend::queries::collection::physical_copy_details(connection, release_id)?
+            .ok_or_else(|| "release is no longer present in the archive index".to_owned())?;
     Ok(PhysicalCopyEditor {
         archive_release_id: details.archive_release_id,
         platform_id: details.platform_id,
@@ -720,8 +717,7 @@ fn start_dump_import_planning(
     };
     let handle = std::thread::spawn(move || {
         let result = (|| {
-            let catalog =
-                retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
+            let catalog = retro_junk_backend::queries::open_catalog(&db_path)?;
             retro_junk_archive_import::plan_import(
                 request,
                 context.as_ref(),
@@ -827,31 +823,12 @@ fn start_dump_import(
                 });
                 let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
                     .map_err(|error| error.to_string())?;
-                let mut snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
-                    .map_err(|error| error.to_string())?;
-                let mut connection =
-                    retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
-                let adopted = crate::backend::assets::adopt_playable_artwork(
-                    &connection,
-                    &snapshot,
+                retro_junk_backend::ops::archive::reindex_after_change(
                     &profile,
+                    &db_path,
                     &media_dir_setting,
                     &cancel,
                 )?;
-                if adopted > 0 {
-                    log::info!(
-                        "Adopted {adopted} existing playable artwork file(s) into the archive"
-                    );
-                    snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
-                        .map_err(|error| error.to_string())?;
-                }
-                retro_junk_db::reconcile_archive_snapshot(
-                    &mut connection,
-                    &snapshot,
-                    &profile.playable_root,
-                    &profile.workspace_root,
-                )
-                .map_err(|error| error.to_string())?;
             }
             Ok(result)
         });
@@ -1394,32 +1371,13 @@ fn start_archive_ingest(
                 },
             )
             .map_err(|error| error.to_string())?;
-            let mut snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
-                .map_err(|error| error.to_string())?;
             if let Some(db_path) = db_path {
-                let mut connection =
-                    retro_junk_db::open_database(&db_path).map_err(|error| error.to_string())?;
-                let adopted = crate::backend::assets::adopt_playable_artwork(
-                    &connection,
-                    &snapshot,
+                retro_junk_backend::ops::archive::reindex_after_change(
                     &profile,
+                    &db_path,
                     &media_dir_setting,
                     &cancel,
                 )?;
-                if adopted > 0 {
-                    log::info!(
-                        "Adopted {adopted} existing playable artwork file(s) into the archive"
-                    );
-                    snapshot = retro_junk_archive::scan_archive(&profile.archive_root)
-                        .map_err(|error| error.to_string())?;
-                }
-                retro_junk_db::reconcile_archive_snapshot(
-                    &mut connection,
-                    &snapshot,
-                    &profile.playable_root,
-                    &profile.workspace_root,
-                )
-                .map_err(|error| error.to_string())?;
             }
             Ok(format!(
                 "Archived dump {} from {}; the source was retained",

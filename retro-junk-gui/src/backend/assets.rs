@@ -17,8 +17,6 @@ use crate::app::RetroJunkApp;
 use crate::backend::worker::{forward_phases, spawn_background_op};
 use crate::state::{self, AppMessage, OperationKind, ProgressDisplay};
 
-pub use retro_junk_backend::ops::assets::adopt_playable_artwork;
-
 /// Load media files for an entry on a background thread.
 ///
 /// The detail panel loads them through egui's file loader, so this path never

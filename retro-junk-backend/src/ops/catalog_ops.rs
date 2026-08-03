@@ -516,3 +516,59 @@ pub fn cache_lists() -> (
         retro_junk_dat::gdb_cache::list().unwrap_or_default(),
     )
 }
+
+/// Answers: "which catalog media rows are byte-identical duplicates?" without
+/// changing anything. Read-only, but it walks the whole catalog, so it belongs
+/// off a render thread.
+pub fn analyze_duplicates(
+    db_path: &Path,
+) -> Result<retro_junk_db::CatalogDeduplicationReport, String> {
+    let connection = crate::queries::open_catalog(db_path)?;
+    retro_junk_db::analyze_catalog_duplicates(&connection, None).map_err(|e| e.to_string())
+}
+
+/// Collapse byte-identical duplicate media onto one canonical row, repointing
+/// everything that referenced a duplicate. Returns the same report shape as
+/// [`analyze_duplicates`], describing what was actually merged.
+pub fn deduplicate(db_path: &Path) -> Result<retro_junk_db::CatalogDeduplicationReport, String> {
+    let connection = crate::queries::open_catalog(db_path)?;
+    retro_junk_db::deduplicate_catalog(&connection, None).map_err(|e| e.to_string())
+}
+
+/// One reviewer decision about a disagreement between catalog sources.
+pub struct DisagreementResolution<'a> {
+    pub disagreement_id: retro_junk_catalog::types::DisagreementId,
+    pub entity_type: &'a str,
+    pub entity_id: &'a str,
+    pub field: &'a str,
+    /// Which side was accepted, recorded verbatim on the disagreement row.
+    pub resolution: &'a str,
+    /// The value to write onto the entity. `None` accepts an empty value,
+    /// which leaves the entity alone and only records the decision.
+    pub chosen_value: Option<&'a str>,
+}
+
+/// Record a reviewer's decision: write the accepted value onto the entity,
+/// then mark the disagreement resolved.
+///
+/// A failure to write the value is logged but does not stop the disagreement
+/// from being closed — the decision itself is worth keeping, and re-showing a
+/// row the user already judged just makes them judge it again.
+pub fn resolve_disagreement(
+    conn: &retro_junk_db::Connection,
+    resolution: &DisagreementResolution<'_>,
+) -> Result<(), String> {
+    if let Some(value) = resolution.chosen_value
+        && let Err(error) = retro_junk_db::apply_disagreement_resolution(
+            conn,
+            resolution.entity_type,
+            resolution.entity_id,
+            resolution.field,
+            value,
+        )
+    {
+        log::warn!("Failed to apply resolution: {error}");
+    }
+    retro_junk_db::resolve_disagreement(conn, resolution.disagreement_id, resolution.resolution)
+        .map_err(|error| error.to_string())
+}

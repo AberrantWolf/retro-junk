@@ -3,11 +3,11 @@
 // keep working. Nothing else remains: this file used to hold the one-time
 // migration from the pre-SQLite JSON cache, which described state that is
 // rebuilt from disk by any scan.
-#[cfg(test)]
-pub(crate) use retro_junk_backend::library::{entry_to_row, row_to_entry};
 pub(crate) use retro_junk_backend::library::{
     detail_to_entry, entry_analysis_update, entry_hash_update,
 };
+#[cfg(test)]
+pub(crate) use retro_junk_backend::library::{entry_to_row, row_to_entry};
 
 #[cfg(test)]
 mod tests {

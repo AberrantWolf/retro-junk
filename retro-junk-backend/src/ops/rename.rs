@@ -767,3 +767,49 @@ fn sniff_detected_extension(
         .cloned()
         .unwrap_or_default()
 }
+
+/// Carry each renamed entry's stored identity across to its new path.
+///
+/// Library entries are keyed by path, so a rename plus a rescan looks exactly
+/// like "one file vanished, another appeared" — and the new row starts with no
+/// digests, no DAT match, and no identification. A rename cannot change
+/// content, so the identity follows the file instead of being re-derived.
+///
+/// Best-effort: a row that cannot be re-keyed (its destination already exists,
+/// or the path is outside the console) simply gets re-read by the rescan, which
+/// is the old behaviour.
+pub fn carry_identity_across_renames(
+    conn: &retro_junk_db::Connection,
+    console_id: retro_junk_db::LibraryConsoleId,
+    console_folder: &Path,
+    results: &[RenameResult],
+) {
+    let key = |path: &Path, directory: bool| {
+        let relative = path.strip_prefix(console_folder).ok()?;
+        let key = if directory {
+            retro_junk_db::set_source_key(relative)
+        } else {
+            retro_junk_db::file_source_key(relative)
+        };
+        key.ok().map(|value| value.as_str().to_owned())
+    };
+    for result in results {
+        let (from, to, directory) = match &result.outcome {
+            RenameOutcome::Renamed { source, target } => (source, target, false),
+            RenameOutcome::M3uRenamed {
+                source_folder,
+                target_folder,
+                ..
+            } => (source_folder, target_folder, true),
+            _ => continue,
+        };
+        let (Some(old_key), Some(new_key)) = (key(from, directory), key(to, directory)) else {
+            continue;
+        };
+        match retro_junk_db::rekey_library_entry(conn, console_id, &old_key, &new_key) {
+            Ok(true) => log::debug!("Carried library identity {old_key} -> {new_key}"),
+            Ok(false) => {}
+            Err(error) => log::warn!("Could not carry library identity for {old_key}: {error}"),
+        }
+    }
+}

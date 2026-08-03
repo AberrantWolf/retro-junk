@@ -1,0 +1,27 @@
+//! Questions about the physical collection: what a frontend needs to show and
+//! edit one archived release's copy and carrier.
+
+use retro_junk_db::{ArchiveCollectionDetails, Connection};
+
+/// Answers: "what is recorded about this archived release's physical copy?"
+///
+/// A release that has left the archive index answers `Ok(None)` — the caller
+/// decides whether that is an error or simply a stale click.
+pub fn physical_copy_details(
+    conn: &Connection,
+    release_id: &str,
+) -> Result<Option<ArchiveCollectionDetails>, String> {
+    retro_junk_db::load_archive_collection_details(conn, release_id)
+        .map_err(|error| error.to_string())
+}
+
+/// Answers: "when was this profile's archive projection last committed?"
+///
+/// `Ok(None)` means the projection has never been built, so a caller should
+/// build it before painting from it.
+pub fn projection_indexed_at(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<Option<String>, String> {
+    retro_junk_db::archive_profile_indexed_at(conn, profile_id).map_err(|error| error.to_string())
+}

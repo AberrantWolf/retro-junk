@@ -1,6 +1,10 @@
 use crate::app::RetroJunkApp;
 use crate::state::TagDialog;
 
+/// How many catalog works the manual-tag search offers at once — enough to
+/// find the right one, short enough to scan by eye.
+const MOD_SEARCH_RESULT_LIMIT: u32 = 20;
+
 /// Whether the row a dialog is about has been hashed yet.
 ///
 /// Content is the only identity a mod or a homebrew title has — nothing else
@@ -176,16 +180,14 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                         let tx = app.message_tx.clone();
                         let repaint = ctx.clone();
                         std::thread::spawn(move || {
-                            let result = retro_junk_db::open_database(&db_path)
-                                .map_err(|error| error.to_string())
+                            let result = retro_junk_backend::queries::open_catalog(&db_path)
                                 .and_then(|connection| {
-                                    retro_junk_db::search_works_for_platform(
+                                    retro_junk_backend::queries::catalog::works_for_platform(
                                         &connection,
                                         &requested_query,
                                         &requested_platform,
-                                        20,
+                                        MOD_SEARCH_RESULT_LIMIT,
                                     )
-                                    .map_err(|error| error.to_string())
                                 });
                             let _ = tx.send(crate::state::AppMessage::ModSearchResults {
                                 query: requested_query,
