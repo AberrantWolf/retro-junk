@@ -2395,3 +2395,142 @@ fn a_mod_waits_for_the_parent_dat_instead_of_inventing_one() {
         "the mod hangs off the work it was derived from"
     );
 }
+
+/// A DAT that retitles a game mints new catalog ids on the next import, and
+/// every archive manifest bound to the old ids is orphaned. The carrier
+/// recovers on its own by re-resolving from the digests the archive recorded;
+/// the release above it must recover too, or a fully identified set of discs
+/// still reads as unidentified with no way to say why.
+#[test]
+fn a_retitled_catalog_rebinds_the_release_from_its_carriers_content() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    let source = temp.path().join("game.nes");
+    std::fs::write(&source, b"cartridge bytes").unwrap();
+    let digests = retro_junk_archive::hash_file_digests(&source, &AtomicBool::new(false)).unwrap();
+    let ingested = retro_junk_archive::ingest_new_carrier_dump(
+        &root,
+        &source,
+        retro_junk_archive::NewCarrierDump {
+            platform_id: "nes".to_owned(),
+            title: "Game".to_owned(),
+            region: "usa".to_owned(),
+            revision: String::new(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: String::new(),
+            sequence_number: 0,
+            carrier_label: String::new(),
+            carrier_kind: retro_junk_archive::CarrierKind::Cartridge,
+            format: retro_junk_archive::RepresentationFormat::Rom,
+            // Bound against catalog ids minted from the old title.
+            catalog_binding: retro_junk_archive::CatalogBinding {
+                catalog_work_id: "nes:game".to_owned(),
+                catalog_release_id: "nes:game:nes:usa".to_owned(),
+                catalog_media_id: "nes:game:nes:usa:1".to_owned(),
+                source: "no-intro".to_owned(),
+                dat_name: "Game".to_owned(),
+                ..Default::default()
+            },
+            source_package: retro_junk_archive::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
+            physical_copy_id: None,
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    // The archive's own evidence records that these bytes matched the catalog.
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
+    let verification_id = retro_junk_archive::VerificationId::new();
+    let evidence_dir = dump.directory.join("evidence");
+    std::fs::create_dir_all(&evidence_dir).unwrap();
+    retro_junk_archive::write_json_new(
+        &evidence_dir.join(format!("verification-{verification_id}.json")),
+        &retro_junk_archive::VerificationEvidence {
+            schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+            verification_id,
+            representation_id: dump.manifest.representation_id,
+            performed_at: "2026-01-01T00:00:00Z".to_owned(),
+            input_manifest_sha256: dump.manifest_sha256.clone(),
+            kind: retro_junk_archive::VerificationKind::Catalog,
+            outcome: retro_junk_archive::VerificationOutcome::Verified,
+            tool: None,
+            catalog: Some(retro_junk_archive::CatalogEvidence {
+                source: "no-intro".to_owned(),
+                system: "nes".to_owned(),
+                version: "1".to_owned(),
+                game: "Game".to_owned(),
+                complete_track_set: true,
+            }),
+            tracks: Vec::new(),
+            detail: "matched".to_owned(),
+        },
+    )
+    .unwrap();
+
+    // The re-imported catalog holds the same bytes under new, retitled ids.
+    let mut conn = open_memory().unwrap();
+    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes')", []).unwrap();
+    conn.execute(
+        "INSERT INTO works(id,canonical_name) VALUES('nes:game-the-adventure','Game: The Adventure')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO releases(id,work_id,platform_id,region,title)
+         VALUES('nes:game-the-adventure:nes:usa','nes:game-the-adventure','nes','usa','Game: The Adventure')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO media(id,release_id,dat_source,dat_name,file_size,crc32,sha1,md5)
+         VALUES('nes:game-the-adventure:nes:usa:1','nes:game-the-adventure:nes:usa','no-intro','Game: The Adventure',?1,?2,?3,?4)",
+        rusqlite::params![digests.size, digests.crc32, digests.sha1, digests.md5],
+    )
+    .unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &temp.path().join("playable"),
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let archive_release_id = ingested.release.archive_release_id.to_string();
+    let (release_id, work_id, state): (Option<String>, Option<String>, String) = conn
+        .query_row(
+            "SELECT catalog_release_id,catalog_work_id,binding_state
+             FROM archive_releases WHERE id=?1",
+            [archive_release_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        release_id.as_deref(),
+        Some("nes:game-the-adventure:nes:usa"),
+        "the release did not recover the identity its carrier proved by content"
+    );
+    assert_eq!(work_id.as_deref(), Some("nes:game-the-adventure"));
+    assert_eq!(state, "rederived");
+
+    // And the claim the manifest still makes is preserved, so the difference
+    // between "recovered" and "never identified" stays visible.
+    let claimed: String = conn
+        .query_row(
+            "SELECT claimed_release_id FROM archive_releases WHERE id=?1",
+            [archive_release_id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(claimed, "nes:game:nes:usa");
+}

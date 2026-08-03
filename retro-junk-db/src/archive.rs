@@ -1356,6 +1356,7 @@ pub fn reconcile_archive_snapshot(
         }
     }
 
+    rebind_releases_from_resolved_carriers(&tx)?;
     rebuild_library_entry_bindings(&tx)?;
     apply_archive_derivations(&tx, ArchiveEvidenceScope::All)?;
     // The user's own decisions, kept beside the collection because this
@@ -1382,6 +1383,74 @@ pub fn reconcile_archive_snapshot(
 // Three binding rules in one place, deliberately: what makes a scanned file an
 // archived carrier's own copy should be readable end to end.
 #[allow(clippy::too_many_lines)]
+/// Give a release the catalog identity its own carriers proved by content.
+///
+/// Catalog ids are derived from titles, so re-importing a DAT that retitled a
+/// game mints new ids and orphans every manifest bound to the old ones. A
+/// carrier recovers on its own — it re-resolves from the digests the archive
+/// recorded — but the release row above it kept pointing at an id that no
+/// longer exists, so a fully identified set of discs still read as
+/// unidentified.
+///
+/// This closes that gap the same way: the carriers agreed, by content, on
+/// which catalog media they are; the release those media belong to is the
+/// release. Only unanimity binds a release id — carriers from different
+/// mastering records legitimately disagree, and that case stays at the work
+/// level, exactly as `bind_carrier_to_catalog` decides it when the binding is
+/// first made.
+fn rebind_releases_from_resolved_carriers(conn: &Connection) -> Result<(), OperationError> {
+    let mut statement = conn.prepare(
+        "SELECT ar.id,
+                COUNT(DISTINCT m.release_id),
+                MIN(m.release_id),
+                COUNT(DISTINCT r.work_id),
+                MIN(r.work_id)
+         FROM archive_releases ar
+         JOIN physical_copies pc ON pc.archive_release_id=ar.id
+         JOIN carriers c ON c.physical_copy_id=pc.id
+         JOIN media m ON m.id=c.catalog_media_id
+         JOIN releases r ON r.id=m.release_id
+         WHERE ar.catalog_release_id IS NULL
+         GROUP BY ar.id",
+    )?;
+    let rederived = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for (archive_release_id, release_count, release_id, work_count, work_id) in rederived {
+        // One work, one release: the carriers describe a single mastering.
+        if release_count == 1 && work_count == 1 {
+            conn.execute(
+                "UPDATE archive_releases
+                 SET catalog_release_id=?1,catalog_work_id=?2,binding_state='rederived'
+                 WHERE id=?3",
+                params![release_id, work_id, archive_release_id],
+            )?;
+            log::info!(
+                "Re-resolved archive release {archive_release_id} to catalog release {} from its carriers' content",
+                release_id.unwrap_or_default()
+            );
+        } else if work_count == 1 {
+            // Mixed masterings of one game: work-level is the honest answer.
+            conn.execute(
+                "UPDATE archive_releases
+                 SET catalog_work_id=?1,binding_state='carrier_resolved'
+                 WHERE id=?2 AND catalog_work_id IS NULL",
+                params![work_id, archive_release_id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn rebuild_library_entry_bindings(conn: &Connection) -> Result<(), OperationError> {
     conn.execute(
         "DELETE FROM library_entry_media_bindings
