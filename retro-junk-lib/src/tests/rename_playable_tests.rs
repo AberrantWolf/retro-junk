@@ -146,6 +146,88 @@ fn the_archive_records_where_the_file_went_without_losing_where_it_was() {
     );
 }
 
+/// A rename must stay inside the build lineage it found.
+///
+/// Lineage is `(parent representation, format)`, and a representation row is
+/// the current state of one file. Writing the *dump's* format instead of the
+/// playable's started a second lineage, so both the old and the new record
+/// stayed live and each projected a representation row under the same id —
+/// which the projection rejects with a unique-constraint failure, taking the
+/// whole reconcile down with it.
+#[test]
+fn renaming_supersedes_the_old_record_instead_of_starting_a_second_lineage() {
+    let temp = tempfile::tempdir().unwrap();
+    let (archive, playable_root, representation_id) =
+        archive_with_playable(temp.path(), "Game (USA) (Track 1).chd");
+    let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+    let before = retro_junk_archive::current_build_evidence(
+        &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0],
+    );
+    assert_eq!(before.len(), 1);
+    let original_format = before[0].format.clone();
+
+    rename_playable(&RenamePlayableRequest {
+        snapshot: &snapshot,
+        playable_root: &playable_root,
+        representation_id: &representation_id,
+        canonical_file_name: "Game (USA).chd",
+        media_root: None,
+    })
+    .unwrap();
+
+    let rescanned = retro_junk_archive::scan_archive(&archive).unwrap();
+    let dump = &rescanned.releases[0].physical_copies[0].carriers[0].dumps[0];
+    let current = retro_junk_archive::current_build_evidence(dump);
+    assert_eq!(
+        current.len(),
+        1,
+        "the rename left two live records, which project two rows under one id"
+    );
+    assert_eq!(current[0].relative_output_path, "psx/Game (USA).chd");
+    // The playable's own format, not the preservation master's.
+    assert_eq!(current[0].format, original_format);
+}
+
+/// A rename says nothing about the bytes, so what was verified about them
+/// must survive it. Re-deriving these downgraded a playable that had been
+/// proven to reproduce its master.
+#[test]
+fn renaming_preserves_what_was_verified_about_the_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let (archive, playable_root, representation_id) =
+        archive_with_playable(temp.path(), "Game (USA) (Track 1).chd");
+    // Mark the existing build as fully verified, as a real one would be.
+    let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+    let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
+    let mut verified = dump.builds[0].evidence.clone();
+    verified.catalog_verified = true;
+    verified.round_trip_verified = true;
+    verified.build_id = retro_junk_archive::BuildId::new();
+    verified.performed_at = "2026-02-01T00:00:00Z".to_owned();
+    retro_junk_archive::write_build_evidence(&dump.directory, &verified).unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+    rename_playable(&RenamePlayableRequest {
+        snapshot: &snapshot,
+        playable_root: &playable_root,
+        representation_id: &representation_id,
+        canonical_file_name: "Game (USA).chd",
+        media_root: None,
+    })
+    .unwrap();
+
+    let rescanned = retro_junk_archive::scan_archive(&archive).unwrap();
+    let current = retro_junk_archive::current_build_evidence(
+        &rescanned.releases[0].physical_copies[0].carriers[0].dumps[0],
+    );
+    assert_eq!(current.len(), 1);
+    assert!(current[0].catalog_verified);
+    assert!(
+        current[0].round_trip_verified,
+        "the rename dropped a round-trip verification it had no business touching"
+    );
+}
+
 #[test]
 fn a_name_collision_stops_rather_than_destroying_the_other_file() {
     let temp = tempfile::tempdir().unwrap();

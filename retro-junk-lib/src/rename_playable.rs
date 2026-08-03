@@ -67,19 +67,26 @@ fn io(path: &Path) -> impl Fn(std::io::Error) -> RenamePlayableError + '_ {
 }
 
 /// Find the dump whose build evidence currently names this representation,
-/// and the path that evidence records.
+/// and that evidence.
+///
+/// The *current* record specifically: `evidence/` is append-only, so a file
+/// that has been renamed or rebuilt before has several records, and only the
+/// live one describes where it is now.
 fn locate<'a>(
     snapshot: &'a ArchiveIndexSnapshot,
     representation_id: &str,
-) -> Option<(&'a IndexedDump, String)> {
+) -> Option<(&'a IndexedDump, &'a retro_junk_archive::BuildEvidence)> {
     for release in &snapshot.releases {
         for copy in &release.physical_copies {
             for carrier in &copy.carriers {
                 for dump in &carrier.dumps {
-                    for build in &dump.builds {
-                        if build.evidence.child_representation_id.to_string() == representation_id {
-                            return Some((dump, build.evidence.relative_output_path.clone()));
-                        }
+                    if let Some(evidence) = retro_junk_archive::current_build_evidence(dump)
+                        .into_iter()
+                        .find(|evidence| {
+                            evidence.child_representation_id.to_string() == representation_id
+                        })
+                    {
+                        return Some((dump, evidence));
                     }
                 }
             }
@@ -93,10 +100,11 @@ fn locate<'a>(
 pub fn rename_playable(
     request: &RenamePlayableRequest<'_>,
 ) -> Result<RenamePlayableReport, RenamePlayableError> {
-    let (dump, relative_path) =
+    let (dump, current) =
         locate(request.snapshot, request.representation_id).ok_or_else(|| {
             RenamePlayableError::UnknownRepresentation(request.representation_id.to_owned())
         })?;
+    let relative_path = current.relative_output_path.clone();
     let source = request.playable_root.join(&relative_path);
     if !source.is_file() {
         return Err(RenamePlayableError::SourceMissing(
@@ -137,30 +145,29 @@ pub fn rename_playable(
 
     // Append, never rewrite: the earlier record is still true about where the
     // file used to be, and the archive keeps its history.
+    //
+    // The new record is the old one with a new path. A rename changes what a
+    // file is called and nothing else, so every other field is carried
+    // forward — including `format`, which together with the parent
+    // representation identifies the build *lineage*. Substituting the dump's
+    // own format here started a second lineage, leaving two live records
+    // claiming one representation id, which the projection rejects. Copying
+    // also preserves what was verified about these bytes: re-deriving
+    // `round_trip_verified` would quietly downgrade a playable that had been
+    // proven to reproduce its master.
     let digests =
         retro_junk_archive::hash_file_digests(&target, &std::sync::atomic::AtomicBool::new(false))
             .map_err(|error| RenamePlayableError::Message(error.to_string()))?;
     let evidence = retro_junk_archive::BuildEvidence {
-        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
         build_id: retro_junk_archive::BuildId::new(),
-        parent_representation_id: dump.manifest.representation_id,
-        // The same file, at a new name: keep its identity so the projection
-        // updates the representation rather than inventing a second one.
-        child_representation_id: request.representation_id.parse().map_err(|_| {
-            RenamePlayableError::UnknownRepresentation(request.representation_id.to_owned())
-        })?,
         performed_at: chrono::Utc::now().to_rfc3339(),
-        input_manifest_sha256: dump.manifest_sha256.clone(),
-        recipe_version: 1,
-        format: dump.manifest.format.clone(),
         relative_output_path: report.to.clone(),
+        // Re-hashed rather than copied: the bytes should be identical, but
+        // recording a digest this run did not observe would be a claim
+        // rather than a measurement.
         output_sha256: digests.sha256,
         output_size: digests.size,
-        catalog_verified: retro_junk_archive::dump_catalog_verified(dump),
-        round_trip_verified: false,
-        tool: None,
-        omitted_features: Vec::new(),
-        canonical_intermediate: None,
+        ..current.clone()
     };
     retro_junk_archive::write_build_evidence(&dump.directory, &evidence)
         .map_err(|error| RenamePlayableError::Message(error.to_string()))?;

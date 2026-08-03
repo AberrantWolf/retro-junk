@@ -30,13 +30,18 @@ pub struct RenameReport {
     pub failures: Vec<String>,
 }
 
-/// Rename every playable in a profile whose name no longer matches the
-/// catalog, then re-project so the result is visible immediately.
+/// Rename playables whose name no longer matches the catalog, then
+/// re-project so the result is visible immediately.
+///
+/// `only_release` limits the repair to one archive release. A button offered
+/// on one release must act on that release: renaming a whole collection is a
+/// different decision, and the user has to be the one making it.
 pub fn rename_stale_playables(
     profile: &CollectionProfile,
     db_path: &Path,
     media_root: Option<&Path>,
     expected_assets: &retro_junk_frontend::AssetSelection,
+    only_release: Option<&str>,
     ctx: &OpCtx,
 ) -> Result<RenameReport, String> {
     let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
@@ -53,6 +58,9 @@ pub fn rename_stale_playables(
     )?;
     let stale = overviews
         .iter()
+        .filter(|release| {
+            only_release.is_none_or(|id| release.archive_release_id == id)
+        })
         .flat_map(|release| &release.completion.attention)
         .filter_map(|attention| match attention {
             Attention::StaleName {
@@ -119,16 +127,19 @@ pub fn rename_stale_playables(
     Ok(report)
 }
 
-/// Misnamed playables in a profile, without changing anything — the preview
-/// behind a dry run and the count behind a prompt.
+/// Misnamed playables, without changing anything — the preview behind a dry
+/// run and the count behind a prompt. `only_release` scopes it the same way
+/// [`rename_stale_playables`] does.
 pub fn stale_playable_names(
     conn: &retro_junk_db::Connection,
     profile_id: &str,
     expected_assets: &retro_junk_frontend::AssetSelection,
+    only_release: Option<&str>,
 ) -> Result<Vec<(String, String)>, String> {
     Ok(
         crate::queries::releases::release_overviews(conn, profile_id, expected_assets)?
             .iter()
+            .filter(|release| only_release.is_none_or(|id| release.archive_release_id == id))
             .flat_map(|release| &release.completion.attention)
             .filter_map(|attention| match attention {
                 Attention::StaleName {

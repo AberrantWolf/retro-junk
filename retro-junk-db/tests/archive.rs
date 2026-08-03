@@ -2534,3 +2534,107 @@ fn a_retitled_catalog_rebinds_the_release_from_its_carriers_content() {
         .unwrap();
     assert_eq!(claimed, "nes:game:nes:usa");
 }
+
+/// An archive can already contain two live build records claiming one
+/// representation, because a rename wrote the wrong format and started a
+/// second lineage instead of superseding the first. Those records are on
+/// disk and `evidence/` is append-only, so the projection has to cope with
+/// them rather than failing — a unique-constraint error here rolls back the
+/// whole reconcile, and every renamed playable reads as missing afterwards.
+#[test]
+fn two_live_builds_claiming_one_representation_project_the_newer() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    let source = temp.path().join("master.bin");
+    std::fs::write(&source, b"master bytes").unwrap();
+    let ingested = retro_junk_archive::ingest_new_carrier_dump(
+        &root,
+        &source,
+        retro_junk_archive::NewCarrierDump {
+            platform_id: "psx".to_owned(),
+            title: "Game".to_owned(),
+            region: "usa".to_owned(),
+            revision: String::new(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: String::new(),
+            sequence_number: 0,
+            carrier_label: String::new(),
+            carrier_kind: retro_junk_archive::CarrierKind::OpticalDisc,
+            format: retro_junk_archive::RepresentationFormat::CueBin,
+            catalog_binding: retro_junk_archive::CatalogBinding::default(),
+            source_package: retro_junk_archive::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
+            physical_copy_id: None,
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+
+    let system_dir = playable_root.join("psx");
+    std::fs::create_dir_all(&system_dir).unwrap();
+    std::fs::write(system_dir.join("Game (USA).chd"), b"playable").unwrap();
+    let child = retro_junk_archive::RepresentationId::new();
+    let base = retro_junk_archive::BuildEvidence {
+        schema_version: retro_junk_archive::MANIFEST_SCHEMA_VERSION,
+        build_id: retro_junk_archive::BuildId::new(),
+        parent_representation_id: ingested.dump.representation_id,
+        child_representation_id: child,
+        performed_at: "2026-01-01T00:00:00Z".to_owned(),
+        input_manifest_sha256: String::new(),
+        recipe_version: 1,
+        format: retro_junk_archive::RepresentationFormat::Chd,
+        relative_output_path: "psx/Game (USA) (Track 1).chd".to_owned(),
+        output_sha256: String::new(),
+        output_size: 8,
+        catalog_verified: false,
+        round_trip_verified: false,
+        tool: None,
+        omitted_features: Vec::new(),
+        canonical_intermediate: None,
+    };
+    retro_junk_archive::write_build_evidence(&ingested.dump_directory, &base).unwrap();
+    // The record the buggy rename wrote: same representation, later, but a
+    // different format — so it reads as its own lineage rather than a
+    // replacement.
+    retro_junk_archive::write_build_evidence(
+        &ingested.dump_directory,
+        &retro_junk_archive::BuildEvidence {
+            build_id: retro_junk_archive::BuildId::new(),
+            performed_at: "2026-02-01T00:00:00Z".to_owned(),
+            relative_output_path: "psx/Game (USA).chd".to_owned(),
+            format: retro_junk_archive::RepresentationFormat::CueBin,
+            ..base.clone()
+        },
+    )
+    .unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    let mut conn = open_memory().unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .expect("the projection must survive an archive it can read");
+
+    // One row, naming where the file actually is.
+    let (count, path): (i64, String) = conn
+        .query_row(
+            "SELECT COUNT(*),MAX(relative_path) FROM representations WHERE role='playable'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(path, "psx/Game (USA).chd");
+}

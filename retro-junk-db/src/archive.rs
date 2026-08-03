@@ -300,10 +300,51 @@ fn current_builds_by_output(
         }
         projected.insert(index, resolved);
     }
-    current
+    // A representation row is the current state of one file, so two live
+    // records claiming one representation id cannot both be projected — the
+    // insert would collide on the primary key and take the whole reconcile
+    // with it. That is not hypothetical: a rename that wrote the wrong format
+    // started a second lineage beside the one it meant to supersede, and the
+    // records it left behind are still on disk in any archive it touched.
+    // The newest record is the truth about where the file is now; the rest is
+    // history, which is what `evidence/` is for.
+    let mut newest_by_representation: HashMap<String, usize> = HashMap::new();
+    for index in current.into_values() {
+        let evidence = &builds[index].evidence;
+        let id = evidence.child_representation_id.to_string();
+        match newest_by_representation.get(&id) {
+            Some(&held) if !supersedes(&builds[held].evidence, evidence) => {}
+            Some(&held) => {
+                log::info!(
+                    "Build {} and {} both claim representation {id}; projecting the newer",
+                    builds[held].evidence.build_id,
+                    evidence.build_id
+                );
+                newest_by_representation.insert(id, index);
+            }
+            None => {
+                newest_by_representation.insert(id, index);
+            }
+        }
+    }
+    newest_by_representation
         .into_values()
         .filter_map(|index| projected.get(&index).map(|value| (index, value.clone())))
         .collect()
+}
+
+/// Whether `candidate` is the later of two build records.
+///
+/// Timestamps decide it; the build id breaks a tie so the projection is
+/// stable rather than depending on directory order.
+fn supersedes(
+    held: &retro_junk_archive::BuildEvidence,
+    candidate: &retro_junk_archive::BuildEvidence,
+) -> bool {
+    (
+        candidate.performed_at.as_str(),
+        candidate.build_id.to_string(),
+    ) > (held.performed_at.as_str(), held.build_id.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

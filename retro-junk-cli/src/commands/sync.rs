@@ -295,6 +295,7 @@ pub(crate) fn run_rename_playables(args: RenamePlayablesArgs) -> Result<(), CliE
             &conn,
             &profile.profile_id.to_string(),
             &expected_assets,
+            args.release_id.as_deref(),
         )
         .map_err(CliError::other)?;
         if stale.is_empty() {
@@ -318,6 +319,7 @@ pub(crate) fn run_rename_playables(args: RenamePlayablesArgs) -> Result<(), CliE
         &db_path,
         Some(&media_root),
         &expected_assets,
+        args.release_id.as_deref(),
         &retro_junk_backend::ops::OpCtx::new(&cancelled, &crate::commands::archive::log_progress),
     )
     .map_err(CliError::other)?;

@@ -347,6 +347,9 @@ pub(crate) struct RenamePlayablesArgs {
     /// Playable library root
     #[arg(long)]
     pub playable_root: Option<PathBuf>,
+    /// Limit the repair to one archive release (default: every release)
+    #[arg(long)]
+    pub release_id: Option<String>,
     /// List what would be renamed without renaming anything
     #[arg(long)]
     pub dry_run: bool,

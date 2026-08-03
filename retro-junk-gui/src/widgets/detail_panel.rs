@@ -802,7 +802,7 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         &app.ui_state.expected_assets,
     );
     let mut requested_build = None;
-    let mut requested_rename = false;
+    let mut requested_rename = None;
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.label(egui::RichText::new(&summary.title).strong().size(18.0));
         ui.add_space(4.0);
@@ -826,16 +826,20 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             detail_row(ui, "Needs", &describe_attention(attention));
         }
         if retro_junk_backend::ops::rename_playable::has_stale_names(&completion) {
-            requested_rename = ui
+            if ui
                 .button(crate::widgets::icons::labeled(
                     crate::widgets::icons::RENAME,
                     "Rename to the catalog's name",
                 ))
                 .on_hover_text(
-                    "Moves the playable, the artwork named after it, and any playlist entry \
-                     pointing at it, then records the new location in the archive",
+                    "Renames this release only. Moves the playable, the artwork named after \
+                     it, and any playlist entry pointing at it, then records the new \
+                     location in the archive",
                 )
-                .clicked();
+                .clicked()
+            {
+                requested_rename = Some(summary.archive_release_id.clone());
+            }
         }
         detail_row(
             ui,
@@ -1026,8 +1030,8 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.weak("No archive or playable action is currently needed.");
         }
     });
-    if requested_rename {
-        crate::backend::rename_playable::start(app, ui.ctx());
+    if let Some(release_id) = requested_rename {
+        crate::backend::rename_playable::start(app, Some(release_id), ui.ctx());
     }
     if let Some((action, format)) = requested_build {
         let playable_platform_id = app.selected_console_index().map_or_else(
