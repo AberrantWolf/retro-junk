@@ -102,3 +102,41 @@ fn an_unknown_selector_resolves_to_nothing() {
 
     assert!(resolve_profile_from(&settings, Some("no-such-collection")).is_none());
 }
+
+/// The gamelist a frontend reads and the gamelist a sync writes have to be the
+/// same file.
+///
+/// The CLI built its roots from empty strings and then substituted its own
+/// sibling `-metadata` default, so with `metadata_dir = "."` it maintained
+/// `roms-metadata/psx/gamelist.xml` while ES-DE read `roms/psx/gamelist.xml`.
+/// Both existed, both parsed, and every projection updated the one nobody
+/// read — so a renamed game kept its old, dangling entry in the frontend.
+#[test]
+fn the_users_metadata_setting_decides_where_gamelists_go() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = temp.path().join("settings.toml");
+    let roms = temp.path().join("roms");
+    std::fs::write(&settings, "[general]\nmetadata_dir = \".\"\n").unwrap();
+
+    let roots = crate::profiles::frontend_roots_from(&settings, &roms, None, None);
+    assert_eq!(
+        roots.metadata_root, roms,
+        "the sync wrote gamelists somewhere the frontend does not read"
+    );
+    // An unset assets directory still means the sibling media convention.
+    assert_eq!(roots.media_root, temp.path().join("roms-media"));
+}
+
+/// An explicit `--metadata-root` still wins; silence is what must fall back to
+/// the user's settings rather than to a second default.
+#[test]
+fn an_explicit_root_overrides_the_setting_but_silence_does_not() {
+    let temp = tempfile::tempdir().unwrap();
+    let settings = temp.path().join("settings.toml");
+    let roms = temp.path().join("roms");
+    std::fs::write(&settings, "[general]\nmetadata_dir = \".\"\n").unwrap();
+
+    let chosen = temp.path().join("elsewhere");
+    let roots = crate::profiles::frontend_roots_from(&settings, &roms, None, Some(chosen.clone()));
+    assert_eq!(roots.metadata_root, chosen);
+}

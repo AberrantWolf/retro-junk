@@ -36,6 +36,37 @@ fn test_parse_xml_dat() {
     );
 }
 
+/// A game whose title contains `&` is written `&amp;` in the DAT, and that is
+/// the document's escaping, not part of the name.
+///
+/// Reading attributes raw kept the entity, and it then reached everywhere the
+/// name goes: the catalog stored `1 &amp; 2`, a playable was built under a
+/// filename containing those five literal characters, and the gamelist writer
+/// escaped it again into `&amp;amp;` — an entry pointing at a file that does
+/// not exist. Element text was already unescaped, so only attributes, and so
+/// only Redump's XML DATs, were wrong.
+#[test]
+fn xml_entities_in_names_are_resolved_not_carried_through() {
+    let xml = r#"<?xml version="1.0"?>
+<datafile>
+    <header><name>Sony - PlayStation</name><version>1</version></header>
+    <game name="Dragon Quest Monsters 1 &amp; 2 (Japan)">
+        <rom name="Dragon Quest Monsters 1 &amp; 2 (Japan).cue" size="100" crc="aabbccdd"/>
+    </game>
+    <game name="Tom &amp; Jerry &lt;Demo&gt; (USA)">
+        <rom name="Tom &amp; Jerry &lt;Demo&gt; (USA).bin" size="200" crc="11223344"/>
+    </game>
+</datafile>"#;
+    let dat = parse_dat(xml.as_bytes()).unwrap();
+    assert_eq!(dat.games[0].name, "Dragon Quest Monsters 1 & 2 (Japan)");
+    assert_eq!(
+        dat.games[0].roms[0].name,
+        "Dragon Quest Monsters 1 & 2 (Japan).cue"
+    );
+    assert_eq!(dat.games[1].name, "Tom & Jerry <Demo> (USA)");
+    assert_eq!(dat.games[1].roms[0].name, "Tom & Jerry <Demo> (USA).bin");
+}
+
 #[test]
 fn test_parse_empty_xml() {
     let xml = r#"<?xml version="1.0"?><datafile></datafile>"#;

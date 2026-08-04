@@ -109,13 +109,33 @@ pub fn parse_logiqx_rom_lines(text: &str) -> Result<Vec<DatRom>, DatError> {
 // Logiqx XML parser
 // ---------------------------------------------------------------------------
 
+/// The text of one XML attribute, with entities resolved.
+///
+/// An attribute's bytes are raw document text, so a title containing `&`
+/// arrives as `&amp;`. Reading them without this stored the entity itself, and
+/// the entity then travelled everywhere the name goes: into catalog rows, into
+/// the canonical filename a playable is built under — a disc image really was
+/// called `Dragon Quest Monsters 1 &amp; 2 ...` on disk — and back out into
+/// gamelist XML, where escaping it a second time produced `&amp;amp;` and a
+/// frontend entry that pointed at no file.
+///
+/// Decoding once here is what fixes all of those, because it is the boundary
+/// they all come through. Element *text* was already unescaped; only
+/// attributes were not, which is why Redump's XML DATs were affected and
+/// No-Intro's `ClrMamePro` text DATs — which have no entities — were not.
+fn attribute_text(
+    attr: &quick_xml::events::attributes::Attribute<'_>,
+) -> Result<String, quick_xml::Error> {
+    Ok(attr.unescape_value()?.into_owned())
+}
+
 /// Build a fresh [`DatGame`] from a `<game>` start tag's attributes.
 fn parse_xml_game_start(e: &quick_xml::events::BytesStart) -> Result<DatGame, DatError> {
     let mut name = String::new();
     for attr in e.attributes() {
         let attr = attr?;
         if attr.key.as_ref() == b"name" {
-            name = String::from_utf8_lossy(&attr.value).to_string();
+            name = attribute_text(&attr)?;
         }
     }
     Ok(DatGame {
@@ -240,7 +260,7 @@ fn parse_xml_rom_attributes(e: &quick_xml::events::BytesStart<'_>) -> Result<Dat
 
     for attr in e.attributes() {
         let attr = attr?;
-        let value = String::from_utf8_lossy(&attr.value).to_string();
+        let value = attribute_text(&attr)?;
         match attr.key.as_ref() {
             b"name" => rom.name = value,
             b"size" => {

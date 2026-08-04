@@ -63,15 +63,11 @@ pub(crate) fn exec_context(
         Some(path) => path,
         None => retro_junk_lib::settings::ensure_catalog_database_location()?,
     };
-    let mut roots =
-        retro_junk_lib::archive_ops::FrontendRoots::from_settings(&profile.playable_root, "", "");
-    // FrontendRoots defaults metadata inline; the CLI keeps its historical
-    // sibling `-metadata` default unless told otherwise.
-    roots.metadata_root = metadata_root
-        .unwrap_or_else(|| retro_junk_lib::util::default_metadata_dir(&profile.playable_root));
-    if let Some(media_root) = media_root {
-        roots.media_root = media_root;
-    }
+    let roots = retro_junk_backend::profiles::frontend_roots(
+        &profile.playable_root,
+        media_root,
+        metadata_root,
+    );
     Ok(ExecContext {
         profile,
         db_path,
@@ -308,10 +304,9 @@ pub(crate) fn run_rename_playables(args: RenamePlayablesArgs) -> Result<(), CliE
         log::info!("{} playable(s) would be renamed", stale.len());
         return Ok(());
     }
-    let media_root = args.media_root.unwrap_or_else(|| {
-        retro_junk_lib::archive_ops::FrontendRoots::from_settings(&profile.playable_root, "", "")
-            .media_root
-    });
+    let media_root =
+        retro_junk_backend::profiles::frontend_roots(&profile.playable_root, args.media_root, None)
+            .media_root;
     let cancelled = Arc::new(AtomicBool::new(false));
     retro_junk_backend::daemon::install_signal_handlers(&cancelled);
     let report = retro_junk_backend::ops::rename_playable::rename_stale_playables(

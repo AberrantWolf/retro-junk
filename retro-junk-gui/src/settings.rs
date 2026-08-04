@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AppSettings {
@@ -7,6 +7,28 @@ pub struct AppSettings {
     pub library: LibrarySettings,
     #[serde(default)]
     pub general: GeneralSettings,
+}
+
+impl AppSettings {
+    /// Where this collection's frontend files go: scraped media and gamelists.
+    ///
+    /// The GUI answers from the settings it is holding, which may include
+    /// edits the user has not saved yet; the CLI and daemon answer from the
+    /// file through `retro_junk_backend::profiles::frontend_roots`. Both go
+    /// through the same rule, so the two surfaces cannot write a collection's
+    /// gamelists into two different directories — which they did, leaving the
+    /// frontend reading a list nothing had updated in weeks.
+    #[must_use]
+    pub fn frontend_roots(
+        &self,
+        playable_root: &Path,
+    ) -> retro_junk_lib::archive_ops::FrontendRoots {
+        retro_junk_lib::archive_ops::FrontendRoots::from_settings(
+            playable_root,
+            &self.general.assets_dir,
+            &self.general.metadata_dir,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

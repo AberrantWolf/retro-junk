@@ -35,6 +35,55 @@ pub fn load_general() -> GeneralSection {
     read(&retro_junk_lib::settings::settings_path()).general
 }
 
+/// Where a profile's frontend files go: playables, scraped media, gamelists.
+///
+/// One answer for every surface. The CLI used to build these itself from empty
+/// strings and then substitute its own sibling `-metadata` default, so it
+/// maintained `roms-metadata/psx/gamelist.xml` while the user's setting put
+/// the gamelist the frontend actually reads at `roms/psx/gamelist.xml`. Both
+/// files existed, both looked healthy, and every projection updated the one
+/// nobody read — a renamed game kept its old entry in the frontend forever.
+///
+/// `media_override` and `metadata_override` are the explicit `--media-root`
+/// and `--metadata-root` flags: a caller may still say exactly where it wants
+/// output, but silence means the user's settings, never a second default.
+#[must_use]
+pub fn frontend_roots(
+    playable_root: &Path,
+    media_override: Option<std::path::PathBuf>,
+    metadata_override: Option<std::path::PathBuf>,
+) -> retro_junk_lib::archive_ops::FrontendRoots {
+    frontend_roots_from(
+        &retro_junk_lib::settings::settings_path(),
+        playable_root,
+        media_override,
+        metadata_override,
+    )
+}
+
+/// [`frontend_roots`] against a named settings file.
+#[must_use]
+pub fn frontend_roots_from(
+    settings_path: &Path,
+    playable_root: &Path,
+    media_override: Option<std::path::PathBuf>,
+    metadata_override: Option<std::path::PathBuf>,
+) -> retro_junk_lib::archive_ops::FrontendRoots {
+    let general = read(settings_path).general;
+    let mut roots = retro_junk_lib::archive_ops::FrontendRoots::from_settings(
+        playable_root,
+        &general.assets_dir,
+        &general.metadata_dir,
+    );
+    if let Some(media_root) = media_override {
+        roots.media_root = media_root;
+    }
+    if let Some(metadata_root) = metadata_override {
+        roots.metadata_root = metadata_root;
+    }
+    roots
+}
+
 #[derive(Deserialize, Default)]
 struct LibrarySection {
     #[serde(default)]

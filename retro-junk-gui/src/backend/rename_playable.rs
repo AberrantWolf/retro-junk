@@ -17,12 +17,10 @@ pub(crate) fn start(app: &mut RetroJunkApp, only_release: Option<String>, _ctx: 
         app.push_error("Rename playables", "Catalog database is unavailable");
         return;
     };
-    let media_root = retro_junk_lib::archive_ops::FrontendRoots::from_settings(
-        &profile.playable_root,
-        &app.settings.general.assets_dir,
-        "",
-    )
-    .media_root;
+    let media_root = app
+        .settings
+        .frontend_roots(&profile.playable_root)
+        .media_root;
     let expected_assets = app.ui_state.expected_assets.clone();
     let description = if only_release.is_some() {
         "Renaming this release's playables to their catalog names".to_owned()

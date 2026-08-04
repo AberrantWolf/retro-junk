@@ -200,6 +200,23 @@ pub fn sync_esde_gamelist_for_release(
     metadata_root: &Path,
     media_root: &Path,
 ) -> Result<Option<PathBuf>, AssetProjectionError> {
+    // Which frontend folder this release publishes into is a property of the
+    // release, not of whichever output happens to be findable — so it is known
+    // before anything else here, and retiring can happen without one.
+    let system_directory = crate::playable_location::release_system_directory(release);
+    let metadata_dir = metadata_root.join(&system_directory);
+
+    // Retire first, and unconditionally. An entry for a name this release has
+    // stopped publishing under is wrong whether or not a *new* entry can be
+    // written — and the releases that cannot be published right now (a
+    // multi-disc set whose playlist is not built yet, an output whose file is
+    // missing) are exactly the ones most likely to be carrying a dead entry.
+    // Cleanup used to sit below the early returns, so those releases never
+    // cleaned up at all and the frontend listed a game that would not launch.
+    let retired = retired_gamelist_paths(release);
+    retro_junk_frontend::esde::remove_game_entries(&metadata_dir.join("gamelist.xml"), &retired)
+        .map_err(|error| AssetProjectionError::Archive(error.to_string()))?;
+
     // Only current builds: a superseded output whose file happens to still be
     // on disk is not a game, it is the leftover of a rename — and giving it a
     // gamelist entry is how one release became two in the frontend.
@@ -236,22 +253,11 @@ pub fn sync_esde_gamelist_for_release(
     } else {
         return Ok(None);
     };
-    let Some(platform) = selected
-        .components()
-        .next()
-        .and_then(|component| component.as_os_str().to_str())
-    else {
-        return Ok(None);
-    };
     let relative_rom = selected
-        .strip_prefix(platform)
+        .strip_prefix(&system_directory)
         .map_err(|error| AssetProjectionError::Archive(error.to_string()))?;
-    let rom_dir = playable_root.join(platform);
-    let media_dir = media_root.join(platform);
-    let metadata_dir = metadata_root.join(platform);
-    let retired = retired_gamelist_paths(release);
-    retro_junk_frontend::esde::remove_game_entries(&metadata_dir.join("gamelist.xml"), &retired)
-        .map_err(|error| AssetProjectionError::Archive(error.to_string()))?;
+    let rom_dir = playable_root.join(&system_directory);
+    let media_dir = media_root.join(&system_directory);
     let stem = if relative_rom
         .parent()
         .and_then(Path::file_name)

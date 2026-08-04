@@ -311,11 +311,7 @@ fn exec_context(profile: Option<&str>, db: Option<PathBuf>) -> Result<ExecContex
         None => retro_junk_lib::settings::ensure_catalog_database_location()?,
     };
     let general = retro_junk_backend::profiles::load_general();
-    let roots = retro_junk_lib::archive_ops::FrontendRoots::from_settings(
-        &profile.playable_root,
-        &general.assets_dir,
-        &general.metadata_dir,
-    );
+    let roots = retro_junk_backend::profiles::frontend_roots(&profile.playable_root, None, None);
     Ok(ExecContext {
         profile,
         db_path,

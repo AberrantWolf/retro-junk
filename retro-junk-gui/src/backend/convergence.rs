@@ -28,11 +28,7 @@ pub fn exec_context(app: &RetroJunkApp) -> Result<retro_junk_backend::ExecContex
         .clone()
         .ok_or_else(|| "Catalog database is unavailable".to_owned())?;
     Ok(retro_junk_backend::ExecContext {
-        roots: retro_junk_lib::archive_ops::FrontendRoots::from_settings(
-            &profile.playable_root,
-            &app.settings.general.assets_dir,
-            &app.settings.general.metadata_dir,
-        ),
+        roots: app.settings.frontend_roots(&profile.playable_root),
         profile,
         db_path,
         tools: retro_junk_backend::ToolPaths {
