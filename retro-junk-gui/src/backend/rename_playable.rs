@@ -8,11 +8,7 @@ use crate::state::{AppMessage, OperationKind, ProgressDisplay};
 
 /// Rename the misnamed playables of one archive release, or of the whole
 /// active profile when no release is named.
-pub(crate) fn start(
-    app: &mut RetroJunkApp,
-    only_release: Option<String>,
-    _ctx: &egui::Context,
-) {
+pub(crate) fn start(app: &mut RetroJunkApp, only_release: Option<String>, _ctx: &egui::Context) {
     let Some(profile) = app.settings.library.active_profile().cloned() else {
         app.push_error("Rename playables", "No active collection profile");
         return;

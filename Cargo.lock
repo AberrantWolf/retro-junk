@@ -5165,6 +5165,7 @@ dependencies = [
  "retro-junk-frontend",
  "retro-junk-io",
  "retro-junk-microsoft",
+ "retro-junk-nec",
  "retro-junk-nintendo",
  "retro-junk-sega",
  "retro-junk-sony",
@@ -5183,6 +5184,14 @@ version = "0.4.0"
 dependencies = [
  "retro-junk-core",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "retro-junk-nec"
+version = "0.4.0"
+dependencies = [
+ "retro-junk-core",
+ "retro-junk-disc",
 ]
 
 [[package]]

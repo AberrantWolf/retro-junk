@@ -10,6 +10,7 @@ members = [
     "retro-junk-sony",
     "retro-junk-sega",
     "retro-junk-microsoft",
+    "retro-junk-nec",
     "retro-junk-scraper",
     "retro-junk-frontend",
     "retro-junk-catalog",
@@ -50,6 +51,7 @@ retro-junk-nintendo = { path = "retro-junk-nintendo" }
 retro-junk-sony = { path = "retro-junk-sony" }
 retro-junk-sega = { path = "retro-junk-sega" }
 retro-junk-microsoft = { path = "retro-junk-microsoft" }
+retro-junk-nec = { path = "retro-junk-nec" }
 retro-junk-dat = { path = "retro-junk-dat" }
 retro-junk-disc = { path = "retro-junk-disc" }
 retro-junk-archive = { path = "retro-junk-archive" }

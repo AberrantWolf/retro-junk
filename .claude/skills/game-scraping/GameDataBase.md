@@ -92,7 +92,8 @@ https://raw.githubusercontent.com/PigSaint/GameDataBase/main/{filename}.csv
 | Wii | `console_nintendo_wii` |
 | Atari 2600 | `console_atari_2600` |
 | Atari 7800 | `console_atari_7800` |
-| PC Engine / TurboGrafx-16 | `console_nec_pcengine_turbografx16` |
+| PC Engine / TurboGrafx-16 / SuperGrafx | `console_nec_pcengine_turbografx_supergrafx` |
+| PC Engine CD-ROM² / TurboGrafx-CD | `console_nec_cdrom2` |
 | Neo Geo | `console_snk_neogeo` |
 | PlayStation | `console_sony_playstation` |
 | Dreamcast | `console_sega_dreamcast` |

@@ -1155,3 +1155,43 @@ fn a_catalog_name_is_made_safe_to_write_without_being_mangled() {
     assert_eq!(safe_file_stem("   "), "untitled");
     assert_eq!(safe_file_stem("\u{7}\u{1}"), "untitled");
 }
+
+/// A European PC Engine release stays under `pce` rather than being filed as
+/// a TurboGrafx-16. NEC's European machine ran the US card library in
+/// localized boxes, so no European-specific cards exist to file: No-Intro's
+/// PC Engine set has no `(Europe)` dumps and Redump's PC Engine CD set has
+/// none either. A European shelf of this console is imported Japanese
+/// software, and sending it to `tg16` split one collection across two
+/// folders on nothing but a region string. It also disagreed with the
+/// playable projection, which has always sent the same release to
+/// `pcengine`.
+#[test]
+fn european_pc_engine_is_not_filed_as_turbografx() {
+    for region in ["Europe", "europe", "eur", " EUR "] {
+        assert_eq!(
+            crate::regional_physical_platform("pce", region),
+            None,
+            "region {region:?} must leave the release under pce"
+        );
+    }
+    // North America is still the TurboGrafx-16, which is the whole reason
+    // the regional split exists.
+    for region in ["USA", "us", "Canada"] {
+        assert_eq!(
+            crate::regional_physical_platform("pce", region),
+            Some("tg16")
+        );
+    }
+    assert_eq!(crate::regional_physical_platform("pce", "Japan"), None);
+}
+
+/// The Mega Drive arm keeps Europe on purpose: unlike the PC Engine, Sega
+/// really did press a distinct European library, so this test guards against
+/// "simplifying" the two arms into one shared region list.
+#[test]
+fn european_genesis_still_goes_to_megadrive() {
+    assert_eq!(
+        crate::regional_physical_platform("genesis", "Europe"),
+        Some("megadrive")
+    );
+}

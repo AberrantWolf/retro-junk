@@ -31,6 +31,7 @@ cargo run -p retro-junk-cli -- analyze --root /path/to/roms
 - `retro-junk-sony` — PS1, PS2, PS3, PSP, Vita
 - `retro-junk-sega` — SG-1000, Master System, Genesis, Sega CD, 32X, Saturn, Dreamcast, Game Gear
 - `retro-junk-microsoft` — Xbox, Xbox 360
+- `retro-junk-nec` — PC Engine / TurboGrafx-16 (HuCard), PC Engine CD / TurboGrafx-CD
 - `retro-junk-dat` — DAT file parsing (No-Intro XML, Redump CSV) and GDB caching (no console-specific logic)
 - `retro-junk-lib` — glue layer: hasher, rename/matching, `AnalysisContext` registering all analyzers. Re-exports `retro-junk-core` types for convenience.
 
@@ -53,11 +54,11 @@ cargo run -p retro-junk-cli -- analyze --root /path/to/roms
          |                                |
     retro-junk-disc                  retro-junk-db
          |                                |
-    +----+----+----+                      |
-    |    |    |    |                      |
- nintendo sony sega microsoft             |
-    |    |    |    |                      |
-    +----+----+----+                      |
+    +----+----+----+----+                 |
+    |    |    |    |    |                 |
+ nintendo sony sega microsoft nec         |
+    |    |    |    |    |                 |
+    +----+----+----+----+                 |
          |                                |
     retro-junk-dat                        |
          |                                |
@@ -71,7 +72,7 @@ cargo run -p retro-junk-cli -- analyze --root /path/to/roms
 ```
 
 Notes:
-- `retro-junk-disc` is used by the disc-based CD/DVD platform crates (`sony`, `sega`). Cartridge-only crates (`nintendo`, `microsoft`) depend only on `core`. Nintendo disc analyzers (GameCube, Wii) use the `nod` crate directly rather than `retro-junk-disc`; Xbox/360 use their own ISO handling.
+- `retro-junk-disc` is used by the disc-based CD/DVD platform crates (`sony`, `sega`, `nec`). Cartridge-only crates (`nintendo`, `microsoft`) depend only on `core`. Nintendo disc analyzers (GameCube, Wii) use the `nod` crate directly rather than `retro-junk-disc`; Xbox/360 use their own ISO handling.
 - `retro-junk-frontend` is `core`-only by design — it describes output formats for ES-DE and similar, not analysis.
 - `retro-junk-import` is the only crate that bridges the analysis and catalog foundations.
 

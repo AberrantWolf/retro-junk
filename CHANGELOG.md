@@ -2,6 +2,33 @@
 
 ## 0.4.0
 
+- PC Engine HuCard games are part of the library. NEC's card system had no
+  analyzer at all — only its CD add-on did — so a folder of `.pce` files was
+  invisible to scanning: the folder never appeared as a console, and no file
+  inside it was ever hashed or matched. There is now a `retro-junk-nec` crate
+  holding both NEC analyzers (the CD one moved there from the glue crate,
+  where it had been the lone piece of console-specific knowledge in a crate
+  that is not supposed to hold any). Cards match against No-Intro `NEC - PC
+  Engine - TurboGrafx 16`, with the 512-byte copier header some old dumps
+  carry skipped before hashing, or every headered dump would silently fail to
+  match. The console keeps its regional identities: a `pce`/`pcengine` folder
+  and a `tg16`/`turbografx-16` folder stay two separate libraries of one
+  console, the way Famicom and NES already do.
+
+- A European PC Engine release is filed as a PC Engine, not a TurboGrafx-16.
+  The archive's region table sent Europe to `tg16` while the playable
+  projection sent the same release to `pcengine`, so one collection could
+  land in two folders depending on which path touched it. The databases
+  settle which is right: No-Intro's PC Engine set has zero `(Europe)` dumps
+  out of 991, and Redump's PC Engine CD set zero out of 551 — NEC's European
+  machine was a PAL TurboGrafx running the American card library, so no
+  European-specific cards or discs were ever pressed, and a European shelf of
+  this console is imported Japanese software. Europe now stays under
+  `pce`/`pcengine` on both paths, and tests on each side state the reasoning
+  so the PC Engine and Mega Drive region lists (where Europe *is* a real
+  library) are not "simplified" into one. Written up in
+  `.claude/skills/retro-archive/consoles/PCEngine_Overview.md`.
+
 - A week-of-changes review (2026-08-03) fixed a batch of defects before they
   shipped:
   - Multi-track discs identified by their complete reproduced track set were

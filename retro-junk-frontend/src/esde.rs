@@ -62,6 +62,13 @@ mod system_directory_tests {
         assert_eq!(system_directory("super-famicom", Some("Japan")), "sfc");
         assert_eq!(system_directory("pce", Some("Japan")), "pcengine");
         assert_eq!(system_directory("pce", Some("USA")), "tg16");
+        // Europe is PC Engine, not TurboGrafx: NEC's European machine ran
+        // the US card library in localized boxes, so no European-specific
+        // cards were ever pressed and a European shelf is imported Japanese
+        // software. The archive agrees (it leaves such a release under
+        // `pce`); this pair used to disagree.
+        assert_eq!(system_directory("pce", Some("Europe")), "pcengine");
+        assert_eq!(system_directory("pcecd", Some("Europe")), "pcenginecd");
         assert_eq!(system_directory("genesis", Some("USA")), "genesis");
         assert_eq!(system_directory("genesis", Some("Europe")), "megadrive");
         assert_eq!(system_directory("genesis", Some("Japan")), "megadrivejp");

@@ -5,6 +5,7 @@ manufacturer: NEC
 generation: 4
 media_type: cartridge
 release_year: 1989
+core_platform: Pce
 regions:
   - region: usa
     release_date: "1989-08-29"

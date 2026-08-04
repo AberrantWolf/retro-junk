@@ -33,7 +33,8 @@ pub(super) fn supported(platform: Platform) -> Vec<RepresentationFormat> {
         | Platform::MasterSystem
         | Platform::Genesis
         | Platform::Sega32x
-        | Platform::GameGear => vec![Format::Rom],
+        | Platform::GameGear
+        | Platform::Pce => vec![Format::Rom],
     }
 }
 

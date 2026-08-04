@@ -2622,6 +2622,14 @@ mod tests {
             physical_archive_platform(&request, Path::new("/roms/game.pce"), &selected),
             "pce"
         );
+        // Europe too: there is no European PC Engine card library to file
+        // separately, so a European release joins the Japanese shelf rather
+        // than being relabeled a TurboGrafx-16.
+        selected.region = "Europe".to_owned();
+        assert_eq!(
+            physical_archive_platform(&request, Path::new("/roms/game.pce"), &selected),
+            "pce"
+        );
 
         selected.platform_id = "saturn".to_owned();
         selected.region = "Japan".to_owned();

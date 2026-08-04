@@ -32,6 +32,7 @@ pub enum Platform {
     GameGear,
 
     // NEC
+    Pce,
     PceCd,
 
     // Sony
@@ -66,6 +67,7 @@ const ALL_PLATFORMS: &[Platform] = &[
     Platform::Saturn,
     Platform::Dreamcast,
     Platform::GameGear,
+    Platform::Pce,
     Platform::PceCd,
     Platform::Ps1,
     Platform::Ps2,
@@ -99,6 +101,7 @@ impl Platform {
             Self::Saturn => "saturn",
             Self::Dreamcast => "dreamcast",
             Self::GameGear => "gamegear",
+            Self::Pce => "pce",
             Self::PceCd => "pcecd",
             Self::Ps1 => "ps1",
             Self::Ps2 => "ps2",
@@ -132,6 +135,7 @@ impl Platform {
             Self::Saturn => "Sega Saturn",
             Self::Dreamcast => "Sega Dreamcast",
             Self::GameGear => "Sega Game Gear",
+            Self::Pce => "NEC PC Engine / TurboGrafx-16",
             Self::PceCd => "NEC PC Engine CD / TurboGrafx-CD",
             Self::Ps1 => "Sony PlayStation",
             Self::Ps2 => "Sony PlayStation 2",
@@ -170,7 +174,7 @@ impl Platform {
             Self::Ps1 | Self::Ps2 | Self::Ps3 | Self::Psp | Self::Vita => "Sony",
 
             Self::Xbox | Self::Xbox360 => "Microsoft",
-            Self::PceCd => "NEC",
+            Self::Pce | Self::PceCd => "NEC",
         }
     }
 
@@ -206,6 +210,19 @@ impl Platform {
             Self::Saturn => &["saturn", "saturnjp", "sega saturn"],
             Self::Dreamcast => &["dreamcast", "dc"],
             Self::GameGear => &["gamegear", "game gear", "gg"],
+            Self::Pce => &[
+                "pce",
+                "pcengine",
+                "pc engine",
+                // North American name for the same hardware; the folder
+                // spellings accepted here are the ones the archive and
+                // backend scan tables already accept.
+                "tg16",
+                "tg 16",
+                "turbografx",
+                "turbografx 16",
+                "turbo grafx 16",
+            ],
             Self::PceCd => &[
                 "pcecd",
                 "pc engine cd",
@@ -223,7 +240,7 @@ impl Platform {
         }
     }
 
-    /// All 25 platform variants.
+    /// All 26 platform variants.
     #[must_use]
     pub fn all() -> &'static [Platform] {
         ALL_PLATFORMS

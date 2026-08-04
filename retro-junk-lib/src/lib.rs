@@ -32,9 +32,9 @@ pub use context::{AnalysisContext, Console, ConsoleFolder, FolderScanResult, Reg
 
 /// Create an `AnalysisContext` with all built-in console analyzers registered.
 ///
-/// Registers all 25 analyzers: NES, SNES, N64, `GameCube`, Wii, Wii U, GB, GBA,
+/// Registers all 26 analyzers: NES, SNES, N64, `GameCube`, Wii, Wii U, GB, GBA,
 /// DS, 3DS, PS1, PS2, PS3, PSP, Vita, SG-1000, Master System, Genesis, Sega CD,
-/// 32X, Saturn, Dreamcast, Game Gear, Xbox, Xbox 360.
+/// 32X, Saturn, Dreamcast, Game Gear, Xbox, Xbox 360, PC Engine, PC Engine CD.
 #[must_use]
 pub fn create_default_context() -> AnalysisContext {
     let mut ctx = AnalysisContext::new();
@@ -71,73 +71,12 @@ pub fn create_default_context() -> AnalysisContext {
     // Microsoft
     ctx.register(retro_junk_microsoft::XboxAnalyzer);
     ctx.register(retro_junk_microsoft::Xbox360Analyzer);
-    ctx.register(PceCdAnalyzer);
+
+    // NEC
+    ctx.register(retro_junk_nec::PceAnalyzer);
+    ctx.register(retro_junk_nec::PceCdAnalyzer);
 
     ctx
-}
-
-/// Redump-backed PC Engine CD / TurboGrafx-CD analyzer.
-#[derive(Debug, Default)]
-pub struct PceCdAnalyzer;
-
-impl RomAnalyzer for PceCdAnalyzer {
-    fn analyze(
-        &self,
-        _reader: &mut dyn ReadSeek,
-        _options: &AnalysisOptions,
-    ) -> Result<RomIdentification, AnalysisError> {
-        Err(AnalysisError::other(
-            "PC Engine CD identification uses complete Redump track hashes",
-        ))
-    }
-
-    fn platform(&self) -> Platform {
-        Platform::PceCd
-    }
-
-    fn file_extensions(&self) -> &'static [&'static str] {
-        &["bin", "cue", "iso", "chd"]
-    }
-
-    fn can_handle(&self, _reader: &mut dyn ReadSeek) -> bool {
-        false
-    }
-
-    fn dat_source(&self) -> DatSource {
-        DatSource::Redump
-    }
-
-    fn redump_slug(&self) -> Option<&'static str> {
-        Some("pce")
-    }
-
-    fn dat_download_ids(&self) -> &'static [&'static str] {
-        &["pce"]
-    }
-
-    fn dat_names(&self) -> &'static [&'static str] {
-        &["NEC - PC Engine CD & TurboGrafx CD"]
-    }
-
-    fn chd_extensions(&self) -> &'static [(&'static str, ChdExtensionRole)] {
-        &[("cue", ChdExtensionRole::Source(ChdMedia::Cd))]
-    }
-
-    fn compute_container_hashes(
-        &self,
-        reader: &mut dyn ReadSeek,
-        algorithms: HashAlgorithms,
-        file_path: Option<&std::path::Path>,
-        on_progress: HashProgressFn<'_>,
-    ) -> Result<Option<FileHashes>, AnalysisError> {
-        retro_junk_disc::hash::hash_disc_container(
-            reader,
-            algorithms,
-            file_path,
-            "PC Engine CD",
-            on_progress,
-        )
-    }
 }
 
 #[cfg(test)]

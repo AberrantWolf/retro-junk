@@ -29,6 +29,12 @@ fn aliases_resolve_correctly() {
         ("mark iii", Platform::MasterSystem),
         ("pcenginecd", Platform::PceCd),
         ("tg-cd", Platform::PceCd),
+        // The card system and the CD add-on are separate libraries with
+        // separate databases; their names must not bleed into each other.
+        ("pce", Platform::Pce),
+        ("pc engine", Platform::Pce),
+        ("tg16", Platform::Pce),
+        ("turbografx-16", Platform::Pce),
     ];
     for (input, expected) in cases {
         let parsed: Platform = input.parse().unwrap();

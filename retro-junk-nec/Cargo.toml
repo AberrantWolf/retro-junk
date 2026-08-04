@@ -1,0 +1,11 @@
+[package]
+name = "retro-junk-nec"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+retro-junk-core.workspace = true
+retro-junk-disc.workspace = true
+
+[lints]
+workspace = true

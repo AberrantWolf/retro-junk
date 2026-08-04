@@ -468,6 +468,14 @@ fn upgrade_legacy_regional_release(
 /// and old directories in the same release. When a mapping is added, bump
 /// [`crate::REGIONAL_PHYSICAL_PLATFORM_MIGRATION`] so already-migrated
 /// archives re-run and pick it up.
+///
+/// Removing a mapping is not symmetric and bumping the marker will not undo
+/// it: the migration only moves releases *out of* the catalog platform's
+/// folder and into a regional one, and it skips anything already sitting
+/// under a regional name. So a release filed under a mapping that later goes
+/// away stays where it was put, and moving it back would take a migration
+/// that walks in the other direction. Weigh that before deleting an arm that
+/// real archives could have exercised.
 pub fn regional_physical_platform(platform: &str, region: &str) -> Option<&'static str> {
     let platform = platform.trim().to_ascii_lowercase();
     let region = region.trim().to_ascii_lowercase();
@@ -491,9 +499,17 @@ pub fn regional_physical_platform(platform: &str, region: &str) -> Option<&'stat
         {
             Some("megadrive")
         }
-        "pce" if matches!(region.as_str(), "usa" | "us" | "canada" | "europe" | "eur") => {
-            Some("tg16")
-        }
+        // Europe is deliberately absent here, unlike the Genesis arm above.
+        // NEC's European machine was a PAL TurboGrafx-16 running the US card
+        // library in localized boxes, so no European-specific cards were
+        // pressed: No-Intro's PC Engine set has zero `(Europe)` dumps (its
+        // only Europe-tagged entries are Wii U Virtual Console re-releases
+        // shared with the USA), and Redump's PC Engine CD set has none at
+        // all. A European collection of this console is imported Japanese
+        // software, so it belongs under `pce`, which is where falling
+        // through to `None` puts it. See
+        // `.claude/skills/retro-archive/consoles/PCEngine_Overview.md`.
+        "pce" if matches!(region.as_str(), "usa" | "us" | "canada") => Some("tg16"),
         "pcecd" if matches!(region.as_str(), "japan" | "jp" | "jpn") => Some("pcenginecd"),
         "pcecd"
             if matches!(

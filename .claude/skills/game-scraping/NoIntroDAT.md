@@ -319,7 +319,10 @@ fn dat_name_to_screenscraper_id(dat_name: &str) -> Option<u32> {
         "Sega - Game Gear" => Some(21),
         "Sega - 32X" => Some(19),
         "Atari - 2600" => Some(26),
-        "NEC - PC Engine - TurboGrafx-16" => Some(31),
+        // NB: the LibRetro mirror spells this file "NEC - PC Engine -
+        // TurboGrafx 16" (no hyphen before 16). The download path must use
+        // that spelling or it 404s.
+        "NEC - PC Engine - TurboGrafx 16" => Some(31),
         "SNK - Neo Geo Pocket" => Some(25),
         "SNK - Neo Geo Pocket Color" => Some(82),
         // Redump (disc systems)
