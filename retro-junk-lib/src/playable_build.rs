@@ -238,14 +238,22 @@ pub fn build_playable(
             request.dump_id
         )));
     };
-    if let Some(existing) = dump.builds.iter().find(|build| {
-        build.evidence.format == request.format
-            && retro_junk_archive::playable_presence(
-                &request.playable_root,
-                &dump.manifest_sha256,
-                &build.evidence,
-            ) == retro_junk_archive::RepresentationPresence::Present
-    }) {
+    // Where the output is, not where it was written: looking only at the
+    // recorded path re-converted a disc that was already sitting in the
+    // frontend's folder, then left two copies of it on disk.
+    let existing = dump.builds.iter().find_map(|build| {
+        if build.evidence.format != request.format {
+            return None;
+        }
+        let (relative, presence) = crate::playable_location::release_output_presence(
+            release,
+            &request.playable_root,
+            dump,
+            &build.evidence,
+        );
+        (presence == retro_junk_archive::RepresentationPresence::Present).then_some(relative)
+    });
+    if let Some(relative) = existing {
         progress(
             "Preferred playable representation is already present",
             ProgressUnit::Items,
@@ -256,9 +264,7 @@ pub fn build_playable(
             project_selected_playlist(request, &request.dump_id)?;
         }
         return Ok(PlayableBuildOutcome {
-            output: request
-                .playable_root
-                .join(&existing.evidence.relative_output_path),
+            output: request.playable_root.join(relative),
             format: request.format.clone(),
         });
     }
@@ -901,24 +907,29 @@ fn project_selected_playlist(
         if sequence == 0 || sequence > request.expected_disc_count {
             continue;
         }
-        let build = carrier
+        // Each disc is listed at the location it is actually in. A disc whose
+        // evidence names the archive's platform folder was invisible here, so
+        // the set failed its own "every disc present" check and no playlist
+        // was written for a set that was complete on disk.
+        let disc = carrier
             .dumps
             .iter()
-            .flat_map(|dump| {
-                dump.builds
-                    .iter()
-                    .map(move |build| (dump.manifest_sha256.as_str(), build))
-            })
-            .find(|(manifest_sha, build)| {
-                build.evidence.format == request.format
-                    && retro_junk_archive::playable_presence(
-                        &request.playable_root,
-                        manifest_sha,
-                        &build.evidence,
-                    ) == retro_junk_archive::RepresentationPresence::Present
+            .flat_map(|dump| dump.builds.iter().map(move |build| (dump, build)))
+            .find_map(|(dump, build)| {
+                if build.evidence.format != request.format {
+                    return None;
+                }
+                let (relative, presence) = crate::playable_location::release_output_presence(
+                    release,
+                    &request.playable_root,
+                    dump,
+                    &build.evidence,
+                );
+                (presence == retro_junk_archive::RepresentationPresence::Present)
+                    .then_some(relative)
             });
-        if let Some((_, build)) = build {
-            discs.push((sequence, build.evidence.relative_output_path.clone()));
+        if let Some(relative) = disc {
+            discs.push((sequence, relative));
         }
     }
     discs.sort_by_key(|(sequence, _)| *sequence);

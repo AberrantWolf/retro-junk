@@ -58,9 +58,7 @@ pub fn rename_stale_playables(
     )?;
     let stale = overviews
         .iter()
-        .filter(|release| {
-            only_release.is_none_or(|id| release.archive_release_id == id)
-        })
+        .filter(|release| only_release.is_none_or(|id| release.archive_release_id == id))
         .flat_map(|release| &release.completion.attention)
         .filter_map(|attention| match attention {
             Attention::StaleName {

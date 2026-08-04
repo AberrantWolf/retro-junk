@@ -1078,14 +1078,30 @@ fn run_adopt_playable(
 
     let mut files = Vec::new();
     collect_playable_files(&playable_root, &playable_root, &mut files)?;
+    // Every file the archive already accounts for, at the location it is
+    // actually in. Comparing against the recorded path instead made each
+    // output whose release publishes into a different folder than the one it
+    // was built into look unaccounted for, and offered a file the archive
+    // already owns for adoption a second time.
+    let outputs_root = playable_root.as_path();
     let known_outputs = snapshot
         .releases
         .iter()
-        .flat_map(|release| &release.physical_copies)
-        .flat_map(|item| &item.carriers)
-        .flat_map(|medium| &medium.dumps)
-        .flat_map(|dump| &dump.builds)
-        .map(|build| build.evidence.relative_output_path.as_str())
+        .flat_map(|release| {
+            release
+                .physical_copies
+                .iter()
+                .flat_map(|item| &item.carriers)
+                .flat_map(|medium| &medium.dumps)
+                .flat_map(|dump| &dump.builds)
+                .map(move |build| {
+                    retro_junk_lib::playable_location::release_output_relative(
+                        release,
+                        outputs_root,
+                        &build.evidence,
+                    )
+                })
+        })
         .collect::<std::collections::BTreeSet<_>>();
     // Decisions the user already made about whole groups of strays. Consulted
     // before anything is hashed, so an ignored file costs a path comparison

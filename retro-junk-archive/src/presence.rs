@@ -91,12 +91,50 @@ pub fn resolve_playable(
     system_directory: &str,
 ) -> (String, RepresentationPresence) {
     let presence = playable_presence(playable_root, current_input_manifest_sha256, evidence);
-    if presence != RepresentationPresence::Missing || system_directory.is_empty() {
+    if presence != RepresentationPresence::Missing {
         return (evidence.relative_output_path.clone(), presence);
     }
+    let resolved = resolve_playable_path(playable_root, evidence, system_directory);
+    if resolved == evidence.relative_output_path {
+        return (resolved, presence);
+    }
+    let mut relocated = evidence.clone();
+    relocated.relative_output_path = resolved;
+    let relocated_presence =
+        playable_presence(playable_root, current_input_manifest_sha256, &relocated);
+    if relocated_presence == RepresentationPresence::Present {
+        (relocated.relative_output_path, relocated_presence)
+    } else {
+        (evidence.relative_output_path.clone(), presence)
+    }
+}
+
+/// Where a build's output is, as a path relative to the playable root.
+///
+/// The location half of [`resolve_playable`], on its own. It answers only
+/// "which file is this evidence talking about", and takes no view on whether
+/// those bytes are current — so a caller that just needs to find the file
+/// cannot get the freshness question wrong by accident, and cannot be tempted
+/// to read `relative_output_path` directly instead.
+///
+/// Reading that field directly is the mistake this exists to prevent: it says
+/// where the output was *written*, and a playable written under the archive's
+/// platform folder (`ps1`) while the frontend files it under `psx` is then
+/// reported missing by everything that looks for it literally.
+#[must_use]
+pub fn resolve_playable_path(
+    playable_root: &Path,
+    evidence: &BuildEvidence,
+    system_directory: &str,
+) -> String {
     let recorded = Path::new(&evidence.relative_output_path);
-    if recorded.as_os_str().is_empty() {
-        return (evidence.relative_output_path.clone(), presence);
+    if system_directory.is_empty() || recorded.as_os_str().is_empty() {
+        return evidence.relative_output_path.clone();
+    }
+    // Where the evidence says, if something is actually there. Only a file
+    // that is absent is worth looking elsewhere for.
+    if std::fs::symlink_metadata(playable_root.join(recorded)).is_ok() {
+        return evidence.relative_output_path.clone();
     }
     // Only a leading *directory* names the old location. Evidence that records
     // a bare file name has no directory to replace — the file name is the tail
@@ -109,28 +147,29 @@ pub fn resolve_playable(
     } else {
         match leading.and_then(|component| component.as_os_str().to_str()) {
             Some(directory) => (Some(directory), tail),
-            None => return (evidence.relative_output_path.clone(), presence),
+            None => return evidence.relative_output_path.clone(),
         }
     };
     if leading.is_some_and(|directory| directory.eq_ignore_ascii_case(system_directory)) {
-        return (evidence.relative_output_path.clone(), presence);
+        return evidence.relative_output_path.clone();
     }
-    let mut relocated = evidence.clone();
-    relocated.relative_output_path = Path::new(system_directory)
+    let relocated = Path::new(system_directory)
         .join(tail)
         .to_string_lossy()
         .replace('\\', "/");
-    let relocated_presence =
-        playable_presence(playable_root, current_input_manifest_sha256, &relocated);
-    if relocated_presence == RepresentationPresence::Present {
-        log::debug!(
-            "Resolved playable {} -> {}",
-            evidence.relative_output_path,
-            relocated.relative_output_path
-        );
-        (relocated.relative_output_path, relocated_presence)
-    } else {
-        (evidence.relative_output_path.clone(), presence)
+    // Accept the new location only if the file there is the one the evidence
+    // describes. A same-named file of a different size is somebody else's.
+    match std::fs::symlink_metadata(playable_root.join(&relocated)) {
+        Ok(metadata)
+            if metadata.file_type().is_file() && metadata.len() == evidence.output_size =>
+        {
+            log::debug!(
+                "Resolved playable {} -> {relocated}",
+                evidence.relative_output_path
+            );
+            relocated
+        }
+        Ok(_) | Err(_) => evidence.relative_output_path.clone(),
     }
 }
 

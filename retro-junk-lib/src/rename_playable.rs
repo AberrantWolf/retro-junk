@@ -16,7 +16,7 @@ mod tests;
 
 use std::path::{Path, PathBuf};
 
-use retro_junk_archive::{ArchiveIndexSnapshot, IndexedDump};
+use retro_junk_archive::{ArchiveIndexSnapshot, IndexedDump, IndexedRelease};
 
 /// One playable to rename, as the caller identified it.
 pub struct RenamePlayableRequest<'a> {
@@ -66,16 +66,24 @@ fn io(path: &Path) -> impl Fn(std::io::Error) -> RenamePlayableError + '_ {
     }
 }
 
-/// Find the dump whose build evidence currently names this representation,
-/// and that evidence.
+/// Find the release and dump whose build evidence currently names this
+/// representation, and that evidence.
 ///
 /// The *current* record specifically: `evidence/` is append-only, so a file
 /// that has been renamed or rebuilt before has several records, and only the
 /// live one describes where it is now.
+///
+/// The release comes back with it because finding the file needs it: which
+/// frontend folder a playable sits in is a property of its release, not of
+/// the evidence record.
 fn locate<'a>(
     snapshot: &'a ArchiveIndexSnapshot,
     representation_id: &str,
-) -> Option<(&'a IndexedDump, &'a retro_junk_archive::BuildEvidence)> {
+) -> Option<(
+    &'a IndexedRelease,
+    &'a IndexedDump,
+    &'a retro_junk_archive::BuildEvidence,
+)> {
     for release in &snapshot.releases {
         for copy in &release.physical_copies {
             for carrier in &copy.carriers {
@@ -86,7 +94,7 @@ fn locate<'a>(
                             evidence.child_representation_id.to_string() == representation_id
                         })
                     {
-                        return Some((dump, evidence));
+                        return Some((release, dump, evidence));
                     }
                 }
             }
@@ -100,11 +108,16 @@ fn locate<'a>(
 pub fn rename_playable(
     request: &RenamePlayableRequest<'_>,
 ) -> Result<RenamePlayableReport, RenamePlayableError> {
-    let (dump, current) =
+    let (release, dump, current) =
         locate(request.snapshot, request.representation_id).ok_or_else(|| {
             RenamePlayableError::UnknownRepresentation(request.representation_id.to_owned())
         })?;
-    let relative_path = current.relative_output_path.clone();
+    // Ask where the file *is*, not where it was written, by the same route the
+    // projection took when it decided this playable was misnamed. Reading the
+    // recorded path directly moved nothing for every release whose archive
+    // folder differs from its frontend folder.
+    let relative_path =
+        crate::playable_location::release_output_relative(release, request.playable_root, current);
     let source = request.playable_root.join(&relative_path);
     if !source.is_file() {
         return Err(RenamePlayableError::SourceMissing(

@@ -49,7 +49,7 @@ pub use marks::{
 };
 pub use presence::{
     RepresentationPresence, archived_files_presence, playable_presence, preservation_presence,
-    resolve_playable,
+    resolve_playable, resolve_playable_path,
 };
 pub use profile::{CollectionProfile, WatchBackend, collection_root_for};
 pub use redumper::{Redumper, RedumperAudit, RedumperError, RedumperWorkspace};

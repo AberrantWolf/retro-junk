@@ -160,6 +160,35 @@ pub fn project_archive_assets(
     Ok(total)
 }
 
+/// Gamelist entries for names a release has stopped publishing under.
+///
+/// A gamelist entry is keyed on its path, so without removing these a rebuild
+/// under a corrected name leaves the old entry behind and the frontend lists
+/// the game twice — once playable, once pointing at a file that is gone.
+///
+/// The leading folder is dropped rather than matched against the gamelist's
+/// own: build evidence names the folder the output was *written* to, and a
+/// record written under the archive's platform folder (`ps1`) describes the
+/// same retired entry as one written under the frontend's (`psx`). Matching
+/// on the folder left those entries in the list forever.
+fn retired_gamelist_paths(release: &IndexedRelease) -> BTreeSet<String> {
+    retro_junk_archive::superseded_release_builds(release)
+        .into_iter()
+        .map(|evidence| {
+            let recorded = Path::new(&evidence.relative_output_path);
+            let mut components = recorded.components();
+            components.next();
+            let tail = components.as_path();
+            let relative = if tail.as_os_str().is_empty() {
+                recorded
+            } else {
+                tail
+            };
+            relative.to_string_lossy().replace('\\', "/")
+        })
+        .collect()
+}
+
 /// Add the release's preferred playable entry to an ES-DE gamelist while
 /// preserving any existing user-managed metadata.
 ///
@@ -176,7 +205,13 @@ pub fn sync_esde_gamelist_for_release(
     // gamelist entry is how one release became two in the frontend.
     let mut outputs = retro_junk_archive::current_release_builds(release)
         .into_iter()
-        .map(|evidence| PathBuf::from(&evidence.relative_output_path))
+        .map(|evidence| {
+            PathBuf::from(crate::playable_location::release_output_relative(
+                release,
+                playable_root,
+                evidence,
+            ))
+        })
         .filter(|relative| playable_root.join(relative).is_file())
         .collect::<BTreeSet<_>>();
     let playlist = outputs.iter().find(|relative| {
@@ -214,19 +249,7 @@ pub fn sync_esde_gamelist_for_release(
     let rom_dir = playable_root.join(platform);
     let media_dir = media_root.join(platform);
     let metadata_dir = metadata_root.join(platform);
-    // Entries for names this release has stopped publishing under. Upserting
-    // is keyed on the path, so without this a rebuild under a corrected name
-    // leaves the old entry behind and the frontend lists the game twice — once
-    // playable, once pointing at a file that is gone.
-    let retired = retro_junk_archive::superseded_release_builds(release)
-        .into_iter()
-        .filter_map(|evidence| {
-            Path::new(&evidence.relative_output_path)
-                .strip_prefix(platform)
-                .ok()
-                .map(|relative| relative.to_string_lossy().replace('\\', "/"))
-        })
-        .collect::<BTreeSet<_>>();
+    let retired = retired_gamelist_paths(release);
     retro_junk_frontend::esde::remove_game_entries(&metadata_dir.join("gamelist.xml"), &retired)
         .map_err(|error| AssetProjectionError::Archive(error.to_string()))?;
     let stem = if relative_rom

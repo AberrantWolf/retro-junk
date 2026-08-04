@@ -18,6 +18,7 @@ pub mod hasher;
 pub mod naming;
 pub mod organize;
 pub mod playable_build;
+pub mod playable_location;
 pub mod redumper_cache;
 pub mod rename;
 pub mod rename_playable;
@@ -142,3 +143,7 @@ impl RomAnalyzer for PceCdAnalyzer {
 #[cfg(test)]
 #[path = "tests/analyzer_invariants.rs"]
 mod analyzer_invariants;
+
+#[cfg(test)]
+#[path = "tests/archive_fixture.rs"]
+mod archive_fixture;

@@ -426,7 +426,7 @@ fn only_the_name_a_release_currently_publishes_under_is_projected() {
     let source = temp.path().join("dump");
     std::fs::create_dir_all(&source).unwrap();
     std::fs::write(source.join("Game.bin"), b"disc bytes").unwrap();
-    let ingested = ingest(&archive, &source, "psx", "Game");
+    ingest(&archive, &source, "psx", "Game");
 
     let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
     let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
@@ -494,11 +494,11 @@ fn a_name_two_lineages_share_is_never_retired() {
     let source = temp.path().join("dump");
     std::fs::create_dir_all(&source).unwrap();
     std::fs::write(source.join("Game.bin"), b"disc bytes").unwrap();
-    let ingested = ingest(&archive, &source, "psx", "Game");
+    ingest(&archive, &source, "psx", "Game");
 
     let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
     let dump = &snapshot.releases[0].physical_copies[0].carriers[0].dumps[0];
-    let mut write = |parent, path: &str| {
+    let write = |parent, path: &str| {
         retro_junk_archive::write_build_evidence(
             &dump.directory,
             &retro_junk_archive::BuildEvidence {
