@@ -200,23 +200,6 @@ pub fn sync_esde_gamelist_for_release(
     metadata_root: &Path,
     media_root: &Path,
 ) -> Result<Option<PathBuf>, AssetProjectionError> {
-    // Which frontend folder this release publishes into is a property of the
-    // release, not of whichever output happens to be findable — so it is known
-    // before anything else here, and retiring can happen without one.
-    let system_directory = crate::playable_location::release_system_directory(release);
-    let metadata_dir = metadata_root.join(&system_directory);
-
-    // Retire first, and unconditionally. An entry for a name this release has
-    // stopped publishing under is wrong whether or not a *new* entry can be
-    // written — and the releases that cannot be published right now (a
-    // multi-disc set whose playlist is not built yet, an output whose file is
-    // missing) are exactly the ones most likely to be carrying a dead entry.
-    // Cleanup used to sit below the early returns, so those releases never
-    // cleaned up at all and the frontend listed a game that would not launch.
-    let retired = retired_gamelist_paths(release);
-    retro_junk_frontend::esde::remove_game_entries(&metadata_dir.join("gamelist.xml"), &retired)
-        .map_err(|error| AssetProjectionError::Archive(error.to_string()))?;
-
     // Only current builds: a superseded output whose file happens to still be
     // on disk is not a game, it is the leftover of a rename — and giving it a
     // gamelist entry is how one release became two in the frontend.
@@ -231,33 +214,64 @@ pub fn sync_esde_gamelist_for_release(
         })
         .filter(|relative| playable_root.join(relative).is_file())
         .collect::<BTreeSet<_>>();
-    let playlist = outputs.iter().find(|relative| {
-        relative
-            .extension()
-            .and_then(|value| value.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("m3u"))
-    });
+    let playlist = outputs
+        .iter()
+        .find(|relative| {
+            relative
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("m3u"))
+        })
+        .cloned();
     let carrier_count = release
         .physical_copies
         .iter()
         .map(|copy| copy.carriers.len())
         .max()
         .unwrap_or(0);
-    let selected = if let Some(playlist) = playlist {
-        playlist.clone()
+    let selected = if playlist.is_some() {
+        playlist
     } else if carrier_count <= 1 {
-        let Some(output) = outputs.pop_first() else {
-            return Ok(None);
-        };
-        output
+        outputs.pop_first()
     } else {
+        None
+    };
+
+    // The folder this release publishes into is the folder its chosen output
+    // is actually in — an output can sit somewhere the naming rule would not
+    // pick today (a `world` NES release filed under `famicom`), and the
+    // gamelist that lists it is the one in *that* folder. Only when there is
+    // nothing to choose from do we fall back to where the release should
+    // publish, which is all retiring needs.
+    let directory = selected
+        .as_ref()
+        .and_then(|relative| relative.components().next())
+        .and_then(|component| component.as_os_str().to_str())
+        .map_or_else(
+            || crate::playable_location::release_system_directory(release),
+            str::to_owned,
+        );
+    let metadata_dir = metadata_root.join(&directory);
+
+    // Retire first, and whether or not a new entry follows. An entry for a
+    // name this release has stopped publishing under is wrong either way — and
+    // the releases that cannot be published right now (a multi-disc set whose
+    // playlist is not built yet, an output whose file is missing) are exactly
+    // the ones most likely to be carrying a dead entry. Cleanup used to sit
+    // below the early returns, so those releases never cleaned up at all and
+    // the frontend listed a game that would not launch.
+    let retired = retired_gamelist_paths(release);
+    retro_junk_frontend::esde::remove_game_entries(&metadata_dir.join("gamelist.xml"), &retired)
+        .map_err(|error| AssetProjectionError::Archive(error.to_string()))?;
+
+    let Some(selected) = selected else {
         return Ok(None);
     };
     let relative_rom = selected
-        .strip_prefix(&system_directory)
+        .strip_prefix(&directory)
         .map_err(|error| AssetProjectionError::Archive(error.to_string()))?;
-    let rom_dir = playable_root.join(&system_directory);
-    let media_dir = media_root.join(&system_directory);
+    let rom_dir = playable_root.join(&directory);
+    let media_dir = media_root.join(&directory);
     let stem = if relative_rom
         .parent()
         .and_then(Path::file_name)
@@ -661,6 +675,86 @@ mod tests {
         let xml = std::fs::read_to_string(path).unwrap();
         assert!(xml.contains("<path>./Game.nes</path>"));
         assert!(xml.contains("<name>Game</name>"));
+    }
+
+    /// An output can sit in a folder the naming rule would not pick for its
+    /// release today — a `world` NES release whose playable was filed under
+    /// `famicom`. The gamelist that lists it is the one in *that* folder.
+    ///
+    /// Deriving the folder from the release instead of from the chosen output
+    /// made this a hard error ("prefix not found"), so the release silently
+    /// stopped being projected at all.
+    #[test]
+    fn a_release_filed_outside_its_computed_folder_is_still_projected() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("archive");
+        let playable = temp.path().join("roms");
+        let source = temp.path().join("game.nes");
+        std::fs::write(&source, b"rom").unwrap();
+        retro_junk_archive::initialize_archive(
+            &archive,
+            &retro_junk_archive::ArchiveRootManifest::new("Test"),
+        )
+        .unwrap();
+        let ingested = retro_junk_archive::ingest_new_carrier_dump(
+            &archive,
+            &source,
+            retro_junk_archive::NewCarrierDump {
+                platform_id: "nes".to_owned(),
+                title: "Game".to_owned(),
+                region: "world".to_owned(),
+                revision: String::new(),
+                variant: String::new(),
+                owner_id: "default".to_owned(),
+                physical_copy_label: String::new(),
+                serial: String::new(),
+                sequence_number: 0,
+                carrier_label: String::new(),
+                carrier_kind: retro_junk_archive::CarrierKind::Cartridge,
+                format: retro_junk_archive::RepresentationFormat::Rom,
+                catalog_binding: retro_junk_archive::CatalogBinding::default(),
+                source_package: retro_junk_archive::SourcePackageRecord::default(),
+                expected_files: Vec::new(),
+                physical_copy_id: None,
+            },
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+        // Built into `famicom`, while the release's own folder would be `nes`.
+        crate::playable_build::build_playable(
+            &crate::playable_build::PlayableBuildRequest {
+                archive_root: archive.clone(),
+                playable_root: playable.clone(),
+                workspace_root: temp.path().join("workspace"),
+                dump_id: ingested.dump.dump_id.to_string(),
+                format: retro_junk_archive::RepresentationFormat::Rom,
+                chdman_path: PathBuf::new(),
+                redumper_path: PathBuf::new(),
+                dolphin_tool_path: PathBuf::new(),
+                allow_unverified: true,
+                retain_intermediate: false,
+                options: std::collections::BTreeMap::new(),
+                playable_platform_id: "famicom".to_owned(),
+                expected_disc_count: 1,
+                canonical_output_stem: "Game".to_owned(),
+                canonical_release_name: "Game".to_owned(),
+            },
+            &|_, _, _, _| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        let snapshot = retro_junk_archive::scan_archive(&archive).unwrap();
+        let metadata = temp.path().join("metadata");
+        let media = temp.path().join("media");
+        let path =
+            sync_esde_gamelist_for_release(&snapshot.releases[0], &playable, &metadata, &media)
+                .expect("projecting a release filed outside its computed folder failed")
+                .expect("no gamelist was written");
+        assert_eq!(path, metadata.join("famicom").join("gamelist.xml"));
+        let xml = std::fs::read_to_string(path).unwrap();
+        assert!(xml.contains("<path>./Game.nes</path>"));
     }
 
     /// Replacing artwork must not leave the media tree without a file: the
