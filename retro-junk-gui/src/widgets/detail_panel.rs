@@ -64,6 +64,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
     show_file_actions(ui, app, console_idx, true);
     ui.separator();
 
+    // Set inside the scroll area, acted on after it: building the prompt needs
+    // a mutable borrow of `app`, which the read-only entry borrow below holds.
+    let mut open_chooser = false;
     egui::ScrollArea::vertical().show(ui, |ui| {
         // Borrow console/entry for the read-only section before the region ComboBox.
         let console = &app.browser.consoles[console_idx];
@@ -79,6 +82,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 EntryStatus::Ambiguous => ("Ambiguous", effective.color()),
                 EntryStatus::LikelyMatched => ("Likely match", effective.color()),
                 EntryStatus::Matched => ("Verified", effective.color()),
+                EntryStatus::Disambiguated => ("Chosen by you", effective.color()),
                 EntryStatus::Tagged(CatalogTag::Homebrew) => ("Homebrew", effective.color()),
                 EntryStatus::Tagged(CatalogTag::Modded) => ("Modded", effective.color()),
             };
@@ -121,6 +125,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                     .weak()
                     .italics(),
             );
+            // Hashing is the better answer because it settles the question
+            // instead of asserting past it, so it is named first. But a disc
+            // whose remaining tracks are simply gone can never be settled that
+            // way, and choosing is the only route by which that file ever
+            // becomes usable at all.
+            if ui.button("Choose which one\u{2026}").clicked() {
+                open_chooser = true;
+            }
         } else if entry.status == EntryStatus::Ambiguous && entry.ambiguous_candidates.is_empty() {
             ui.add_space(2.0);
             if let Some(ref discs) = entry.disc_identifications {
@@ -573,6 +585,84 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             show_media(ui, media);
         }
     });
+    if open_chooser {
+        open_disambiguation(app, console_idx, entry_idx);
+    }
+}
+
+/// Ask the ladder what this file could be, and put those answers in front of
+/// the user.
+///
+/// The candidate list comes from `identify` rather than from the entry's cached
+/// candidate *names*, because a choice has to be recorded against a catalog
+/// media id — and because asking the one identifier is what guarantees the
+/// chooser cannot offer something the evidence already ruled out.
+fn open_disambiguation(app: &mut RetroJunkApp, console_idx: usize, entry_idx: usize) {
+    let Some(db_path) = app.db_path.clone() else {
+        app.push_error("Choose entry", "Catalog database is unavailable");
+        return;
+    };
+    let console = &app.browser.consoles[console_idx];
+    let entry = &console.entries[entry_idx];
+    let platform_id = console.platform.short_name().to_owned();
+    let label = entry.game_entry.display_name().to_owned();
+    let Some(hashes) = entry.hashes.clone() else {
+        app.push_error(
+            "Choose entry",
+            "Calculate hashes for this file first — there is nothing to match candidates against",
+        );
+        return;
+    };
+    let content = retro_junk_archive::MarkedContent {
+        size: hashes.data_size,
+        crc32: hashes.crc32.clone(),
+        sha1: hashes.sha1.clone().unwrap_or_default(),
+        md5: hashes.md5.clone().unwrap_or_default(),
+    };
+    let tracks = vec![retro_junk_db::TrackDigest {
+        number: 1,
+        size: content.size,
+        crc32: content.crc32.clone(),
+        md5: content.md5.clone(),
+        sha1: content.sha1.clone(),
+    }];
+    match retro_junk_backend::disambiguation::candidates_for(&db_path, &platform_id, tracks) {
+        Ok(candidates) if candidates.is_empty() => app.push_error(
+            "Choose entry",
+            "No catalog entry matches this file's hashes, so there is nothing to choose between",
+        ),
+        Ok(candidates) => {
+            let chosen = app
+                .settings
+                .library
+                .active_profile()
+                .and_then(|profile| {
+                    retro_junk_backend::disambiguation::Disambiguations::load(
+                        &profile.collection_root(),
+                    )
+                    .ok()
+                })
+                .and_then(|chosen| chosen.chosen_for(&content).map(str::to_owned));
+            let selected = chosen
+                .as_ref()
+                .and_then(|id| {
+                    candidates
+                        .iter()
+                        .position(|candidate| &candidate.media_id == id)
+                })
+                .unwrap_or(0);
+            app.ui_state.disambiguate_prompt =
+                Some(crate::widgets::disambiguate_dialog::DisambiguatePrompt {
+                    label,
+                    platform_id,
+                    content,
+                    candidates,
+                    chosen,
+                    selected,
+                });
+        }
+        Err(error) => app.push_error("Choose entry", &error),
+    }
 }
 
 fn show_multi_selection(ui: &mut egui::Ui, app: &mut RetroJunkApp) {

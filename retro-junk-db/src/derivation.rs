@@ -221,8 +221,10 @@ pub enum MarkDecision<'a> {
     },
     /// The user corrected which region this file is from.
     RegionOverride { region: &'a str },
-    /// The user took the tag off.
-    Cleared,
+    /// The user took a decision back. Names *which* decision, because marks
+    /// are filed one per decision slot: clearing a region correction must not
+    /// take a homebrew tag with it.
+    Cleared { kind: retro_junk_archive::MarkKind },
 }
 
 /// Record — or forget — the durable form of one library row's tag.
@@ -257,9 +259,9 @@ pub fn record_entry_mark(
         MarkDecision::RegionOverride { region } => {
             (retro_junk_archive::MarkKind::RegionOverride, region, "")
         }
-        // Removal only needs the file's identity: a mark's path is its
-        // platform and digest, never its kind.
-        MarkDecision::Cleared => (retro_junk_archive::MarkKind::Homebrew, "", ""),
+        // Removal needs the file's identity *and* which slot to clear: a
+        // mark's path is its decision slot, platform and digest.
+        MarkDecision::Cleared { kind } => (kind, "", ""),
     };
     let name = match decision {
         MarkDecision::Homebrew { name, .. } if !name.trim().is_empty() => name.to_owned(),
@@ -279,9 +281,11 @@ pub fn record_entry_mark(
         parent_work_id: parent_work_id.to_owned(),
         parent_dat_name,
         content: subject.content,
+        chosen_media_id: String::new(),
+        chosen_dat_name: String::new(),
         note: String::new(),
     };
-    let outcome = if matches!(decision, MarkDecision::Cleared) {
+    let outcome = if matches!(decision, MarkDecision::Cleared { .. }) {
         retro_junk_archive::remove_mark(collection_root, &mark).map(|_| None)
     } else {
         retro_junk_archive::write_mark(collection_root, &mark).map(Some)

@@ -10,6 +10,9 @@ pub mod adoption;
 pub mod assets;
 pub mod completion;
 pub mod daemon;
+/// The disambiguation store lives in `retro-junk-db`, because carrier
+/// resolution there consults it too and one definition beats two.
+pub use retro_junk_db::disambiguation;
 pub mod executor;
 pub mod fingerprint;
 pub mod incoming;

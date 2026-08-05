@@ -2299,6 +2299,8 @@ fn applying_a_homebrew_mark_rebuilds_its_catalog_rows_and_claims_its_file() {
             sha1: "aaaa1111".to_owned(),
             md5: String::new(),
         },
+        chosen_media_id: String::new(),
+        chosen_dat_name: String::new(),
         note: String::new(),
     };
     retro_junk_archive::write_mark(temp.path(), &mark).unwrap();
@@ -2358,6 +2360,8 @@ fn a_mod_waits_for_the_parent_dat_instead_of_inventing_one() {
             sha1: "bbbb2222".to_owned(),
             md5: String::new(),
         },
+        chosen_media_id: String::new(),
+        chosen_dat_name: String::new(),
         note: String::new(),
     };
     retro_junk_archive::write_mark(temp.path(), &mark).unwrap();

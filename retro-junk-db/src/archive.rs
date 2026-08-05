@@ -707,11 +707,13 @@ pub fn unbound_playable_rows(
 ///
 /// Deliberately conservative: only current, successful, complete-track-set
 /// evidence counts, and an ambiguous match resolves to nothing rather than
-/// guessing between candidates.
+/// guessing between candidates — unless a person has already chosen, which
+/// `chosen` carries.
 fn rederived_catalog_media(
     conn: &Connection,
     platform_id: &str,
     carrier: &retro_junk_archive::IndexedCarrier,
+    chosen: &crate::disambiguation::Disambiguations,
 ) -> Result<Option<String>, OperationError> {
     let platform = catalog_platform_id(platform_id);
     for dump in &carrier.dumps {
@@ -758,13 +760,33 @@ fn rederived_catalog_media(
             if tracks.len() != evidence.tracks.len() {
                 continue;
             }
-            if let [matched] = match_complete_catalog_media(conn, &platform, &tracks)?.as_slice() {
-                log::info!(
-                    "Re-resolved carrier {} to catalog medium {} from recorded track digests",
-                    carrier.manifest.carrier_id,
-                    matched.media_id
-                );
-                return Ok(Some(matched.media_id.clone()));
+            match match_complete_catalog_media(conn, &platform, &tracks)?.as_slice() {
+                [matched] => {
+                    log::info!(
+                        "Re-resolved carrier {} to catalog medium {} from recorded track digests",
+                        carrier.manifest.carrier_id,
+                        matched.media_id
+                    );
+                    return Ok(Some(matched.media_id.clone()));
+                }
+                // Several catalog entries fit these bytes. The tool will not
+                // choose, but a person may already have — and their answer is
+                // kept beside the collection precisely so it survives this
+                // projection being rebuilt.
+                candidates if candidates.len() > 1 => {
+                    if let Some(chosen) = chosen.chosen_for_any(
+                        candidates.iter().map(|candidate| candidate.media_id.as_str()),
+                    ) {
+                        log::info!(
+                            "Carrier {} resolves to catalog medium {chosen}, chosen by hand from \
+                             {} possible entries",
+                            carrier.manifest.carrier_id,
+                            candidates.len()
+                        );
+                        return Ok(Some(chosen.to_owned()));
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -975,6 +997,13 @@ pub fn reconcile_archive_snapshot(
 ) -> Result<(), OperationError> {
     let tx = conn.transaction()?;
     let profile_id = snapshot.manifest.profile_id.to_string();
+    // Decisions a person made about ambiguous carriers. Read from beside the
+    // collection rather than from this projection, which is about to be
+    // rewritten — that is the whole reason they are not stored here.
+    let chosen = crate::disambiguation::Disambiguations::load(
+        &retro_junk_archive::collection_root_for(&snapshot.root, playable_root),
+    )
+    .unwrap_or_default();
     // Policies intentionally have no polymorphic foreign key. Remove carrier
     // policies owned by this projection before cascading its archive rows, or
     // a rebuild would leave stale rows and collide on reinsertion.
@@ -1139,7 +1168,7 @@ pub fn reconcile_archive_snapshot(
                 let (catalog_media, media_binding) = match recorded {
                     Some(id) => (Some(id), "resolved"),
                     None => {
-                        match rederived_catalog_media(&tx, &release.manifest.platform_id, carrier)?
+                        match rederived_catalog_media(&tx, &release.manifest.platform_id, carrier, &chosen)?
                         {
                             Some(id) => (Some(id), "rederived"),
                             None if !claimed_media.is_empty() => (None, "unresolved"),

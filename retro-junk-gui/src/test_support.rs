@@ -59,6 +59,7 @@ pub fn test_entry(game_entry: GameEntry) -> LibraryEntry {
         disc_identifications: None,
         broken_references: None,
         cue_compat_issues: None,
+        disambiguation: None,
         tag: None,
     }
 }

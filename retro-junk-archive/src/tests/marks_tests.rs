@@ -15,6 +15,8 @@ fn mark(kind: MarkKind, name: &str, sha1: &str) -> CollectionMark {
             sha1: sha1.to_owned(),
             md5: String::new(),
         },
+        chosen_media_id: String::new(),
+        chosen_dat_name: String::new(),
         note: String::new(),
     }
 }

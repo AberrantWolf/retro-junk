@@ -105,6 +105,10 @@ pub struct LibraryEntry {
     pub cue_compat_issues: Option<Vec<CueCompatIssue>>,
     /// User-applied tag (homebrew or modded).
     pub tag: Option<CatalogTag>,
+    /// The catalog medium a person chose for this file when the evidence left
+    /// more than one possible. Read from the collection's marks, never from a
+    /// database row, so it survives a rename and a rebuild.
+    pub disambiguation: Option<String>,
 }
 
 /// A CUE sheet compatibility issue detected during scan.
@@ -189,6 +193,9 @@ pub enum EntryStatus {
     Matched,
     /// User-tagged as homebrew or modded
     Tagged(CatalogTag),
+    /// A person picked this entry from the candidates the evidence left.
+    /// Correct, but asserted rather than verified, and re-selectable.
+    Disambiguated,
 }
 
 impl EntryStatus {
@@ -205,14 +212,19 @@ impl EntryStatus {
     /// - `Tagged` is [`Severity::Asserted`]. Homebrew and mods are not defects
     ///   and never become verified, because no catalog will ever list them —
     ///   they are a person's assertion, which is what blue now means.
+    /// - `Ambiguous` is [`Severity::Incomplete`]. It has candidates and needs
+    ///   a decision, which is work to finish rather than a dead end.
     #[must_use]
     pub const fn severity(self) -> crate::completion::Severity {
         use crate::completion::Severity;
         match self {
             Self::Matched => Severity::Verified,
-            Self::Tagged(_) => Severity::Asserted,
-            Self::LikelyMatched => Severity::Incomplete,
-            Self::Unrecognized | Self::Ambiguous => Severity::Broken,
+            Self::Tagged(_) | Self::Disambiguated => Severity::Asserted,
+            // Ambiguous is amber, not red: several catalog entries remain
+            // possible, so there is a decision waiting rather than nothing to
+            // go on. Red is for content that cannot be used at all.
+            Self::LikelyMatched | Self::Ambiguous => Severity::Incomplete,
+            Self::Unrecognized => Severity::Broken,
             Self::Unknown => Severity::Unmeasured,
         }
     }
@@ -227,6 +239,9 @@ impl EntryStatus {
                 "Likely match \u{2013} identity is known, but the complete content is not hash-verified"
             }
             EntryStatus::Matched => "Verified match in database",
+            EntryStatus::Disambiguated => {
+                "You chose this entry \u{2013} not verified, and you can change it"
+            }
             EntryStatus::Tagged(CatalogTag::Homebrew) => "Homebrew game",
             EntryStatus::Tagged(CatalogTag::Modded) => "Modded ROM",
         }
@@ -348,18 +363,7 @@ pub fn apply_catalog_resolution(
             cover_title,
             screen_title,
         } => {
-            entry.status = match info.method {
-                MatchMethod::Serial => EntryStatus::LikelyMatched,
-                // Recorded archive evidence already names a complete,
-                // catalog-verified dump; there is no local track set to judge.
-                MatchMethod::ArchiveEvidence => EntryStatus::Matched,
-                MatchMethod::Crc32 | MatchMethod::Sha1
-                    if entry.disc_verification.permits_verified_status() =>
-                {
-                    EntryStatus::Matched
-                }
-                MatchMethod::Crc32 | MatchMethod::Sha1 => EntryStatus::LikelyMatched,
-            };
+            entry.status = verdict_status(entry, matches, &info);
             entry.dat_match = Some(info);
             entry.ambiguous_candidates.clear();
             if !cover_title.is_empty() {
@@ -370,7 +374,14 @@ pub fn apply_catalog_resolution(
             }
         }
         CatalogUiResolution::Ambiguous(candidates) => {
-            entry.status = EntryStatus::Ambiguous;
+            // A person may already have settled this. `decide` is what says
+            // so — the same call the archive side and the chooser make.
+            entry.status = match identification_for(entry, matches, false) {
+                retro_junk_db::identify::Identification::Manual { .. } => {
+                    EntryStatus::Disambiguated
+                }
+                _ => EntryStatus::Ambiguous,
+            };
             entry.dat_match = None;
             entry.ambiguous_candidates = candidates;
         }
@@ -382,6 +393,80 @@ pub fn apply_catalog_resolution(
             };
             entry.dat_match = None;
             entry.ambiguous_candidates.clear();
+        }
+    }
+}
+
+/// The one verdict, asked of the one ladder.
+///
+/// The library scan matches in bulk — a thousand files in two queries — so it
+/// cannot call `identify` per file. It gathers differently and then decides
+/// identically, through `identify::decide`, which is what stops "when is a
+/// match good enough" from having a second answer here. A file that reads as
+/// verified on the archive screen therefore cannot read as likely on this one.
+fn identification_for(
+    entry: &LibraryEntry,
+    matches: &[retro_junk_db::CatalogMediaMatch],
+    hash_backed: bool,
+) -> retro_junk_db::identify::Identification {
+    let candidates = matches
+        .iter()
+        .map(|matched| retro_junk_db::identify::Candidate {
+            media_id: matched.media.id.clone(),
+            release_id: matched.media.release_id.clone(),
+            work_id: String::new(),
+            game: matched.media.dat_name.clone(),
+            region: matched.region.clone(),
+            revision: matched.release_revision.clone(),
+            variant: String::new(),
+        })
+        .collect::<Vec<_>>();
+    // A complete per-track verification, or a plain single-file hash match, is
+    // the whole medium checked. A serial-only match never is.
+    let fully_checked = hash_backed && entry.disc_verification.permits_verified_status();
+    retro_junk_db::identify::decide(
+        candidates,
+        &retro_junk_db::identify::EvidenceShape {
+            hashed_tracks: usize::from(entry.hashes.is_some()),
+            total_tracks: usize::from(entry.hashes.is_some()),
+            fully_checked,
+            manual_media_id: entry.disambiguation.as_deref(),
+            not_catalogued: false,
+            catalog_present: !matches.is_empty(),
+        },
+    )
+}
+
+/// Map the verdict onto the status this view speaks.
+fn verdict_status(
+    entry: &LibraryEntry,
+    matches: &[retro_junk_db::CatalogMediaMatch],
+    info: &DatMatchInfo,
+) -> EntryStatus {
+    // Recorded archive evidence already names a complete, catalog-verified
+    // dump; there is no local track set left to judge.
+    if matches!(info.method, MatchMethod::ArchiveEvidence) {
+        return EntryStatus::Matched;
+    }
+    let hash_backed = matches!(info.method, MatchMethod::Crc32 | MatchMethod::Sha1);
+    // The candidates were already narrowed to this one — by byte order, by a
+    // header revision, by whatever evidence separated them. Narrowing is
+    // gathering; `decide` judges only how strong the surviving answer is, so
+    // it must be shown the survivor rather than the field it came from.
+    let selected = matches
+        .iter()
+        .find(|matched| {
+            matched.media.dat_name == info.game_name && matched.media.rom_name == info.rom_name
+        })
+        .cloned()
+        .map_or_else(|| matches.to_vec(), |chosen| vec![chosen]);
+    match identification_for(entry, &selected, hash_backed) {
+        retro_junk_db::identify::Identification::Complete { .. } => EntryStatus::Matched,
+        retro_junk_db::identify::Identification::Manual { .. } => EntryStatus::Disambiguated,
+        retro_junk_db::identify::Identification::Unique { .. } => EntryStatus::LikelyMatched,
+        retro_junk_db::identify::Identification::Ambiguous { .. } => EntryStatus::Ambiguous,
+        retro_junk_db::identify::Identification::Unidentified { .. } => {
+            EntryStatus::Unrecognized
         }
     }
 }
@@ -905,6 +990,7 @@ pub fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
         .unwrap_or_default();
 
     Some(LibraryEntry {
+        disambiguation: None,
         id: None,
         revision: 0,
         source_revision: 0,
@@ -944,6 +1030,7 @@ fn status_to_str(status: EntryStatus) -> (&'static str, Option<&'static str>) {
         EntryStatus::Matched => ("matched", None),
         EntryStatus::Tagged(CatalogTag::Homebrew) => ("tagged", Some("homebrew")),
         EntryStatus::Tagged(CatalogTag::Modded) => ("tagged", Some("modded")),
+        EntryStatus::Disambiguated => ("disambiguated", None),
     }
 }
 
@@ -953,6 +1040,7 @@ fn str_to_status(s: &str) -> EntryStatus {
         "ambiguous" => EntryStatus::Ambiguous,
         "likely" => EntryStatus::LikelyMatched,
         "matched" => EntryStatus::Matched,
+        "disambiguated" => EntryStatus::Disambiguated,
         // "unknown", "tagged" (tag column provides the real tag), and anything else
         _ => EntryStatus::Unknown,
     }

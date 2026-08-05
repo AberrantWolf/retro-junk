@@ -91,7 +91,7 @@ it feels, but whether it changes what you would do.
 |----------|--------|------|---------|----------------------|
 | `Verified` | green | filled check circle | Complete and checked against a catalog | nothing |
 | `Asserted` | blue | pencil / hand mark | A **person** decided this: manual disambiguation, homebrew, a ROM hack, a mod. Correct, but not machine-verifiable and never will be | nothing — this is intentional |
-| `Incomplete` | amber | half-filled circle | Usable, but something is missing or unverified | finish it: hash the rest, scrape the art |
+| `Incomplete` | amber | half-filled circle | Something is missing, unverified, or waiting on your decision | finish it: hash the rest, scrape the art, pick between candidates |
 | `Broken` | red | warning triangle | Unusable: nothing identifies it, **or** we can name it and a hash contradicts it | investigate or replace the file |
 | `Unmeasured` | gray | hollow circle | No measurement is possible yet, and the reason says why | usually: import DATs for this platform |
 
@@ -99,8 +99,9 @@ Hard rules:
 
 - A medium with unhashed or missing tracks is **never** green or blue. It is
   `Incomplete` at best.
-- Red means unusable, not merely unknown-but-harmless: either nothing
-  identifies it at all, or `HashesDisagree`.
+- Red means unusable *and* nothing more to go on: either nothing identifies it
+  at all, or `HashesDisagree`. `Ambiguous` is amber, not red — it has a
+  candidate list, so there is a decision to make rather than a dead end.
 - Gray is only for "cannot be measured", never for a zero denominator.
 - Blue is never *derived*. If the system worked the answer out, it is green,
   amber, or red. Blue means a human's assertion is load-bearing.
@@ -184,9 +185,16 @@ the seed of the single path, not a thing to reimplement beside.
 
 ## The database is disposable
 
-Identification changes the media key, so the catalog is rebuilt rather than
-migrated. That is only safe because everything durable lives outside the
-database — verified 2026-08-05:
+No rebuild turned out to be necessary. The first plan was to re-key media on
+content, which would have orphaned every id the archive and collection point
+at and forced a rebuild. Keeping the slug id and adding a *content lookup* as
+the importer's last resort reaches the same place without breaking a single
+reference: a renamed game is found by its track set and keeps the id it had.
+
+The property still matters, though, and every new user decision is held to it —
+a disambiguation is a mark beside the collection, not a row. The database
+remains rebuildable because everything durable lives outside it — verified
+2026-08-05:
 
 - archive releases, carriers, representations, derivations → rebuilt by
   `reconcile_archive_snapshot` from on-disk manifests
@@ -224,14 +232,41 @@ Landed:
 - Scraping warns once, through the shared progress channel so both frontends
   get it, when a platform has no catalog to search with.
 
-Not yet done:
+- Manual disambiguation, end to end: a `Disambiguation` mark kind, the
+  `retro_junk_backend::disambiguation` store that reads and writes it, and a
+  chooser in the details view that offers the entry's own candidates and
+  nothing else. `identify` consults the choice through
+  `Evidence::manual_media_id`.
+- Marks are filed one per *decision slot* rather than one per file, fixing a
+  bug this work uncovered: a region correction and a homebrew tag on the same
+  file overwrote each other, because the mark's path was platform and digest
+  with no room for two answers.
+- `Ambiguous` is amber rather than red — it has candidates, so it is a decision
+  to make rather than a dead end.
 
-- **Manual disambiguation is reachable but not persistable.** `identify`
-  accepts `Evidence::manual_media_id` and returns the `Manual` rung, but
-  nothing writes or reads the content-keyed mark that would remember the
-  choice, and there is no chooser in the details view.
-- **The legacy matchers still exist.** The entry points listed under "One code
-  path" have not been funnelled through `identify` yet; the importer and the
-  archive's carrier resolution are the only callers using the complete-track
-  rule so far.
-- **The catalog has not been rebuilt** on the corrected key.
+- One ladder, two ways of gathering. `identify::decide` is the pure rule —
+  candidates in, verdict out — and `identify` is the per-file gatherer that
+  feeds it. The library scan matches in bulk (a thousand files in two queries)
+  and cannot afford a query per file, so it gathers its own way and then calls
+  the same `decide`. The status ladder that used to live beside it in
+  `apply_catalog_resolution` is gone.
+- Narrowing and deciding are separated. Choosing *which* candidate survives —
+  by byte order, by an NDS header revision — is gathering; `decide` only
+  judges how strong the surviving answer is, and is handed the survivor rather
+  than the field it came from.
+- Carrier resolution consults disambiguations. When recorded track digests fit
+  more than one catalog entry the projection still refuses to guess, but it
+  now honours a choice a person already made. The collection root comes from
+  the snapshot's own root, so none of the thirty-six callers of
+  `reconcile_archive_snapshot` had to change.
+- `EntryStatus::Disambiguated` exists and reads as `Asserted` — blue, never
+  green, and re-selectable.
+
+Remaining, and deliberately so:
+
+- The raw-DAT matchers in `retro-junk-dat` (`match_by_hash`, `match_by_serial`)
+  still answer for themselves. They match against an ephemeral `DatIndex` built
+  from DAT files with no database in the picture, so they cannot call
+  `identify`, which needs a connection. `CLAUDE.md` already records that this
+  path is being migrated out in favour of the catalog database; folding it into
+  the ladder is that migration, not a detail of this one.

@@ -68,6 +68,15 @@ pub enum MarkKind {
     /// scan concluded, which is exactly the kind of decision no DAT records
     /// and therefore the kind most easily lost.
     RegionOverride,
+    /// The user picked which catalog entry an ambiguous file is, from the
+    /// candidates that were actually possible for it.
+    ///
+    /// Like a region override this mints nothing and only settles a question
+    /// the evidence could not. It is deliberately stored here rather than in
+    /// the database: the database is disposable and rebuilt from DATs and
+    /// archive manifests, so a choice that lived only there would be lost the
+    /// next time it was rebuilt.
+    Disambiguation,
 }
 
 impl MarkKind {
@@ -77,6 +86,25 @@ impl MarkKind {
             Self::Homebrew => "homebrew",
             Self::Modded => "modded",
             Self::RegionOverride => "region_override",
+            Self::Disambiguation => "disambiguation",
+        }
+    }
+
+    /// Which decision about a file this kind answers.
+    ///
+    /// Marks are stored one per slot per file, because the decisions are not
+    /// all mutually exclusive. `Homebrew` and `Modded` are two answers to the
+    /// same question — is this its own work, or derived from one — so
+    /// re-deciding replaces. A region correction and a disambiguation each
+    /// answer a different question entirely, and a file may carry one of each;
+    /// keying them all on platform and digest alone silently overwrote
+    /// whichever decision came first.
+    #[must_use]
+    pub const fn slot(self) -> &'static str {
+        match self {
+            Self::Homebrew | Self::Modded => "derivation",
+            Self::RegionOverride => "region",
+            Self::Disambiguation => "identity",
         }
     }
 }
@@ -100,7 +128,10 @@ pub struct MarkedContent {
 impl MarkedContent {
     /// The digest that names this mark's file on disk. SHA-1 when available,
     /// because a CRC-32 collision is reachable across a large collection.
-    fn key(&self) -> Option<&str> {
+    /// Public because every store keyed on marked content must agree on what
+    /// names a file — one definition, or two indexes drift apart.
+    #[must_use]
+    pub fn key(&self) -> Option<&str> {
         [&self.sha1, &self.crc32]
             .into_iter()
             .find(|digest| !digest.is_empty())
@@ -130,6 +161,16 @@ pub struct CollectionMark {
     #[serde(default)]
     pub parent_dat_name: String,
     pub content: MarkedContent,
+    /// Disambiguation: the catalog medium the user chose.
+    ///
+    /// Carried alongside `chosen_dat_name`, which is what survives a rebuild —
+    /// media ids are minted per DAT import and mean nothing on another
+    /// machine, exactly as `parent_dat_name` exists for mods.
+    #[serde(default)]
+    pub chosen_media_id: String,
+    /// The chosen entry's DAT name, which is the portable half of the choice.
+    #[serde(default)]
+    pub chosen_dat_name: String,
     #[serde(default)]
     pub note: String,
 }
@@ -139,11 +180,18 @@ impl SidecarRecord for CollectionMark {
     const SCHEMA_VERSION: u32 = MARK_SCHEMA_VERSION;
     const UNNAMED: &'static str = "a mark needs at least a CRC32 or a SHA-1 to identify its file";
 
-    /// Platform plus content digest, so the same decision always lands on the
-    /// same path.
+    /// Decision slot, platform and content digest, so the same decision always
+    /// lands on the same path.
+    ///
+    /// The slot is part of the name because a file can carry more than one
+    /// kind of decision at once — homebrew *and* a region correction, say.
+    /// Naming on platform and digest alone meant the second decision silently
+    /// overwrote the first. Kinds that answer the same question share a slot,
+    /// so re-deciding still replaces rather than accumulating.
     fn sidecar_name(&self) -> Option<String> {
         Some(format!(
-            "{}-{}.toml",
+            "{}-{}-{}.toml",
+            self.kind.slot(),
             crate::layout::slugify(&self.platform_id),
             self.content.key()?.to_ascii_lowercase()
         ))

@@ -1121,7 +1121,9 @@ pub fn set_entry_region_override(
     let change = set_user_field(conn, id, "region_override", value.unwrap_or(""))?;
     if let Some(collection_root) = collection_root {
         let decision = match value {
-            None | Some("") => crate::derivation::MarkDecision::Cleared,
+            None | Some("") => crate::derivation::MarkDecision::Cleared {
+                kind: retro_junk_archive::MarkKind::RegionOverride,
+            },
             Some(region) => crate::derivation::MarkDecision::RegionOverride { region },
         };
         if let Err(error) =
@@ -1146,7 +1148,9 @@ pub fn set_entry_tag(
     let change = set_user_field(conn, id, "tag", value.unwrap_or(""))?;
     if let Some(collection_root) = collection_root {
         let decision = match value {
-            None | Some("") => crate::derivation::MarkDecision::Cleared,
+            None | Some("") => crate::derivation::MarkDecision::Cleared {
+                kind: retro_junk_archive::MarkKind::Homebrew,
+            },
             Some("homebrew") => crate::derivation::MarkDecision::Homebrew {
                 name: "",
                 region: "",

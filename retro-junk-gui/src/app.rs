@@ -101,6 +101,10 @@ pub struct UiState {
     /// belongs to. Repairs rewrite files in place, so nothing runs until it
     /// is accepted.
     pub repair_prompt: Option<(String, Box<crate::state::RepairPrompt>)>,
+    /// An ambiguous entry the user is choosing an identity for. The tool will
+    /// not guess between catalog entries, so this is how the question gets
+    /// answered.
+    pub disambiguate_prompt: Option<crate::widgets::disambiguate_dialog::DisambiguatePrompt>,
     /// Whether a repair keeps a `.bak` copy first. On by default: a repair
     /// exists because the file is nearly right, and an unrecoverable mistake
     /// would cost the dump.
@@ -211,6 +215,7 @@ impl Default for UiState {
             results_dialog: ResultsDialog::None,
             chd_compress_prompt: None,
             repair_prompt: None,
+            disambiguate_prompt: None,
             repair_create_backup: true,
             chdman_probe: ChdmanProbe::Idle,
             credential_status: None,
@@ -1707,6 +1712,7 @@ impl eframe::App for RetroJunkApp {
         // Compress-to-CHD confirmation dialog
         widgets::chd_compress_dialog::show(ctx, self);
         widgets::repair_dialog::show(ctx, self);
+        widgets::disambiguate_dialog::show(ctx, self);
 
         views::collection::show_import_modal(ctx, self);
 

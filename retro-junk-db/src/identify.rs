@@ -220,10 +220,101 @@ pub struct Evidence<'a> {
     pub not_catalogued: bool,
 }
 
+/// What the caller measured, apart from the candidates themselves.
+///
+/// Separating this from the candidate list is what lets one set of rules serve
+/// both a per-file lookup and a batched one. The library scan matches a
+/// thousand files in two queries and cannot afford a query per file, but it
+/// must reach exactly the same verdict as a single `identify` call — so it
+/// gathers differently and decides identically.
+#[derive(Debug, Clone, Default)]
+pub struct EvidenceShape<'a> {
+    /// Tracks we hashed.
+    pub hashed_tracks: usize,
+    /// Tracks the medium has, when that is known to be more than we hashed.
+    pub total_tracks: usize,
+    /// Whether the candidates came from a *complete* track-set agreement
+    /// rather than from anything weaker.
+    pub fully_checked: bool,
+    /// A choice a person already made for this content.
+    pub manual_media_id: Option<&'a str>,
+    /// Content the user declared uncatalogued — homebrew, a hack, a mod.
+    pub not_catalogued: bool,
+    /// Whether any catalog exists for this platform. Distinguishes "your
+    /// hashes disagree with the catalog" from "there is no catalog to
+    /// disagree with".
+    pub catalog_present: bool,
+}
+
+/// Turn a candidate list into a verdict.
+///
+/// The one place the ladder's rules live. Everything above this is gathering;
+/// this is the deciding, and no caller may reimplement it — two copies of
+/// "when is a match good enough" is how a file came to read as verified on one
+/// screen and ambiguous on another.
+#[must_use]
+pub fn decide(candidates: Vec<Candidate>, shape: &EvidenceShape<'_>) -> Identification {
+    if shape.not_catalogued {
+        return Identification::Unidentified {
+            why: Incompleteness::NotCatalogued,
+        };
+    }
+
+    // A person's choice outranks the automatic answer, but only among entries
+    // that were actually possible — a chooser may not invent one.
+    if let Some(chosen) = shape.manual_media_id
+        && let Some(found) = candidates
+            .iter()
+            .find(|candidate| candidate.media_id == chosen)
+    {
+        return Identification::Manual {
+            media_id: found.media_id.clone(),
+            release_id: found.release_id.clone(),
+            candidates,
+        };
+    }
+
+    match candidates.len() {
+        0 => Identification::Unidentified {
+            why: if shape.catalog_present {
+                Incompleteness::HashesDisagree
+            } else {
+                Incompleteness::NoCatalogForPlatform
+            },
+        },
+        1 => {
+            let found = candidates.into_iter().next().unwrap_or_else(|| unreachable!());
+            let hashed = shape.hashed_tracks;
+            let total = shape.total_tracks.max(hashed);
+            // Verified only when every track agreed *and* we hashed everything
+            // the medium has.
+            let why = if hashed < total {
+                Some(Incompleteness::TracksUnhashed { hashed, total })
+            } else if shape.fully_checked {
+                None
+            } else {
+                Some(Incompleteness::PrimaryHashOnly)
+            };
+            match why {
+                Some(why) => Identification::Unique {
+                    media_id: found.media_id,
+                    release_id: found.release_id,
+                    why,
+                },
+                None => Identification::Complete {
+                    media_id: found.media_id,
+                    release_id: found.release_id,
+                },
+            }
+        }
+        _ => Identification::Ambiguous { candidates },
+    }
+}
+
 /// Identify one medium against the catalog.
 ///
-/// The single entry point. Callers supply what they measured and get back
-/// exactly one rung of the ladder.
+/// The single entry point for a per-file lookup: it gathers candidates and
+/// hands them to [`decide`], which owns the rules.
 pub fn identify(
     conn: &Connection,
     evidence: &Evidence<'_>,
@@ -239,9 +330,6 @@ pub fn identify(
         });
     }
 
-    let hashed = evidence.tracks.len();
-    let total = evidence.total_tracks.unwrap_or(hashed);
-
     // Rung 1: every track agreed. `match_complete_catalog_media` is
     // deliberately strict — it refuses to let one data track vouch for a
     // multi-track disc — so anything it returns is fully checked.
@@ -252,64 +340,22 @@ pub fn identify(
         (partial_candidates(conn, evidence)?, false)
     } else {
         (
-            verified
-                .into_iter()
-                .map(Candidate::from)
-                .collect::<Vec<_>>(),
+            verified.into_iter().map(Candidate::from).collect::<Vec<_>>(),
             true,
         )
     };
 
-    // A person's choice outranks the automatic answer, but only among the
-    // entries that were actually possible — a chooser may not invent one.
-    if let Some(chosen) = evidence.manual_media_id
-        && let Some(found) = candidates
-            .iter()
-            .find(|candidate| candidate.media_id == chosen)
-    {
-        return Ok(Identification::Manual {
-            media_id: found.media_id.clone(),
-            release_id: found.release_id.clone(),
-            candidates,
-        });
-    }
-
-    match candidates.len() {
-        0 => Ok(Identification::Unidentified {
-            why: if catalog_has_platform(conn, evidence.platform_id)? {
-                Incompleteness::HashesDisagree
-            } else {
-                Incompleteness::NoCatalogForPlatform
-            },
-        }),
-        1 => {
-            let found = candidates
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| unreachable!());
-            // Verified only when every track agreed *and* we hashed everything
-            // the medium has.
-            let why = if hashed < total {
-                Some(Incompleteness::TracksUnhashed { hashed, total })
-            } else if !fully_checked {
-                Some(Incompleteness::PrimaryHashOnly)
-            } else {
-                None
-            };
-            Ok(match why {
-                Some(why) => Identification::Unique {
-                    media_id: found.media_id,
-                    release_id: found.release_id,
-                    why,
-                },
-                None => Identification::Complete {
-                    media_id: found.media_id,
-                    release_id: found.release_id,
-                },
-            })
-        }
-        _ => Ok(Identification::Ambiguous { candidates }),
-    }
+    Ok(decide(
+        candidates,
+        &EvidenceShape {
+            hashed_tracks: evidence.tracks.len(),
+            total_tracks: evidence.total_tracks.unwrap_or(evidence.tracks.len()),
+            fully_checked,
+            manual_media_id: evidence.manual_media_id,
+            not_catalogued: false,
+            catalog_present: catalog_has_platform(conn, evidence.platform_id)?,
+        },
+    ))
 }
 
 /// Every catalog medium that shares at least one track with what we hashed.

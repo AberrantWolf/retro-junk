@@ -34,6 +34,8 @@ fn mark(kind: MarkKind, parent_dat_name: &str) -> CollectionMark {
             sha1: "da39a3ee5e6b4b0d3255bfef95601890afd80709".to_owned(),
             md5: String::new(),
         },
+        chosen_media_id: String::new(),
+        chosen_dat_name: String::new(),
         note: String::new(),
     }
 }

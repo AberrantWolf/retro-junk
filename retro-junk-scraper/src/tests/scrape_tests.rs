@@ -18,6 +18,8 @@ fn mark(name: &str, sha1: &str, crc32: &str, size: u64) -> CollectionMark {
             sha1: sha1.to_owned(),
             md5: String::new(),
         },
+        chosen_media_id: String::new(),
+        chosen_dat_name: String::new(),
         note: String::new(),
     }
 }
