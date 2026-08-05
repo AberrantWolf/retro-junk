@@ -31,9 +31,18 @@ pub fn show_with_warning(
     if ui.is_rect_visible(rect) {
         let mut x = rect.left() + 5.0;
 
-        // Status circle
-        ui.painter()
-            .circle_filled(egui::pos2(x, rect.center().y), 4.0, color);
+        // Status glyph. The shape carries the state as well as the hue does:
+        // green and red are the two most important states and are also the
+        // most common colour blindness, and at this size hue is the least
+        // reliable channel. `Incomplete` against `Unmeasured` depends on it
+        // most — both read as "not done" by colour alone.
+        ui.painter().text(
+            egui::pos2(x, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            crate::theme::severity_icon(status.severity()),
+            egui::FontId::proportional(11.0),
+            color,
+        );
         x += 10.0;
 
         // Warning triangle for broken references or hash warnings

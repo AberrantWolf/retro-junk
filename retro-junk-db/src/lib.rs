@@ -8,12 +8,15 @@ pub mod convergence;
 pub mod deduplicate;
 pub mod derivation;
 pub mod facts;
+pub mod identify;
 pub mod library;
 pub mod operations;
 pub mod queries;
 pub mod schema;
 pub mod work;
 
+// The type `match_complete_catalog_media` takes, re-exported so callers of
+// that API need not depend on the archive crate to build its argument.
 pub use archive::{
     AdoptableHashes, ArchiveCollectionDetails, ArchiveEvidenceIdentity, ArchiveEvidenceScope,
     ArchiveReleaseSummary, CompleteCatalogMediaMatch, LibraryEntryBinding, MarkReport,
@@ -84,6 +87,7 @@ pub use queries::{
     search_releases_filtered, search_releases_paged, search_works, search_works_for_platform,
     works_for_platform,
 };
+pub use retro_junk_archive::TrackDigest;
 pub use retro_junk_catalog::types::Media;
 pub use rusqlite::Connection;
 pub use schema::{configure_connection, database_needs_migration, open_database, open_memory};

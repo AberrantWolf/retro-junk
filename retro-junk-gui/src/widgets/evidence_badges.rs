@@ -15,19 +15,22 @@ use crate::app::RetroJunkApp;
 const DOT_SPACING: f32 = 11.0;
 const DOT_RADIUS: f32 = 3.5;
 
-/// Colors for the fold's levels. The only thing this widget decides is how
-/// a level looks — never what a level is.
+/// Colors for the fold's levels.
+///
+/// The widget decides nothing about status: it asks the level for its severity
+/// and the theme for that severity's colour, which is the same pair of calls
+/// the row's general status dot makes. A badge therefore cannot contradict the
+/// summary beside it.
+///
+/// `NotApplicable` is the one place appearance departs from severity: nothing
+/// is expected of this aspect, so it is severity-`Verified` but drawn dim
+/// rather than green — claiming evidence that was never gathered would be a
+/// lie in the other direction.
 fn level_color(level: FractionLevel, ui: &egui::Ui) -> egui::Color32 {
-    match level {
-        FractionLevel::Complete => crate::theme::STATUS_OK,
-        FractionLevel::Partial => crate::theme::STATUS_WARN_STRONG,
-        FractionLevel::Empty => ui.visuals().text_color().linear_multiply(0.35),
-        // Nothing expected, or nothing measurable: dim, with the popover
-        // saying which and why.
-        FractionLevel::NotApplicable | FractionLevel::Unknown(_) => {
-            ui.visuals().text_color().linear_multiply(0.12)
-        }
+    if matches!(level, FractionLevel::NotApplicable) {
+        return ui.visuals().text_color().linear_multiply(0.12);
     }
+    crate::theme::severity_color(level.severity())
 }
 
 /// One evidence class on one release.

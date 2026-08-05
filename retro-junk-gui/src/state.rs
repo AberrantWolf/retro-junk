@@ -174,14 +174,7 @@ pub trait EntryStatusColor {
 
 impl EntryStatusColor for EntryStatus {
     fn color(self) -> egui::Color32 {
-        match self {
-            EntryStatus::Unknown => egui::Color32::GRAY,
-            EntryStatus::Unrecognized => crate::theme::STATUS_ERR,
-            EntryStatus::Ambiguous => crate::theme::STATUS_WARN,
-            EntryStatus::LikelyMatched => crate::theme::STATUS_INFO,
-            EntryStatus::Matched => crate::theme::STATUS_OK,
-            EntryStatus::Tagged(_) => egui::Color32::from_rgb(100, 150, 220),
-        }
+        crate::theme::severity_color(self.severity())
     }
 }
 
@@ -200,19 +193,27 @@ pub enum RowStatus {
 
 impl RowStatus {
     pub fn color(&self) -> egui::Color32 {
-        use retro_junk_backend::completion::Overall;
         match self {
             Self::Entry(status) => (*status).color(),
-            Self::Archive(Overall::Complete) => crate::theme::STATUS_OK,
-            Self::Archive(Overall::Incomplete) => crate::theme::STATUS_INFO,
-            Self::Archive(Overall::NeedsAttention) => crate::theme::STATUS_WARN,
-            Self::Archive(Overall::Unidentified) => egui::Color32::GRAY,
+            Self::Archive(overall) => crate::theme::severity_color(overall.severity()),
+        }
+    }
+
+    /// Where this row sits on the one severity scale.
+    pub fn severity(&self) -> retro_junk_backend::completion::Severity {
+        match self {
+            Self::Entry(status) => status.severity(),
+            Self::Archive(overall) => overall.severity(),
         }
     }
 
     pub fn tooltip(&self) -> String {
         use retro_junk_backend::completion::Overall;
-        match self {
+        // The severity line comes first and is the same sentence everywhere
+        // this state appears; the specific wording below adds detail without
+        // being free to contradict it.
+        let scale = crate::theme::severity_tooltip(self.severity());
+        let detail = match self {
             Self::Entry(status) => status.tooltip().to_owned(),
             Self::Archive(Overall::Complete) => {
                 "Every expected disc is stored and catalog-verified".to_owned()
@@ -227,7 +228,8 @@ impl RowStatus {
                 "Nothing hash-verified says what this is — identify it against the catalog"
                     .to_owned()
             }
-        }
+        };
+        format!("{scale}\n{detail}")
     }
 }
 

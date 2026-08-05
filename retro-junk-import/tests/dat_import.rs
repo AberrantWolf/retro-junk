@@ -448,3 +448,84 @@ fn disc_number_extracted() {
     // Both discs should share the same release
     assert_eq!(disc1[0].release_id, disc2[0].release_id);
 }
+
+/// A corrected DAT name must keep the entry it already had, not grow a twin.
+///
+/// The title is part of the work, release and media ids, so a renamed game
+/// used to mint a whole new triple beside the old one with identical hashes —
+/// 871 of them appeared the day an XML-entity bug was fixed and the names
+/// changed from `1 &amp; 2` to `1 & 2`. Content-based re-binding then found
+/// two candidates for one disc and refused to identify it at all, which is how
+/// the duplicate was noticed: a release simply went unidentified.
+#[test]
+fn a_renamed_game_keeps_its_entry_instead_of_gaining_a_twin() {
+    let conn = setup_db();
+    let rom = DatRom {
+        name: "Tom & Jerry (USA).nes".to_string(),
+        size: 40976,
+        crc: "d445f698".to_string(),
+        sha1: Some("ea343f4e445a9050d4b4fbac2c77d0693b1d0922".to_string()),
+        md5: None,
+        serial: None,
+    };
+    let dat_with = |title: &str, rom_name: &str| DatFile {
+        name: "Nintendo - Nintendo Entertainment System".to_string(),
+        description: String::new(),
+        version: "1".to_string(),
+        games: vec![DatGame {
+            name: title.to_string(),
+            region: None,
+            serial: None,
+            version: None,
+            category: None,
+            roms: vec![DatRom {
+                name: rom_name.to_string(),
+                ..rom.clone()
+            }],
+        }],
+    };
+
+    // The name as the entity bug left it.
+    import_dat(
+        &conn,
+        &dat_with("Tom &amp; Jerry (USA)", "Tom &amp; Jerry (USA).nes"),
+        Platform::Nes,
+        "no-intro",
+        &SilentProgress,
+    )
+    .unwrap();
+    let first: String = conn
+        .query_row("SELECT id FROM media", [], |row| row.get(0))
+        .unwrap();
+
+    // The same game, re-imported once the parser stopped carrying the entity.
+    import_dat(
+        &conn,
+        &dat_with("Tom & Jerry (USA)", "Tom & Jerry (USA).nes"),
+        Platform::Nes,
+        "no-intro",
+        &SilentProgress,
+    )
+    .unwrap();
+
+    let media_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        media_rows, 1,
+        "the corrected name created a second catalog entry for the same bytes"
+    );
+    let (id, dat_name): (String, String) = conn
+        .query_row("SELECT id, dat_name FROM media", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(
+        id, first,
+        "the row's id changed, orphaning anything bound to it"
+    );
+    assert_eq!(
+        dat_name, "Tom & Jerry (USA)",
+        "the row kept the stale name instead of taking the correction"
+    );
+}

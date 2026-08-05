@@ -229,7 +229,97 @@ pub enum Overall {
     Complete,
 }
 
+/// How bad a state is, on the one scale every indicator renders through.
+///
+/// The general status column and the per-aspect evidence badges both map
+/// through this, and an overall severity is the *worst* of the severities it
+/// is made of ([`Completion::severity`]) rather than a second judgement made
+/// beside them. That is what makes it impossible for the two columns to
+/// disagree: the summary cannot be greener than its greenest part.
+///
+/// Ordered worst-last so `max` folds them. See `IDENTIFICATION.md` for the
+/// colour and icon each one carries, and why there are five.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum Severity {
+    /// Complete and checked.
+    Verified,
+    /// A person's assertion is load-bearing: a manual disambiguation, or
+    /// content no catalog will ever list (homebrew, a hack, a mod). Correct,
+    /// but never machine-verifiable — so never green, and never a defect.
+    Asserted,
+    /// No measurement is possible yet, and the reason says why.
+    Unmeasured,
+    /// Usable, but something is missing or unverified.
+    Incomplete,
+    /// Unusable: nothing identifies it, or a hash contradicts what it claims
+    /// to be.
+    Broken,
+}
+
+impl Severity {
+    /// The worse of two severities.
+    #[must_use]
+    pub fn worst(self, other: Self) -> Self {
+        self.max(other)
+    }
+
+    /// One word, for a narrow cell or a CLI column.
+    #[must_use]
+    pub const fn short_label(self) -> &'static str {
+        match self {
+            Self::Verified => "Verified",
+            Self::Asserted => "Asserted",
+            Self::Unmeasured => "Unmeasured",
+            Self::Incomplete => "Incomplete",
+            Self::Broken => "Broken",
+        }
+    }
+}
+
+impl FractionLevel {
+    /// Where this aspect sits on the one scale.
+    ///
+    /// `NotApplicable` is [`Severity::Verified`] rather than a state of its
+    /// own: nothing is expected, so nothing is outstanding.
+    #[must_use]
+    pub const fn severity(self) -> Severity {
+        match self {
+            Self::Complete | Self::NotApplicable => Severity::Verified,
+            Self::Partial | Self::Empty => Severity::Incomplete,
+            Self::Unknown(_) => Severity::Unmeasured,
+        }
+    }
+}
+
+impl Identity {
+    /// Where an identity sits on the one scale.
+    #[must_use]
+    pub const fn severity(&self) -> Severity {
+        match self {
+            Self::Bound { .. } | Self::WorkBound { .. } => Severity::Verified,
+            // The disk names a catalog entry this machine lacks. Nothing is
+            // wrong with the file; we simply cannot judge it until the catalog
+            // is imported, which is what "unmeasured" means.
+            Self::BindingUnresolved { .. } => Severity::Unmeasured,
+            // A name with no hash-verified identity behind it is not a
+            // weaker kind of known — it is unusable, because acting on it
+            // would act on a guess.
+            Self::Named { .. } | Self::Unknown => Severity::Broken,
+        }
+    }
+}
+
 impl Overall {
+    /// Where an overall state sits on the one scale.
+    #[must_use]
+    pub const fn severity(self) -> Severity {
+        match self {
+            Self::Complete => Severity::Verified,
+            Self::Incomplete => Severity::Incomplete,
+            Self::NeedsAttention | Self::Unidentified => Severity::Broken,
+        }
+    }
+
     /// The one label for an overall state. Frontends render this rather than
     /// writing their own wording, so the table, the detail panel, and the
     /// CLI cannot describe the same release differently.
@@ -256,6 +346,40 @@ impl Overall {
 }
 
 impl Completion {
+    /// The one severity for this release, folded from the same evidence the
+    /// badges render.
+    ///
+    /// The summary is the worst of its parts, so a release cannot show a green
+    /// dot beside an amber badge. Anything a person must decide about lands on
+    /// [`Severity::Broken`] through `attention`, because an unresolved
+    /// decision is the tool declining to act.
+    #[must_use]
+    pub fn severity(&self) -> Severity {
+        let mut severity = self.identity.severity();
+        for fraction in self.evidence() {
+            severity = severity.worst(fraction.level().severity());
+        }
+        if !self.attention.is_empty() {
+            severity = severity.worst(Severity::Broken);
+        }
+        severity
+    }
+
+    /// Every aspect that carries evidence, in the order frontends show them.
+    ///
+    /// One list, so a new aspect cannot be added to the badges and forgotten
+    /// in the fold — which is how a summary drifts away from its parts.
+    #[must_use]
+    pub const fn evidence(&self) -> [Fraction; 5] {
+        [
+            self.presence,
+            self.integrity,
+            self.catalog,
+            self.playable,
+            self.artwork,
+        ]
+    }
+
     #[must_use]
     pub fn overall(&self) -> Overall {
         match &self.identity {
@@ -266,13 +390,7 @@ impl Completion {
         if !self.attention.is_empty() {
             return Overall::NeedsAttention;
         }
-        let all = [
-            self.presence,
-            self.integrity,
-            self.catalog,
-            self.playable,
-            self.artwork,
-        ];
+        let all = self.evidence();
         if all.iter().all(|fraction| fraction.is_complete()) {
             Overall::Complete
         } else {

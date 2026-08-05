@@ -200,3 +200,38 @@ The one thing that did **not** live outside the database was 465 dismissed
 `adopt_playable` suggestions, and by decision those are not preserved. Any new
 user decision — manual disambiguation especially — must be durable outside the
 database or this property is lost.
+
+## Where the code is against this document
+
+Landed:
+
+- The ladder itself — `retro-junk-db/src/identify.rs`. One `identify()`, the
+  five rungs, the candidate list behind `Ambiguous`, and the rule that a
+  manual choice may only name an entry that was already a candidate.
+- The severity scale — `retro-junk-backend/src/completion.rs`.
+  `Completion::severity` folds identity and every evidence fraction with
+  `worst`, so a summary can never read better than the worst badge beside it;
+  a property test walks every combination of fraction shapes to hold that.
+- One appearance mapping — `retro-junk-gui/src/theme.rs`. The row status dot,
+  the per-aspect evidence badges and the library entry badge all resolve
+  colour through `severity_color`, and the dot draws `severity_icon` so the
+  state survives without colour. The three separate colour tables are gone.
+- `LikelyMatched` is amber, not blue, and `Tagged` (homebrew, mods) is blue —
+  the two mappings the new rules made wrong.
+- The importer finds an existing medium by its complete track set when the
+  name has changed (`retro-junk-import/src/dat_import.rs`), so a corrected DAT
+  name keeps its entry instead of minting a twin.
+- Scraping warns once, through the shared progress channel so both frontends
+  get it, when a platform has no catalog to search with.
+
+Not yet done:
+
+- **Manual disambiguation is reachable but not persistable.** `identify`
+  accepts `Evidence::manual_media_id` and returns the `Manual` rung, but
+  nothing writes or reads the content-keyed mark that would remember the
+  choice, and there is no chooser in the details view.
+- **The legacy matchers still exist.** The entry points listed under "One code
+  path" have not been funnelled through `identify` yet; the importer and the
+  archive's carrier resolution are the only callers using the complete-track
+  rule so far.
+- **The catalog has not been rebuilt** on the corrected key.

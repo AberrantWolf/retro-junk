@@ -34,3 +34,58 @@ pub fn log_level_color(level: log::Level) -> egui::Color32 {
         log::Level::Trace => egui::Color32::from_rgb(100, 100, 100),
     }
 }
+
+/// How one severity looks. The single place a status becomes a colour and a
+/// glyph.
+///
+/// Colour alone is not enough here: the two most important states are green
+/// and red — the most common colour blindness — the indicator is a small dot
+/// at table density where hue reads worst, and screenshots and the CLI lose
+/// colour entirely. So every severity carries a glyph that is sufficient on
+/// its own, and `Incomplete` against `Unmeasured` especially depends on it:
+/// both read as "not done" by colour and mean quite different things.
+#[must_use]
+pub fn severity_color(severity: retro_junk_backend::completion::Severity) -> egui::Color32 {
+    use retro_junk_backend::completion::Severity;
+    match severity {
+        Severity::Verified => STATUS_OK,
+        Severity::Asserted => STATUS_INFO,
+        Severity::Incomplete => STATUS_WARN_STRONG,
+        Severity::Broken => STATUS_ERR,
+        Severity::Unmeasured => STATUS_MUTED,
+    }
+}
+
+/// The glyph for a severity, readable without colour.
+#[must_use]
+pub fn severity_icon(severity: retro_junk_backend::completion::Severity) -> &'static str {
+    use retro_junk_backend::completion::Severity;
+    match severity {
+        Severity::Verified => egui_phosphor::regular::CHECK_CIRCLE,
+        Severity::Asserted => egui_phosphor::regular::PENCIL_SIMPLE,
+        Severity::Incomplete => egui_phosphor::regular::CIRCLE_HALF,
+        Severity::Broken => egui_phosphor::regular::WARNING,
+        Severity::Unmeasured => egui_phosphor::regular::CIRCLE_DASHED,
+    }
+}
+
+/// What a severity means, and what closes it. Frontends render this rather
+/// than inventing their own wording.
+#[must_use]
+pub fn severity_tooltip(severity: retro_junk_backend::completion::Severity) -> &'static str {
+    use retro_junk_backend::completion::Severity;
+    match severity {
+        Severity::Verified => "Complete and checked against the catalog",
+        Severity::Asserted => {
+            "Identified by hand, or content no catalog lists — correct, but not machine-verified"
+        }
+        Severity::Incomplete => "Usable, but something is missing or unverified",
+        Severity::Broken => {
+            "Not usable: nothing identifies this, or a hash contradicts what it claims to be"
+        }
+        Severity::Unmeasured => "Nothing can be measured yet — usually a missing catalog import",
+    }
+}
+
+/// Dimmed indicator for states that carry no measurement.
+pub const STATUS_MUTED: egui::Color32 = egui::Color32::from_rgb(130, 130, 130);

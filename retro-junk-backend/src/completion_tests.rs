@@ -242,3 +242,77 @@ fn incomplete_requires_a_real_measured_gap() {
     completion.playable = Fraction::known(1, 2);
     assert_eq!(completion.playable.level(), FractionLevel::Partial);
 }
+
+/// The general status column and the evidence badges must be incapable of
+/// disagreeing.
+///
+/// They can only disagree if the summary is computed *beside* the evidence
+/// instead of *from* it. Folding with `worst` makes the summary unable to be
+/// greener than its greenest part, so this is a property, not a spot check:
+/// no combination of fractions can produce a summary better than the worst
+/// badge shown next to it.
+#[test]
+fn a_summary_can_never_read_better_than_the_worst_evidence_beside_it() {
+    use crate::completion::{Fraction, Identity, UnknownReason};
+
+    let shapes = [
+        Fraction::known(2, 2),
+        Fraction::known(1, 2),
+        Fraction::known(0, 2),
+        Fraction::known(0, 0),
+        Fraction::Unknown(UnknownReason::NotCatalogBound),
+        Fraction::Unknown(UnknownReason::CatalogMissingMedia),
+    ];
+    for presence in shapes {
+        for integrity in shapes {
+            for catalog in shapes {
+                let completion = Completion {
+                    identity: Identity::Bound {
+                        release_id: "r".to_owned(),
+                    },
+                    presence,
+                    integrity,
+                    catalog,
+                    playable: Fraction::known(1, 1),
+                    artwork: Fraction::known(1, 1),
+                    attention: Vec::new(),
+                };
+                let worst_badge = completion
+                    .evidence()
+                    .iter()
+                    .map(|fraction| fraction.level().severity())
+                    .max()
+                    .expect("evidence is never empty");
+                assert!(
+                    completion.severity() >= worst_badge,
+                    "summary {:?} read better than its worst badge {worst_badge:?}",
+                    completion.severity()
+                );
+            }
+        }
+    }
+}
+
+/// A disc with tracks it has not accounted for is never green or blue —
+/// green would claim a check that did not happen, and blue is reserved for
+/// what a person asserted.
+#[test]
+fn incomplete_evidence_is_never_painted_as_good() {
+    use crate::completion::{Fraction, Identity, Severity};
+
+    let completion = Completion {
+        identity: Identity::Bound {
+            release_id: "r".to_owned(),
+        },
+        presence: Fraction::known(1, 3),
+        integrity: Fraction::known(1, 1),
+        catalog: Fraction::known(1, 1),
+        playable: Fraction::known(1, 1),
+        artwork: Fraction::known(1, 1),
+        attention: Vec::new(),
+    };
+    let severity = completion.severity();
+    assert_ne!(severity, Severity::Verified);
+    assert_ne!(severity, Severity::Asserted);
+    assert_eq!(severity, Severity::Incomplete);
+}

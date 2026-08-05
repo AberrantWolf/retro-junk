@@ -255,6 +255,22 @@ fn import_game(
         operations::find_media_by_dat_name(conn, &game.name)?
             .filter(|media| media.release_id == effective_release_id && media.rom_name.is_empty())
     };
+    // Last resort: find it by what it *is* rather than what it is called.
+    //
+    // Both lookups above are keyed on the name — the release id embeds the
+    // title slug — so a corrected DAT name makes the existing row unfindable
+    // and mints a whole new work/release/media triple beside it, with
+    // identical hashes. That is how one entity-escaping fix produced 871
+    // duplicate entries, and how content-based re-binding then found two
+    // candidates for one disc and refused to identify it at all.
+    //
+    // The key is the complete ordered track set, never the primary track: 1029
+    // catalog rows share their primary hash with another row on the same
+    // platform, and matching on it would merge genuinely different games.
+    let existing = match existing {
+        Some(found) => Some(found),
+        None => find_media_by_content(conn, platform_id, &track_roms, primary_rom)?,
+    };
     if let Some(ref existing_media) = existing {
         let same_hashes = existing_media.crc32 == primary_rom.crc
             && existing_media.sha1 == primary_rom.sha1.as_deref().unwrap_or("")
@@ -415,6 +431,53 @@ fn make_release_id(
         id.push_str(&crate::slugify(variant));
     }
     id
+}
+
+/// Find an existing catalog medium by its content, so a renamed game keeps
+/// its identity instead of gaining a twin.
+///
+/// The content key is the complete ordered track set — every non-CUE ROM's
+/// sha1 and size — falling back to the single ROM's digests for media the
+/// catalog stores without tracks. `match_complete_catalog_media` owns that
+/// rule, including the refusal to let one data track vouch for a multi-track
+/// disc, so this asks it rather than growing a second definition.
+fn find_media_by_content(
+    conn: &Connection,
+    platform_id: &str,
+    track_roms: &[&retro_junk_dat::DatRom],
+    primary_rom: &retro_junk_dat::DatRom,
+) -> Result<Option<Media>, OperationError> {
+    let tracks = if track_roms.is_empty() {
+        vec![(primary_rom.size, primary_rom.sha1.clone())]
+    } else {
+        track_roms
+            .iter()
+            .map(|rom| (rom.size, rom.sha1.clone()))
+            .collect()
+    };
+    if tracks.iter().any(|(_, sha1)| sha1.is_none()) {
+        return Ok(None);
+    }
+    let digests = tracks
+        .into_iter()
+        .enumerate()
+        .map(|(index, (size, sha1))| retro_junk_db::TrackDigest {
+            number: u32::try_from(index + 1).unwrap_or(1),
+            size,
+            crc32: String::new(),
+            md5: String::new(),
+            sha1: sha1.unwrap_or_default().to_lowercase(),
+        })
+        .collect::<Vec<_>>();
+    let matches =
+        retro_junk_db::archive::match_complete_catalog_media(conn, platform_id, &digests)?;
+    // Only an unambiguous answer may reclaim an id. Two catalog rows sharing a
+    // complete track set would be a catalog problem, and guessing between them
+    // is how the wrong game gets renamed.
+    let [found] = matches.as_slice() else {
+        return Ok(None);
+    };
+    retro_junk_db::queries::get_media_by_id(conn, &found.media_id)
 }
 
 /// Generate a stable media ID from release + ROM name.

@@ -192,6 +192,31 @@ pub enum EntryStatus {
 }
 
 impl EntryStatus {
+    /// Where a library entry sits on the one severity scale.
+    ///
+    /// The same scale archive releases use, so the Library view cannot paint a
+    /// file and the release it belongs to in contradictory colours.
+    ///
+    /// Two mappings are deliberate and were previously wrong:
+    ///
+    /// - `LikelyMatched` is [`Severity::Incomplete`], not a shade of good. A
+    ///   disc with missing or mismatched tracks used to draw the same blue as
+    ///   a healthy row, which is precisely the claim it cannot support.
+    /// - `Tagged` is [`Severity::Asserted`]. Homebrew and mods are not defects
+    ///   and never become verified, because no catalog will ever list them —
+    ///   they are a person's assertion, which is what blue now means.
+    #[must_use]
+    pub const fn severity(self) -> crate::completion::Severity {
+        use crate::completion::Severity;
+        match self {
+            Self::Matched => Severity::Verified,
+            Self::Tagged(_) => Severity::Asserted,
+            Self::LikelyMatched => Severity::Incomplete,
+            Self::Unrecognized | Self::Ambiguous => Severity::Broken,
+            Self::Unknown => Severity::Unmeasured,
+        }
+    }
+
     /// Human-readable tooltip explaining this status.
     pub fn tooltip(self) -> &'static str {
         match self {

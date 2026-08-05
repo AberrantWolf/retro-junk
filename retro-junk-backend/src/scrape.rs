@@ -66,6 +66,7 @@ pub fn scrape_release_artwork(
         // Another run filled the gap between derivation and execution.
         return Ok(ScrapeReport::default());
     }
+    warn_if_scraping_without_a_catalog(conn, &action.platform_id, progress);
     if ctx.scrape.only_when_unambiguous && gap.identity <= ScrapeIdentityTier::Filename {
         return Ok(ScrapeReport {
             published: 0,
@@ -242,6 +243,30 @@ fn run_one(run: RunOne<'_>) -> Result<retro_junk_scraper::ScrapeRunResult, WorkE
             }
         }
     }))
+}
+
+/// The one warning about scraping a platform with no catalog behind it.
+///
+/// A scrape is only as good as the identity it searches with. With a DAT
+/// imported we query using the catalog entry's own title and digests, which
+/// is what the entry *is*; without one there is nothing to speak for the game
+/// but whatever the local file happens to hash to, and matches get noticeably
+/// worse. That is worth saying out loud rather than silently returning worse
+/// artwork, so it goes through the shared progress channel and reaches the CLI
+/// log and the GUI toast alike — one message, not one per frontend.
+fn warn_if_scraping_without_a_catalog(
+    conn: &retro_junk_db::Connection,
+    platform_id: &str,
+    progress: &PhaseProgressFn<'_>,
+) {
+    if retro_junk_db::identify::catalog_has_platform(conn, platform_id).unwrap_or(true) {
+        return;
+    }
+    let message = format!(
+        "No DAT imported for {platform_id} — scraping falls back to local file hashes and will          match less accurately. Import the catalog for this platform to improve it."
+    );
+    log::warn!("{message}");
+    progress(&message, retro_junk_io::ProgressUnit::Items, 0, 0);
 }
 
 /// Assemble the scrape target for one archived release.
