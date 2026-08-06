@@ -176,22 +176,57 @@ entry point rather than each asking their own question:
 - `retro-junk-db/archive`: `match_catalog_file`,
   `match_complete_catalog_media` (+ `_any_platform` variants),
   `match_catalog_serial_any_platform`
-- `retro-junk-import/dat_import`: `find_media_by_release_and_rom_name`,
-  `find_media_by_dat_name`
+- `retro-junk-import/dat_import`: one content lookup, keyed on the medium's
+  own id — see below
 
 `match_complete_catalog_media` already implements rung 1 correctly, including
 the rule that one matching data track cannot verify a multi-track disc. It is
 the seed of the single path, not a thing to reimplement beside.
 
+## Identity comes from content; the title is a label
+
+Catalog ids used to be built out of the game's title — `{platform}:{slug(title)}`
+for a work, that plus region and revision for a release, that plus the ROM
+filename for a medium. So the title was part of the primary key, and every time
+a title changed the key changed with it and the old row was orphaned. Fixing one
+XML-entity bug renamed 871 Redump entries and minted 871 duplicate
+work/release/media triples with identical hashes; the entity itself became part
+of an identifier (`ps1:dragon-quest-monsters-1-amp-2-…`); and an all-non-ASCII
+title slugged to the empty string, so every Japanese-titled game on a platform
+collided into one work.
+
+An earlier attempt kept the slug and added a content lookup as the importer's
+last resort. That found a renamed game again, but it did not stop the id from
+being made of a title, so the machinery to work around the drift kept growing:
+claimed ids beside resolved ones, a re-derived binding state, a merge pass for
+rows that duplicated because the key moved.
+
+Identity is now:
+
+- **A medium** *is* its bytes, so its id is folded from them —
+  SHA-256 over the complete ordered track set, truncated to 80 bits, rendered
+  Crockford base32 with a `med_` prefix. `retro-junk-catalog/src/content_id.rs`
+  is the only place this is computed, and it refuses to mint an id for an empty
+  file or a digest-less entry.
+- **A work and a release** are groupings with no content of their own, so
+  folding them from their members would move their ids the day a DAT adds a
+  region or a disc. They get a `wrk_`/`rel_` id minted once, and are found again
+  by their natural key: a work by canonical name and platform, a release by
+  (work, platform, region, revision, variant).
+- **The title is a label.** When a DAT renames a game, the medium is found by
+  its digests, and the work and release above it keep their ids and simply take
+  the new wording.
+- **Homebrew and mods** are in no DAT, so they fold *their own* digests through
+  the same function. Consistent rule: catalogued things fold the catalog's
+  hashes, uncatalogued things fold their own.
+- **Archive manifests carry no catalog ids at all.** A `[catalog_binding]`
+  records which catalog agreed, its version, the name it used, and the digests
+  it matched. Which catalog row that is gets worked out from those digests on
+  whichever machine is asking.
+
 ## The database is disposable
 
-No rebuild turned out to be necessary. The first plan was to re-key media on
-content, which would have orphaned every id the archive and collection point
-at and forced a rebuild. Keeping the slug id and adding a *content lookup* as
-the importer's last resort reaches the same place without breaking a single
-reference: a renamed game is found by its track set and keeps the id it had.
-
-The property still matters, though, and every new user decision is held to it —
+Every new user decision is held to this —
 a disambiguation is a mark beside the collection, not a row. The database
 remains rebuildable because everything durable lives outside it — verified
 2026-08-05:
@@ -226,9 +261,15 @@ Landed:
   state survives without colour. The three separate colour tables are gone.
 - `LikelyMatched` is amber, not blue, and `Tagged` (homebrew, mods) is blue —
   the two mappings the new rules made wrong.
-- The importer finds an existing medium by its complete track set when the
-  name has changed (`retro-junk-import/src/dat_import.rs`), so a corrected DAT
-  name keeps its entry instead of minting a twin.
+- Catalog ids come from content, not from the title
+  (`retro-junk-catalog/src/content_id.rs`, `retro-junk-import/src/dat_import.rs`).
+  A medium's id is folded from its complete ordered track set; works and
+  releases are minted once and found by their natural key; a renamed game is a
+  relabel that keeps every id it had. Archive manifests hold no catalog ids at
+  all, and the machinery that existed only to survive them drifting — claimed
+  ids, a `rederived` binding state, a re-bind pass, three name-keyed importer
+  finders, two copies of an ASCII-only slugify, and the exact-duplicate merge —
+  is gone with them.
 - Scraping warns once, through the shared progress channel so both frontends
   get it, when a platform has no catalog to search with.
 

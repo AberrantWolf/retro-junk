@@ -84,6 +84,10 @@ pub struct DumpImportCandidate {
     pub disposition: ImportDisposition,
     pub selected_match: Option<CatalogCandidate>,
     pub physical_copy_id: Option<PhysicalCopyId>,
+    /// The archive release this dump joins, when planning found one it belongs
+    /// under. Deciding that two pressings of a game are one owned thing needs
+    /// the catalog, which only planning can consult.
+    pub join_release: Option<retro_junk_archive::ArchiveReleaseId>,
     pub verification_tracks: Vec<TrackDigest>,
     pub verification_tool: Option<retro_junk_archive::ToolRecord>,
     pub verification_detail: String,
@@ -383,6 +387,7 @@ pub fn plan_import(
                 carrier_kind,
                 archive_platform_id: String::new(),
                 identification: IdentificationResolution::Unresolved,
+                join_release: None,
                 disposition: ImportDisposition::Invalid {
                     reason: "playable promotion currently accepts only loose, archival-equivalent cartridge ROM files".to_owned(),
                 },
@@ -406,6 +411,7 @@ pub fn plan_import(
                 carrier_kind,
                 archive_platform_id: String::new(),
                 identification: IdentificationResolution::Unresolved,
+                join_release: None,
                 disposition: ImportDisposition::AlreadyArchived { dump_id, directory },
                 selected_match: None,
                 physical_copy_id: None,
@@ -445,6 +451,7 @@ pub fn plan_import(
                     carrier_kind,
                     archive_platform_id: effective_platform_hint.unwrap_or_default().to_owned(),
                     identification: IdentificationResolution::Unresolved,
+                    join_release: None,
                     disposition: ImportDisposition::Invalid {
                         reason: error.to_string(),
                     },
@@ -523,106 +530,95 @@ pub fn plan_import(
             } else {
                 false
             };
-        let (selected_match, disposition, identification, physical_copy_id, archive_platform_id) =
-            match matches.as_slice() {
-                [] => (
-                    None,
-                    ImportDisposition::Unresolved {
-                        reason: "no catalog hash or serial match".to_owned(),
-                    },
-                    IdentificationResolution::Unresolved,
-                    None,
-                    String::new(),
-                ),
-                [selected] => {
-                    let archive_platform_id =
-                        physical_archive_platform(&request, &source, selected);
-                    let compatible_catalog_releases = if selected.work_id.is_empty() {
-                        BTreeSet::new()
-                    } else {
-                        retro_junk_db::releases_for_work(catalog, &selected.work_id)
-                            .map_err(|error| ImportError::Catalog(error.to_string()))?
-                            .into_iter()
-                            .filter(|release| {
-                                release.platform_id == selected.platform_id
-                                    && release.region == selected.region
+        let (
+            selected_match,
+            disposition,
+            identification,
+            physical_copy_id,
+            archive_platform_id,
+            join_release,
+        ) = match matches.as_slice() {
+            [] => (
+                None,
+                ImportDisposition::Unresolved {
+                    reason: "no catalog hash or serial match".to_owned(),
+                },
+                IdentificationResolution::Unresolved,
+                None,
+                String::new(),
+                None,
+            ),
+            [selected] => {
+                let archive_platform_id = physical_archive_platform(&request, &source, selected);
+                let compatible_catalog_releases = if selected.work_id.is_empty() {
+                    BTreeSet::new()
+                } else {
+                    retro_junk_db::releases_for_work(catalog, &selected.work_id)
+                        .map_err(|error| ImportError::Catalog(error.to_string()))?
+                        .into_iter()
+                        .filter(|release| {
+                            release.platform_id == selected.platform_id
+                                && release.region == selected.region
+                        })
+                        .map(|release| release.id)
+                        .collect::<BTreeSet<_>>()
+                };
+                let joined = archive_release_for(
+                    &archive,
+                    catalog,
+                    &archive_platform_id,
+                    selected,
+                    &compatible_catalog_releases,
+                )?;
+                let join_release = joined.map(|release| release.manifest.archive_release_id);
+                let copies = joined
+                    .map(|release| {
+                        release
+                            .physical_copies
+                            .iter()
+                            .map(|copy| PhysicalCopyCandidate {
+                                physical_copy_id: copy.manifest.physical_copy_id,
+                                copy_number: copy.manifest.copy_number,
+                                label: copy.manifest.label.clone(),
                             })
-                            .map(|release| release.id)
-                            .collect::<BTreeSet<_>>()
-                    };
-                    let copies = archive
-                        .releases
-                        .iter()
-                        .find(|release| {
-                            release.manifest.catalog_binding.catalog_release_id
-                                == selected.release_id
-                                || compatible_catalog_releases
-                                    .contains(&release.manifest.catalog_binding.catalog_release_id)
-                                || (!selected.work_id.is_empty()
-                                    && (release.manifest.catalog_binding.catalog_work_id
-                                        == selected.work_id
-                                        || release.physical_copies.iter().any(|copy| {
-                                            copy.carriers.iter().any(|carrier| {
-                                                carrier.manifest.catalog_binding.catalog_work_id
-                                                    == selected.work_id
-                                                    || compatible_catalog_releases.contains(
-                                                        &carrier
-                                                            .manifest
-                                                            .catalog_binding
-                                                            .catalog_release_id,
-                                                    )
-                                            })
-                                        })))
-                                || (release.manifest.platform_id == archive_platform_id
-                                    && release.manifest.title == selected.title
-                                    && release.manifest.region == selected.region
-                                    && release.manifest.revision == selected.revision
-                                    && release.manifest.variant == selected.variant)
-                        })
-                        .map(|release| {
-                            release
-                                .physical_copies
-                                .iter()
-                                .map(|copy| PhysicalCopyCandidate {
-                                    physical_copy_id: copy.manifest.physical_copy_id,
-                                    copy_number: copy.manifest.copy_number,
-                                    label: copy.manifest.label.clone(),
-                                })
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    if !request.new_physical_copy && copies.len() > 1 {
-                        (
-                            Some(selected.clone()),
-                            ImportDisposition::NeedsPhysicalCopyChoice { copies },
-                            resolution,
-                            None,
-                            archive_platform_id,
-                        )
-                    } else {
-                        (
-                            Some(selected.clone()),
-                            ImportDisposition::Ready,
-                            resolution,
-                            if request.new_physical_copy {
-                                None
-                            } else {
-                                copies.first().map(|copy| copy.physical_copy_id)
-                            },
-                            archive_platform_id,
-                        )
-                    }
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if !request.new_physical_copy && copies.len() > 1 {
+                    (
+                        Some(selected.clone()),
+                        ImportDisposition::NeedsPhysicalCopyChoice { copies },
+                        resolution,
+                        None,
+                        archive_platform_id,
+                        join_release,
+                    )
+                } else {
+                    (
+                        Some(selected.clone()),
+                        ImportDisposition::Ready,
+                        resolution,
+                        if request.new_physical_copy {
+                            None
+                        } else {
+                            copies.first().map(|copy| copy.physical_copy_id)
+                        },
+                        archive_platform_id,
+                        join_release,
+                    )
                 }
-                _ => (
-                    None,
-                    ImportDisposition::NeedsCatalogChoice {
-                        candidates: matches,
-                    },
-                    IdentificationResolution::Ambiguous,
-                    None,
-                    String::new(),
-                ),
-            };
+            }
+            _ => (
+                None,
+                ImportDisposition::NeedsCatalogChoice {
+                    candidates: matches,
+                },
+                IdentificationResolution::Ambiguous,
+                None,
+                String::new(),
+                None,
+            ),
+        };
         let intermediate_source = if matches!(format, RepresentationFormat::RedumperRaw)
             && matches!(
                 identification,
@@ -647,6 +643,7 @@ pub fn plan_import(
             disposition,
             selected_match,
             physical_copy_id,
+            join_release,
             verification_tracks,
             verification_tool,
             verification_detail,
@@ -706,6 +703,11 @@ pub fn execute_import(
     let mut copied_bytes = 0_u64;
     let mut results = Vec::with_capacity(plan.candidates.len());
     let mut created_copies = BTreeMap::<String, Vec<(PhysicalCopyId, BTreeSet<u32>)>>::new();
+    // The archive release each logical release (work, platform, region) landed
+    // in during this run. Discs of one boxed set can come from different
+    // masterings — different revisions, different catalog releases — and
+    // nothing in a manifest says they belong together, so the run remembers.
+    let mut created_releases = BTreeMap::<String, retro_junk_archive::ArchiveReleaseId>::new();
     let mut imported_packages =
         BTreeMap::<String, (PathBuf, retro_junk_archive::DumpManifest)>::new();
     for (index, candidate) in plan.candidates.into_iter().enumerate() {
@@ -782,9 +784,6 @@ pub fn execute_import(
                         .flatten()
                 });
                 let binding = CatalogBinding {
-                    catalog_work_id: selected.work_id.clone(),
-                    catalog_release_id: selected.release_id.clone(),
-                    catalog_media_id: selected.media_id.clone(),
                     source: selected.source.clone(),
                     dat_name: selected.title.clone(),
                     source_version: selected.source_version.clone(),
@@ -796,6 +795,9 @@ pub fn execute_import(
                     expected_tracks: candidate.verification_tracks.clone(),
                 };
                 let source_package = source_record(&candidate.source, &candidate.package);
+                let join_release = candidate
+                    .join_release
+                    .or_else(|| created_releases.get(&logical_release_key).copied());
                 let spec = NewCarrierDump {
                     platform_id: if candidate.archive_platform_id.is_empty() {
                         selected.platform_id.clone()
@@ -814,6 +816,7 @@ pub fn execute_import(
                     carrier_kind: candidate.carrier_kind.clone(),
                     format: candidate.format.clone(),
                     catalog_binding: binding,
+                    join_release,
                     source_package,
                     expected_files: candidate
                         .package
@@ -843,6 +846,9 @@ pub fn execute_import(
                 match imported {
                     Ok(imported) => {
                         copied_bytes = copied_bytes.saturating_add(candidate.package.total_bytes);
+                        created_releases
+                            .entry(logical_release_key.clone())
+                            .or_insert(imported.release.archive_release_id);
                         let copies = created_copies.entry(logical_release_key).or_default();
                         if let Some((_, positions)) = copies.iter_mut().find(|(copy_id, _)| {
                             *copy_id == imported.physical_copy.physical_copy_id
@@ -943,6 +949,7 @@ pub fn execute_import(
                     carrier_kind: candidate.carrier_kind.clone(),
                     format: candidate.format.clone(),
                     catalog_binding: CatalogBinding::default(),
+                    join_release: candidate.join_release,
                     source_package,
                     expected_files: candidate
                         .package
@@ -2152,6 +2159,63 @@ fn group_equivalent_release_matches(matches: &mut Vec<CatalogCandidate>) -> bool
     before != matches.len()
 }
 
+/// The archive release a newly identified dump belongs with, if the archive
+/// already holds one.
+///
+/// Two questions, cheapest first. Does an archive release *describe* the same
+/// thing — same platform, title, region, revision, variant? Those all came from
+/// the catalog when the release was first archived, so a match is a match.
+/// Failing that, does one of its carriers *contain* something from the same
+/// catalog release, or from a compatible mastering of the same work? That
+/// question is answered from each carrier's recorded track set, run back
+/// through the catalog — the same evidence that identified it in the first
+/// place.
+///
+/// The manifests hold no catalog row ids to compare, and deliberately so: an id
+/// derived from a title moved whenever a title was corrected, which is how one
+/// game came to have two archive releases.
+fn archive_release_for<'a>(
+    archive: &'a retro_junk_archive::ArchiveIndexSnapshot,
+    catalog: &retro_junk_db::Connection,
+    archive_platform_id: &str,
+    selected: &CatalogCandidate,
+    compatible_catalog_releases: &BTreeSet<String>,
+) -> Result<Option<&'a retro_junk_archive::IndexedRelease>, ImportError> {
+    let described = archive.releases.iter().find(|release| {
+        release.manifest.platform_id == archive_platform_id
+            && release.manifest.title == selected.title
+            && release.manifest.region == selected.region
+            && release.manifest.revision == selected.revision
+            && release.manifest.variant == selected.variant
+    });
+    if described.is_some() {
+        return Ok(described);
+    }
+    for release in &archive.releases {
+        for copy in &release.physical_copies {
+            for carrier in &copy.carriers {
+                let tracks = &carrier.manifest.catalog_binding.expected_tracks;
+                if tracks.is_empty() {
+                    continue;
+                }
+                let matches = retro_junk_db::match_complete_catalog_media(
+                    catalog,
+                    &release.manifest.platform_id,
+                    tracks,
+                )
+                .map_err(|error| ImportError::Catalog(error.to_string()))?;
+                if matches.iter().any(|found| {
+                    found.release_id == selected.release_id
+                        || compatible_catalog_releases.contains(&found.release_id)
+                }) {
+                    return Ok(Some(release));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn catalog_candidate_release_key(candidate: &CatalogCandidate) -> String {
     if candidate.work_id.is_empty() {
         return candidate.release_id.clone();
@@ -2194,19 +2258,62 @@ mod tests {
         .unwrap();
 
         let mut catalog = retro_junk_db::open_memory().unwrap();
-        catalog.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('psx','PlayStation','PSX','Sony',5,'cd',1994,'','Psx')", []).unwrap();
+        // The catalog names the console `ps1`; the archive lays PlayStation
+        // discs out under `psx` for the frontend. Both are the same platform,
+        // and the projection normalises between them.
+        catalog.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('ps1','PlayStation','PS1','Sony',5,'cd',1994,'','Ps1')", []).unwrap();
         catalog
             .execute(
                 "INSERT INTO works(id,canonical_name) VALUES('work','Two Disc Game')",
                 [],
             )
             .unwrap();
-        catalog.execute("INSERT INTO releases(id,work_id,platform_id,region,revision,title) VALUES('release-a','work','psx','usa','mastering-a','Two Disc Game')", []).unwrap();
-        catalog.execute("INSERT INTO releases(id,work_id,platform_id,region,revision,title) VALUES('release-b','work','psx','usa','mastering-b','Two Disc Game')", []).unwrap();
-        catalog.execute("INSERT INTO releases(id,work_id,platform_id,region,revision,title) VALUES('release-c','work','psx','usa','mastering-c','Two Disc Game')", []).unwrap();
-        catalog.execute("INSERT INTO media(id,release_id,media_serial,disc_number,dat_source) VALUES('disc-1','release-a','SLUS-00001',1,'redump')", []).unwrap();
-        catalog.execute("INSERT INTO media(id,release_id,media_serial,disc_number,dat_source) VALUES('disc-2','release-b','SLUS-00002',2,'redump')", []).unwrap();
-        catalog.execute("INSERT INTO media(id,release_id,media_serial,disc_number,dat_source) VALUES('disc-1b','release-c','SLUS-00003',1,'redump')", []).unwrap();
+        catalog.execute("INSERT INTO releases(id,work_id,platform_id,region,revision,title) VALUES('release-a','work','ps1','usa','mastering-a','Two Disc Game')", []).unwrap();
+        catalog.execute("INSERT INTO releases(id,work_id,platform_id,region,revision,title) VALUES('release-b','work','ps1','usa','mastering-b','Two Disc Game')", []).unwrap();
+        catalog.execute("INSERT INTO releases(id,work_id,platform_id,region,revision,title) VALUES('release-c','work','ps1','usa','mastering-c','Two Disc Game')", []).unwrap();
+        // Each catalog medium carries the digests of the disc it describes,
+        // which is the only thing that binds an archived carrier to it.
+        for (media_id, release_id, serial, disc, file) in [
+            (
+                "disc-1",
+                "release-a",
+                "SLUS-00001",
+                1,
+                "SLUS-00001/disc.bin",
+            ),
+            (
+                "disc-2",
+                "release-b",
+                "SLUS-00002",
+                2,
+                "SLUS-00002/disc.bin",
+            ),
+            (
+                "disc-1b",
+                "release-c",
+                "SLUS-00003",
+                1,
+                "SLUS-00003/disc.bin",
+            ),
+        ] {
+            let digests =
+                retro_junk_archive::hash_file_digests(&inbox.join(file), &AtomicBool::new(false))
+                    .unwrap();
+            catalog.execute(
+                "INSERT INTO media(id,release_id,media_serial,disc_number,dat_source,file_size,crc32,sha1,md5)
+                 VALUES(?1,?2,?3,?4,'redump',?5,?6,?7,?8)",
+                rusqlite::params![
+                    media_id,
+                    release_id,
+                    serial,
+                    disc,
+                    digests.size,
+                    digests.crc32,
+                    digests.sha1,
+                    digests.md5
+                ],
+            ).unwrap();
+        }
         catalog
             .execute(
                 "INSERT INTO media_serial_keys(media_id,serial_key) VALUES('disc-1','SLUS00001')",
@@ -2269,13 +2376,14 @@ mod tests {
             phase.kind == PlanningProgressKind::Items && phase.current == 3 && phase.total == 3
         }));
         assert_eq!(plan.candidates.len(), 3);
+        // Each disc matched the catalog on its own bytes, which is what later
+        // binds it — the folder serials agree, but they are not the evidence.
         assert!(plan.candidates.iter().all(|candidate| {
             matches!(candidate.disposition, ImportDisposition::Ready)
                 && matches!(
                     candidate.identification,
-                    IdentificationResolution::Identified {
-                        method: IdentificationMethod::FolderSerial
-                    }
+                    IdentificationResolution::CatalogVerified { .. }
+                        | IdentificationResolution::Identified { .. }
                 )
         }));
 
@@ -2304,29 +2412,25 @@ mod tests {
         assert_eq!(snapshot.releases[0].physical_copies.len(), 2);
         assert_eq!(snapshot.releases[0].physical_copies[0].carriers.len(), 2);
         assert_eq!(snapshot.releases[0].physical_copies[1].carriers.len(), 1);
-        assert_eq!(
-            snapshot.releases[0]
-                .manifest
-                .catalog_binding
-                .catalog_work_id,
-            "work"
-        );
-        assert!(
-            snapshot.releases[0]
-                .manifest
-                .catalog_binding
-                .catalog_release_id
-                .is_empty()
-        );
-        let exact_carrier_releases = snapshot.releases[0]
+        // Three discs from three different masterings land under one archive
+        // release, each keeping the exact catalog entry its own match named.
+        // Nothing here is a catalog row id: the manifests describe what was
+        // matched, and which catalog release the set belongs to is worked out
+        // from the carriers when the projection is built.
+        let carrier_serials = snapshot.releases[0]
             .physical_copies
             .iter()
             .flat_map(|copy| &copy.carriers)
-            .map(|carrier| carrier.manifest.catalog_binding.catalog_release_id.as_str())
+            .flat_map(|carrier| carrier.manifest.catalog_binding.serials.clone())
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
-            exact_carrier_releases,
-            ["release-a", "release-b", "release-c"].into()
+            carrier_serials,
+            [
+                "SLUS-00001".to_owned(),
+                "SLUS-00002".to_owned(),
+                "SLUS-00003".to_owned()
+            ]
+            .into()
         );
         assert!(
             snapshot.releases[0]
@@ -2829,8 +2933,9 @@ mod tests {
             snapshot.releases[0]
                 .manifest
                 .catalog_binding
-                .catalog_release_id
-                .is_empty()
+                .dat_name
+                .is_empty(),
+            "an unbound import names no catalog entry"
         );
     }
 

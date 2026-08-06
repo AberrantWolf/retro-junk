@@ -46,7 +46,7 @@ pub const PROJECTION_TABLES: &[&str] = &[
 
 /// Bumped whenever a projection table's shape changes. Unlike
 /// [`CURRENT_VERSION`], this never needs a migration arm.
-pub const PROJECTION_VERSION: i32 = 1;
+pub const PROJECTION_VERSION: i32 = 2;
 
 /// Drop and rebuild the projection when its recorded shape is not the one
 /// this build expects.
@@ -93,7 +93,7 @@ pub fn ensure_projection_shape(conn: &Connection) -> Result<(), SchemaError> {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 26;
+pub const CURRENT_VERSION: i32 = 27;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -366,8 +366,6 @@ const TABLES: &[(&str, &str)] = &[
           profile_id TEXT NOT NULL REFERENCES archive_profiles(id) ON DELETE CASCADE,
           catalog_work_id TEXT REFERENCES works(id) ON DELETE SET NULL,
           catalog_release_id TEXT REFERENCES releases(id) ON DELETE SET NULL,
-          claimed_work_id TEXT NOT NULL DEFAULT '',
-          claimed_release_id TEXT NOT NULL DEFAULT '',
           platform_id TEXT NOT NULL,
           title TEXT NOT NULL,
           region TEXT NOT NULL DEFAULT '',
@@ -375,7 +373,7 @@ const TABLES: &[(&str, &str)] = &[
           variant TEXT NOT NULL DEFAULT '',
           manifest_path TEXT NOT NULL,
           manifest_sha256 TEXT NOT NULL,
-          binding_state TEXT NOT NULL DEFAULT 'unresolved',
+          binding_state TEXT NOT NULL DEFAULT 'unbound',
           UNIQUE(profile_id, manifest_path))",
     ),
     (
@@ -397,14 +395,13 @@ const TABLES: &[(&str, &str)] = &[
         "(id TEXT PRIMARY KEY,
           physical_copy_id TEXT NOT NULL REFERENCES physical_copies(id) ON DELETE CASCADE,
           catalog_media_id TEXT REFERENCES media(id) ON DELETE SET NULL,
-          claimed_media_id TEXT NOT NULL DEFAULT '',
           kind TEXT NOT NULL DEFAULT 'unknown',
           serial TEXT NOT NULL DEFAULT '',
           sequence_number INTEGER NOT NULL DEFAULT 0,
           label TEXT NOT NULL DEFAULT '',
           manifest_path TEXT NOT NULL,
           manifest_sha256 TEXT NOT NULL,
-          binding_state TEXT NOT NULL DEFAULT 'unresolved')",
+          binding_state TEXT NOT NULL DEFAULT 'unbound')",
     ),
     (
         "dump_events",
@@ -602,6 +599,10 @@ const TABLES: &[(&str, &str)] = &[
 
 const INDEXES_SQL: &str = "
 CREATE UNIQUE INDEX IF NOT EXISTS idx_releases_natural ON releases(work_id, platform_id, region, revision, variant);
+-- A work's id is minted, so importing a DAT finds an existing work by what it
+-- is called and which platform its releases are on: this index, then the
+-- (work_id, platform_id) prefix of idx_releases_natural.
+CREATE INDEX IF NOT EXISTS idx_works_name ON works(canonical_name);
 CREATE INDEX IF NOT EXISTS idx_media_release ON media(release_id);
 CREATE INDEX IF NOT EXISTS idx_media_crc32 ON media(crc32);
 CREATE INDEX IF NOT EXISTS idx_media_sha1 ON media(sha1);
@@ -1055,18 +1056,12 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                     "CREATE TABLE IF NOT EXISTS catalog_source_snapshots {body};"
                 ))?;
             }
-            20 => {
-                // Losslessly collapse only media rows with complete, identical
-                // release identity and byte/track evidence.
-                let has_catalog: bool = conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='media')",
-                    [],
-                    |row| row.get(0),
-                )?;
-                if has_catalog {
-                    crate::deduplicate::deduplicate_catalog(conn, None)?;
-                }
-            }
+            // Historical, and now a no-op: v20 collapsed media rows that were
+            // byte-for-byte identical, which happened whenever a corrected
+            // title minted a second row beside the first. Media ids are folded
+            // from the medium's digests since v27, so identical content shares
+            // one primary key and the duplicate cannot be created — and the v27
+            // rebuild re-keys every row anyway.
             21 => {
                 // Cross-process work coordination: claims, per-target errors,
                 // the suggestions inbox, the incoming-package ledger, and the
@@ -1122,6 +1117,28 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                              ))
                            )
                          );",
+                    )?;
+                }
+            }
+            26 => {
+                // Work, release and media ids stopped being made out of the
+                // game's title. A medium's id is now folded from its digests
+                // and a work's is minted, so importing a DAT finds an existing
+                // work by canonical name and platform instead of by rebuilding
+                // the same slug. Only the index that lookup needs is added
+                // here: every id in the catalog changes, which no migration can
+                // do in place — `catalog reset` then `catalog import all`
+                // rebuilds it, and the archive on disk is unaffected because
+                // manifests no longer carry these ids at all.
+                // A library-only database has no catalog tables to index.
+                let has_works: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='works')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_works {
+                    conn.execute_batch(
+                        "CREATE INDEX IF NOT EXISTS idx_works_name ON works(canonical_name);",
                     )?;
                 }
             }

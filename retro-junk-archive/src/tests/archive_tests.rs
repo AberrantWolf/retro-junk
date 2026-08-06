@@ -196,6 +196,7 @@ fn low_level_ingest_rejects_multiple_redumper_images() {
             carrier_kind: crate::CarrierKind::OpticalDisc,
             format: RepresentationFormat::RedumperRaw,
             catalog_binding: crate::CatalogBinding::default(),
+            join_release: None,
             source_package: crate::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -236,6 +237,7 @@ fn legacy_japanese_nes_release_is_moved_to_famicom_without_recopying_dump() {
             carrier_kind: crate::CarrierKind::Cartridge,
             format: RepresentationFormat::Rom,
             catalog_binding: crate::CatalogBinding::default(),
+            join_release: None,
             source_package: crate::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -299,6 +301,7 @@ fn legacy_japanese_saturn_release_is_moved_to_saturnjp_without_recopying_dump() 
             carrier_kind: crate::CarrierKind::OpticalDisc,
             format: RepresentationFormat::Iso,
             catalog_binding: crate::CatalogBinding::default(),
+            join_release: None,
             source_package: crate::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -376,6 +379,7 @@ fn portable_hierarchy_and_append_only_evidence_are_scannable() {
             carrier_kind: crate::CarrierKind::Cartridge,
             format: RepresentationFormat::Rom,
             catalog_binding: crate::CatalogBinding::default(),
+            join_release: None,
             source_package: crate::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -695,6 +699,7 @@ fn release_assets_are_copied_and_indexed_as_authoritative_originals() {
             carrier_kind: crate::CarrierKind::Cartridge,
             format: RepresentationFormat::Rom,
             catalog_binding: crate::CatalogBinding::default(),
+            join_release: None,
             source_package: crate::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -748,12 +753,29 @@ fn release_assets_are_copied_and_indexed_as_authoritative_originals() {
     assert_eq!(std::fs::read(&cover).unwrap(), b"original pixels");
 }
 
-#[test]
-fn carrier_binding_replaces_a_single_identity_and_generalizes_a_mixed_parent() {
-    let temp = tempfile::tempdir().unwrap();
-    let archive = temp.path().join("archive");
+fn track(sha1: &str, size: u64) -> crate::TrackDigest {
+    crate::TrackDigest {
+        number: 1,
+        size,
+        crc32: String::new(),
+        md5: String::new(),
+        sha1: sha1.to_owned(),
+    }
+}
+
+/// One archived disc, bound to a catalog entry, with the release and carrier
+/// manifest paths its caller needs.
+fn archive_with_one_bound_disc(
+    temp: &std::path::Path,
+) -> (
+    std::path::PathBuf,
+    crate::IngestedCarrierDump,
+    std::path::PathBuf,
+    std::path::PathBuf,
+) {
+    let archive = temp.join("archive");
     initialize_archive(&archive, &ArchiveRootManifest::new("Binding")).unwrap();
-    let disc = temp.path().join("disc.bin");
+    let disc = temp.join("disc.bin");
     std::fs::write(&disc, b"disc").unwrap();
     let imported = ingest_new_carrier_dump(
         &archive,
@@ -772,11 +794,12 @@ fn carrier_binding_replaces_a_single_identity_and_generalizes_a_mixed_parent() {
             carrier_kind: crate::CarrierKind::OpticalDisc,
             format: RepresentationFormat::Rom,
             catalog_binding: crate::CatalogBinding {
-                catalog_work_id: "work".to_owned(),
-                catalog_release_id: "release-a".to_owned(),
-                catalog_media_id: "media-a".to_owned(),
+                dat_name: "Game (Japan)".to_owned(),
+                source: "redump".to_owned(),
+                expected_tracks: vec![track("aa", 4)],
                 ..Default::default()
             },
+            join_release: None,
             source_package: crate::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -797,27 +820,44 @@ fn carrier_binding_replaces_a_single_identity_and_generalizes_a_mixed_parent() {
         .find(|path| path.join("carrier.toml").is_file())
         .unwrap()
         .join("carrier.toml");
+    (archive, imported, release_path, carrier_path)
+}
+
+/// Re-identifying a carrier against a corrected catalog entry replaces what it
+/// records, and leaves the release still describing one specific thing.
+#[test]
+fn rebinding_a_carrier_replaces_what_it_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let (archive, _imported, release_path, carrier_path) = archive_with_one_bound_disc(temp.path());
     assert!(
         !crate::bind_carrier_to_catalog(
             &release_path,
             &carrier_path,
             &crate::CatalogBinding {
-                catalog_work_id: "work".to_owned(),
-                catalog_release_id: "release-b".to_owned(),
-                catalog_media_id: "media-b".to_owned(),
+                dat_name: "Game (Japan) (Rev A)".to_owned(),
+                source: "redump".to_owned(),
+                expected_tracks: vec![track("bb", 4)],
                 ..Default::default()
             },
+            false,
         )
         .unwrap()
     );
     let rebound = scan_archive(&archive).unwrap();
     assert_eq!(
-        rebound.releases[0]
-            .manifest
-            .catalog_binding
-            .catalog_release_id,
-        "release-b"
+        rebound.releases[0].manifest.catalog_binding.dat_name,
+        "Game (Japan) (Rev A)"
     );
+    assert_eq!(rebound.releases[0].manifest.revision, "mastering-a");
+}
+
+/// A copy whose discs came from two pressings is one owned thing but more than
+/// one catalog release, so the release above them stops claiming either one's
+/// revision or track set. Each carrier keeps its own.
+#[test]
+fn a_release_spanning_masterings_stops_describing_just_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let (archive, imported, release_path, _carrier_path) = archive_with_one_bound_disc(temp.path());
 
     let second_disc = temp.path().join("disc-2.bin");
     std::fs::write(&second_disc, b"disc two").unwrap();
@@ -838,6 +878,7 @@ fn carrier_binding_replaces_a_single_identity_and_generalizes_a_mixed_parent() {
             carrier_kind: crate::CarrierKind::OpticalDisc,
             format: RepresentationFormat::Rom,
             catalog_binding: crate::CatalogBinding::default(),
+            join_release: None,
             source_package: crate::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: Some(imported.physical_copy.physical_copy_id),
@@ -852,45 +893,84 @@ fn carrier_binding_replaces_a_single_identity_and_generalizes_a_mixed_parent() {
         .find(|path| path.join("carrier.toml").is_file())
         .unwrap()
         .join("carrier.toml");
+
+    // The caller found this second disc belongs to a different catalog release
+    // than its sibling.
     assert!(
         crate::bind_carrier_to_catalog(
             &release_path,
             &second_carrier_path,
             &crate::CatalogBinding {
-                catalog_work_id: "work".to_owned(),
-                catalog_release_id: "release-c".to_owned(),
-                catalog_media_id: "media-c".to_owned(),
+                dat_name: "Game (Japan) (Rev B)".to_owned(),
+                source: "redump".to_owned(),
+                expected_tracks: vec![track("cc", 8)],
                 ..Default::default()
             },
+            true,
         )
         .unwrap()
     );
 
     let snapshot = scan_archive(&archive).unwrap();
     assert_eq!(
-        snapshot.releases[0]
-            .manifest
-            .catalog_binding
-            .catalog_work_id,
-        "work"
+        snapshot.releases[0].manifest.catalog_binding.source,
+        "redump"
     );
     assert!(
         snapshot.releases[0]
             .manifest
             .catalog_binding
-            .catalog_release_id
+            .expected_tracks
             .is_empty()
     );
+    assert!(snapshot.releases[0].manifest.revision.is_empty());
     let carrier = snapshot.releases[0].physical_copies[0]
         .carriers
         .iter()
         .find(|carrier| carrier.manifest.sequence_number == 2)
         .unwrap();
     assert_eq!(
-        carrier.manifest.catalog_binding.catalog_release_id,
-        "release-c"
+        carrier.manifest.catalog_binding.dat_name,
+        "Game (Japan) (Rev B)"
     );
-    assert_eq!(carrier.manifest.catalog_binding.catalog_media_id, "media-c");
+    assert_eq!(
+        carrier.manifest.catalog_binding.expected_tracks,
+        vec![track("cc", 8)]
+    );
+}
+
+/// A manifest written before catalog ids were dropped still reads cleanly, so
+/// the tidy-up script is housekeeping rather than something the code waits on.
+#[test]
+fn a_manifest_still_carrying_the_old_catalog_ids_parses() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("carrier.toml");
+    std::fs::write(
+        &path,
+        concat!(
+            "schema_version = 2\n",
+            "carrier_id = \"0198f0c1-1234-7000-8000-000000000001\"\n",
+            "physical_copy_id = \"0198f0c1-1234-7000-8000-000000000002\"\n",
+            "serial = \"\"\n",
+            "sequence_number = 1\n",
+            "label = \"\"\n",
+            "[kind]\n",
+            "type = \"optical_disc\"\n",
+            "[catalog_binding]\n",
+            "catalog_work_id = \"ps1:biohazard-3\"\n",
+            "catalog_release_id = \"ps1:biohazard-3:ps1:japan\"\n",
+            "catalog_media_id = \"ps1:biohazard-3:ps1:japan:disc\"\n",
+            "source = \"redump\"\n",
+            "dat_name = \"BioHazard 3 - Last Escape (Japan)\"\n",
+        ),
+    )
+    .unwrap();
+    let manifest: crate::CarrierManifest = crate::read_toml(&path).unwrap();
+    assert_eq!(manifest.catalog_binding.source, "redump");
+    assert_eq!(
+        manifest.catalog_binding.dat_name,
+        "BioHazard 3 - Last Escape (Japan)"
+    );
 }
 
 /// A network share that refuses to flush a directory (macOS smbfs answers
@@ -949,6 +1029,7 @@ fn a_scanned_manifest_digest_matches_the_file_on_disk() {
             carrier_kind: crate::CarrierKind::Cartridge,
             format: RepresentationFormat::Rom,
             catalog_binding: crate::CatalogBinding::default(),
+            join_release: None,
             source_package: crate::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,

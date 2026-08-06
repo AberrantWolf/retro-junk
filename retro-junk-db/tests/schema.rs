@@ -30,7 +30,7 @@ fn v20_adds_work_identity_to_archive_releases() {
         .execute_batch(
             "CREATE TABLE schema_version(version INTEGER NOT NULL);
              INSERT INTO schema_version(version) VALUES(19);
-             CREATE TABLE works(id TEXT PRIMARY KEY);
+             CREATE TABLE works(id TEXT PRIMARY KEY, canonical_name TEXT NOT NULL DEFAULT '');
              CREATE TABLE archive_releases(
                  id TEXT PRIMARY KEY,
                  profile_id TEXT NOT NULL,
@@ -94,7 +94,7 @@ fn an_outdated_projection_is_rebuilt_rather_than_migrated() {
     let connection = open_database(&db_path).unwrap();
     // Rebuilt to the current shape...
     connection
-        .prepare("SELECT claimed_media_id FROM carriers LIMIT 0")
+        .prepare("SELECT binding_state FROM carriers LIMIT 0")
         .expect("carriers was not rebuilt to the current shape");
     // ...and emptied, because the manifests on disk are the authority.
     let carriers: i64 = connection

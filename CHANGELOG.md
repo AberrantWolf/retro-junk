@@ -2,6 +2,67 @@
 
 ## 0.4.0
 
+- Catalog identity comes from a game's bytes, not from its name. Work, release
+  and media ids used to be built out of the title — `{platform}:{slug(title)}`
+  and derivations of it — so the title was part of the primary key, and every
+  time a title changed the key changed with it and the old row was orphaned.
+  Fixing one XML-entity bug renamed 871 Redump entries and minted 871
+  duplicate work/release/media triples with identical hashes; the entity
+  itself became part of an identifier (`ps1:dragon-quest-monsters-1-amp-2-…`);
+  and because the slug kept only ASCII, a title with none — `パロディウスだ!` —
+  slugged to the empty string, so every Japanese-titled game on a platform
+  collided into one work. A medium's id is now folded from its complete
+  ordered track set: SHA-256, truncated to 80 bits, rendered as
+  `med_7K4M9XQZ3QP8WBTN`. Works and releases are groupings with no content of
+  their own — folding them from their members would move their ids the day a
+  DAT adds a region or a disc — so they get an id minted once and are found
+  again by canonical name and platform. A renamed game is now a relabel: the
+  medium is found by its digests, and the work and release above it keep their
+  ids and take the new wording.
+
+- Archive manifests no longer name a catalog row. A `[catalog_binding]`
+  records which catalog agreed, its version, the name it used, and the digests
+  it matched — a description, not a pointer. Which catalog row that is gets
+  worked out from those digests, so an archive written on one machine resolves
+  on another instead of naming ids a differently versioned import never
+  created. On the reference archive that state was 201 of 248 carriers.
+  `scripts/migrate_manifests.py` strips the three dead keys from manifests on
+  disk; it is tidying rather than a gate, because the fields were already
+  ignored.
+
+- Machinery that existed only to survive ids drifting is gone with them: the
+  `claimed_work_id`/`claimed_release_id`/`claimed_media_id` columns, the
+  `rederived` and `carrier_resolved` binding states (a carrier is `bound` or
+  `unbound`, because there is one way to bind), two of the importer's three
+  name-keyed media lookups, both copies of an ASCII-only `slugify`, the CLI's
+  `wrk-`/`rel-`/`med-` display prefixes and the check that could not tell one
+  from a title slug beginning with `rel-`, and the exact-duplicate merge pass —
+  two rows with identical content share one primary key now, so that duplicate
+  cannot be created. What remains of the duplicate report is the case no key
+  can settle: entries claiming to be the same edition while their bytes differ.
+
+- Homebrew and mods are identified by their own digests, through the same
+  function. Three bugs go with the change: a homebrew id built from
+  `slugify(name)` collided whenever two titles slugged alike and orphaned on
+  rename; a homebrew medium was inserted with no digests at all, so the file it
+  described could never be matched back to it; and a modded medium with no
+  hashes fell back to a wall-clock timestamp, which meant the same file gained
+  a fresh row on every run. A mod also names its parent by that parent's media
+  id rather than by a name, so the link means the same thing on any machine
+  that has imported the same DAT.
+
+- Two enrichment sources had a copy each of the same "find or create this
+  company" lookup, and both keyed it on a slug of the company name — so every
+  company whose name has no ASCII in it folded into one row. There is one
+  lookup now, keyed on the name itself.
+
+- `retro-junk --help` names the build, at every level of the command tree, and
+  `--version` answers. Values are checked while the command line is still being
+  read: `catalog lookup --type` and `sync --only` list what they accept and
+  reject anything else before work starts, and `catalog import`/`catalog
+  enrich-gdb` reject an unknown system name before creating a database and
+  seeding it.
+
 - PC Engine HuCard games are part of the library. NEC's card system had no
   analyzer at all — only its CD add-on did — so a folder of `.pce` files was
   invisible to scanning: the folder never appeared as a console, and no file

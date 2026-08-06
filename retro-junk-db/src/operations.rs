@@ -1,8 +1,9 @@
 //! CRUD operations for all catalog entity types.
 
+use retro_junk_catalog::content_id;
 use retro_junk_catalog::types::{
     Asset, CatalogPlatform, CatalogTag, CollectionEntry, Company, Disagreement, DisagreementId,
-    ImportLog, ImportLogId, Media, MediaStatus, MediaType, PlatformRelationship, Release,
+    ImportLog, ImportLogId, Media, MediaType, PlatformRelationship, Release,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use thiserror::Error;
@@ -131,6 +132,33 @@ pub fn insert_work(
 pub fn find_work_by_name(conn: &Connection, name: &str) -> Result<Option<String>, OperationError> {
     let mut stmt = conn.prepare("SELECT id FROM works WHERE canonical_name = ?1 LIMIT 1")?;
     let result = stmt.query_row(params![name], |row| row.get::<_, String>(0));
+    match result {
+        Ok(id) => Ok(Some(id)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Find a work by canonical name, on one platform only.
+///
+/// A work id says nothing about which console it is for, so the platform has
+/// to come from the releases hanging off it. Without that filter, importing
+/// the SNES DAT would attach every "Tetris" release to the NES work of the
+/// same name — which is why the old title-derived ids embedded the platform.
+/// The `(work_id, platform_id, …)` index makes the join a lookup rather than
+/// a scan.
+pub fn find_work_by_name_on_platform(
+    conn: &Connection,
+    name: &str,
+    platform_id: &str,
+) -> Result<Option<String>, OperationError> {
+    let mut stmt = conn.prepare(
+        "SELECT w.id FROM works w
+         JOIN releases r ON r.work_id = w.id
+         WHERE w.canonical_name = ?1 AND r.platform_id = ?2
+         ORDER BY w.id LIMIT 1",
+    )?;
+    let result = stmt.query_row(params![name, platform_id], |row| row.get::<_, String>(0));
     match result {
         Ok(id) => Ok(Some(id)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -434,75 +462,6 @@ pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationErr
     Ok(())
 }
 
-/// Find media by DAT name (exact match).
-pub fn find_media_by_dat_name(
-    conn: &Connection,
-    dat_name: &str,
-) -> Result<Option<Media>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, release_id, media_serial, disc_number, disc_label,
-                revision, status, tag, dat_name, rom_name, dat_source, file_size,
-                crc32, sha1, md5, created_at, updated_at
-         FROM media WHERE dat_name = ?1 LIMIT 1",
-    )?;
-    row_to_media(&mut stmt, params![dat_name])
-}
-
-/// Find the specific ROM representation attached to a release.
-///
-/// A DAT can contain multiple records with the same game name but different
-/// ROM byte orders or container formats (notably N64 `.z64` and `.v64`).  The
-/// ROM filename, not the display/game name, distinguishes those fingerprints.
-pub fn find_media_by_release_and_rom_name(
-    conn: &Connection,
-    release_id: &str,
-    rom_name: &str,
-) -> Result<Option<Media>, OperationError> {
-    let mut stmt = conn.prepare(
-        "SELECT id, release_id, media_serial, disc_number, disc_label,
-                revision, status, tag, dat_name, rom_name, dat_source, file_size,
-                crc32, sha1, md5, created_at, updated_at
-         FROM media WHERE release_id = ?1 AND rom_name = ?2 LIMIT 1",
-    )?;
-    row_to_media(&mut stmt, params![release_id, rom_name])
-}
-
-fn row_to_media(
-    stmt: &mut rusqlite::Statement<'_>,
-    params: impl rusqlite::Params,
-) -> Result<Option<Media>, OperationError> {
-    let result = stmt.query_row(params, |row| {
-        let status_str: String = row.get(6)?;
-        let tag_str: Option<String> = row.get(7)?;
-        Ok(Media {
-            id: row.get(0)?,
-            release_id: row.get(1)?,
-            media_serial: row.get(2)?,
-            disc_number: row.get(3)?,
-            disc_label: row.get(4)?,
-            revision: row.get(5)?,
-            status: MediaStatus::from_str_loose(&status_str),
-            tag: tag_str.as_deref().and_then(CatalogTag::from_str_loose),
-            dat_name: row.get(8)?,
-            rom_name: row.get(9)?,
-            dat_source: row.get(10)?,
-            file_size: row.get(11)?,
-            crc32: row.get(12)?,
-            sha1: row.get(13)?,
-            md5: row.get(14)?,
-            created_at: row.get(15)?,
-            updated_at: row.get(16)?,
-        })
-    });
-    match result {
-        Ok(m) => Ok(Some(m)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
-// ── Media Track Operations ─────────────────────────────────────────────────
-
 /// A single track within a disc-based media entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaTrack {
@@ -645,50 +604,6 @@ pub fn set_media_tag(
     Ok(())
 }
 
-/// The medium a homebrew work's single release holds.
-///
-/// Derived, never stored: the same three inputs always name the same row, so
-/// applying a mark twice — here and on another machine — lands on it rather
-/// than minting a second. One definition, because two would differ silently.
-#[must_use]
-pub fn homebrew_media_id(work_id: &str, platform_id: &str, region: &str) -> String {
-    format!("{work_id}:{platform_id}:{region}:media")
-}
-
-/// Create a homebrew Work with a Release and empty Media entry in a transaction.
-///
-/// Returns the created Work ID.
-pub fn create_homebrew_work(
-    conn: &Connection,
-    name: &str,
-    platform_id: &str,
-    region: &str,
-) -> Result<String, OperationError> {
-    let slug = slugify(name);
-    let work_id = format!("{platform_id}:homebrew:{slug}");
-    let release_id = format!("{work_id}:{platform_id}:{region}");
-    let media_id = homebrew_media_id(&work_id, platform_id, region);
-
-    conn.execute(
-        "INSERT INTO works (id, canonical_name, tag) VALUES (?1, ?2, 'homebrew')
-         ON CONFLICT(id) DO UPDATE SET canonical_name = excluded.canonical_name, updated_at = datetime('now')",
-        params![work_id, name],
-    )?;
-    conn.execute(
-        "INSERT INTO releases (id, work_id, platform_id, region, title)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = datetime('now')",
-        params![release_id, work_id, platform_id, region, name],
-    )?;
-    conn.execute(
-        "INSERT INTO media (id, release_id, tag) VALUES (?1, ?2, 'homebrew')
-         ON CONFLICT(id) DO UPDATE SET tag = 'homebrew', updated_at = datetime('now')",
-        params![media_id, release_id],
-    )?;
-
-    Ok(work_id)
-}
-
 /// Hash parameters for creating a media entry.
 #[derive(Debug, Clone)]
 pub struct MediaHashes {
@@ -698,28 +613,115 @@ pub struct MediaHashes {
     pub file_size: i64,
 }
 
+impl MediaHashes {
+    /// The id these digests name, or why they cannot name anything.
+    ///
+    /// Homebrew and mods are never in a DAT, so unlike a catalogued medium
+    /// there is no published track set to fold — their own bytes are all there
+    /// is, and folding those through the same function is what makes the id
+    /// mean the same thing on another machine. A file nobody has hashed yet
+    /// gets no id and no row: an unhashed mod used to be keyed on the wall
+    /// clock, so the same file gained a fresh row on every run.
+    pub fn content_id(&self) -> Result<String, OperationError> {
+        let sha1 = self.sha1.as_deref().unwrap_or_default();
+        let size = u64::try_from(self.file_size).unwrap_or(0);
+        content_id::media_id_from_file(size, sha1)
+            .map_err(|error| OperationError::InvalidField(error.to_string()))
+    }
+}
+
+/// What creating a homebrew entry produced.
+#[derive(Debug, Clone)]
+pub struct HomebrewWork {
+    pub work_id: String,
+    pub media_id: String,
+}
+
+/// Create a homebrew Work with a Release and its one Media entry.
+///
+/// A homebrew title has no catalog to be found in, so its identity is the
+/// file's own digests: applying the same mark twice — here and on another
+/// machine — lands on the same medium rather than minting a second. The work
+/// above it is found by name and platform, exactly as a catalogued work is,
+/// and its id is minted.
+pub fn create_homebrew_work(
+    conn: &Connection,
+    name: &str,
+    platform_id: &str,
+    region: &str,
+    hashes: &MediaHashes,
+) -> Result<HomebrewWork, OperationError> {
+    let media_id = hashes.content_id()?;
+    let work_id = if let Some(found) = find_work_by_name_on_platform(conn, name, platform_id)? {
+        conn.execute(
+            "UPDATE works SET tag='homebrew',updated_at=datetime('now') WHERE id=?1",
+            [&found],
+        )?;
+        found
+    } else {
+        let minted = content_id::new_work_id();
+        conn.execute(
+            "INSERT INTO works (id, canonical_name, tag) VALUES (?1, ?2, 'homebrew')",
+            params![minted, name],
+        )?;
+        minted
+    };
+    let release_id = if let Some(found) = find_release(conn, &work_id, platform_id, region, "", "")?
+    {
+        found.id
+    } else {
+        let minted = content_id::new_release_id();
+        conn.execute(
+            "INSERT INTO releases (id, work_id, platform_id, region, title)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![minted, work_id, platform_id, region, name],
+        )?;
+        minted
+    };
+    conn.execute(
+        "INSERT INTO media (id, release_id, tag, crc32, sha1, md5, file_size)
+         VALUES (?1, ?2, 'homebrew', ?3, ?4, ?5, ?6)
+         ON CONFLICT(id) DO UPDATE SET
+           tag = 'homebrew', crc32 = excluded.crc32, sha1 = excluded.sha1,
+           md5 = excluded.md5, file_size = excluded.file_size,
+           updated_at = datetime('now')",
+        params![
+            media_id,
+            release_id,
+            hashes.crc32,
+            hashes.sha1.clone().unwrap_or_default(),
+            hashes.md5.clone().unwrap_or_default(),
+            hashes.file_size,
+        ],
+    )?;
+
+    Ok(HomebrewWork { work_id, media_id })
+}
+
 /// Create a modded Media entry linked to an existing Work.
 ///
-/// Finds or creates a Release under the given Work, then creates
-/// a Media entry tagged as modded. Returns the created Media ID.
+/// Finds or creates a Release under the given Work, then creates a Media entry
+/// tagged as modded, keyed on the derivative's own digests. A mod is not in any
+/// catalog, so its bytes are the only thing that identifies it — and the only
+/// thing that identifies it the same way twice.
 pub fn create_modded_media(
     conn: &Connection,
     work_id: &str,
     platform_id: &str,
     region: &str,
     disc_number: Option<u32>,
-    hashes: Option<&MediaHashes>,
+    hashes: &MediaHashes,
 ) -> Result<String, OperationError> {
     if disc_number == Some(0) {
         return Err(OperationError::InvalidField(
             "disc number must be greater than zero".to_owned(),
         ));
     }
+    let media_id = hashes.content_id()?;
     // Find an existing release or create one
     let release_id = if let Some(r) = find_release(conn, work_id, platform_id, region, "", "")? {
         r.id
     } else {
-        let rid = format!("{work_id}:{platform_id}:{region}:modded");
         // Get work name for the release title
         let work_name: String = conn
             .query_row(
@@ -731,38 +733,13 @@ pub fn create_modded_media(
                 entity_type: "work".to_string(),
                 id: work_id.to_string(),
             })?;
+        let minted = content_id::new_release_id();
         conn.execute(
             "INSERT INTO releases (id, work_id, platform_id, region, title)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![rid, work_id, platform_id, region, work_name],
+            params![minted, work_id, platform_id, region, work_name],
         )?;
-        rid
-    };
-
-    // Use hash or system time for uniqueness
-    let media_suffix = match hashes {
-        Some(h) => h.crc32.clone(),
-        None => std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .to_string(),
-    };
-    let disc_number = disc_number.unwrap_or(0);
-    let media_scope = if disc_number == 0 {
-        "game".to_owned()
-    } else {
-        format!("disc-{disc_number}")
-    };
-    let media_id = format!("{release_id}:modded:{media_scope}:{media_suffix}");
-    let (crc32, sha1, md5, file_size) = match hashes {
-        Some(h) => (
-            h.crc32.as_str(),
-            h.sha1.as_deref().unwrap_or(""),
-            h.md5.as_deref().unwrap_or(""),
-            h.file_size,
-        ),
-        None => ("", "", "", 0),
+        minted
     };
 
     conn.execute(
@@ -775,11 +752,11 @@ pub fn create_modded_media(
         params![
             media_id,
             release_id,
-            disc_number,
-            crc32,
-            sha1,
-            md5,
-            file_size
+            disc_number.unwrap_or(0),
+            hashes.crc32,
+            hashes.sha1.as_deref().unwrap_or(""),
+            hashes.md5.as_deref().unwrap_or(""),
+            hashes.file_size,
         ],
     )?;
 
@@ -1152,25 +1129,6 @@ pub fn delete_orphan_works(conn: &Connection) -> Result<u64, OperationError> {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Convert a string to a URL-friendly slug (lowercase, hyphens, no trailing hyphen).
-fn slugify(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut last_was_separator = false;
-    for c in s.chars() {
-        if c.is_ascii_alphanumeric() {
-            result.push(c.to_ascii_lowercase());
-            last_was_separator = false;
-        } else if !last_was_separator && !result.is_empty() {
-            result.push('-');
-            last_was_separator = true;
-        }
-    }
-    if result.ends_with('-') {
-        result.pop();
-    }
-    result
-}
-
 fn media_type_str(mt: MediaType) -> &'static str {
     match mt {
         MediaType::Cartridge => "cartridge",
@@ -1201,16 +1159,17 @@ pub struct AppliedMark {
 
 /// Apply one user decision to the catalog, creating whatever it names.
 ///
-/// Marks carry the *inputs* that catalog ids are minted from — name, platform,
-/// region, and the parent's DAT game name — never the ids themselves, because
-/// media ids are minted per DAT release and do not survive a re-import on
-/// another machine. Rebuilding the rows from those inputs is what makes a mark
-/// portable; the ids come out the same because they are derived, not stored.
+/// A mark carries the file's own digests, and those are what the rows it
+/// creates are keyed on — so applying the same mark on another machine lands on
+/// the same medium rather than minting a second beside it. Nothing here depends
+/// on a name matching.
 ///
-/// A mod resolves its parent work through `parent_dat_name` first, falling
-/// back to `parent_work_id`. Nothing is created for a mod whose parent this
-/// machine's catalog does not know — the decision is kept, waiting for the DAT
-/// that gives it meaning, rather than manufacturing an orphan work.
+/// A mod names its parent by that parent's catalog media id, which is folded
+/// from the parent's published digests and therefore means the same thing
+/// wherever the same DAT has been imported. Nothing is created for a mod whose
+/// parent this machine's catalog does not have yet — the decision is kept,
+/// waiting for the DAT that gives it meaning, rather than manufacturing an
+/// orphan work.
 pub fn apply_collection_mark(
     conn: &Connection,
     mark: &retro_junk_archive::CollectionMark,
@@ -1228,23 +1187,20 @@ pub fn apply_collection_mark(
         retro_junk_archive::MarkKind::RegionOverride
         | retro_junk_archive::MarkKind::Disambiguation => Ok(None),
         retro_junk_archive::MarkKind::Homebrew => {
-            let work_id = create_homebrew_work(conn, &mark.name, &mark.platform_id, &mark.region)?;
-            // `create_homebrew_work` mints the row but records no digests, so
-            // on its own the file it describes can never be matched back to
-            // it. The mark is the only place those digests exist.
-            let media_id = homebrew_media_id(&work_id, &mark.platform_id, &mark.region);
-            set_media_hashes(conn, &media_id, &hashes)?;
+            let created =
+                create_homebrew_work(conn, &mark.name, &mark.platform_id, &mark.region, &hashes)?;
             Ok(Some(AppliedMark {
-                media_id,
-                work_id,
+                media_id: created.media_id,
+                work_id: created.work_id,
                 tag: "homebrew",
             }))
         }
         retro_junk_archive::MarkKind::Modded => {
-            let Some(work_id) = resolve_parent_work(conn, mark)? else {
+            let Some(work_id) = parent_work_of_media(conn, &mark.parent_media_id)? else {
                 log::debug!(
-                    "Mark for {} names parent '{}', which this catalog does not have yet",
+                    "Mark for {} names parent medium '{}' ({}), which this catalog does not have yet",
                     mark.name,
+                    mark.parent_media_id,
                     mark.parent_dat_name
                 );
                 return Ok(None);
@@ -1255,7 +1211,7 @@ pub fn apply_collection_mark(
                 &mark.platform_id,
                 &mark.region,
                 None,
-                Some(&hashes),
+                &hashes,
             )?;
             Ok(Some(AppliedMark {
                 media_id,
@@ -1266,73 +1222,26 @@ pub fn apply_collection_mark(
     }
 }
 
-/// The work a mod is derived from: by the parent's name where the catalog has
-/// it, else by the recorded work id.
+/// The work a catalog medium belongs to, if this catalog holds that medium.
 ///
-/// The name is tried against DAT game names first and canonical work names
-/// second, because that is the order the writing side prefers them in — a work
-/// with no DAT-derived medium has only a canonical name to be known by. The
-/// work id comes last: it is a local shortcut that says nothing on a machine
-/// whose catalog was built from a different import.
-fn resolve_parent_work(
+/// One lookup along two foreign keys, because a media id is folded from the
+/// medium's own digests: it names the same row on every machine that has
+/// imported the DAT it came from, so there is no name-matching chain to fall
+/// back through.
+pub fn parent_work_of_media(
     conn: &Connection,
-    mark: &retro_junk_archive::CollectionMark,
+    media_id: &str,
 ) -> Result<Option<String>, OperationError> {
-    if !mark.parent_dat_name.is_empty() {
-        let found: Option<String> = conn
-            .query_row(
-                "SELECT r.work_id FROM media m
-                 JOIN releases r ON r.id=m.release_id
-                 WHERE m.dat_name=?1 AND r.platform_id=?2
-                 ORDER BY m.id LIMIT 1",
-                params![mark.parent_dat_name, mark.platform_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if found.is_some() {
-            return Ok(found);
-        }
-        let by_name: Option<String> = conn
-            .query_row(
-                "SELECT w.id FROM works w
-                 JOIN releases r ON r.work_id=w.id
-                 WHERE w.canonical_name=?1 AND r.platform_id=?2
-                 ORDER BY w.id LIMIT 1",
-                params![mark.parent_dat_name, mark.platform_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if by_name.is_some() {
-            return Ok(by_name);
-        }
-    }
-    if mark.parent_work_id.is_empty() {
+    if media_id.is_empty() {
         return Ok(None);
     }
     Ok(conn
         .query_row(
-            "SELECT id FROM works WHERE id=?1",
-            [&mark.parent_work_id],
+            "SELECT r.work_id FROM media m
+             JOIN releases r ON r.id=m.release_id
+             WHERE m.id=?1",
+            [media_id],
             |row| row.get(0),
         )
         .optional()?)
-}
-
-fn set_media_hashes(
-    conn: &Connection,
-    media_id: &str,
-    hashes: &MediaHashes,
-) -> Result<(), OperationError> {
-    conn.execute(
-        "UPDATE media SET crc32=?2,sha1=?3,md5=?4,file_size=?5,updated_at=datetime('now')
-         WHERE id=?1",
-        params![
-            media_id,
-            hashes.crc32,
-            hashes.sha1.clone().unwrap_or_default(),
-            hashes.md5.clone().unwrap_or_default(),
-            hashes.file_size,
-        ],
-    )?;
-    Ok(())
 }

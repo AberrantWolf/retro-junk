@@ -1165,6 +1165,49 @@ pub fn set_entry_tag(
     Ok(change)
 }
 
+/// The digests of the file a library row stands for, when it has been hashed.
+///
+/// Homebrew and mods are identified by their own bytes and nothing else, so
+/// this is where their catalog rows get their identity. A row nobody has hashed
+/// yet gets `None` and therefore no catalog row: an id made from anything else
+/// — a name, or the clock — would be a different id the next time the same file
+/// came round, which is how an unhashed mod used to gain a fresh row per run.
+/// The tag itself still sticks; hashing the row later is what gives it an
+/// identity to carry.
+fn entry_hashes(
+    conn: &Connection,
+    id: LibraryEntryId,
+) -> Result<Option<crate::operations::MediaHashes>, LibraryError> {
+    let (crc32, sha1, md5, data_size) = conn
+        .query_row(
+            "SELECT crc32,sha1,md5,data_size FROM library_entries WHERE id=?1",
+            [id.0],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or(LibraryError::NotFound)?;
+    if sha1.is_empty() || data_size <= 0 {
+        log::debug!(
+            "Library row {} has no digests yet, so its tag has nothing to be keyed on",
+            id.0
+        );
+        return Ok(None);
+    }
+    Ok(Some(crate::operations::MediaHashes {
+        crc32,
+        sha1: Some(sha1),
+        md5: Some(md5).filter(|value| !value.is_empty()),
+        file_size: data_size,
+    }))
+}
+
 pub fn create_homebrew_and_tag_entry(
     conn: &mut Connection,
     id: LibraryEntryId,
@@ -1174,8 +1217,11 @@ pub fn create_homebrew_and_tag_entry(
     collection_root: Option<&std::path::Path>,
 ) -> Result<LibraryChangeSet, LibraryError> {
     let change = mutate_entry_with_catalog(conn, id, "homebrew", |tx| {
-        crate::operations::create_homebrew_work(tx, name, platform_id, region)
-            .map(|work_id| crate::operations::homebrew_media_id(&work_id, platform_id, region))
+        let Some(hashes) = entry_hashes(tx, id)? else {
+            return Ok(String::new());
+        };
+        crate::operations::create_homebrew_work(tx, name, platform_id, region, &hashes)
+            .map(|created| created.media_id)
             .map_err(|error| LibraryError::CatalogMutation(error.to_string()))
     })?;
     if let Some(collection_root) = collection_root {
@@ -1197,8 +1243,6 @@ pub struct ModdedEntry<'a> {
     pub region: &'a str,
     /// Which disc of the parent, when the file is one disc image of several.
     pub disc_number: Option<u32>,
-    /// The derivative's own digests, which identify it and nothing else.
-    pub hashes: Option<&'a crate::operations::MediaHashes>,
     /// Where to record the durable form. `None` leaves the decision in this
     /// database only, which is where it does not survive.
     pub collection_root: Option<&'a std::path::Path>,
@@ -1210,13 +1254,16 @@ pub fn create_modded_and_tag_entry(
     modded: &ModdedEntry<'_>,
 ) -> Result<LibraryChangeSet, LibraryError> {
     let change = mutate_entry_with_catalog(conn, id, "modded", |tx| {
+        let Some(hashes) = entry_hashes(tx, id)? else {
+            return Ok(String::new());
+        };
         crate::operations::create_modded_media(
             tx,
             modded.work_id,
             modded.platform_id,
             modded.region,
             modded.disc_number,
-            modded.hashes,
+            &hashes,
         )
         .map_err(|error| LibraryError::CatalogMutation(error.to_string()))
     })?;
@@ -1875,8 +1922,6 @@ fn empty_facts(summary: &crate::archive::ArchiveReleaseSummary) -> crate::facts:
         revision: summary.revision.clone(),
         catalog_release_id: summary.catalog_release_id.clone(),
         catalog_work_id: None,
-        claimed_release_id: String::new(),
-        claimed_work_id: String::new(),
         expected_discs: None,
         carriers: Vec::new(),
         desired_playables: 0,

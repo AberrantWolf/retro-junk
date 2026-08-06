@@ -40,6 +40,7 @@ impl Fixture {
                 carrier_kind: CarrierKind::OpticalDisc,
                 format: RepresentationFormat::Iso,
                 catalog_binding: CatalogBinding::default(),
+                join_release: None,
                 source_package: SourcePackageRecord::default(),
                 expected_files: Vec::new(),
                 physical_copy_id: None,

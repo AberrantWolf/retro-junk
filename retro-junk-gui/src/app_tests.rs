@@ -346,8 +346,6 @@ fn archive_detail_owns_grouped_playable_assets() {
                 revision: String::new(),
                 catalog_release_id: None,
                 catalog_work_id: None,
-                claimed_release_id: String::new(),
-                claimed_work_id: String::new(),
                 expected_discs: None,
                 carriers: Vec::new(),
                 desired_playables: 1,

@@ -72,7 +72,6 @@ pub enum LibraryStoreRequest {
         platform_id: String,
         region: String,
         disc_number: Option<u32>,
-        hashes: Option<retro_junk_db::MediaHashes>,
         collection_root: Option<std::path::PathBuf>,
     },
     ApplyAnalysis {
@@ -394,7 +393,6 @@ fn execute(
             platform_id,
             region,
             disc_number,
-            hashes,
             collection_root,
         } => LibraryStoreValue::ChangeSet(retro_junk_db::create_modded_and_tag_entry(
             conn,
@@ -404,7 +402,6 @@ fn execute(
                 platform_id: &platform_id,
                 region: &region,
                 disc_number,
-                hashes: hashes.as_ref(),
                 collection_root: collection_root.as_deref(),
             },
         )?),

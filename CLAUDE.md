@@ -13,12 +13,22 @@ Rust workspace for analyzing retro game ROM files and disc images. Identifies fo
 
 ```bash
 cargo build                              # build all crates
-cargo test                               # test all crates
+cargo test --workspace --all-targets     # test all crates (the fast form — see below)
+cargo test                               # ...plus a doc-test pass per crate
 cargo test -p retro-junk-nintendo        # test one crate
 cargo install --path retro-junk-cli      # install CLI
 cargo run -p retro-junk-cli -- list      # run without installing
 cargo run -p retro-junk-cli -- analyze --root /path/to/roms
 ```
+
+**Prefer `--all-targets` when running the whole suite.** Running the tests
+themselves takes about 26 seconds. Plain `cargo test` takes about two and a
+half minutes, because it adds a documentation-test pass for each of the twenty
+crates — a separate rustdoc run apiece, almost all of which find zero doc
+tests. `--all-targets` runs the same test binaries and skips that pass.
+
+Measured 2026-08-06. If you find yourself waiting on the test suite, check
+which form you ran before assuming a test got slower.
 
 ## Architecture
 

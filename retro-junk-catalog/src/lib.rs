@@ -4,10 +4,12 @@
 //! any database dependencies. Consumers can use these types directly for
 //! serialization, display, or passing to `retro-junk-db` for persistence.
 
+pub mod content_id;
 pub mod name_parser;
 pub mod types;
 pub mod yaml;
 
+pub use content_id::{ContentIdError, ContentPart};
 pub use name_parser::{
     DumpStatus, ParsedDatName, parse_dat_name, region_slug_to_display, region_to_slug,
 };

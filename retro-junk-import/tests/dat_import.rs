@@ -334,7 +334,7 @@ fn multi_region_game() {
                 name: "Tetris (USA, Europe).nes".to_string(),
                 size: 32768,
                 crc: "aabbccdd".to_string(),
-                sha1: None,
+                sha1: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
                 md5: None,
                 serial: None,
             }],
@@ -367,7 +367,7 @@ fn prototype_flag_sets_media_status() {
                 name: "Unreleased Game (USA) (Proto).nes".to_string(),
                 size: 16384,
                 crc: "11223344".to_string(),
-                sha1: None,
+                sha1: Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
                 md5: None,
                 serial: None,
             }],
@@ -413,7 +413,7 @@ fn disc_number_extracted() {
                     name: "Final Fantasy VII (USA) (Disc 1).bin".to_string(),
                     size: 700_000_000,
                     crc: "aabb0001".to_string(),
-                    sha1: None,
+                    sha1: Some("cccccccccccccccccccccccccccccccccccccccc".to_string()),
                     md5: None,
                     serial: Some("SCUS-94163".to_string()),
                 }],
@@ -428,7 +428,7 @@ fn disc_number_extracted() {
                     name: "Final Fantasy VII (USA) (Disc 2).bin".to_string(),
                     size: 700_000_000,
                     crc: "aabb0002".to_string(),
-                    sha1: None,
+                    sha1: Some("dddddddddddddddddddddddddddddddddddddddd".to_string()),
                     md5: None,
                     serial: Some("SCUS-94164".to_string()),
                 }],
@@ -528,4 +528,234 @@ fn a_renamed_game_keeps_its_entry_instead_of_gaining_a_twin() {
         dat_name, "Tom & Jerry (USA)",
         "the row kept the stale name instead of taking the correction"
     );
+}
+
+/// The rename must be a *relabel* all the way up: the work and release that
+/// held the medium keep their ids and take the new wording, or every archive
+/// manifest and library binding pointing at them is orphaned in the same way
+/// the media row used to be.
+#[test]
+fn a_renamed_game_relabels_its_work_and_release_rather_than_replacing_them() {
+    let conn = setup_db();
+    let dat_with = |title: &str| DatFile {
+        name: "Nintendo - Nintendo Entertainment System".to_string(),
+        description: String::new(),
+        version: "1".to_string(),
+        games: vec![DatGame {
+            name: title.to_string(),
+            region: None,
+            serial: None,
+            version: None,
+            category: None,
+            roms: vec![DatRom {
+                name: format!("{title}.nes"),
+                size: 40976,
+                crc: "d445f698".to_string(),
+                sha1: Some("ea343f4e445a9050d4b4fbac2c77d0693b1d0922".to_string()),
+                md5: None,
+                serial: None,
+            }],
+        }],
+    };
+
+    import_dat(
+        &conn,
+        &dat_with("Tom &amp; Jerry (USA)"),
+        Platform::Nes,
+        "no-intro",
+        &SilentProgress,
+    )
+    .unwrap();
+    let before: (String, String) = conn
+        .query_row("SELECT r.id,r.work_id FROM releases r", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+
+    import_dat(
+        &conn,
+        &dat_with("Tom & Jerry (USA)"),
+        Platform::Nes,
+        "no-intro",
+        &SilentProgress,
+    )
+    .unwrap();
+
+    let works: i64 = conn
+        .query_row("SELECT COUNT(*) FROM works", [], |row| row.get(0))
+        .unwrap();
+    let releases: i64 = conn
+        .query_row("SELECT COUNT(*) FROM releases", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(works, 1, "the corrected name minted a second work");
+    assert_eq!(releases, 1, "the corrected name minted a second release");
+
+    let after: (String, String) = conn
+        .query_row("SELECT r.id,r.work_id FROM releases r", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(
+        after, before,
+        "the ids moved when only the label should have"
+    );
+
+    let (work_name, release_title): (String, String) = conn
+        .query_row(
+            "SELECT w.canonical_name,r.title FROM works w JOIN releases r ON r.work_id=w.id",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(work_name, "Tom & Jerry");
+    assert_eq!(release_title, "Tom & Jerry");
+}
+
+/// Titles with no ASCII in them at all used to slug to the empty string, so
+/// every such game on a platform collided into one work id. This was live:
+/// `パロディウスだ!` and `がんばれゴエモン` were one row.
+#[test]
+fn two_titles_with_no_ascii_are_two_works() {
+    let conn = setup_db();
+    let dat = DatFile {
+        name: "Nintendo - Nintendo Entertainment System".to_string(),
+        description: String::new(),
+        version: "1".to_string(),
+        games: vec![
+            DatGame {
+                name: "パロディウスだ! (Japan)".to_string(),
+                region: None,
+                serial: None,
+                version: None,
+                category: None,
+                roms: vec![DatRom {
+                    name: "パロディウスだ! (Japan).nes".to_string(),
+                    size: 262_144,
+                    crc: "11111111".to_string(),
+                    sha1: Some("1111111111111111111111111111111111111111".to_string()),
+                    md5: None,
+                    serial: None,
+                }],
+            },
+            DatGame {
+                name: "がんばれゴエモン (Japan)".to_string(),
+                region: None,
+                serial: None,
+                version: None,
+                category: None,
+                roms: vec![DatRom {
+                    name: "がんばれゴエモン (Japan).nes".to_string(),
+                    size: 393_216,
+                    crc: "22222222".to_string(),
+                    sha1: Some("2222222222222222222222222222222222222222".to_string()),
+                    md5: None,
+                    serial: None,
+                }],
+            },
+        ],
+    };
+
+    let stats = import_dat(&conn, &dat, Platform::Nes, "no-intro", &SilentProgress).unwrap();
+    assert_eq!(stats.media_created, 2);
+    assert_eq!(
+        stats.works_created, 2,
+        "two Japanese titles became one work"
+    );
+
+    let works: i64 = conn
+        .query_row("SELECT COUNT(*) FROM works", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(works, 2);
+    let media: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(media, 2);
+}
+
+/// Two entries whose bytes are identical are one medium, whatever they are
+/// called. The second overwrites the first rather than sitting beside it,
+/// because they share a primary key.
+#[test]
+fn identical_bytes_under_two_names_are_one_medium() {
+    let conn = setup_db();
+    let entry = |title: &str| DatGame {
+        name: title.to_string(),
+        region: None,
+        serial: None,
+        version: None,
+        category: None,
+        roms: vec![DatRom {
+            name: format!("{title}.nes"),
+            size: 40976,
+            crc: "d445f698".to_string(),
+            sha1: Some("ea343f4e445a9050d4b4fbac2c77d0693b1d0922".to_string()),
+            md5: None,
+            serial: None,
+        }],
+    };
+    let dat = DatFile {
+        name: "Nintendo - Nintendo Entertainment System".to_string(),
+        description: String::new(),
+        version: "1".to_string(),
+        games: vec![entry("Game (USA)"), entry("Game, The (USA)")],
+    };
+
+    import_dat(&conn, &dat, Platform::Nes, "no-intro", &SilentProgress).unwrap();
+    let media: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(media, 1);
+}
+
+/// A DAT entry with no SHA-1, or one describing an empty file, cannot be told
+/// apart from any other such entry. Importing it would hand out an id meaning
+/// "some empty thing", so it is left out and counted where someone can see it.
+#[test]
+fn entries_that_nothing_can_identify_are_skipped_and_counted() {
+    let conn = setup_db();
+    let dat = DatFile {
+        name: "Nintendo - Nintendo Entertainment System".to_string(),
+        description: String::new(),
+        version: "1".to_string(),
+        games: vec![
+            DatGame {
+                name: "No Digest (USA)".to_string(),
+                region: None,
+                serial: None,
+                version: None,
+                category: None,
+                roms: vec![DatRom {
+                    name: "No Digest (USA).nes".to_string(),
+                    size: 40976,
+                    crc: "d445f698".to_string(),
+                    sha1: None,
+                    md5: None,
+                    serial: None,
+                }],
+            },
+            DatGame {
+                name: "Empty File (USA)".to_string(),
+                region: None,
+                serial: None,
+                version: None,
+                category: None,
+                roms: vec![DatRom {
+                    name: "Empty File (USA).nes".to_string(),
+                    size: 0,
+                    crc: "00000000".to_string(),
+                    sha1: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".to_string()),
+                    md5: None,
+                    serial: None,
+                }],
+            },
+        ],
+    };
+
+    let stats = import_dat(&conn, &dat, Platform::Nes, "no-intro", &SilentProgress).unwrap();
+    assert_eq!(stats.skipped_unidentifiable, 2);
+    assert_eq!(stats.media_created, 0);
+    let media: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(media, 0);
 }

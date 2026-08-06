@@ -177,6 +177,16 @@ pub fn safe_file_stem(value: &str) -> String {
     }
 }
 
+/// A directory name built from a title: lowercase, alphanumerics kept,
+/// everything else collapsed to a single hyphen.
+///
+/// **Filesystem paths only. This is never an identifier.** It folds every
+/// non-alphanumeric character away and lowercases the rest, so distinct titles
+/// routinely produce the same slug — an all-non-ASCII title produces nothing at
+/// all, which is why the fallback exists. Archive directories are named this way
+/// because a person browsing the archive should be able to read them; nothing
+/// parses one, and nothing should. Identity comes from content digests
+/// (`retro_junk_catalog::content_id`).
 #[must_use]
 pub fn slugify(value: &str) -> String {
     let mut out = String::new();

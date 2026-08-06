@@ -26,7 +26,7 @@ fn mark(kind: MarkKind, parent_dat_name: &str) -> CollectionMark {
         platform_id: "snes".to_owned(),
         region: "usa".to_owned(),
         name: "Super Mario World (Kaizo Edition).sfc".to_owned(),
-        parent_work_id: String::new(),
+        parent_media_id: String::new(),
         parent_dat_name: parent_dat_name.to_owned(),
         content: MarkedContent {
             size: 1_048_576,

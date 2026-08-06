@@ -4,15 +4,20 @@ use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
 use crate::CliError;
-use crate::cli_types::CatalogLookupArgs;
+use crate::cli_types::{CatalogEntityType, CatalogLookupArgs};
 
 use super::{default_catalog_db_path, format_file_size_or, or_str, truncate_str};
 
-/// Entity type prefixes for ID-based lookups.
+/// Ask for one platform by its id, rather than searching for the text.
+///
+/// A platform id is a short slug — `ps1`, `snes` — that would otherwise read
+/// as a search term, so it needs a marker. Works, releases and media do not:
+/// their ids already begin with `wrk_`, `rel_` or `med_`, which says what kind
+/// of thing they name. There used to be a display wrapper adding `wrk-`,
+/// `rel-` and `med-` on top of ids that began with neither, and it could not
+/// tell its own `rel-` prefix from a title slug that happened to start with
+/// "rel-".
 const PREFIX_PLATFORM: &str = "plt-";
-const PREFIX_WORK: &str = "wrk-";
-const PREFIX_RELEASE: &str = "rel-";
-const PREFIX_MEDIA: &str = "med-";
 
 /// Entry point for `catalog lookup`.
 pub(crate) fn run_catalog_lookup(args: CatalogLookupArgs) -> Result<(), CliError> {
@@ -90,17 +95,17 @@ pub(crate) fn run_catalog_lookup(args: CatalogLookupArgs) -> Result<(), CliError
 
     // ── Browse/search modes ───────────────────────────────────────────
     match query {
-        Some(q) if is_prefixed_id(&q) => dispatch_id_lookup(&conn, &q),
-        Some(q) => dispatch_search(&conn, &q, &entity_type, &platform, limit, offset),
+        Some(q) if is_id_lookup(&q) => dispatch_id_lookup(&conn, &q),
+        Some(q) => dispatch_search(&conn, &q, entity_type, &platform, limit, offset),
         None => dispatch_listing(
             &conn,
-            &entity_type,
+            entity_type,
             &platform,
             &manufacturer,
             limit,
             offset,
             group,
-        )?,
+        ),
     }
 
     Ok(())
@@ -108,11 +113,10 @@ pub(crate) fn run_catalog_lookup(args: CatalogLookupArgs) -> Result<(), CliError
 
 // ── Routing helpers ─────────────────────────────────────────────────────────
 
-fn is_prefixed_id(q: &str) -> bool {
-    q.starts_with(PREFIX_PLATFORM)
-        || q.starts_with(PREFIX_WORK)
-        || q.starts_with(PREFIX_RELEASE)
-        || q.starts_with(PREFIX_MEDIA)
+/// Is this query naming one row outright, rather than describing what to
+/// search for?
+fn is_id_lookup(q: &str) -> bool {
+    q.starts_with(PREFIX_PLATFORM) || retro_junk_catalog::content_id::is_content_id(q)
 }
 
 // ── Hash Lookup ─────────────────────────────────────────────────────────────
@@ -231,7 +235,7 @@ fn lookup_by_serial(
         for r in &releases {
             let plat = platform_label(&r.platform_id);
             let date_str = &r.release_date;
-            let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
+            let rid = r.id.clone();
             log::info!(
                 "  {:<40} {:<10} {:<7} {:<12} {}",
                 truncate_str(&r.title, 40),
@@ -256,22 +260,22 @@ fn dispatch_id_lookup(conn: &retro_junk_db::Connection, q: &str) {
             Ok(None) => log::info!("No platform found with ID \"{id}\"."),
             Err(e) => log::error!("Lookup failed: {e}"),
         }
-    } else if let Some(id) = q.strip_prefix(PREFIX_WORK) {
-        match retro_junk_db::get_work_by_id(conn, id) {
+    } else if q.starts_with(retro_junk_catalog::content_id::WORK_PREFIX) {
+        match retro_junk_db::get_work_by_id(conn, q) {
             Ok(Some(w)) => print_work_detail(conn, &w, &platform_label),
-            Ok(None) => log::info!("No work found with ID \"{id}\"."),
+            Ok(None) => log::info!("No work found with ID \"{q}\"."),
             Err(e) => log::error!("Lookup failed: {e}"),
         }
-    } else if let Some(id) = q.strip_prefix(PREFIX_RELEASE) {
-        match retro_junk_db::get_release_by_id(conn, id) {
+    } else if q.starts_with(retro_junk_catalog::content_id::RELEASE_PREFIX) {
+        match retro_junk_db::get_release_by_id(conn, q) {
             Ok(Some(r)) => print_release_detail(conn, &r, &platform_label, &company_label),
-            Ok(None) => log::info!("No release found with ID \"{id}\"."),
+            Ok(None) => log::info!("No release found with ID \"{q}\"."),
             Err(e) => log::error!("Lookup failed: {e}"),
         }
-    } else if let Some(id) = q.strip_prefix(PREFIX_MEDIA) {
-        match retro_junk_db::get_media_by_id(conn, id) {
+    } else if q.starts_with(retro_junk_catalog::content_id::MEDIA_PREFIX) {
+        match retro_junk_db::get_media_by_id(conn, q) {
             Ok(Some(m)) => print_media_detail(conn, &m, &platform_label),
-            Ok(None) => log::info!("No media found with ID \"{id}\"."),
+            Ok(None) => log::info!("No media found with ID \"{q}\"."),
             Err(e) => log::error!("Lookup failed: {e}"),
         }
     }
@@ -284,7 +288,7 @@ fn dispatch_id_lookup(conn: &retro_junk_db::Connection, q: &str) {
 fn dispatch_search(
     conn: &retro_junk_db::Connection,
     query: &str,
-    entity_type: &str,
+    entity_type: Option<CatalogEntityType>,
     platform: &str,
     limit: u32,
     offset: u32,
@@ -294,7 +298,7 @@ fn dispatch_search(
     let platform = (!platform.is_empty()).then_some(platform);
 
     match entity_type {
-        "works" | "work" => {
+        Some(CatalogEntityType::Works) => {
             let results = match retro_junk_db::search_works(conn, query, limit, offset) {
                 Ok(r) => r,
                 Err(e) => {
@@ -308,7 +312,7 @@ fn dispatch_search(
             }
             print_works_table(&results, offset);
         }
-        "releases" | "release" => {
+        Some(CatalogEntityType::Releases) => {
             let results =
                 match retro_junk_db::search_releases_paged(conn, query, platform, limit, offset) {
                     Ok(r) => r,
@@ -323,7 +327,7 @@ fn dispatch_search(
             }
             print_releases_table(&results, &platform_label, offset, limit);
         }
-        "media" => {
+        Some(CatalogEntityType::Media) => {
             let results = match retro_junk_db::search_media(conn, query, platform, limit, offset) {
                 Ok(r) => r,
                 Err(e) => {
@@ -338,7 +342,7 @@ fn dispatch_search(
             print_media_table(conn, &results, &platform_label, offset, limit);
         }
         // Unified search across all types
-        "" => {
+        None | Some(CatalogEntityType::Platforms) => {
             let works = retro_junk_db::search_works(conn, query, limit, 0).unwrap_or_default();
             let releases = retro_junk_db::search_releases_paged(conn, query, platform, limit, 0)
                 .unwrap_or_default();
@@ -356,7 +360,7 @@ fn dispatch_search(
                     format!("Works ({}):", works.len()).if_supports_color(Stdout, |t| t.bold()),
                 );
                 for w in &works {
-                    let wid = format!("{}{}", PREFIX_WORK, &w.id);
+                    let wid = w.id.clone();
                     log::info!(
                         "  {:<50} {}",
                         w.canonical_name,
@@ -375,7 +379,7 @@ fn dispatch_search(
                 for r in &releases {
                     let plat = platform_label(&r.platform_id);
                     let date_str = &r.release_date;
-                    let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
+                    let rid = r.id.clone();
                     log::info!(
                         "  {:<35} {:<8} {:<7} {:<12} {}",
                         truncate_str(&r.title, 35),
@@ -397,7 +401,7 @@ fn dispatch_search(
                     let name = or_str(&m.dat_name, &m.id);
                     let size_str = format_file_size_or(m.file_size, "");
                     let plat = resolve_media_platform(conn, &m.release_id, &platform_label);
-                    let mid = format!("{}{}", PREFIX_MEDIA, &m.id);
+                    let mid = m.id.clone();
                     log::info!(
                         "  {:<35} {:<8} {:>8}  {}",
                         truncate_str(name, 35),
@@ -410,11 +414,8 @@ fn dispatch_search(
             }
 
             log::info!(
-                "Use --type to search a single type with pagination, or pass a prefixed ID for details."
+                "Use --type to search a single type with pagination, or pass an id for details."
             );
-        }
-        other => {
-            log::error!("Unknown type \"{other}\". Use: platforms, works, releases, media");
         }
     }
 }
@@ -423,23 +424,23 @@ fn dispatch_search(
 
 fn dispatch_listing(
     conn: &retro_junk_db::Connection,
-    entity_type: &str,
+    entity_type: Option<CatalogEntityType>,
     platform: &str,
     manufacturer: &str,
     limit: u32,
     offset: u32,
     group: bool,
-) -> Result<(), CliError> {
+) {
     match entity_type {
-        "" | "platforms" | "platform" => {
+        None | Some(CatalogEntityType::Platforms) => {
             list_platforms(conn, manufacturer, group);
         }
-        "works" | "work" => {
+        Some(CatalogEntityType::Works) => {
             log::info!(
                 "Listing works requires a search query. Try: catalog lookup <query> --type works"
             );
         }
-        "releases" | "release" => {
+        Some(CatalogEntityType::Releases) => {
             if platform.is_empty() {
                 log::info!(
                     "Listing releases requires --platform. Try: catalog lookup --type releases --platform nes"
@@ -448,7 +449,7 @@ fn dispatch_listing(
                 list_releases_for_platform(conn, platform, limit, offset);
             }
         }
-        "media" => {
+        Some(CatalogEntityType::Media) => {
             if platform.is_empty() {
                 log::info!(
                     "Listing media requires --platform. Try: catalog lookup --type media --platform nes"
@@ -457,13 +458,7 @@ fn dispatch_listing(
                 list_media_for_platform(conn, platform, limit, offset);
             }
         }
-        other => {
-            return Err(CliError::other(format!(
-                "Unknown type \"{other}\". Use: platforms, works, releases, media"
-            )));
-        }
     }
-    Ok(())
 }
 
 // ── Platform listing ────────────────────────────────────────────────────────
@@ -680,7 +675,7 @@ fn print_work_detail(
         "{}",
         w.canonical_name.if_supports_color(Stdout, |t| t.bold()),
     );
-    log::info!("  ID: {}{}", PREFIX_WORK, &w.id);
+    log::info!("  ID: {}", &w.id);
 
     let releases = retro_junk_db::releases_for_work(conn, &w.id).unwrap_or_default();
     if releases.is_empty() {
@@ -690,7 +685,7 @@ fn print_work_detail(
         for r in &releases {
             let plat = platform_label(&r.platform_id);
             let date_str = &r.release_date;
-            let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
+            let rid = r.id.clone();
             log::info!(
                 "    {:<35} {:<8} {:<7} {:<12} {}",
                 truncate_str(&r.title, 35),
@@ -738,7 +733,7 @@ fn print_release_detail(
         .rating
         .map_or_else(|| dash.to_string(), |r| format!("{r:.1}"));
 
-    log::info!("  ID:           {}{}", PREFIX_RELEASE, &release.id);
+    log::info!("  ID:           {}", &release.id);
     if !release.alt_title.is_empty() {
         log::info!("  Alt title:    {}", release.alt_title);
     }
@@ -841,17 +836,17 @@ fn print_media_detail(
     let name = or_str(&m.dat_name, &m.id);
 
     log::info!("{}", name.if_supports_color(Stdout, |t| t.bold()));
-    log::info!("  ID:        {}{}", PREFIX_MEDIA, &m.id);
+    log::info!("  ID:        {}", &m.id);
 
     // Resolve parent release for platform info
     if let Ok(Some(release)) = retro_junk_db::get_release_by_id(conn, &m.release_id) {
         let plat = platform_label(&release.platform_id);
-        log::info!("  Release:   {}{}", PREFIX_RELEASE, &m.release_id);
+        log::info!("  Release:   {}", &m.release_id);
         log::info!("  Title:     {}", &release.title);
         log::info!("  Platform:  {plat}");
         log::info!("  Region:    {}", &release.region);
     } else {
-        log::info!("  Release:   {}{}", PREFIX_RELEASE, &m.release_id);
+        log::info!("  Release:   {}", &m.release_id);
     }
 
     let size_str = format_file_size_or(m.file_size, dash);
@@ -890,7 +885,7 @@ fn print_media_detail(
 
 fn print_works_table(works: &[retro_junk_db::WorkRow], offset: u32) {
     for w in works {
-        let wid = format!("{}{}", PREFIX_WORK, &w.id);
+        let wid = w.id.clone();
         log::info!(
             "  {:<50} {}",
             w.canonical_name,
@@ -911,7 +906,7 @@ fn print_releases_table(
         let plat = platform_label(&r.platform_id);
         let date_str = &r.release_date;
         let serial_str = r.game_serial.as_str();
-        let rid = format!("{}{}", PREFIX_RELEASE, &r.id);
+        let rid = r.id.clone();
         log::info!(
             "  {:<35} {:<8} {:<7} {:<12} {:<14} {}",
             truncate_str(&r.title, 35),
@@ -946,7 +941,7 @@ fn print_media_table(
         let name = or_str(&m.dat_name, &m.id);
         let size_str = format_file_size_or(m.file_size, "");
         let plat = resolve_media_platform(conn, &m.release_id, platform_label);
-        let mid = format!("{}{}", PREFIX_MEDIA, &m.id);
+        let mid = m.id.clone();
         log::info!(
             "  {:<35} {:<8} {:>8}  {}",
             truncate_str(name, 35),

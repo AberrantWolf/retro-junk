@@ -6,9 +6,66 @@ use clap::{Args, Parser, Subcommand};
 
 use retro_junk_lib::Platform;
 
+/// Every help screen, with the build's version above the description.
+///
+/// Everything after the first line is what clap's own template produces; only
+/// the `{name} {version}` header is added.
+const HELP_TEMPLATE: &str = "\
+{name} {version}
+{about-with-newline}
+{usage-heading} {usage}
+
+{all-args}{after-help}";
+
+/// The action kinds `sync --only` accepts, taken from the list itself so the
+/// two can never drift apart.
+///
+/// Naming them here means a typo is rejected while clap is still reading the
+/// command line, with the valid spellings printed — rather than after the
+/// archive has been scanned and the projection rebuilt.
+fn action_kind_values() -> clap::builder::PossibleValuesParser {
+    clap::builder::PossibleValuesParser::new(
+        retro_junk_db::convergence::ActionKind::all()
+            .iter()
+            .map(|kind| {
+                let (canonical, aliases) = kind
+                    .spellings()
+                    .split_first()
+                    .expect("every action kind names itself at least once");
+                // Aliases are accepted but stay out of the help line, which
+                // would otherwise run to three times the width for no gain.
+                clap::builder::PossibleValue::new(*canonical).aliases(aliases.iter().copied())
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Apply [`HELP_TEMPLATE`] to a command and everything under it.
+///
+/// clap hands a subcommand its parent's version but not its parent's help
+/// template, so without this walk only the top-level `--help` would name the
+/// build — and the top level is the screen a person is least likely to be
+/// reading when something has gone wrong.
+pub(crate) fn version_in_help(command: clap::Command) -> clap::Command {
+    let names = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_owned())
+        .collect::<Vec<_>>();
+    let mut command = command.help_template(HELP_TEMPLATE);
+    for name in names {
+        command = command.mut_subcommand(name, version_in_help);
+    }
+    command
+}
+
 #[derive(Parser)]
 #[command(name = "retro-junk")]
 #[command(about = "Analyze retro game ROMs and disc images", long_about = None)]
+// A bug report that quotes help output should say which build it came from,
+// so the version leads every help screen as well as answering `--version`.
+// `propagate_version` gives every subcommand the version; [`HELP_TEMPLATE`]
+// and [`version_in_help`] put it on the page.
+#[command(version, propagate_version = true)]
 pub(crate) struct Cli {
     /// Library path containing console folders (falls back to saved config, then cwd)
     #[arg(short = 'L', long, global = true)]
@@ -259,8 +316,7 @@ pub(crate) struct SyncArgs {
     #[arg(long)]
     pub release: Option<String>,
     /// Restrict to specific action kinds
-    /// (verify-integrity, verify-catalog, audit-redumper, build, scrape, project, gamelist)
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, value_delimiter = ',', value_parser = action_kind_values())]
     pub only: Vec<String>,
     /// Print the derived plan without executing; non-zero exit when
     /// anything is blocked
@@ -1051,15 +1107,11 @@ pub(crate) enum SettingsAction {
 
 #[derive(Subcommand)]
 pub(crate) enum CatalogAction {
-    /// Analyze or losslessly merge exact duplicate catalog media rows
+    /// Report catalog media that claim to be the same edition but hash differently
     Deduplicate {
-        /// Restrict cleanup to one catalog platform
+        /// Restrict the report to one catalog platform
         #[arg(long)]
         platform: Option<String>,
-
-        /// Apply the reported exact merges (analysis is the default)
-        #[arg(long)]
-        apply: bool,
 
         /// Print a machine-readable JSON summary
         #[arg(long)]
@@ -1308,15 +1360,29 @@ pub(crate) struct CatalogEnrichArgs {
     pub no_reconcile: bool,
 }
 
+/// Which kind of catalog row `catalog lookup` should search or list.
+///
+/// A closed set, so clap rejects anything else at parse time and lists the
+/// valid values in `--help` — rather than the command opening the database,
+/// doing its work, and only then complaining.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum CatalogEntityType {
+    Platforms,
+    Works,
+    Releases,
+    Media,
+}
+
 /// Arguments for `catalog lookup`.
 #[derive(Args)]
 pub(crate) struct CatalogLookupArgs {
-    /// Search query, prefixed ID (plt-X, wrk-X, rel-X, med-X), or omit to list
+    /// Search query, an id (`wrk_…`, `rel_…`, `med_…`, or `plt-<platform>`),
+    /// or omit to list
     pub query: Option<String>,
 
-    /// Filter by entity type: platforms, works, releases, media
-    #[arg(long, short = 't', default_value = "")]
-    pub r#type: String,
+    /// Filter by entity type
+    #[arg(long, short = 't', value_enum)]
+    pub r#type: Option<CatalogEntityType>,
 
     /// Filter by platform short name (e.g., nes, snes, psx)
     #[arg(long, default_value = "")]

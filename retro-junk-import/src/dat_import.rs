@@ -3,6 +3,7 @@
 //! Each `DatGame` is parsed via the name parser to extract title, region, revision,
 //! and status. These are mapped to Work → Release → Media entities in the database.
 
+use retro_junk_catalog::content_id::{self, ContentPart};
 use retro_junk_catalog::name_parser::{self, DumpStatus};
 use retro_junk_catalog::types::{ImportLog, ImportLogId, Media, MediaStatus, Release};
 use retro_junk_core::Platform;
@@ -19,7 +20,6 @@ use rusqlite::Connection;
 use thiserror::Error;
 
 use crate::progress::ImportProgress;
-use crate::slugify;
 
 #[derive(Debug, Error)]
 pub enum ImportError {
@@ -44,6 +44,11 @@ pub struct ImportStats {
     pub media_updated: u64,
     pub media_unchanged: u64,
     pub skipped_bad: u64,
+    /// Entries whose digests cannot name anything — no SHA-1, or a zero-byte
+    /// ROM whose digest every other empty file shares. Importing them would
+    /// hand out an id that means "some empty thing", so they are left out and
+    /// counted where someone can see them.
+    pub skipped_unidentifiable: u64,
     pub total_games: u64,
     pub disagreements_found: u64,
 }
@@ -126,23 +131,6 @@ fn import_game(
         return Ok(());
     }
 
-    // Generate work ID from title + platform
-    let work_id = make_work_id(&canonical_title, platform_id);
-
-    // Find or create Work (check by generated ID, not by name, to avoid
-    // false positives from cross-platform titles like "Tetris")
-    let work_exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM works WHERE id = ?1)",
-        [&work_id],
-        |row| row.get(0),
-    )?;
-    if work_exists {
-        stats.works_existing += 1;
-    } else {
-        operations::insert_work(conn, &work_id, &canonical_title)?;
-        stats.works_created += 1;
-    }
-
     // Determine regions — use parsed regions, fallback to DAT-level region or "unknown"
     let regions = if !parsed.regions.is_empty() {
         parsed
@@ -170,49 +158,6 @@ fn import_game(
         revision.clone()
     };
     let variant = compute_release_variant(&parsed);
-    let release_id = make_release_id(&work_id, platform_id, primary_region, &revision, &variant);
-
-    // Find or create Release
-    let existing_release = operations::find_release(
-        conn,
-        &work_id,
-        platform_id,
-        primary_region,
-        &revision,
-        &variant,
-    )?;
-    let effective_release_id = if let Some(ref existing) = existing_release {
-        stats.releases_existing += 1;
-        existing.id.clone()
-    } else {
-        let release = Release {
-            id: release_id.clone(),
-            work_id: work_id.clone(),
-            platform_id: platform_id.to_string(),
-            region: primary_region.clone(),
-            revision: revision.clone(),
-            variant: variant.clone(),
-            title: parsed.title.clone(),
-            alt_title: String::new(),
-            publisher_id: None,
-            developer_id: None,
-            release_date: String::new(),
-            game_serial: String::new(),
-            genre: String::new(),
-            players: String::new(),
-            rating: None,
-            description: String::new(),
-            screen_title: String::new(),
-            cover_title: String::new(),
-            screenscraper_id: None,
-            scraper_not_found: false,
-            created_at: String::new(),
-            updated_at: String::new(),
-        };
-        operations::upsert_release(conn, &release)?;
-        stats.releases_created += 1;
-        release_id.clone()
-    };
 
     // Separate track ROMs from the primary data track.
     // Full Redump DATs include CUE files and per-track BIN entries.
@@ -237,46 +182,56 @@ fn import_game(
         return Ok(());
     };
 
-    // A DAT may carry multiple byte-order/container representations under the
-    // same game name. N64 DATs, for example, have separate `.z64` and `.v64`
-    // records with different hashes. Treat the ROM filename as part of the
-    // media identity so one representation cannot overwrite another.
-    let existing = operations::find_media_by_release_and_rom_name(
-        conn,
-        &effective_release_id,
-        &primary_rom.name,
-    )?;
-    let existing = if existing.is_some() {
-        existing
-    } else {
-        // Very old catalogs did not persist the ROM filename. Claim that row
-        // only when it belongs to this release and is genuinely blank; a
-        // non-empty different filename is a distinct DAT representation.
-        operations::find_media_by_dat_name(conn, &game.name)?
-            .filter(|media| media.release_id == effective_release_id && media.rom_name.is_empty())
-    };
-    // Last resort: find it by what it *is* rather than what it is called.
+    // The medium's identity is its complete ordered track set — never the
+    // primary track alone: 1029 catalog rows share their primary hash with
+    // another row on the same platform, and matching on that would merge
+    // genuinely different games. A medium the DAT lists as one file is the
+    // same statement with a one-item list.
     //
-    // Both lookups above are keyed on the name — the release id embeds the
-    // title slug — so a corrected DAT name makes the existing row unfindable
-    // and mints a whole new work/release/media triple beside it, with
-    // identical hashes. That is how one entity-escaping fix produced 871
+    // This is the only lookup. The three that came before it were all keyed on
+    // a name — the game name, the ROM filename, and a release id that embedded
+    // the title slug — so a corrected DAT name made the existing row
+    // unfindable and minted a whole new work/release/media triple beside it
+    // with identical hashes. That is how one XML-entity fix produced 871
     // duplicate entries, and how content-based re-binding then found two
     // candidates for one disc and refused to identify it at all.
-    //
-    // The key is the complete ordered track set, never the primary track: 1029
-    // catalog rows share their primary hash with another row on the same
-    // platform, and matching on it would merge genuinely different games.
-    let existing = match existing {
-        Some(found) => Some(found),
-        None => find_media_by_content(conn, platform_id, &track_roms, primary_rom)?,
+    let media_id = match content_id::media_id(&content_parts(&track_roms, primary_rom)) {
+        Ok(id) => id,
+        Err(error) => {
+            log::warn!(
+                "Skipping DAT entry that cannot be identified by content ({}): {error}",
+                game.name
+            );
+            stats.skipped_unidentifiable += 1;
+            return Ok(());
+        }
     };
+    let existing = retro_junk_db::queries::get_media_by_id(conn, &media_id)?;
+
+    let natural = ReleaseKey {
+        platform_id,
+        region: primary_region,
+        revision: &revision,
+        variant: &variant,
+    };
+    let effective_release_id = place_release(
+        conn,
+        existing.as_ref(),
+        &canonical_title,
+        &parsed.title,
+        &natural,
+        stats,
+    )?;
+
     if let Some(ref existing_media) = existing {
-        let same_hashes = existing_media.crc32 == primary_rom.crc
-            && existing_media.sha1 == primary_rom.sha1.as_deref().unwrap_or("")
-            && existing_media.file_size == i64::try_from(primary_rom.size).unwrap_or(0)
-            && existing_media.revision == media_revision;
-        if same_hashes && existing_media.rom_name == primary_rom.name {
+        // The digests already agree — that is what found this row. What is
+        // left to notice is a changed label or classification.
+        let unchanged = existing_media.release_id == effective_release_id
+            && existing_media.rom_name == primary_rom.name
+            && existing_media.dat_name == game.name
+            && existing_media.revision == media_revision
+            && existing_media.status == media_status;
+        if unchanged {
             stats.media_unchanged += 1;
             return Ok(());
         }
@@ -284,14 +239,6 @@ fn import_game(
     } else {
         stats.media_created += 1;
     }
-
-    // Preserve an existing ID when upgrading a catalog created by the old
-    // game-name key. This repairs it in place on re-import without orphaning
-    // collection rows or media assets that reference that ID.
-    let media_id = existing.as_ref().map_or_else(
-        || make_media_id(&effective_release_id, &primary_rom.name),
-        |media| media.id.clone(),
-    );
 
     let media_serial = game
         .serial
@@ -403,87 +350,152 @@ fn compute_release_variant(parsed: &name_parser::ParsedDatName) -> String {
     }
 }
 
-// ── ID Generation ───────────────────────────────────────────────────────────
+// ── Identity ────────────────────────────────────────────────────────────────
 
-/// Generate a stable work ID from title and platform.
-///
-/// Uses a simple slug: lowercase, alphanumeric + hyphens.
-fn make_work_id(title: &str, platform_id: &str) -> String {
-    let slug = slugify(title);
-    format!("{platform_id}:{slug}")
-}
-
-/// Generate a stable release ID from work + platform + region + revision + variant.
-fn make_release_id(
-    work_id: &str,
-    platform_id: &str,
-    region: &str,
-    revision: &str,
-    variant: &str,
-) -> String {
-    let mut id = format!("{work_id}:{platform_id}:{region}");
-    if !revision.is_empty() {
-        id.push(':');
-        id.push_str(&crate::slugify(revision));
-    }
-    if !variant.is_empty() {
-        id.push(':');
-        id.push_str(&crate::slugify(variant));
-    }
-    id
-}
-
-/// Find an existing catalog medium by its content, so a renamed game keeps
-/// its identity instead of gaining a twin.
-///
-/// The content key is the complete ordered track set — every non-CUE ROM's
-/// sha1 and size — falling back to the single ROM's digests for media the
-/// catalog stores without tracks. `match_complete_catalog_media` owns that
-/// rule, including the refusal to let one data track vouch for a multi-track
-/// disc, so this asks it rather than growing a second definition.
-fn find_media_by_content(
-    conn: &Connection,
-    platform_id: &str,
+/// The digests that name one medium: every non-CUE track in the order the DAT
+/// lists them, or the single ROM's own digests when the DAT lists it as one
+/// file.
+fn content_parts(
     track_roms: &[&retro_junk_dat::DatRom],
     primary_rom: &retro_junk_dat::DatRom,
-) -> Result<Option<Media>, OperationError> {
-    let tracks = if track_roms.is_empty() {
-        vec![(primary_rom.size, primary_rom.sha1.clone())]
+) -> Vec<ContentPart> {
+    if track_roms.is_empty() {
+        vec![ContentPart::new(
+            primary_rom.size,
+            primary_rom.sha1.clone().unwrap_or_default(),
+        )]
     } else {
         track_roms
             .iter()
-            .map(|rom| (rom.size, rom.sha1.clone()))
+            .map(|rom| ContentPart::new(rom.size, rom.sha1.clone().unwrap_or_default()))
             .collect()
-    };
-    if tracks.iter().any(|(_, sha1)| sha1.is_none()) {
-        return Ok(None);
     }
-    let digests = tracks
-        .into_iter()
-        .enumerate()
-        .map(|(index, (size, sha1))| retro_junk_db::TrackDigest {
-            number: u32::try_from(index + 1).unwrap_or(1),
-            size,
-            crc32: String::new(),
-            md5: String::new(),
-            sha1: sha1.unwrap_or_default().to_lowercase(),
-        })
-        .collect::<Vec<_>>();
-    let matches =
-        retro_junk_db::archive::match_complete_catalog_media(conn, platform_id, &digests)?;
-    // Only an unambiguous answer may reclaim an id. Two catalog rows sharing a
-    // complete track set would be a catalog problem, and guessing between them
-    // is how the wrong game gets renamed.
-    let [found] = matches.as_slice() else {
-        return Ok(None);
-    };
-    retro_junk_db::queries::get_media_by_id(conn, &found.media_id)
 }
 
-/// Generate a stable media ID from release + ROM name.
-fn make_media_id(release_id: &str, rom_name: &str) -> String {
-    let slug = slugify(rom_name);
-    format!("{release_id}:{slug}")
+/// What distinguishes one release of a work from another.
+struct ReleaseKey<'a> {
+    platform_id: &'a str,
+    region: &'a str,
+    revision: &'a str,
+    variant: &'a str,
+}
+
+/// Which release a DAT entry belongs to, creating the release and its work
+/// when nothing yet describes it.
+///
+/// The interesting case is the first one: this medium's bytes are already in
+/// the catalog, and the release holding them still answers to the same region,
+/// revision and variant. Then the DAT has not moved the medium anywhere — it
+/// has renamed it. So the existing work and release keep their ids and take
+/// the new title as a *label*, which is the whole point of keying on content:
+/// correcting `Tom &amp; Jerry` to `Tom & Jerry` must not orphan anything.
+///
+/// Anything else — a medium the catalog has never seen, or one the DAT has
+/// genuinely reclassified into a different region or revision — falls through
+/// to the ordinary find-or-mint: a work is found by its canonical name on this
+/// platform, a release by its natural key beneath that work, and either is
+/// minted with a fresh id when absent.
+fn place_release(
+    conn: &Connection,
+    existing_media: Option<&Media>,
+    canonical_title: &str,
+    release_title: &str,
+    natural: &ReleaseKey<'_>,
+    stats: &mut ImportStats,
+) -> Result<String, ImportError> {
+    if let Some(media) = existing_media
+        && let Some(release) = retro_junk_db::queries::get_release_by_id(conn, &media.release_id)?
+        && release.platform_id == natural.platform_id
+        && release.region == natural.region
+        && release.revision == natural.revision
+        && release.variant == natural.variant
+    {
+        stats.works_existing += 1;
+        stats.releases_existing += 1;
+        relabel(conn, &release, canonical_title, release_title)?;
+        return Ok(release.id);
+    }
+
+    let work_id = if let Some(found) =
+        operations::find_work_by_name_on_platform(conn, canonical_title, natural.platform_id)?
+    {
+        stats.works_existing += 1;
+        found
+    } else {
+        let minted = content_id::new_work_id();
+        operations::insert_work(conn, &minted, canonical_title)?;
+        stats.works_created += 1;
+        minted
+    };
+
+    let existing_release = operations::find_release(
+        conn,
+        &work_id,
+        natural.platform_id,
+        natural.region,
+        natural.revision,
+        natural.variant,
+    )?;
+    if let Some(existing) = existing_release {
+        stats.releases_existing += 1;
+        return Ok(existing.id);
+    }
+
+    let release = Release {
+        id: content_id::new_release_id(),
+        work_id,
+        platform_id: natural.platform_id.to_owned(),
+        region: natural.region.to_owned(),
+        revision: natural.revision.to_owned(),
+        variant: natural.variant.to_owned(),
+        title: release_title.to_owned(),
+        alt_title: String::new(),
+        publisher_id: None,
+        developer_id: None,
+        release_date: String::new(),
+        game_serial: String::new(),
+        genre: String::new(),
+        players: String::new(),
+        rating: None,
+        description: String::new(),
+        screen_title: String::new(),
+        cover_title: String::new(),
+        screenscraper_id: None,
+        scraper_not_found: false,
+        created_at: String::new(),
+        updated_at: String::new(),
+    };
+    operations::upsert_release(conn, &release)?;
+    stats.releases_created += 1;
+    Ok(release.id)
+}
+
+/// Take the DAT's new wording for a work and release whose identity is settled.
+fn relabel(
+    conn: &Connection,
+    release: &Release,
+    canonical_title: &str,
+    release_title: &str,
+) -> Result<(), ImportError> {
+    if release.title != release_title {
+        conn.execute(
+            "UPDATE releases SET title=?2,updated_at=datetime('now') WHERE id=?1",
+            rusqlite::params![release.id, release_title],
+        )?;
+    }
+    let current_name: String = conn.query_row(
+        "SELECT canonical_name FROM works WHERE id=?1",
+        [&release.work_id],
+        |row| row.get(0),
+    )?;
+    if current_name != canonical_title {
+        log::info!(
+            "Catalog work {} is now called '{canonical_title}' (was '{current_name}')",
+            release.work_id
+        );
+        operations::update_work_name(conn, &release.work_id, canonical_title)?;
+    }
+    Ok(())
 }
 
 /// Map a `DatSource` to the string used in the catalog.

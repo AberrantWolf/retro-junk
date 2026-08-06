@@ -139,27 +139,28 @@ fn homebrews_serial_never_counts_toward_its_identity() {
     assert_eq!(homebrew.tier(), ScrapeIdentityTier::Filename);
 }
 
-/// Ids are minted per DAT release and do not survive a re-import elsewhere, so
-/// what a mark records about a parent is what it is *called*.
+/// A mod points at one of its parent's catalogued media by that medium's id,
+/// which is folded from the medium's own digests and so means the same thing
+/// on any machine with the same DAT. The name rides along for reading.
 #[test]
-fn a_parent_is_named_by_its_dat_name_and_falls_back_to_its_canonical_name() {
+fn a_parent_is_referenced_by_its_medium_and_labelled_by_its_dat_name() {
     let conn = catalog_with_parent();
-    assert_eq!(
-        retro_junk_db::derivation::work_lookup_name(&conn, "snes:smw", "snes").unwrap(),
-        "Super Mario World (USA)"
-    );
+    let parent = retro_junk_db::derivation::parent_reference(&conn, "snes:smw", "snes").unwrap();
+    assert_eq!(parent.media_id, "snes:smw:usa:media");
+    assert_eq!(parent.dat_name, "Super Mario World (USA)");
 
-    // A work synthesized from a mark has no DAT-derived medium at all.
+    // A work synthesized from an earlier mark has no catalogued medium at all,
+    // so there is nothing to point at — only a name to read.
     conn.execute_batch(
         "INSERT INTO works(id,canonical_name,tag) VALUES('snes:homebrew:x','Finchy Quest','homebrew');
          INSERT INTO releases(id,work_id,platform_id,region,title)
          VALUES('snes:homebrew:x:rel','snes:homebrew:x','snes','usa','Finchy Quest');",
     )
     .unwrap();
-    assert_eq!(
-        retro_junk_db::derivation::work_lookup_name(&conn, "snes:homebrew:x", "snes").unwrap(),
-        "Finchy Quest"
-    );
+    let synthesized =
+        retro_junk_db::derivation::parent_reference(&conn, "snes:homebrew:x", "snes").unwrap();
+    assert!(synthesized.media_id.is_empty());
+    assert_eq!(synthesized.dat_name, "Finchy Quest");
 }
 
 /// Tagging writes the durable form as well as the row. Without this the
@@ -178,7 +179,6 @@ fn tagging_a_mod_records_the_decision_beside_the_collection() {
             platform_id: "snes",
             region: "usa",
             disc_number: None,
-            hashes: None,
             collection_root: Some(collection.path()),
         },
     )
@@ -188,10 +188,13 @@ fn tagging_a_mod_records_the_decision_beside_the_collection() {
     assert_eq!(marks.len(), 1);
     assert_eq!(marks[0].kind, retro_junk_archive::MarkKind::Modded);
     assert_eq!(
-        marks[0].parent_dat_name, "Super Mario World (USA)",
-        "the parent travels by name, because ids do not travel at all"
+        marks[0].parent_media_id, "snes:smw:usa:media",
+        "the link travels as the parent medium's content id"
     );
-    assert_eq!(marks[0].parent_work_id, "snes:smw");
+    assert_eq!(
+        marks[0].parent_dat_name, "Super Mario World (USA)",
+        "with the name alongside it, to read"
+    );
     assert_eq!(marks[0].content.sha1, "da39a3ee");
     assert_eq!(marks[0].name, "Super Mario World (Kaizo).sfc");
 
@@ -223,7 +226,6 @@ fn tagging_a_mod_makes_its_parent_resolvable_at_once() {
             platform_id: "snes",
             region: "usa",
             disc_number: None,
-            hashes: None,
             collection_root: Some(collection.path()),
         },
     )

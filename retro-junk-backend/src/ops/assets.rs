@@ -115,15 +115,14 @@ pub fn adopt_playable_artwork(
     media_dir_setting: &str,
     cancel: &AtomicBool,
 ) -> Result<usize, String> {
-    let archive_releases = snapshot
-        .releases
-        .iter()
-        .filter_map(|release| {
-            let catalog_id = release.manifest.catalog_binding.catalog_release_id.trim();
-            (!catalog_id.is_empty())
-                .then_some((catalog_id.to_owned(), release.manifest.archive_release_id))
-        })
-        .collect::<HashMap<_, _>>();
+    // Which archive release holds which catalog release is the projection's
+    // answer, derived by content from each release's carriers. The manifests
+    // themselves name no catalog row.
+    let archive_releases = retro_junk_db::archive::archive_releases_by_catalog_release(
+        connection,
+        &snapshot.manifest.profile_id.to_string(),
+    )
+    .map_err(|error| error.to_string())?;
     if archive_releases.is_empty() {
         return Ok(0);
     }
@@ -132,7 +131,10 @@ pub fn adopt_playable_artwork(
     for candidate in
         retro_junk_db::playable_artwork_candidates(connection).map_err(|error| error.to_string())?
     {
-        let Some(&release_id) = archive_releases.get(&candidate.catalog_release_id) else {
+        let Some(release_id) = archive_releases
+            .get(&candidate.catalog_release_id)
+            .and_then(|id| id.parse::<retro_junk_archive::ArchiveReleaseId>().ok())
+        else {
             continue;
         };
         let Ok(game_entry) =

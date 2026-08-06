@@ -31,8 +31,7 @@ pub use archive::{
     unbound_playable_rows, update_projected_platform_policy,
 };
 pub use deduplicate::{
-    CatalogDeduplicationReport, DuplicateMediaGroup, analyze_catalog_duplicates,
-    deduplicate_catalog,
+    CatalogDeduplicationReport, SuspectedDuplicateGroup, analyze_catalog_duplicates,
 };
 pub use derivation::{CatalogDerivation, query_entry_derivations};
 pub use library::{
@@ -60,14 +59,14 @@ pub use library::{
 pub use operations::{
     MediaHashes, MediaTrack, OperationError, SeedStats, apply_disagreement_resolution,
     clear_not_found_flags, create_homebrew_work, create_modded_media, delete_orphan_works,
-    delete_release, detach_modded_media, find_company_by_alias, find_media_by_dat_name,
-    find_media_by_release_and_rom_name, find_media_tracks, find_media_tracks_for_media_ids,
-    find_release, find_work_by_name, insert_asset, insert_disagreement, insert_import_log,
-    insert_media_track, insert_work, mark_release_not_found, move_assets_to_release,
-    move_disagreements_for_release, move_media_to_release, resolve_disagreement, seed_from_catalog,
-    set_media_tag, set_work_tag, unenrich_releases, update_release_enrichment,
-    update_releases_work_id, update_work_name, upsert_collection_entry, upsert_company,
-    upsert_media, upsert_override, upsert_platform, upsert_release,
+    delete_release, detach_modded_media, find_company_by_alias, find_media_tracks,
+    find_media_tracks_for_media_ids, find_release, find_work_by_name, insert_asset,
+    insert_disagreement, insert_import_log, insert_media_track, insert_work,
+    mark_release_not_found, move_assets_to_release, move_disagreements_for_release,
+    move_media_to_release, resolve_disagreement, seed_from_catalog, set_media_tag, set_work_tag,
+    unenrich_releases, update_release_enrichment, update_releases_work_id, update_work_name,
+    upsert_collection_entry, upsert_company, upsert_media, upsert_override, upsert_platform,
+    upsert_release,
 };
 pub use queries::{
     CatalogHashQuery, CatalogMediaMatch, CatalogStats, CollectionRow, CompanyRow,

@@ -19,6 +19,10 @@ pub(crate) fn run_catalog_enrich_gdb(
 ) -> Result<(), CliError> {
     use retro_junk_import::gdb_import::{self, GdbEnrichOptions};
 
+    // Reject an unknown system before touching the database, so a typo costs
+    // nothing and says so immediately.
+    let resolved = resolve_systems(ctx, systems, &SystemCapability::GdbSupport)?;
+
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
 
     if !db_path.exists() {
@@ -30,8 +34,6 @@ pub(crate) fn run_catalog_enrich_gdb(
     let conn = retro_junk_db::open_database(&db_path)
         .map_err(|e| CliError::database(format!("Failed to open catalog database: {e}")))?;
 
-    // Resolve systems
-    let resolved = resolve_systems(ctx, systems, &SystemCapability::GdbSupport)?;
     let consoles: Vec<(String, &'static [&'static str])> = resolved
         .into_iter()
         .map(|c| {

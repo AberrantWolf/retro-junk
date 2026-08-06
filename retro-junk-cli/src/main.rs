@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::SystemTime;
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 use log::LevelFilter;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
@@ -116,7 +116,11 @@ pub(crate) fn log_blank() {
 // -- Main --
 
 fn main() {
-    let cli = Cli::parse();
+    // Parsed through a rebuilt command tree rather than `Cli::parse()`, so
+    // every help screen carries the version. Unknown arguments still fail here,
+    // before any of the work below starts.
+    let matches = cli_types::version_in_help(Cli::command()).get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit());
     let quiet = cli.quiet;
     let verbose = cli.verbose;
 
@@ -248,21 +252,13 @@ fn run(
 #[allow(clippy::too_many_lines)]
 fn run_catalog(action: CatalogAction, quiet: bool, ctx: &AnalysisContext) -> Result<(), CliError> {
     match action {
-        CatalogAction::Deduplicate {
-            platform,
-            apply,
-            json,
-            db,
-        } => {
+        CatalogAction::Deduplicate { platform, json, db } => {
             let path = db.unwrap_or_else(retro_junk_lib::settings::catalog_database_path);
             let connection = retro_junk_db::open_database(&path)
                 .map_err(|error| CliError::database(error.to_string()))?;
-            let report = if apply {
-                retro_junk_db::deduplicate_catalog(&connection, platform.as_deref())
-            } else {
+            let report =
                 retro_junk_db::analyze_catalog_duplicates(&connection, platform.as_deref())
-            }
-            .map_err(|error| CliError::database(error.to_string()))?;
+                    .map_err(|error| CliError::database(error.to_string()))?;
             if json {
                 println!(
                     "{}",
@@ -270,23 +266,15 @@ fn run_catalog(action: CatalogAction, quiet: bool, ctx: &AnalysisContext) -> Res
                         .map_err(|error| CliError::other(error.to_string()))?
                 );
             } else {
+                // Nothing to apply: media that are byte-for-byte the same now
+                // share one id, so only genuine contradictions reach here and
+                // those want a person, not a merge.
                 log::info!(
-                    "{} exact duplicate group(s), {} affected reference(s), {} suspected non-identical group(s){}",
-                    report.exact_groups.len(),
-                    report.affected_references,
-                    report.suspected_groups,
-                    if report.applied {
-                        " merged"
-                    } else {
-                        " (dry run)"
-                    }
+                    "{} group(s) claim to be the same edition while their bytes disagree",
+                    report.suspected_groups.len()
                 );
-                for group in report.exact_groups {
-                    log::info!(
-                        "{} <- {}",
-                        group.canonical_media_id,
-                        group.duplicate_media_ids.join(", ")
-                    );
+                for group in report.suspected_groups {
+                    log::info!("{}: {}", group.platform_id, group.media_ids.join(", "));
                 }
             }
         }

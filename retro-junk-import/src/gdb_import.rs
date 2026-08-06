@@ -7,15 +7,13 @@
 //! Data source: <https://github.com/PigSaint/GameDataBase>
 //! License: CC BY 4.0 — Attribution to `PigSaint` required.
 
-use retro_junk_catalog::types::Company;
 use retro_junk_dat::gdb::{self, GdbGame};
 use retro_junk_dat::gdb_cache;
-use retro_junk_db::{Connection, operations, queries};
+use retro_junk_db::{Connection, queries};
 use rusqlite::params;
 
 use crate::ImportError;
 use crate::merge;
-use crate::slugify;
 
 /// Statistics from a GDB enrichment run.
 #[derive(Debug, Default)]
@@ -354,32 +352,9 @@ fn find_or_create_company(
     name: &str,
     stats: &mut GdbEnrichStats,
 ) -> Result<String, ImportError> {
-    // Check by alias first
-    if let Some(company_id) = operations::find_company_by_alias(conn, name)? {
-        return Ok(company_id);
+    let found = crate::companies::find_or_create_company(conn, name)?;
+    if found.created {
+        stats.companies_created += 1;
     }
-
-    // Check by slug
-    let slug = slugify(name);
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM companies WHERE id = ?1)",
-        [&slug],
-        |row| row.get(0),
-    )?;
-    if exists {
-        return Ok(slug);
-    }
-
-    // Create new company
-    let company = Company {
-        id: slug.clone(),
-        name: name.to_string(),
-        country: String::new(),
-        aliases: vec![name.to_string()],
-    };
-    operations::upsert_company(conn, &company)?;
-    stats.companies_created += 1;
-    log::debug!("Created new company: {name} ({slug})");
-
-    Ok(slug)
+    Ok(found.id)
 }

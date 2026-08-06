@@ -20,10 +20,6 @@ pub enum CollectionError {
     NotInitialized(String),
     #[error("archive path already contains non-archive data: {0}")]
     NonEmptyRoot(String),
-    #[error(
-        "carrier matched catalog work {found}, but its archived parent is already bound to {expected}"
-    )]
-    CatalogWorkConflict { found: String, expected: String },
     #[error(transparent)]
     InvalidPackage(#[from] RedumperPackageError),
     #[error(transparent)]
@@ -65,6 +61,16 @@ pub struct NewCarrierDump {
     pub carrier_kind: CarrierKind,
     pub format: RepresentationFormat,
     pub catalog_binding: CatalogBinding,
+    /// The archive release this dump belongs under, when the caller already
+    /// worked it out.
+    ///
+    /// Deciding that two discs are the same owned thing sometimes needs the
+    /// catalog — two pressings of one game have different revisions but belong
+    /// in one box — and this crate has no catalog to ask. A caller that does
+    /// puts its answer here. Without one, the dump joins a release describing
+    /// the same platform, region, title, revision and variant, or starts a new
+    /// one. Nothing about this is written to a manifest.
+    pub join_release: Option<ArchiveReleaseId>,
     pub source_package: crate::SourcePackageRecord,
     /// Digests calculated while staging the source. When supplied, archive
     /// copy reads must reproduce them before publication.
@@ -126,48 +132,31 @@ pub fn validate_redumper_package(source: &Path) -> Result<(), RedumperPackageErr
     })
 }
 
-/// Apply an exact catalog identity to one carrier and keep its parent release
-/// honest when the owned copy spans compatible mastering-specific releases.
+/// Record what a catalog said about one carrier, and keep its parent release
+/// honest when the owned copy spans more than one mastering.
 ///
-/// A parent stays release-bound while all identified carriers agree. If an
-/// incoming carrier names another release for the same work, the parent keeps
-/// only the work identity; exact release and media IDs remain on each carrier.
+/// The release above a set of carriers describes them collectively. While every
+/// identified carrier comes from the same catalog release, that description can
+/// be specific — a revision, a variant, the exact track set. Once the copy mixes
+/// masterings of the same game, none of that is true of the whole set any more,
+/// so it is cleared and the release keeps only what all of them share. Each
+/// carrier keeps its own exact evidence either way.
+///
+/// `spans_masterings` is the caller's finding, not this function's: deciding
+/// whether two carriers came from the same catalog release means asking the
+/// catalog, and this crate has no catalog to ask. Returns it back so the caller
+/// can report what happened.
 pub fn bind_carrier_to_catalog(
     release_manifest_path: &Path,
     carrier_manifest_path: &Path,
     binding: &CatalogBinding,
+    spans_masterings: bool,
 ) -> Result<bool, CollectionError> {
     let original_release: ReleaseManifest = read_toml(release_manifest_path)?;
     let mut release = original_release.clone();
     let mut carrier: CarrierManifest = read_toml(carrier_manifest_path)?;
 
-    let existing_work = &release.catalog_binding.catalog_work_id;
-    if !existing_work.is_empty()
-        && !binding.catalog_work_id.is_empty()
-        && existing_work != &binding.catalog_work_id
-    {
-        return Err(CollectionError::CatalogWorkConflict {
-            found: binding.catalog_work_id.clone(),
-            expected: existing_work.clone(),
-        });
-    }
-
     carrier.catalog_binding = binding.clone();
-    let already_work_level = !release.catalog_binding.catalog_work_id.is_empty()
-        && release.catalog_binding.catalog_release_id.is_empty();
-    let mixed_catalog_releases = !release.catalog_binding.catalog_release_id.is_empty()
-        && release.catalog_binding.catalog_release_id != binding.catalog_release_id
-        && sibling_uses_catalog_release(
-            release_manifest_path
-                .parent()
-                .unwrap_or_else(|| Path::new("")),
-            carrier_manifest_path,
-            &release.catalog_binding.catalog_release_id,
-        )?;
-    release
-        .catalog_binding
-        .catalog_work_id
-        .clone_from(&binding.catalog_work_id);
     release.catalog_binding.source.clone_from(&binding.source);
     release
         .catalog_binding
@@ -177,23 +166,11 @@ pub fn bind_carrier_to_catalog(
         .catalog_binding
         .source_version
         .clone_from(&binding.source_version);
-    let work_level = already_work_level || mixed_catalog_releases;
-    if work_level {
-        release.catalog_binding.catalog_release_id.clear();
-        release.catalog_binding.catalog_media_id.clear();
+    if spans_masterings {
         release.catalog_binding.serials.clear();
         release.catalog_binding.expected_tracks.clear();
         release.revision.clear();
         release.variant.clear();
-    } else {
-        release
-            .catalog_binding
-            .catalog_release_id
-            .clone_from(&binding.catalog_release_id);
-        release
-            .catalog_binding
-            .catalog_media_id
-            .clone_from(&binding.catalog_media_id);
     }
 
     write_toml_atomic(release_manifest_path, &release)?;
@@ -201,51 +178,7 @@ pub fn bind_carrier_to_catalog(
         let _ = write_toml_atomic(release_manifest_path, &original_release);
         return Err(error.into());
     }
-    Ok(work_level)
-}
-
-fn sibling_uses_catalog_release(
-    release_directory: &Path,
-    target_carrier_manifest: &Path,
-    catalog_release_id: &str,
-) -> Result<bool, CollectionError> {
-    let copies_directory = release_directory.join("physical-copies");
-    if !copies_directory.is_dir() {
-        return Ok(false);
-    }
-    for copy in std::fs::read_dir(&copies_directory).map_err(|source| CollectionError::Io {
-        path: copies_directory.display().to_string(),
-        source,
-    })? {
-        let copy = copy.map_err(|source| CollectionError::Io {
-            path: copies_directory.display().to_string(),
-            source,
-        })?;
-        let carriers_directory = copy.path().join("carriers");
-        if !carriers_directory.is_dir() {
-            continue;
-        }
-        for carrier in
-            std::fs::read_dir(&carriers_directory).map_err(|source| CollectionError::Io {
-                path: carriers_directory.display().to_string(),
-                source,
-            })?
-        {
-            let carrier = carrier.map_err(|source| CollectionError::Io {
-                path: carriers_directory.display().to_string(),
-                source,
-            })?;
-            let manifest_path = carrier.path().join("carrier.toml");
-            if manifest_path == target_carrier_manifest || !manifest_path.is_file() {
-                continue;
-            }
-            let sibling: CarrierManifest = read_toml(&manifest_path)?;
-            if sibling.catalog_binding.catalog_release_id == catalog_release_id {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+    Ok(spans_masterings)
 }
 
 /// Set or clear the archive-authoritative playable default for one platform.
@@ -367,7 +300,8 @@ pub fn upgrade_legacy_regional_physical_platforms(root: &Path) -> Result<usize, 
             continue;
         }
         let platform_directory = platform_entry.path();
-        let platform_folder = platform_entry.file_name().to_string_lossy().into_owned();
+        let mut moved_away = 0usize;
+        let mut stayed = 0usize;
         for release_entry in
             std::fs::read_dir(&platform_directory).map_err(|source| CollectionError::Io {
                 path: platform_directory.display().to_string(),
@@ -393,12 +327,19 @@ pub fn upgrade_legacy_regional_physical_platforms(root: &Path) -> Result<usize, 
             if !source_manifest_path.is_file() {
                 continue;
             }
-            upgraded += usize::from(upgrade_legacy_regional_release(root, &source_directory)?);
+            if upgrade_legacy_regional_release(root, &source_directory)? {
+                moved_away += 1;
+            } else {
+                stayed += 1;
+            }
         }
-        if matches!(
-            platform_folder.to_ascii_lowercase().as_str(),
-            "nes" | "snes" | "genesis" | "pce" | "pcecd" | "saturn"
-        ) {
+        // A folder every release moved out of was a combined catalog platform,
+        // and is now an empty shell. Which platform a release belongs to is
+        // what its manifest says — reading it off the folder name meant a list
+        // of legacy names to keep in step, and a folder someone had renamed was
+        // simply never cleaned up.
+        upgraded += moved_away;
+        if moved_away > 0 && stayed == 0 {
             let _ = std::fs::remove_dir(&platform_directory);
         }
     }
@@ -574,27 +515,27 @@ pub fn ingest_new_carrier_dump(
         catalog_binding: spec.catalog_binding.clone(),
     };
     let requested_physical_copy_id = spec.physical_copy_id;
+    let join_release = spec.join_release;
     let existing_release = crate::scan_archive(archive_root).ok().and_then(|snapshot| {
         snapshot.releases.into_iter().find(|candidate| {
+            // The caller's answer wins outright, because it is the only one
+            // that could have consulted a catalog.
+            if join_release.is_some_and(|id| candidate.manifest.archive_release_id == id) {
+                return true;
+            }
             let owns_requested_copy = requested_physical_copy_id.is_some_and(|requested| {
                 candidate
                     .physical_copies
                     .iter()
                     .any(|copy| copy.manifest.physical_copy_id == requested)
             });
-            let same_catalog_work = !proposed_release.catalog_binding.catalog_work_id.is_empty()
-                && (candidate.manifest.catalog_binding.catalog_work_id
-                    == proposed_release.catalog_binding.catalog_work_id
-                    || candidate.physical_copies.iter().any(|copy| {
-                        copy.carriers.iter().any(|carrier| {
-                            carrier.manifest.catalog_binding.catalog_work_id
-                                == proposed_release.catalog_binding.catalog_work_id
-                        })
-                    }));
+            // Otherwise, a dump joins a release that describes the same thing.
+            // Manifests carry no catalog row ids to compare, and deliberately
+            // so: those moved whenever a title was corrected, which is what
+            // made two archive releases appear for one game.
             candidate.manifest.platform_id == proposed_release.platform_id
                 && candidate.manifest.region == proposed_release.region
                 && (owns_requested_copy
-                    || same_catalog_work
                     || (candidate.manifest.title == proposed_release.title
                         && candidate.manifest.revision == proposed_release.revision
                         && candidate.manifest.variant == proposed_release.variant))
@@ -621,19 +562,15 @@ pub fn ingest_new_carrier_dump(
     let (release, release_dir, created_release, updated_release) =
         if let Some(existing) = &existing_release {
             let mut manifest = existing.manifest.clone();
+            // The release's own track set describes one medium. A second,
+            // different medium joining the same release means that description
+            // no longer covers the set, so it is dropped rather than left
+            // pointing at whichever disc happened to arrive first.
             let incoming = &proposed_release.catalog_binding;
-            let same_work = !incoming.catalog_work_id.is_empty()
-                && manifest.catalog_binding.catalog_work_id == incoming.catalog_work_id;
-            let mixed_catalog_releases = same_work
-                && !manifest.catalog_binding.catalog_release_id.is_empty()
-                && manifest.catalog_binding.catalog_release_id != incoming.catalog_release_id;
-            if mixed_catalog_releases {
-                manifest
-                    .catalog_binding
-                    .catalog_work_id
-                    .clone_from(&incoming.catalog_work_id);
-                manifest.catalog_binding.catalog_release_id.clear();
-                manifest.catalog_binding.catalog_media_id.clear();
+            let spans_masterings = !manifest.catalog_binding.expected_tracks.is_empty()
+                && !incoming.expected_tracks.is_empty()
+                && manifest.catalog_binding.expected_tracks != incoming.expected_tracks;
+            if spans_masterings {
                 manifest.catalog_binding.serials.clear();
                 manifest.catalog_binding.expected_tracks.clear();
                 manifest.revision.clear();
@@ -680,10 +617,14 @@ pub fn ingest_new_carrier_dump(
             let directory = ArchiveLayout::physical_copy_dir(&release_dir, copy_number);
             (manifest, directory, true, Vec::new())
         };
+    // Is this dump another capture of a disc this copy already holds? Two
+    // carriers are the same medium when the catalog matched them on the same
+    // complete ordered track set — the bytes, not a row id. Failing that, the
+    // serial and disc number are what an unidentified import has to go on.
     let matching_carrier = existing_carriers.into_iter().find(|candidate| {
-        (!spec.catalog_binding.catalog_media_id.is_empty()
-            && candidate.manifest.catalog_binding.catalog_media_id
-                == spec.catalog_binding.catalog_media_id)
+        (!spec.catalog_binding.expected_tracks.is_empty()
+            && candidate.manifest.catalog_binding.expected_tracks
+                == spec.catalog_binding.expected_tracks)
             || (!spec.serial.is_empty()
                 && candidate.manifest.serial.eq_ignore_ascii_case(&spec.serial)
                 && candidate.manifest.sequence_number == spec.sequence_number)

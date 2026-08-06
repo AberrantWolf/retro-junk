@@ -465,9 +465,7 @@ fn verdict_status(
         retro_junk_db::identify::Identification::Manual { .. } => EntryStatus::Disambiguated,
         retro_junk_db::identify::Identification::Unique { .. } => EntryStatus::LikelyMatched,
         retro_junk_db::identify::Identification::Ambiguous { .. } => EntryStatus::Ambiguous,
-        retro_junk_db::identify::Identification::Unidentified { .. } => {
-            EntryStatus::Unrecognized
-        }
+        retro_junk_db::identify::Identification::Unidentified { .. } => EntryStatus::Unrecognized,
     }
 }
 

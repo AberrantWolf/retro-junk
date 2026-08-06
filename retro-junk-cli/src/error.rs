@@ -11,8 +11,10 @@ pub(crate) enum CliError {
     #[error("Database error: {0}")]
     Database(String),
 
-    /// Unknown or unsupported system name
-    #[error("Unknown system: {0}")]
+    /// Unknown or unsupported system name. The message names the system and
+    /// how to see the valid ones, so it is printed as given rather than
+    /// prefixed again.
+    #[error("{0}")]
     UnknownSystem(String),
 
     /// Configuration error

@@ -12,6 +12,7 @@ fn dump_ingest_adopts_existing_playable_artwork_once() {
     let rom = playable_root.join("nes/game.nes");
     std::fs::create_dir_all(rom.parent().unwrap()).unwrap();
     std::fs::write(&rom, b"rom").unwrap();
+    let digests = retro_junk_archive::hash_file_digests(&rom, &AtomicBool::new(false)).unwrap();
     retro_junk_archive::ingest_new_carrier_dump(
         &archive_root,
         &rom,
@@ -29,10 +30,11 @@ fn dump_ingest_adopts_existing_playable_artwork_once() {
             carrier_kind: retro_junk_archive::CarrierKind::Cartridge,
             format: retro_junk_archive::RepresentationFormat::Rom,
             catalog_binding: retro_junk_archive::CatalogBinding {
-                catalog_release_id: "release-game".to_owned(),
-                catalog_media_id: "media-game".to_owned(),
+                source: "no-intro".to_owned(),
+                dat_name: "Game".to_owned(),
                 ..Default::default()
             },
+            join_release: None,
             source_package: retro_junk_archive::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -46,7 +48,7 @@ fn dump_ingest_adopts_existing_playable_artwork_once() {
     let cover = media_root.join("nes/covers/game.png");
     std::fs::create_dir_all(cover.parent().unwrap()).unwrap();
     std::fs::write(&cover, b"existing cover").unwrap();
-    let connection = retro_junk_db::open_memory().unwrap();
+    let mut connection = retro_junk_db::open_memory().unwrap();
     connection.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes')", []).unwrap();
     connection
         .execute(
@@ -55,7 +57,19 @@ fn dump_ingest_adopts_existing_playable_artwork_once() {
         )
         .unwrap();
     connection.execute("INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('release-game','work-game','nes','usa','Game')", []).unwrap();
-    connection.execute("INSERT INTO media(id,release_id,dat_source) VALUES('media-game','release-game','no-intro')", []).unwrap();
+    // The archived cartridge's own bytes are what bind it to this row.
+    connection
+        .execute(
+            "INSERT INTO media(id,release_id,dat_source,file_size,crc32,sha1,md5)
+         VALUES('media-game','release-game','no-intro',?1,?2,?3,?4)",
+            (
+                i64::try_from(digests.size).unwrap(),
+                digests.crc32.as_str(),
+                digests.sha1.as_str(),
+                digests.md5.as_str(),
+            ),
+        )
+        .unwrap();
     connection
         .execute(
             "INSERT INTO library_roots(id,root_path) VALUES(1,?1)",
@@ -89,6 +103,15 @@ fn dump_ingest_adopts_existing_playable_artwork_once() {
         watch_backend: retro_junk_archive::WatchBackend::default(),
     };
     let snapshot = retro_junk_archive::scan_archive(&archive_root).unwrap();
+    // Which archive release holds which catalog release is the projection's
+    // answer, worked out from the carriers' digests, so it has to be built.
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut connection,
+        &snapshot,
+        &profile.playable_root,
+        &profile.workspace_root,
+    )
+    .unwrap();
     let cancel = AtomicBool::new(false);
     let media_setting = media_root.to_string_lossy();
     let _lock = retro_junk_archive::ArchiveLock::acquire(&archive_root).unwrap();

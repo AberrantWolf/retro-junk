@@ -23,6 +23,11 @@ pub(crate) fn run_catalog_import(
 ) -> Result<(), CliError> {
     use retro_junk_import::{ImportStats, dat_source_str, import_dat, log_import};
 
+    // Before anything: is every named system one we can import? Creating a
+    // database and seeding it from YAML only to reject `nse` as a typo leaves
+    // the user staring at work that happened for nothing.
+    let to_import = resolve_systems(ctx, systems, &SystemCapability::DatSupport)?;
+
     let db_path = db_path.unwrap_or_else(default_catalog_db_path);
 
     // Open or create the database
@@ -56,9 +61,6 @@ pub(crate) fn run_catalog_import(
             catalog_dir.display(),
         );
     }
-
-    // Determine which consoles to import
-    let to_import = resolve_systems(ctx, systems, &SystemCapability::DatSupport)?;
 
     log::info!(
         "{}",
@@ -144,6 +146,7 @@ pub(crate) fn run_catalog_import(
             total_stats.media_updated += stats.media_updated;
             total_stats.media_unchanged += stats.media_unchanged;
             total_stats.skipped_bad += stats.skipped_bad;
+            total_stats.skipped_unidentifiable += stats.skipped_unidentifiable;
             total_stats.total_games += stats.total_games;
             total_stats.disagreements_found += stats.disagreements_found;
         }
@@ -202,6 +205,14 @@ pub(crate) fn run_catalog_import(
         total_stats.media_unchanged,
         total_stats.skipped_bad,
     );
+    if total_stats.skipped_unidentifiable > 0 {
+        // Entries whose digests name nothing — no SHA-1, or a zero-byte ROM.
+        // Rare enough to be worth saying out loud when it happens.
+        log::info!(
+            "  Skipped, nothing to identify them by: {}",
+            total_stats.skipped_unidentifiable,
+        );
+    }
     if total_stats.disagreements_found > 0 {
         log::info!("  Disagreements: {}", total_stats.disagreements_found);
     }

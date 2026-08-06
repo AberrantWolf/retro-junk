@@ -34,8 +34,6 @@ pub struct CarrierFacts {
     pub physical_copy_id: String,
     /// The catalog medium this carrier resolved to, when it did.
     pub catalog_media_id: Option<String>,
-    /// The medium id the carrier's manifest claims, resolved or not.
-    pub claimed_media_id: String,
     /// The bound medium's disc number (0 when the catalog doesn't number it).
     pub disc_number: Option<i64>,
     /// Preservation-master representations recorded for this carrier.
@@ -80,9 +78,6 @@ pub struct ReleaseFacts {
     /// Resolved catalog identity, when the local catalog has the row.
     pub catalog_release_id: Option<String>,
     pub catalog_work_id: Option<String>,
-    /// What the manifest on disk claims, independent of local resolution.
-    pub claimed_release_id: String,
-    pub claimed_work_id: String,
     /// Present when the catalog can say how many discs a complete set has.
     pub expected_discs: Option<ExpectedDiscs>,
     pub carriers: Vec<CarrierFacts>,
@@ -279,8 +274,7 @@ pub fn release_facts_in_scope(
     {
         let mut statement = conn.prepare(
             "SELECT ar.id,ar.platform_id,ar.title,ar.region,ar.revision,
-                    ar.catalog_release_id,ar.catalog_work_id,
-                    ar.claimed_release_id,ar.claimed_work_id
+                    ar.catalog_release_id,ar.catalog_work_id
              FROM archive_releases ar
              JOIN archive_profiles ap ON ap.id=ar.profile_id
              WHERE (?1='' OR ar.profile_id=?1)
@@ -296,8 +290,6 @@ pub fn release_facts_in_scope(
                 revision: row.get(4)?,
                 catalog_release_id: row.get(5)?,
                 catalog_work_id: row.get(6)?,
-                claimed_release_id: row.get(7)?,
-                claimed_work_id: row.get(8)?,
                 expected_discs: None,
                 carriers: Vec::new(),
                 desired_playables: 0,
@@ -335,7 +327,7 @@ pub fn release_facts_in_scope(
     {
         let mut statement = conn.prepare(
             "SELECT pc.archive_release_id,c.id,pc.id,
-                    c.catalog_media_id,c.claimed_media_id,m.disc_number,
+                    c.catalog_media_id,m.disc_number,
                     (SELECT COUNT(*) FROM representations rep
                      WHERE rep.carrier_id=c.id AND rep.role='preservation_master'),
                     (SELECT COUNT(*) FROM representations rep
@@ -361,12 +353,11 @@ pub fn release_facts_in_scope(
                     carrier_id: row.get(1)?,
                     physical_copy_id: row.get(2)?,
                     catalog_media_id: row.get(3)?,
-                    claimed_media_id: row.get(4)?,
-                    disc_number: row.get(5)?,
-                    masters_recorded: row.get(6)?,
-                    masters_present: row.get(7)?,
-                    integrity_verified: row.get(8)?,
-                    catalog_verified: row.get(9)?,
+                    disc_number: row.get(4)?,
+                    masters_recorded: row.get(5)?,
+                    masters_present: row.get(6)?,
+                    integrity_verified: row.get(7)?,
+                    catalog_verified: row.get(8)?,
                 },
             ))
         })? {

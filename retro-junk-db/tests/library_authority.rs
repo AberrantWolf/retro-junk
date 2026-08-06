@@ -586,6 +586,14 @@ fn catalog_creation_and_library_tagging_are_one_transaction() {
     let entry = load_entry_details_for_console(&conn, console)
         .unwrap()
         .remove(0);
+    // The catalog rows are keyed on the file's digests, so a row nobody has
+    // hashed never reaches the catalog at all — and there would be nothing to
+    // roll back.
+    conn.execute(
+        "UPDATE library_entries SET sha1='aaaa1111',crc32='deadbeef',data_size=262144 WHERE id=?1",
+        [entry.id.0],
+    )
+    .unwrap();
 
     // No such platform exists, so the catalog release insert violates its FK.
     // The library tag must roll back with the catalog work/media rows.

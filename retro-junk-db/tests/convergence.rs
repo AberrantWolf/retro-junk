@@ -806,3 +806,46 @@ fn an_unrelated_library_file_does_not_owe_adoption() {
             .any(|action| action.kind == ActionKind::AdoptPlayable)
     );
 }
+
+/// The canonical spelling and the string the tables are keyed on must be the
+/// same word. They are produced by two different `match` arms, so nothing but
+/// this stops one from being edited without the other — and the way that would
+/// surface is a `--only` value the help screen offers being rejected.
+#[test]
+fn every_action_kind_leads_with_the_name_it_is_stored_under() {
+    for kind in ActionKind::all() {
+        assert_eq!(
+            kind.spellings().first().copied(),
+            Some(kind.as_str()),
+            "{kind:?} spells itself differently in as_str() and spellings()"
+        );
+    }
+}
+
+/// Every spelling the help screen offers, and every alias behind it, has to
+/// parse back to the kind that claimed it.
+#[test]
+fn every_spelling_parses_back_to_its_own_kind() {
+    for kind in ActionKind::all() {
+        for spelling in kind.spellings() {
+            assert_eq!(
+                spelling.parse::<ActionKind>().as_ref(),
+                Ok(kind),
+                "{spelling} did not parse back to {kind:?}"
+            );
+        }
+    }
+    assert!("bogus".parse::<ActionKind>().is_err());
+}
+
+/// No two kinds may claim the same word, or one of them becomes unreachable
+/// from the command line depending on list order.
+#[test]
+fn no_two_action_kinds_claim_the_same_spelling() {
+    let mut seen = std::collections::BTreeSet::new();
+    for kind in ActionKind::all() {
+        for spelling in kind.spellings() {
+            assert!(seen.insert(*spelling), "{spelling} is claimed twice");
+        }
+    }
+}

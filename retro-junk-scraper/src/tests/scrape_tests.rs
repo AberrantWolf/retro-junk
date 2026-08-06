@@ -10,7 +10,7 @@ fn mark(name: &str, sha1: &str, crc32: &str, size: u64) -> CollectionMark {
         platform_id: "psx".to_owned(),
         region: "usa".to_owned(),
         name: name.to_owned(),
-        parent_work_id: String::new(),
+        parent_media_id: String::new(),
         parent_dat_name: "Test Game (USA)".to_owned(),
         content: MarkedContent {
             size,

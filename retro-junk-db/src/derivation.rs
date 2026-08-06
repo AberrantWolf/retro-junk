@@ -173,40 +173,60 @@ pub(crate) fn lookup_size(file_size: u64, multi_track: bool) -> u64 {
     if multi_track { 0 } else { file_size }
 }
 
-/// The name that names a catalogued work to another machine.
+/// How a mod records the catalogued thing it was made from.
 ///
-/// Ids are not portable — a media id encodes the DAT release it was minted
-/// against — so a mod records what its parent is *called*. A DAT game name is
-/// what the importer matched on and what a scraper's filename tier wants; a
-/// work with no DAT-derived medium (itself synthesized from a mark) has only
-/// its canonical name, which is still better than nothing to carry.
-pub fn work_lookup_name(
+/// The id is a catalog medium's, folded from that medium's published digests,
+/// so it names the same row on every machine that has imported the same DAT.
+/// The name rides along as a label — it is what the scraper's filename tier
+/// asks for and what a person reading the mark needs — and nothing resolves
+/// through it.
+#[derive(Debug, Clone, Default)]
+pub struct ParentReference {
+    pub media_id: String,
+    pub dat_name: String,
+}
+
+/// The medium to record as a derivative's parent: one of the catalogued
+/// (untagged) media of `work_id` on this platform.
+///
+/// A work is a grouping, so "which of its media" has to be answered somehow;
+/// the lowest id is a stable, arbitrary pick, and every medium of the work
+/// leads back to the same work when the mark is applied. A work with no
+/// catalogued medium — one synthesized from an earlier mark — yields nothing,
+/// because there is no published content to point at.
+pub fn parent_reference(
     conn: &Connection,
     work_id: &str,
     platform_id: &str,
-) -> Result<String, LibraryError> {
-    let dat_name: Option<String> = conn
+) -> Result<ParentReference, LibraryError> {
+    let found: Option<(String, String)> = conn
         .query_row(
-            "SELECT m.dat_name FROM media m
+            "SELECT m.id,m.dat_name FROM media m
              JOIN releases r ON r.id=m.release_id
-             WHERE r.work_id=?1 AND m.dat_name<>'' AND COALESCE(m.tag,'')=''
+             WHERE r.work_id=?1 AND COALESCE(m.tag,'')=''
                AND (?2='' OR r.platform_id=?2)
              ORDER BY m.id LIMIT 1",
             params![work_id, platform_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    if let Some(dat_name) = dat_name.filter(|name| !name.trim().is_empty()) {
-        return Ok(dat_name);
-    }
-    Ok(conn
-        .query_row(
-            "SELECT canonical_name FROM works WHERE id=?1",
-            [work_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .unwrap_or_default())
+    let Some((media_id, dat_name)) = found else {
+        // No catalogued medium to point at. The canonical name is still worth
+        // carrying so the mark reads as something rather than nothing.
+        let canonical: String = conn
+            .query_row(
+                "SELECT canonical_name FROM works WHERE id=?1",
+                [work_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+        return Ok(ParentReference {
+            media_id: String::new(),
+            dat_name: canonical,
+        });
+    };
+    Ok(ParentReference { media_id, dat_name })
 }
 
 /// One tag decision, in the form that has to survive this database.
@@ -267,10 +287,10 @@ pub fn record_entry_mark(
         MarkDecision::Homebrew { name, .. } if !name.trim().is_empty() => name.to_owned(),
         _ => subject.display_name.clone(),
     };
-    let parent_dat_name = if parent_work_id.is_empty() {
-        String::new()
+    let parent = if parent_work_id.is_empty() {
+        ParentReference::default()
     } else {
-        work_lookup_name(conn, parent_work_id, &subject.platform_id)?
+        parent_reference(conn, parent_work_id, &subject.platform_id)?
     };
     let mark = retro_junk_archive::CollectionMark {
         schema_version: retro_junk_archive::marks::MARK_SCHEMA_VERSION,
@@ -278,8 +298,8 @@ pub fn record_entry_mark(
         platform_id: subject.platform_id,
         region: region.to_owned(),
         name,
-        parent_work_id: parent_work_id.to_owned(),
-        parent_dat_name,
+        parent_media_id: parent.media_id,
+        parent_dat_name: parent.dat_name,
         content: subject.content,
         chosen_media_id: String::new(),
         chosen_dat_name: String::new(),

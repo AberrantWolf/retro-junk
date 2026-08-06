@@ -294,17 +294,6 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                     })
                     .unwrap_or_else(|| "unknown".to_string());
 
-                // Convert hashes if available
-                let hashes =
-                    entry_ref
-                        .and_then(|e| e.hashes.as_ref())
-                        .map(|h| retro_junk_db::MediaHashes {
-                            crc32: h.crc32.clone(),
-                            sha1: h.sha1.clone(),
-                            md5: h.md5.clone(),
-                            file_size: h.data_size as i64,
-                        });
-
                 app.submit_store(
                     crate::backend::library_store::LibraryStoreRequest::CreateModdedAndTag {
                         entry_id,
@@ -316,7 +305,6 @@ fn show_mod_search_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
                         } else {
                             None
                         },
-                        hashes,
                         collection_root,
                     },
                     ctx,

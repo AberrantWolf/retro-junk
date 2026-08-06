@@ -1288,9 +1288,9 @@ fn describe_attention(attention: &retro_junk_backend::completion::Attention) -> 
             "{count} built playable(s) are not where their evidence says — adopt them by content \
              before building again"
         ),
-        Attention::BindingUnresolved { claimed } => format!(
-            "The archive names catalog entry {claimed}, which this machine does not have — \
-             import the catalog for this platform"
+        Attention::ContentUnmatched { carriers } => format!(
+            "{carriers} archived disc(s) match no entry in this machine's catalog — import a \
+             catalog that lists them, or mark them as content no catalog will ever have"
         ),
         Attention::MasterMissing { .. } => {
             "A preservation master the manifest records is missing from disk".to_owned()

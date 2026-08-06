@@ -89,8 +89,8 @@ const PLAYABLE_REPRESENTATION_TO_LIBRARY_ENTRY_JOIN: &str = "\
 /// This is the one definition of "this scanned playable file is an archived
 /// carrier's own copy". It deliberately says nothing about the catalog: an
 /// unbound archive still owns the playable its build evidence produced, and a
-/// carrier whose recorded catalog medium has been re-slugged by a later import
-/// must not lose its playable in the meantime.
+/// carrier no catalog on this machine can name must not lose its playable in
+/// the meantime.
 const ARCHIVE_BOUND_LIBRARY_ROWS: &str = "\
      SELECT binding.library_entry_id AS library_entry_id,
             binding.representation_id AS representation_id,
@@ -574,19 +574,18 @@ pub struct LibraryEntryBinding<'a> {
 /// using already-computed strong hashes. This does not make the library row
 /// authoritative and is safe to rebuild.
 ///
-/// Every id a caller hands in names a row this database may simply not have.
-/// Archive manifests travel between machines, and a catalog medium id is minted
-/// against the DAT version that was imported when the carrier was archived, so
-/// a manifest routinely names a medium this catalog never created. Storing that
-/// id anyway is refused outright by the foreign keys — failing the caller's
-/// whole run over one file — so each reference is resolved first and only what
-/// exists is written:
+/// Every id a caller hands in names a row this database may simply not have —
+/// a carrier from an archive this projection has not indexed yet, or a medium
+/// from a DAT this machine has not imported. Storing one anyway is refused
+/// outright by the foreign keys, which would fail the caller's whole run over
+/// one file, so each reference is resolved first and only what exists is
+/// written:
 ///
 /// - a carrier the projection does not hold yet means there is nothing to bind
 ///   to, so nothing is written (reindexing the archive will bind it);
 /// - the carrier row's own catalog medium wins over the caller's, because
-///   reindexing already re-derived it from digests when the manifest's id was
-///   one this catalog does not have;
+///   reindexing derived it from the archive's recorded digests, which is the
+///   more direct evidence;
 /// - with no carrier, the caller's medium is used if this catalog holds it.
 pub fn bind_library_entries_by_hash(
     conn: &Connection,
@@ -694,28 +693,39 @@ pub fn unbound_playable_rows(
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
 }
 
-/// Re-resolve a carrier's catalog medium from the digests its own evidence
-/// records, for archives whose recorded media id this machine's catalog does
-/// not have.
+/// Which catalog medium a carrier is, from the digests recorded beside it.
 ///
-/// Media ids encode the DAT release they were minted against, so they do not
-/// survive a re-import on another machine — which is the normal case for an
-/// archive written from more than one host. The digests do survive: a catalog
-/// verification records the complete ordered track set it matched. Feeding
-/// those back through the same complete-track rule recovers the binding
-/// without trusting the id.
+/// This is the only way a carrier gets a catalog identity. The archive names no
+/// catalog row anywhere — an id built from a game's title moved every time a
+/// title was corrected, and an archive written on one machine named rows a
+/// differently versioned import on another machine never created. The digests
+/// do not move, so they are asked instead, in order of how directly they answer
+/// the question:
 ///
-/// Deliberately conservative: only current, successful, complete-track-set
-/// evidence counts, and an ambiguous match resolves to nothing rather than
-/// guessing between candidates — unless a person has already chosen, which
-/// `chosen` carries.
-fn rederived_catalog_media(
+/// 1. The track set the carrier's own binding recorded, which is what the
+///    catalog agreed to when it was identified.
+/// 2. The track set a catalog verification recorded against a current dump.
+/// 3. The digests of a dump's single archived file — a cartridge, where the one
+///    file *is* the whole medium and there are no tracks to compare.
+///
+/// Deliberately conservative throughout: an ambiguous match resolves to nothing
+/// rather than guessing between candidates — unless a person has already
+/// chosen, which `chosen` carries.
+fn resolved_catalog_media(
     conn: &Connection,
     platform_id: &str,
     carrier: &retro_junk_archive::IndexedCarrier,
     chosen: &crate::disambiguation::Disambiguations,
 ) -> Result<Option<String>, OperationError> {
     let platform = catalog_platform_id(platform_id);
+
+    let recorded = &carrier.manifest.catalog_binding.expected_tracks;
+    if !recorded.is_empty()
+        && let Some(id) = matched_track_set(conn, &platform, recorded, carrier, chosen)?
+    {
+        return Ok(Some(id));
+    }
+
     for dump in &carrier.dumps {
         // One definition of "the archive calls this dump catalog-verified",
         // shared with every other consumer — including the shape rule that
@@ -731,18 +741,7 @@ fn rederived_catalog_media(
             {
                 continue;
             }
-            // A cartridge records no per-track digests — its one archived file
-            // is the whole dump. Match on what the manifest recorded for it.
             if evidence.tracks.is_empty() {
-                if let [file] = dump.manifest.files.as_slice()
-                    && let Some(id) = matched_single_file(conn, &platform, file)?
-                {
-                    log::info!(
-                        "Re-resolved carrier {} to catalog medium {id} from its recorded file digests",
-                        carrier.manifest.carrier_id
-                    );
-                    return Ok(Some(id));
-                }
                 continue;
             }
             let tracks = evidence
@@ -760,37 +759,68 @@ fn rederived_catalog_media(
             if tracks.len() != evidence.tracks.len() {
                 continue;
             }
-            match match_complete_catalog_media(conn, &platform, &tracks)?.as_slice() {
-                [matched] => {
-                    log::info!(
-                        "Re-resolved carrier {} to catalog medium {} from recorded track digests",
-                        carrier.manifest.carrier_id,
-                        matched.media_id
-                    );
-                    return Ok(Some(matched.media_id.clone()));
-                }
-                // Several catalog entries fit these bytes. The tool will not
-                // choose, but a person may already have — and their answer is
-                // kept beside the collection precisely so it survives this
-                // projection being rebuilt.
-                candidates if candidates.len() > 1 => {
-                    if let Some(chosen) = chosen.chosen_for_any(
-                        candidates.iter().map(|candidate| candidate.media_id.as_str()),
-                    ) {
-                        log::info!(
-                            "Carrier {} resolves to catalog medium {chosen}, chosen by hand from \
-                             {} possible entries",
-                            carrier.manifest.carrier_id,
-                            candidates.len()
-                        );
-                        return Ok(Some(chosen.to_owned()));
-                    }
-                }
-                _ => {}
+            if let Some(id) = matched_track_set(conn, &platform, &tracks, carrier, chosen)? {
+                return Ok(Some(id));
             }
         }
     }
+
+    // A cartridge has no tracks: its one archived file is the whole medium, and
+    // its digests are in the dump manifest whether or not anything ever ran a
+    // catalog pass over it.
+    for dump in &carrier.dumps {
+        if let [file] = dump.manifest.files.as_slice()
+            && let Some(id) = matched_single_file(conn, &platform, file)?
+        {
+            log::debug!(
+                "Carrier {} is catalog medium {id}, by its one archived file's digests",
+                carrier.manifest.carrier_id
+            );
+            return Ok(Some(id));
+        }
+    }
     Ok(None)
+}
+
+/// The catalog medium a complete ordered track set names, if exactly one does —
+/// or the one a person picked, when several fit.
+fn matched_track_set(
+    conn: &Connection,
+    platform: &str,
+    tracks: &[TrackDigest],
+    carrier: &retro_junk_archive::IndexedCarrier,
+    chosen: &crate::disambiguation::Disambiguations,
+) -> Result<Option<String>, OperationError> {
+    match match_complete_catalog_media(conn, platform, tracks)?.as_slice() {
+        [matched] => {
+            log::debug!(
+                "Carrier {} is catalog medium {}, by its recorded track digests",
+                carrier.manifest.carrier_id,
+                matched.media_id
+            );
+            Ok(Some(matched.media_id.clone()))
+        }
+        // Several catalog entries fit these bytes. The tool will not choose,
+        // but a person may already have — and their answer is kept beside the
+        // collection precisely so it survives this projection being rebuilt.
+        candidates if candidates.len() > 1 => {
+            if let Some(chosen) = chosen.chosen_for_any(
+                candidates
+                    .iter()
+                    .map(|candidate| candidate.media_id.as_str()),
+            ) {
+                log::info!(
+                    "Carrier {} resolves to catalog medium {chosen}, chosen by hand from {} \
+                     possible entries",
+                    carrier.manifest.carrier_id,
+                    candidates.len()
+                );
+                return Ok(Some(chosen.to_owned()));
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
 }
 
 /// The catalog medium one archived file's recorded digests name, if exactly
@@ -1033,56 +1063,17 @@ pub fn reconcile_archive_snapshot(
     )?;
 
     for release in &snapshot.releases {
-        let catalog_release = existing_id(
-            &tx,
-            "releases",
-            &release.manifest.catalog_binding.catalog_release_id,
-        )?;
-        let catalog_work = if release.manifest.catalog_binding.catalog_work_id.is_empty() {
-            catalog_release
-                .as_deref()
-                .map(|release_id| {
-                    tx.query_row(
-                        "SELECT work_id FROM releases WHERE id=?1",
-                        [release_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()
-                })
-                .transpose()?
-                .flatten()
-        } else {
-            existing_id(
-                &tx,
-                "works",
-                &release.manifest.catalog_binding.catalog_work_id,
-            )?
-        };
-        let claimed_release = release.manifest.catalog_binding.catalog_release_id.as_str();
-        let claimed_work = release.manifest.catalog_binding.catalog_work_id.as_str();
-        // "unresolved" is reserved for a real claim the catalog cannot
-        // resolve — the fix is a catalog import. A release whose manifest
-        // claims nothing is "unbound" — the fix is identification. The old
-        // projection collapsed both into "unresolved" by erasing the claim.
-        let binding_state = if catalog_release.is_some() {
-            "resolved"
-        } else if catalog_work.is_some() {
-            "carrier_resolved"
-        } else if !claimed_release.is_empty() || !claimed_work.is_empty() {
-            "unresolved"
-        } else {
-            "unbound"
-        };
+        // A release has no catalog identity of its own to read: its manifest
+        // describes what the archive holds, and the catalog identity comes up
+        // from its carriers once they have each resolved by content. That
+        // happens in `bind_releases_from_carriers`, after every carrier below
+        // has been projected — so the row starts unbound and is filled in.
         tx.execute(
-            "INSERT INTO archive_releases(id,profile_id,catalog_work_id,catalog_release_id,claimed_work_id,claimed_release_id,platform_id,title,region,revision,variant,manifest_path,manifest_sha256,binding_state)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            "INSERT INTO archive_releases(id,profile_id,catalog_work_id,catalog_release_id,platform_id,title,region,revision,variant,manifest_path,manifest_sha256,binding_state)
+             VALUES(?1,?2,NULL,NULL,?3,?4,?5,?6,?7,?8,?9,'unbound')",
             params![
                 release.manifest.archive_release_id.to_string(),
                 profile_id,
-                catalog_work,
-                catalog_release,
-                claimed_work,
-                claimed_release,
                 release.manifest.platform_id,
                 release.manifest.title,
                 release.manifest.region,
@@ -1090,7 +1081,6 @@ pub fn reconcile_archive_snapshot(
                 release.manifest.variant,
                 relative(&snapshot.root, &release.directory.join("release.toml")),
                 release.manifest_sha256,
-                binding_state,
             ],
         )?;
         for file in &release.supporting_files {
@@ -1152,38 +1142,28 @@ pub fn reconcile_archive_snapshot(
                 )?;
             }
             for carrier in &physical_copy.carriers {
-                let recorded = existing_id(
+                // Which catalog medium a carrier is comes from the digests the
+                // archive itself recorded, every time — never from an id
+                // written into the manifest. Ids used to be derived from the
+                // game's title, so an archive written on one machine named
+                // rows a differently versioned import on another machine never
+                // created; the digests are the same everywhere.
+                let (catalog_media, media_binding) = match resolved_catalog_media(
                     &tx,
-                    "media",
-                    &carrier.manifest.catalog_binding.catalog_media_id,
-                )?;
-                // A media id is deterministic but not portable: it is derived
-                // from the DAT release it was minted against, so an archive
-                // built on one machine binds carriers to ids a differently
-                // versioned import never creates. Rather than call the carrier
-                // unbound, re-resolve it from the digests the archive itself
-                // recorded — the same complete-track rule the binding used in
-                // the first place, so this can only reach the same answer.
-                let claimed_media = carrier.manifest.catalog_binding.catalog_media_id.as_str();
-                let (catalog_media, media_binding) = match recorded {
-                    Some(id) => (Some(id), "resolved"),
-                    None => {
-                        match rederived_catalog_media(&tx, &release.manifest.platform_id, carrier, &chosen)?
-                        {
-                            Some(id) => (Some(id), "rederived"),
-                            None if !claimed_media.is_empty() => (None, "unresolved"),
-                            None => (None, "unbound"),
-                        }
-                    }
+                    &release.manifest.platform_id,
+                    carrier,
+                    &chosen,
+                )? {
+                    Some(id) => (Some(id), "bound"),
+                    None => (None, "unbound"),
                 };
                 tx.execute(
-                    "INSERT INTO carriers(id,physical_copy_id,catalog_media_id,claimed_media_id,kind,serial,sequence_number,label,manifest_path,manifest_sha256,binding_state)
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                    "INSERT INTO carriers(id,physical_copy_id,catalog_media_id,kind,serial,sequence_number,label,manifest_path,manifest_sha256,binding_state)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                     params![
                         carrier.manifest.carrier_id.to_string(),
                         physical_copy.manifest.physical_copy_id.to_string(),
                         catalog_media,
-                        claimed_media,
                         carrier_kind_key(&carrier.manifest.kind),
                         carrier.manifest.serial,
                         carrier.manifest.sequence_number,
@@ -1426,7 +1406,7 @@ pub fn reconcile_archive_snapshot(
         }
     }
 
-    rebind_releases_from_resolved_carriers(&tx)?;
+    bind_releases_from_carriers(&tx)?;
     rebuild_library_entry_bindings(&tx)?;
     apply_archive_derivations(&tx, ArchiveEvidenceScope::All)?;
     // The user's own decisions, kept beside the collection because this
@@ -1437,6 +1417,71 @@ pub fn reconcile_archive_snapshot(
         &retro_junk_archive::collection_root_for(&snapshot.root, playable_root),
     )?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Give a release the catalog identity its own carriers proved by content.
+///
+/// This is how an archive release gets a catalog identity at all. Nothing on
+/// disk names one: a release manifest describes what the archive holds, and
+/// each carrier under it resolves to a catalog medium from its recorded
+/// digests. The release those media belong to is the release.
+///
+/// Only unanimity binds a release id. Carriers from different mastering
+/// records legitimately disagree — a boxed set whose discs came from two
+/// pressings is one owned thing but two catalog releases — and that case is
+/// bound at the work level instead, which is the honest answer rather than
+/// picking one of the two.
+fn bind_releases_from_carriers(conn: &Connection) -> Result<(), OperationError> {
+    let mut statement = conn.prepare(
+        "SELECT ar.id,
+                COUNT(DISTINCT m.release_id),
+                MIN(m.release_id),
+                COUNT(DISTINCT r.work_id),
+                MIN(r.work_id)
+         FROM archive_releases ar
+         JOIN physical_copies pc ON pc.archive_release_id=ar.id
+         JOIN carriers c ON c.physical_copy_id=pc.id
+         JOIN media m ON m.id=c.catalog_media_id
+         JOIN releases r ON r.id=m.release_id
+         WHERE ar.catalog_release_id IS NULL
+         GROUP BY ar.id",
+    )?;
+    let by_carriers = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for (archive_release_id, release_count, release_id, work_count, work_id) in by_carriers {
+        // One work, one release: the carriers describe a single mastering.
+        if release_count == 1 && work_count == 1 {
+            conn.execute(
+                "UPDATE archive_releases
+                 SET catalog_release_id=?1,catalog_work_id=?2,binding_state='bound'
+                 WHERE id=?3",
+                params![release_id, work_id, archive_release_id],
+            )?;
+            log::debug!(
+                "Archive release {archive_release_id} is catalog release {} by its carriers' content",
+                release_id.unwrap_or_default()
+            );
+        } else if work_count == 1 {
+            // Mixed masterings of one game: work-level is the honest answer.
+            conn.execute(
+                "UPDATE archive_releases
+                 SET catalog_work_id=?1,binding_state='bound'
+                 WHERE id=?2 AND catalog_work_id IS NULL",
+                params![work_id, archive_release_id],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -1453,74 +1498,6 @@ pub fn reconcile_archive_snapshot(
 // Three binding rules in one place, deliberately: what makes a scanned file an
 // archived carrier's own copy should be readable end to end.
 #[allow(clippy::too_many_lines)]
-/// Give a release the catalog identity its own carriers proved by content.
-///
-/// Catalog ids are derived from titles, so re-importing a DAT that retitled a
-/// game mints new ids and orphans every manifest bound to the old ones. A
-/// carrier recovers on its own — it re-resolves from the digests the archive
-/// recorded — but the release row above it kept pointing at an id that no
-/// longer exists, so a fully identified set of discs still read as
-/// unidentified.
-///
-/// This closes that gap the same way: the carriers agreed, by content, on
-/// which catalog media they are; the release those media belong to is the
-/// release. Only unanimity binds a release id — carriers from different
-/// mastering records legitimately disagree, and that case stays at the work
-/// level, exactly as `bind_carrier_to_catalog` decides it when the binding is
-/// first made.
-fn rebind_releases_from_resolved_carriers(conn: &Connection) -> Result<(), OperationError> {
-    let mut statement = conn.prepare(
-        "SELECT ar.id,
-                COUNT(DISTINCT m.release_id),
-                MIN(m.release_id),
-                COUNT(DISTINCT r.work_id),
-                MIN(r.work_id)
-         FROM archive_releases ar
-         JOIN physical_copies pc ON pc.archive_release_id=ar.id
-         JOIN carriers c ON c.physical_copy_id=pc.id
-         JOIN media m ON m.id=c.catalog_media_id
-         JOIN releases r ON r.id=m.release_id
-         WHERE ar.catalog_release_id IS NULL
-         GROUP BY ar.id",
-    )?;
-    let rederived = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, Option<String>>(4)?,
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-    drop(statement);
-    for (archive_release_id, release_count, release_id, work_count, work_id) in rederived {
-        // One work, one release: the carriers describe a single mastering.
-        if release_count == 1 && work_count == 1 {
-            conn.execute(
-                "UPDATE archive_releases
-                 SET catalog_release_id=?1,catalog_work_id=?2,binding_state='rederived'
-                 WHERE id=?3",
-                params![release_id, work_id, archive_release_id],
-            )?;
-            log::info!(
-                "Re-resolved archive release {archive_release_id} to catalog release {} from its carriers' content",
-                release_id.unwrap_or_default()
-            );
-        } else if work_count == 1 {
-            // Mixed masterings of one game: work-level is the honest answer.
-            conn.execute(
-                "UPDATE archive_releases
-                 SET catalog_work_id=?1,binding_state='carrier_resolved'
-                 WHERE id=?2 AND catalog_work_id IS NULL",
-                params![work_id, archive_release_id],
-            )?;
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn rebuild_library_entry_bindings(conn: &Connection) -> Result<(), OperationError> {
     conn.execute(
         "DELETE FROM library_entry_media_bindings
@@ -2279,6 +2256,28 @@ pub fn load_archive_collection_details(
     )
     .optional()
     .map_err(Into::into)
+}
+
+/// Which archive release each catalog release is held by, in one profile.
+///
+/// The manifests on disk name no catalog row, so this is where that mapping
+/// lives: the projection derived it from each release's carriers, by content.
+/// Callers that have a catalog release id and want the archived thing it stands
+/// for — adopting already-downloaded artwork, say — ask here rather than
+/// reading an id out of a manifest that no longer carries one.
+pub fn archive_releases_by_catalog_release(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<HashMap<String, String>, OperationError> {
+    let mut statement = conn.prepare(
+        "SELECT catalog_release_id,id FROM archive_releases
+         WHERE profile_id=?1 AND catalog_release_id IS NOT NULL",
+    )?;
+    let rows = statement.query_map([profile_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.collect::<Result<HashMap<_, _>, _>>()
+        .map_err(Into::into)
 }
 
 /// The candidate id, but only if `table` actually holds a row with it —

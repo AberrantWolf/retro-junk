@@ -40,6 +40,7 @@ fn ingest(
             carrier_kind: CarrierKind::Cartridge,
             format: RepresentationFormat::Rom,
             catalog_binding: CatalogBinding::default(),
+            join_release: None,
             source_package: SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -134,7 +135,14 @@ fn a_multi_track_master_is_catalog_verified_from_its_stored_tracks() {
 
     let rescanned = retro_junk_archive::scan_archive(&archive).unwrap();
     let carrier = &rescanned.releases[0].physical_copies[0].carriers[0];
-    assert_eq!(carrier.manifest.catalog_binding.catalog_media_id, "m1");
+    assert_eq!(
+        carrier.manifest.catalog_binding.dat_name, "Game",
+        "the carrier records what the catalog said, not a row id"
+    );
+    assert!(
+        !carrier.manifest.catalog_binding.expected_tracks.is_empty(),
+        "and the digests it matched on, which is what re-resolves it anywhere"
+    );
     // Verified against the whole ordered set, so it counts as a complete
     // match rather than "one track happened to line up".
     let evidence = retro_junk_archive::dump_catalog_evidence(&carrier.dumps[0]).unwrap();
@@ -279,7 +287,7 @@ fn catalog_file_verification_binds_unique_matches_and_refuses_ambiguity() {
 
     let rescanned = retro_junk_archive::scan_archive(&archive).unwrap();
     let carrier = &rescanned.releases[0].physical_copies[0].carriers[0];
-    assert_eq!(carrier.manifest.catalog_binding.catalog_media_id, "m1");
+    assert_eq!(carrier.manifest.catalog_binding.dat_name, "Game");
     assert!(retro_junk_archive::dump_catalog_verified(&carrier.dumps[0]));
 
     // A second identical catalog medium makes the match ambiguous: evidence
@@ -317,7 +325,10 @@ fn catalog_file_verification_binds_unique_matches_and_refuses_ambiguity() {
         .find(|release| release.manifest.title == "Other")
         .unwrap();
     let carrier = &other.physical_copies[0].carriers[0];
-    assert!(carrier.manifest.catalog_binding.catalog_media_id.is_empty());
+    assert!(
+        carrier.manifest.catalog_binding.dat_name.is_empty(),
+        "an ambiguous match binds nothing"
+    );
     assert!(!retro_junk_archive::dump_catalog_verified(
         &carrier.dumps[0]
     ));

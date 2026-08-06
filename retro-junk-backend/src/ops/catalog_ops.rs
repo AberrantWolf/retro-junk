@@ -517,22 +517,16 @@ pub fn cache_lists() -> (
     )
 }
 
-/// Answers: "which catalog media rows are byte-identical duplicates?" without
-/// changing anything. Read-only, but it walks the whole catalog, so it belongs
-/// off a render thread.
+/// Answers: "which catalog media claim to be the same edition while their
+/// bytes disagree?" Read-only, and there is nothing to apply — a byte-identical
+/// pair now shares one primary key, so only the genuine conflicts are left, and
+/// those are a person's call. It walks the whole catalog, so it belongs off a
+/// render thread.
 pub fn analyze_duplicates(
     db_path: &Path,
 ) -> Result<retro_junk_db::CatalogDeduplicationReport, String> {
     let connection = crate::queries::open_catalog(db_path)?;
     retro_junk_db::analyze_catalog_duplicates(&connection, None).map_err(|e| e.to_string())
-}
-
-/// Collapse byte-identical duplicate media onto one canonical row, repointing
-/// everything that referenced a duplicate. Returns the same report shape as
-/// [`analyze_duplicates`], describing what was actually merged.
-pub fn deduplicate(db_path: &Path) -> Result<retro_junk_db::CatalogDeduplicationReport, String> {
-    let connection = crate::queries::open_catalog(db_path)?;
-    retro_junk_db::deduplicate_catalog(&connection, None).map_err(|e| e.to_string())
 }
 
 /// One reviewer decision about a disagreement between catalog sources.

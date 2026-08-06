@@ -121,6 +121,7 @@ pub(crate) fn run_archive(
                 carrier_kind: carrier_kind_for_format(&parse_format(&format)?),
                 format: parse_format(&format)?,
                 catalog_binding: retro_junk_archive::CatalogBinding::default(),
+                join_release: None,
                 source_package: retro_junk_archive::SourcePackageRecord::default(),
                 expected_files: Vec::new(),
                 physical_copy_id: None,
@@ -600,6 +601,7 @@ fn run_import(
     if !frontend_asset_candidates.is_empty() {
         let adopted = adopt_imported_frontend_assets(
             &archive_root,
+            &connection,
             &snapshot,
             &frontend_asset_candidates,
             &cancelled,
@@ -748,6 +750,7 @@ fn prompt_line(prompt: &str) -> Result<String, CliError> {
 
 fn adopt_imported_frontend_assets(
     archive_root: &std::path::Path,
+    connection: &retro_junk_db::Connection,
     snapshot: &retro_junk_archive::ArchiveIndexSnapshot,
     candidates: &[(String, String, String, PathBuf)],
     cancelled: &AtomicBool,
@@ -765,17 +768,20 @@ fn adopt_imported_frontend_assets(
         AssetType::PhysicalMedia,
         AssetType::Miximage,
     ];
-    let releases = snapshot
-        .releases
-        .iter()
-        .filter_map(|release| {
-            let catalog_id = release.manifest.catalog_binding.catalog_release_id.trim();
-            (!catalog_id.is_empty()).then_some((catalog_id, release.manifest.archive_release_id))
-        })
-        .collect::<std::collections::HashMap<_, _>>();
+    // Which archive release holds which catalog release is the projection's
+    // answer, derived by content from each release's carriers. The manifests
+    // themselves name no catalog row.
+    let releases = retro_junk_db::archive::archive_releases_by_catalog_release(
+        connection,
+        &snapshot.manifest.profile_id.to_string(),
+    )
+    .map_err(|error| CliError::other(error.to_string()))?;
     let mut pending = Vec::new();
     for (catalog_release_id, platform_id, stem, media_root) in candidates {
-        let Some(&release_id) = releases.get(catalog_release_id.as_str()) else {
+        let Some(release_id) = releases
+            .get(catalog_release_id.as_str())
+            .and_then(|id| id.parse::<retro_junk_archive::ArchiveReleaseId>().ok())
+        else {
             continue;
         };
         for asset_type in TYPES {
@@ -1956,6 +1962,7 @@ mod tests {
                 carrier_kind: retro_junk_archive::CarrierKind::OpticalDisc,
                 format: RepresentationFormat::Iso,
                 catalog_binding: retro_junk_archive::CatalogBinding::default(),
+                join_release: None,
                 source_package: retro_junk_archive::SourcePackageRecord::default(),
                 expected_files: Vec::new(),
                 physical_copy_id: None,

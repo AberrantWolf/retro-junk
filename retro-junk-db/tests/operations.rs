@@ -202,9 +202,8 @@ fn media_upsert_and_find() {
     media.sha1 = "ea343f4e445a9050d4b4fbac2c77d0693b1d0922".to_string();
     upsert_media(&conn, &media).unwrap();
 
-    let found = find_media_by_dat_name(&conn, "Super Mario Bros. (USA).nes").unwrap();
-    assert!(found.is_some());
-    let m = found.unwrap();
+    let m = get_media_by_id(&conn, "smb1-nes-usa-v1").unwrap().unwrap();
+    assert_eq!(m.dat_name, "Super Mario Bros. (USA).nes");
     assert_eq!(m.crc32, "d445f698");
     // Unset fields round-trip as empty/zero defaults, not NULL.
     assert_eq!(m.md5, "");
@@ -367,19 +366,31 @@ fn set_and_clear_media_tag() {
     assert!(tag.is_none());
 }
 
+fn homebrew_hashes() -> MediaHashes {
+    MediaHashes {
+        crc32: "deadbeef".to_owned(),
+        sha1: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned()),
+        md5: None,
+        file_size: 262_144,
+    }
+}
+
 #[test]
 fn create_homebrew_work_creates_work_release_media() {
     let conn = open_memory().unwrap();
     let platform = test_platform();
     upsert_platform(&conn, &platform).unwrap();
 
-    let work_id = create_homebrew_work(&conn, "My Homebrew Game", "nes", "usa").unwrap();
+    let created =
+        create_homebrew_work(&conn, "My Homebrew Game", "nes", "usa", &homebrew_hashes()).unwrap();
 
     // Work should exist with homebrew tag
     let tag: Option<String> = conn
-        .query_row("SELECT tag FROM works WHERE id = ?1", [&work_id], |row| {
-            row.get(0)
-        })
+        .query_row(
+            "SELECT tag FROM works WHERE id = ?1",
+            [&created.work_id],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(tag.as_deref(), Some("homebrew"));
 
@@ -387,21 +398,61 @@ fn create_homebrew_work_creates_work_release_media() {
     let release_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM releases WHERE work_id = ?1",
-            [&work_id],
+            [&created.work_id],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(release_count, 1);
 
-    // Media should exist with homebrew tag
-    let media_tag: Option<String> = conn
+    // Media should exist with homebrew tag, and with the digests that name it —
+    // a row inserted without them could never be matched back to its file.
+    let (media_tag, sha1, size): (Option<String>, String, i64) = conn
         .query_row(
-            "SELECT m.tag FROM media m JOIN releases r ON m.release_id = r.id WHERE r.work_id = ?1",
-            [&work_id],
-            |row| row.get(0),
+            "SELECT m.tag,m.sha1,m.file_size FROM media m
+             JOIN releases r ON m.release_id = r.id WHERE r.work_id = ?1",
+            [&created.work_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
     assert_eq!(media_tag.as_deref(), Some("homebrew"));
+    assert_eq!(sha1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    assert_eq!(size, 262_144);
+}
+
+/// The same file marked as homebrew twice — here and on another machine —
+/// must land on the one row, because the id is folded from its digests.
+#[test]
+fn marking_the_same_homebrew_file_twice_lands_on_one_row() {
+    let conn = open_memory().unwrap();
+    upsert_platform(&conn, &test_platform()).unwrap();
+
+    let first =
+        create_homebrew_work(&conn, "My Homebrew Game", "nes", "usa", &homebrew_hashes()).unwrap();
+    let second =
+        create_homebrew_work(&conn, "My Homebrew Game", "nes", "usa", &homebrew_hashes()).unwrap();
+
+    assert_eq!(first.media_id, second.media_id);
+    assert_eq!(first.work_id, second.work_id);
+    let media_rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM media", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(media_rows, 1);
+}
+
+/// An unhashed file cannot be identified by anything that will still name it
+/// tomorrow, so it is refused rather than keyed on a name or the clock.
+#[test]
+fn homebrew_with_no_digests_is_refused() {
+    let conn = open_memory().unwrap();
+    upsert_platform(&conn, &test_platform()).unwrap();
+
+    let unhashed = MediaHashes {
+        crc32: String::new(),
+        sha1: None,
+        md5: None,
+        file_size: 0,
+    };
+    assert!(create_homebrew_work(&conn, "Nameless", "nes", "usa", &unhashed).is_err());
 }
 
 #[test]
@@ -416,7 +467,8 @@ fn create_modded_media_and_detach() {
     )
     .unwrap();
 
-    let media_id = create_modded_media(&conn, "nes:smb", "nes", "usa", None, None).unwrap();
+    let media_id =
+        create_modded_media(&conn, "nes:smb", "nes", "usa", None, &homebrew_hashes()).unwrap();
 
     // Media should exist with modded tag
     let tag: Option<String> = conn
@@ -450,7 +502,8 @@ fn create_modded_disc_media_records_selected_disc_number() {
     )
     .unwrap();
 
-    let media_id = create_modded_media(&conn, "game", "nes", "usa", Some(2), None).unwrap();
+    let media_id =
+        create_modded_media(&conn, "game", "nes", "usa", Some(2), &homebrew_hashes()).unwrap();
     let disc_number: u32 = conn
         .query_row(
             "SELECT disc_number FROM media WHERE id=?1",
@@ -460,5 +513,7 @@ fn create_modded_disc_media_records_selected_disc_number() {
         .unwrap();
 
     assert_eq!(disc_number, 2);
-    assert!(media_id.contains(":disc-2:"));
+    // The disc number is recorded on the row, not smuggled into its id: the id
+    // is folded from the file's digests and says nothing else.
+    assert!(media_id.starts_with("med_"));
 }

@@ -30,10 +30,11 @@ pub enum Identity {
     /// different mastering records of the same work, so no single catalog
     /// release describes the set.
     WorkBound { work_id: String },
-    /// The archive manifest on disk claims a catalog ID that the local
-    /// catalog cannot resolve. This is not "unbound" — the disk's claim is
-    /// preserved, and the fix is a catalog import, not re-identification.
-    BindingUnresolved { claimed: String },
+    /// The archive verified these bytes against a catalog, and no entry in
+    /// this machine's catalog matches them. Not "unbound" — the work was done
+    /// and came back empty. The fix is a catalog this content is actually in,
+    /// or accepting that nothing will ever list it.
+    ContentUnmatched,
     /// Weak evidence only (serial, header, or filename): we have a display
     /// name but no hash-verified catalog identity.
     Named { name: String },
@@ -48,9 +49,8 @@ impl Identity {
         match self {
             Self::Bound { release_id } => Some(release_id),
             Self::WorkBound { work_id } => Some(work_id),
-            Self::BindingUnresolved { claimed } => Some(claimed),
             Self::Named { name } => Some(name),
-            Self::Unknown => None,
+            Self::ContentUnmatched | Self::Unknown => None,
         }
     }
 }
@@ -62,9 +62,10 @@ pub enum UnknownReason {
     /// No catalog identity, so there is no expected count to measure
     /// against. Fix: identify against the catalog.
     NotCatalogBound,
-    /// The disk claims a catalog ID this machine's catalog lacks. Fix:
-    /// import (or re-import) the catalog for this platform.
-    BindingUnresolved,
+    /// The archive matched these bytes against a catalog, and this machine's
+    /// catalog has no entry with them. Fix: import a catalog that lists this
+    /// content, if one does.
+    ContentUnmatched,
     /// The catalog resolves the identity but lists no media for it, so
     /// there is no expected disc set to measure against. Fix: re-import
     /// the catalog for this platform.
@@ -79,8 +80,8 @@ impl UnknownReason {
             Self::NotCatalogBound => {
                 "No catalog identity yet — identify this release to set an expectation"
             }
-            Self::BindingUnresolved => {
-                "The archive names a catalog entry this machine doesn't have — import the catalog for this platform"
+            Self::ContentUnmatched => {
+                "No catalog on this machine lists these bytes — import a catalog that covers them"
             }
             Self::CatalogMissingMedia => {
                 "The catalog knows this release but lists no media for it — re-import the catalog for this platform"
@@ -170,6 +171,20 @@ impl Fraction {
     }
 }
 
+/// Carriers whose bytes a catalog verified, but which this machine's catalog
+/// cannot name.
+///
+/// The archive records that a catalog agreed with these bytes; the projection
+/// then re-derived which medium that was, from the same digests, and found no
+/// row. So the content is real and checked, and nothing here lists it.
+fn unmatched_carriers(facts: &retro_junk_db::facts::ReleaseFacts) -> u64 {
+    facts
+        .carriers
+        .iter()
+        .filter(|carrier| carrier.catalog_verified && carrier.catalog_media_id.is_none())
+        .count() as u64
+}
+
 /// An actionable problem attached to a release. Every variant names the fix
 /// as data, so frontends offer the action instead of describing the state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,9 +199,9 @@ pub enum Attention {
     /// Built playables are not where their evidence says. Fix: adopt (find
     /// them by content), never rebuild beside them.
     PlayableMissing { count: u64 },
-    /// The disk claims a catalog ID the local catalog lacks. Fix: import
-    /// the catalog for this platform.
-    BindingUnresolved { claimed: String },
+    /// The archive checked these bytes against a catalog and nothing matched.
+    /// Fix: import a catalog that lists this content.
+    ContentUnmatched { carriers: u64 },
     /// A preservation master the manifest records is missing or has the
     /// wrong size on disk.
     MasterMissing { carrier_id: String },
@@ -300,7 +315,7 @@ impl Identity {
             // The disk names a catalog entry this machine lacks. Nothing is
             // wrong with the file; we simply cannot judge it until the catalog
             // is imported, which is what "unmeasured" means.
-            Self::BindingUnresolved { .. } => Severity::Unmeasured,
+            Self::ContentUnmatched => Severity::Unmeasured,
             // A name with no hash-verified identity behind it is not a
             // weaker kind of known — it is unusable, because acting on it
             // would act on a guess.
@@ -384,7 +399,7 @@ impl Completion {
     pub fn overall(&self) -> Overall {
         match &self.identity {
             Identity::Unknown | Identity::Named { .. } => return Overall::Unidentified,
-            Identity::BindingUnresolved { .. } => return Overall::NeedsAttention,
+            Identity::ContentUnmatched => return Overall::NeedsAttention,
             Identity::Bound { .. } | Identity::WorkBound { .. } => {}
         }
         if !self.attention.is_empty() {
@@ -416,14 +431,12 @@ impl Completion {
             Identity::WorkBound {
                 work_id: work_id.clone(),
             }
-        } else if !facts.claimed_release_id.is_empty() {
-            Identity::BindingUnresolved {
-                claimed: facts.claimed_release_id.clone(),
-            }
-        } else if !facts.claimed_work_id.is_empty() {
-            Identity::BindingUnresolved {
-                claimed: facts.claimed_work_id.clone(),
-            }
+        } else if unmatched_carriers(facts) > 0 {
+            // Carriers whose dumps were checked against a catalog and matched,
+            // yet resolve to no row here: this machine's catalog does not list
+            // what these bytes are. That is a different problem from never
+            // having looked, and it has a different fix.
+            Identity::ContentUnmatched
         } else if facts.title.is_empty() {
             Identity::Unknown
         } else {
@@ -458,9 +471,7 @@ impl Completion {
             (Identity::Bound { .. } | Identity::WorkBound { .. }, None) => {
                 Fraction::Unknown(UnknownReason::CatalogMissingMedia)
             }
-            (Identity::BindingUnresolved { .. }, _) => {
-                Fraction::Unknown(UnknownReason::BindingUnresolved)
-            }
+            (Identity::ContentUnmatched, _) => Fraction::Unknown(UnknownReason::ContentUnmatched),
             (Identity::Named { .. } | Identity::Unknown, _) => {
                 Fraction::Unknown(UnknownReason::NotCatalogBound)
             }
@@ -481,9 +492,9 @@ impl Completion {
         let artwork = Fraction::known(artwork_have, expected_assets.types.len() as u64);
 
         let mut attention = Vec::new();
-        if let Identity::BindingUnresolved { claimed } = &identity {
-            attention.push(Attention::BindingUnresolved {
-                claimed: claimed.clone(),
+        if identity == Identity::ContentUnmatched {
+            attention.push(Attention::ContentUnmatched {
+                carriers: unmatched_carriers(facts),
             });
         }
         for carrier in &facts.carriers {

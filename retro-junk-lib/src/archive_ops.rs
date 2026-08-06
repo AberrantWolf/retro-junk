@@ -251,16 +251,17 @@ pub fn identify_archived_carriers(
                                     // conclusion about is left alone, whether
                                     // that conclusion bound a carrier or not.
                                     // The exception repairs an inconsistency:
-                                    // evidence says these bytes matched, but
-                                    // the carrier carries no media id, so the
-                                    // binding needs redoing.
+                                    // evidence says these bytes matched a
+                                    // catalog entry, but the carrier records
+                                    // nothing that entry said, so the binding
+                                    // needs redoing.
                                     IdentifySelection::StaleOnly => {
                                         !retro_junk_archive::dump_catalog_attempted(dump)
                                             || (retro_junk_archive::dump_catalog_verified(dump)
                                                 && carrier
                                                     .manifest
                                                     .catalog_binding
-                                                    .catalog_media_id
+                                                    .dat_name
                                                     .is_empty())
                                     }
                                 }
@@ -327,7 +328,7 @@ pub fn identify_archived_carriers(
                 }
                 let (outcome, catalog, detail) = match matches.as_slice() {
                     [catalog_match] => {
-                        bind_carrier(release, carrier, catalog_match, &audit.tracks)?;
+                        bind_carrier(conn, release, carrier, catalog_match, &audit.tracks)?;
                         report.identified += 1;
                         (
                             VerificationOutcome::Verified,
@@ -511,7 +512,7 @@ pub fn verify_catalog_files(
                 .map_err(ArchiveOpsError::msg)?;
         let (outcome, catalog, detail) = match matches.as_slice() {
             [catalog_match] => {
-                bind_carrier(release, carrier, catalog_match, &[])?;
+                bind_carrier(conn, release, carrier, catalog_match, &[])?;
                 report.identified += 1;
                 (
                     VerificationOutcome::Verified,
@@ -1336,15 +1337,13 @@ fn catalog_evidence(
 }
 
 fn bind_carrier(
+    conn: &retro_junk_db::Connection,
     release: &IndexedRelease,
     carrier: &IndexedCarrier,
     catalog_match: &retro_junk_db::CompleteCatalogMediaMatch,
     expected_tracks: &[TrackDigest],
 ) -> Result<(), ArchiveOpsError> {
     let binding = CatalogBinding {
-        catalog_work_id: catalog_match.work_id.clone(),
-        catalog_release_id: catalog_match.release_id.clone(),
-        catalog_media_id: catalog_match.media_id.clone(),
         source: catalog_match.source.clone(),
         dat_name: catalog_match.game.clone(),
         source_version: catalog_match.source_version.clone(),
@@ -1355,13 +1354,55 @@ fn bind_carrier(
         },
         expected_tracks: expected_tracks.to_vec(),
     };
+    let spans_masterings = release_spans_masterings(conn, release, carrier, catalog_match)?;
     retro_junk_archive::bind_carrier_to_catalog(
         &release.directory.join("release.toml"),
         &carrier.directory.join("carrier.toml"),
         &binding,
+        spans_masterings,
     )
     .map(|_| ())
     .map_err(ArchiveOpsError::msg)
+}
+
+/// Do this archive release's other carriers come from a different catalog
+/// release than the one just matched?
+///
+/// Discs of one set share a catalog release; a boxed set assembled from two
+/// pressings does not. Only the catalog can tell those apart, so this asks it:
+/// each sibling's recorded track set goes back through the same complete-track
+/// rule that identified it, and the release its medium belongs to is compared.
+/// A sibling with no recorded track set — a cartridge, or one never identified
+/// — says nothing either way and is passed over.
+fn release_spans_masterings(
+    conn: &retro_junk_db::Connection,
+    release: &IndexedRelease,
+    binding_carrier: &IndexedCarrier,
+    catalog_match: &retro_junk_db::CompleteCatalogMediaMatch,
+) -> Result<bool, ArchiveOpsError> {
+    for copy in &release.physical_copies {
+        for sibling in &copy.carriers {
+            if sibling.manifest.carrier_id == binding_carrier.manifest.carrier_id {
+                continue;
+            }
+            let tracks = &sibling.manifest.catalog_binding.expected_tracks;
+            if tracks.is_empty() {
+                continue;
+            }
+            let matches = retro_junk_db::match_complete_catalog_media(
+                conn,
+                &release.manifest.platform_id,
+                tracks,
+            )
+            .map_err(ArchiveOpsError::msg)?;
+            if let [sibling_match] = matches.as_slice()
+                && sibling_match.release_id != catalog_match.release_id
+            {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 fn append_reproduction_evidence(
@@ -1436,7 +1477,7 @@ fn verify_track_set(
             .map_err(ArchiveOpsError::msg)?;
     let (outcome, catalog, detail) = match matches.as_slice() {
         [catalog_match] => {
-            bind_carrier(release, carrier, catalog_match, &tracks)?;
+            bind_carrier(conn, release, carrier, catalog_match, &tracks)?;
             report.identified += 1;
             (
                 VerificationOutcome::Verified,

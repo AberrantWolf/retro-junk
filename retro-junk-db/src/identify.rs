@@ -283,7 +283,10 @@ pub fn decide(candidates: Vec<Candidate>, shape: &EvidenceShape<'_>) -> Identifi
             },
         },
         1 => {
-            let found = candidates.into_iter().next().unwrap_or_else(|| unreachable!());
+            let found = candidates
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| unreachable!());
             let hashed = shape.hashed_tracks;
             let total = shape.total_tracks.max(hashed);
             // Verified only when every track agreed *and* we hashed everything
@@ -340,7 +343,10 @@ pub fn identify(
         (partial_candidates(conn, evidence)?, false)
     } else {
         (
-            verified.into_iter().map(Candidate::from).collect::<Vec<_>>(),
+            verified
+                .into_iter()
+                .map(Candidate::from)
+                .collect::<Vec<_>>(),
             true,
         )
     };

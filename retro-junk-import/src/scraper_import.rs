@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use futures::stream::{self, StreamExt};
-use retro_junk_catalog::types::{Asset, AssetOwner, Company, Media, Release};
+use retro_junk_catalog::types::{Asset, AssetOwner, Media, Release};
 use retro_junk_core::Platform;
 use retro_junk_db::{operations, queries};
 use retro_junk_scraper::client::ScreenScraperClient;
@@ -43,7 +43,6 @@ const BATCH_SIZE: u32 = 500;
 /// Consecutive-error count that trips the circuit breaker and cancels the platform.
 const CIRCUIT_BREAKER_THRESHOLD: u32 = 15;
 
-use crate::slugify;
 use rusqlite::Connection;
 use thiserror::Error;
 use tokio::sync::mpsc::Sender;
@@ -972,34 +971,11 @@ fn find_or_create_company(
     name: &str,
     stats: &mut EnrichStats,
 ) -> Result<String, EnrichError> {
-    // Check if a company with this alias already exists
-    if let Some(company_id) = operations::find_company_by_alias(conn, name)? {
-        return Ok(company_id);
+    let found = crate::companies::find_or_create_company(conn, name)?;
+    if found.created {
+        stats.companies_created += 1;
     }
-
-    // Also check by exact company name
-    let slug = slugify(name);
-    let exists: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM companies WHERE id = ?1)",
-        [&slug],
-        |row| row.get(0),
-    )?;
-    if exists {
-        return Ok(slug);
-    }
-
-    // Create new company
-    let company = Company {
-        id: slug.clone(),
-        name: name.to_string(),
-        country: String::new(),
-        aliases: vec![name.to_string()],
-    };
-    operations::upsert_company(conn, &company)?;
-    stats.companies_created += 1;
-    log::debug!("Created new company: {name} ({slug})");
-
-    Ok(slug)
+    Ok(found.id)
 }
 
 /// A successfully downloaded asset ready for DB insertion.

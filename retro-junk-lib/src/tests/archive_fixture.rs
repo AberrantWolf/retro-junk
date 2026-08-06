@@ -60,6 +60,7 @@ pub fn archive_with_playable_at(
             carrier_kind: retro_junk_archive::CarrierKind::OpticalDisc,
             format: retro_junk_archive::RepresentationFormat::CueBin,
             catalog_binding: retro_junk_archive::CatalogBinding::default(),
+            join_release: None,
             source_package: retro_junk_archive::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,

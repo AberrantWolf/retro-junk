@@ -149,26 +149,32 @@ pub struct CollectionMark {
     pub region: String,
     /// Homebrew: the work's name. Modded: the label for the derived file.
     pub name: String,
-    /// The catalogued work a mod is derived from, so it can inherit that
-    /// work's identity and artwork instead of matching anything itself.
+    /// The catalogued medium a mod is derived from, so it can inherit that
+    /// game's identity and artwork instead of matching anything itself.
+    ///
+    /// A catalog media id is folded from the medium's own digests, so the same
+    /// bytes produce the same id on every machine that ever imports that DAT.
+    /// That is what makes this link portable, and why a mod names a medium
+    /// rather than a work: works are grouped by hand and their ids are minted
+    /// locally, while a medium simply *is* its bytes.
     ///
     /// Empty for homebrew, which has no parent.
     #[serde(default)]
-    pub parent_work_id: String,
-    /// The parent's DAT game name. Media ids are minted per DAT release and do
-    /// not survive a re-import elsewhere, so this is what actually carries the
-    /// link between machines; `parent_work_id` is the local shortcut.
+    pub parent_media_id: String,
+    /// What the parent is called, for reading and for the scraper's
+    /// filename-based lookup.
+    ///
+    /// Deliberately a label and nothing more: it is allowed to be stale or
+    /// wrong, and no resolution depends on it. `parent_media_id` carries the
+    /// link.
     #[serde(default)]
     pub parent_dat_name: String,
     pub content: MarkedContent,
-    /// Disambiguation: the catalog medium the user chose.
-    ///
-    /// Carried alongside `chosen_dat_name`, which is what survives a rebuild —
-    /// media ids are minted per DAT import and mean nothing on another
-    /// machine, exactly as `parent_dat_name` exists for mods.
+    /// Disambiguation: the catalog medium the user chose, by its content id.
     #[serde(default)]
     pub chosen_media_id: String,
-    /// The chosen entry's DAT name, which is the portable half of the choice.
+    /// What the chosen entry is called, for reading. A label, like
+    /// `parent_dat_name`; `chosen_media_id` is the choice.
     #[serde(default)]
     pub chosen_dat_name: String,
     #[serde(default)]

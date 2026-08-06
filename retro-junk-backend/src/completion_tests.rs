@@ -50,14 +50,13 @@ fn extra_evidence_beyond_what_is_expected_still_reads_complete() {
 }
 
 #[test]
-fn unresolved_binding_is_attention_not_unbound() {
-    // The old projection erased unresolvable bindings to NULL, making
-    // "your catalog is out of date" indistinguishable from "never
-    // identified". The fold must keep them apart.
+fn content_that_matches_nothing_is_attention_not_unidentified() {
+    // "A catalog checked these bytes and this machine lists none of them" is
+    // not the same as "nobody ever looked", and the fold must keep them apart:
+    // the first has a fix (get a catalog that covers it), the second has a
+    // different one (identify it).
     let mut completion = all_complete();
-    completion.identity = Identity::BindingUnresolved {
-        claimed: "psx:some-retitled-game:psx:usa".into(),
-    };
+    completion.identity = Identity::ContentUnmatched;
     assert_eq!(completion.overall(), Overall::NeedsAttention);
 
     completion.identity = Identity::Unknown;
@@ -108,7 +107,6 @@ mod fold {
             carrier_id: id.into(),
             physical_copy_id: copy.into(),
             catalog_media_id: Some(format!("media-{id}")),
-            claimed_media_id: format!("media-{id}"),
             disc_number: None,
             masters_recorded: 1,
             masters_present: 1,
@@ -126,8 +124,6 @@ mod fold {
             revision: String::new(),
             catalog_release_id: Some("psx:crash-team-racing:psx:usa".into()),
             catalog_work_id: Some("psx:crash-team-racing".into()),
-            claimed_release_id: "psx:crash-team-racing:psx:usa".into(),
-            claimed_work_id: String::new(),
             expected_discs: Some(ExpectedDiscs {
                 count: 1,
                 numbered: false,
@@ -147,11 +143,12 @@ mod fold {
 
     #[test]
     fn the_original_symptom_a_filename_titled_import_reads_unidentified_not_zero_of_zero() {
-        // A ReadyUnbound import: title is the source filename, no claims.
+        // A ReadyUnbound import: the title is the source filename, and nothing
+        // has ever been checked against a catalog.
         let mut unbound = facts();
         unbound.catalog_release_id = None;
         unbound.catalog_work_id = None;
-        unbound.claimed_release_id = String::new();
+        unbound.carriers[0].catalog_verified = false;
         let completion = Completion::for_release(&unbound, &no_assets());
         assert_eq!(
             completion.identity,
@@ -168,26 +165,27 @@ mod fold {
         assert!(completion.catalog.describe().contains("identify"));
     }
 
+    /// The archive verified this disc against a catalog. This machine's
+    /// catalog has no entry with those bytes — a different situation from
+    /// never having looked, and with a different fix.
     #[test]
-    fn a_claim_the_catalog_lacks_reads_as_unresolved_with_the_claim_preserved() {
-        let mut orphaned = facts();
-        orphaned.catalog_release_id = None;
-        orphaned.catalog_work_id = None;
-        // claimed_release_id stays — the manifest still names the old id.
-        let completion = Completion::for_release(&orphaned, &no_assets());
-        assert_eq!(
-            completion.identity,
-            Identity::BindingUnresolved {
-                claimed: "psx:crash-team-racing:psx:usa".into()
-            }
-        );
+    fn bytes_a_catalog_checked_and_this_machine_cannot_name_ask_for_attention() {
+        let mut unmatched = facts();
+        unmatched.catalog_release_id = None;
+        unmatched.catalog_work_id = None;
+        unmatched.carriers[0].catalog_media_id = None;
+        // catalog_verified stays true: the check happened and came back empty.
+        let completion = Completion::for_release(&unmatched, &no_assets());
+        assert_eq!(completion.identity, Identity::ContentUnmatched);
         assert_eq!(completion.overall(), Overall::NeedsAttention);
         assert!(
             completion
                 .attention
-                .contains(&Attention::BindingUnresolved {
-                    claimed: "psx:crash-team-racing:psx:usa".into()
-                })
+                .contains(&Attention::ContentUnmatched { carriers: 1 })
+        );
+        assert_eq!(
+            completion.catalog,
+            Fraction::Unknown(UnknownReason::ContentUnmatched)
         );
     }
 

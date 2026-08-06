@@ -389,20 +389,26 @@ fn show_editor(
             ui.end_row();
             ui.label("Catalog");
             if editor.catalog_release_id.is_empty() {
-                if editor.release_binding_state == "carrier_resolved" {
+                if editor.release_binding_state == "bound" {
+                    // Bound, but not to one release: the carriers matched media
+                    // from more than one mastering of the same game.
                     ui.label(format!(
-                        "{} · exact carrier matches (compatible masterings)",
+                        "{} · compatible masterings, matched per carrier",
                         editor.catalog_source
                     ));
                 } else {
-                    ui.colored_label(egui::Color32::YELLOW, &editor.release_binding_state);
+                    ui.colored_label(
+                        egui::Color32::YELLOW,
+                        "no catalog entry matches these bytes",
+                    );
                 }
             } else {
-                ui.label(format!(
-                    "{} · {}",
-                    editor.catalog_source, editor.release_binding_state
-                ))
-                .on_hover_text(&editor.catalog_release_id);
+                let source = if editor.catalog_source.is_empty() {
+                    "matched by content"
+                } else {
+                    editor.catalog_source.as_str()
+                };
+                ui.label(source).on_hover_text(&editor.catalog_release_id);
             }
             ui.end_row();
             ui.label("Carrier");
@@ -1237,6 +1243,12 @@ fn import_identification_label(
     }
 }
 
+/// One line describing a catalog entry the user is choosing between.
+///
+/// The DAT's own name for the game leads, because that is what a person
+/// recognises. The medium's id trails it: folded from that medium's digests, it
+/// is the same string on every machine, so it is worth reading out loud, and
+/// worth pasting into a mod configuration or a bug report.
 fn catalog_candidate_label(candidate: &retro_junk_archive_import::CatalogCandidate) -> String {
     let mut qualifiers = [
         candidate.platform_id.as_str(),
@@ -1253,7 +1265,7 @@ fn catalog_candidate_label(candidate: &retro_junk_archive_import::CatalogCandida
         qualifiers.push(format!("disc {}", candidate.sequence_number));
     }
     qualifiers.push(candidate.source.clone());
-    qualifiers.push(format!("release {}", candidate.release_id));
+    qualifiers.push(candidate.media_id.clone());
     format!("{} · {}", candidate.title, qualifiers.join(" · "))
 }
 

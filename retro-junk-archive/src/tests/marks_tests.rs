@@ -7,7 +7,7 @@ fn mark(kind: MarkKind, name: &str, sha1: &str) -> CollectionMark {
         platform_id: "nes".to_owned(),
         region: "usa".to_owned(),
         name: name.to_owned(),
-        parent_work_id: String::new(),
+        parent_media_id: String::new(),
         parent_dat_name: String::new(),
         content: MarkedContent {
             size: 262_144,

@@ -162,28 +162,37 @@ pub enum CarrierKind {
     Other(String),
 }
 
+/// What a catalog said about an archived carrier when it was identified.
+///
+/// This is a *description*, not a pointer. It records which catalog agreed,
+/// which version of it, what that catalog called the game, and the digests it
+/// matched — enough for any machine to find the same entry again by content.
+/// It deliberately holds no catalog row ids: those were derived from the
+/// game's title, so correcting a title orphaned every manifest that named the
+/// old one, and an archive written on one machine bound to ids a differently
+/// versioned import on another machine never created.
+///
+/// Only the digests and the archived bytes themselves are authoritative.
+/// Nothing here is load-bearing on its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CatalogBinding {
-    /// Stable work-level identity shared by compatible releases/masterings.
-    ///
-    /// A logical owned release may contain individually verified carriers
-    /// whose catalog release IDs differ. In that case the release manifest
-    /// keeps this work ID while `catalog_release_id` remains empty; each
-    /// carrier retains its exact release/media binding.
-    #[serde(default)]
-    pub catalog_work_id: String,
-    #[serde(default)]
-    pub catalog_release_id: String,
-    #[serde(default)]
-    pub catalog_media_id: String,
+    /// Which catalog agreed — "redump", "no-intro".
     #[serde(default)]
     pub source: String,
+    /// What that catalog calls the game.
+    ///
+    /// Deliberately redundant and non-authoritative: it exists so a person
+    /// reading the manifest can tell what this is, and it is safe for it to be
+    /// wrong or stale. Re-identification runs off the digests, never this.
     #[serde(default)]
     pub dat_name: String,
     #[serde(default)]
     pub source_version: String,
     #[serde(default)]
     pub serials: Vec<String>,
+    /// The complete ordered track set the catalog matched, where the medium
+    /// has tracks. Empty for a cartridge, whose one archived file is the whole
+    /// medium — its digests live in the dump manifest instead.
     #[serde(default)]
     pub expected_tracks: Vec<TrackDigest>,
 }

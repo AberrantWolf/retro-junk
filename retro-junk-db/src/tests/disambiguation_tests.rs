@@ -66,7 +66,7 @@ fn a_disambiguation_does_not_clobber_another_decision_about_the_same_file() {
         platform_id: "ps1".to_owned(),
         region: "japan".to_owned(),
         name: "Game".to_owned(),
-        parent_work_id: String::new(),
+        parent_media_id: String::new(),
         parent_dat_name: String::new(),
         content: subject.clone(),
         chosen_media_id: String::new(),

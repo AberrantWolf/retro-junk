@@ -90,22 +90,39 @@ impl ActionKind {
     }
 }
 
+impl ActionKind {
+    /// Every spelling that names this kind, the canonical one first.
+    ///
+    /// One list, read by both the parser below and anything that offers the
+    /// choices to a person — the CLI's `--only` and its help text. Two lists
+    /// would eventually disagree about what is valid, and the way that shows
+    /// up is a documented spelling being rejected.
+    #[must_use]
+    pub fn spellings(self) -> &'static [&'static str] {
+        match self {
+            Self::VerifyIntegrity => &["verify_integrity", "verify-integrity", "integrity"],
+            Self::VerifyCatalog => &["verify_catalog", "verify-catalog", "catalog"],
+            Self::AuditRedumper => &["audit_redumper", "audit-redumper", "audit"],
+            Self::AdoptPlayable => &["adopt_playable", "adopt-playable", "adopt"],
+            Self::BuildPlayable => &["build", "build_playable"],
+            Self::RenamePlayable => &["rename_playable", "rename-playable", "rename"],
+            Self::Scrape => &["scrape", "artwork"],
+            Self::ProjectAssets => &["project_assets", "project"],
+            Self::SyncGamelist => &["sync_gamelist", "gamelist"],
+        }
+    }
+}
+
 impl std::str::FromStr for ActionKind {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "verify_integrity" | "verify-integrity" | "integrity" => Ok(Self::VerifyIntegrity),
-            "verify_catalog" | "verify-catalog" | "catalog" => Ok(Self::VerifyCatalog),
-            "audit_redumper" | "audit-redumper" | "audit" => Ok(Self::AuditRedumper),
-            "adopt_playable" | "adopt-playable" | "adopt" => Ok(Self::AdoptPlayable),
-            "build" | "build_playable" => Ok(Self::BuildPlayable),
-            "rename_playable" | "rename-playable" | "rename" => Ok(Self::RenamePlayable),
-            "scrape" | "artwork" => Ok(Self::Scrape),
-            "project_assets" | "project" => Ok(Self::ProjectAssets),
-            "sync_gamelist" | "gamelist" => Ok(Self::SyncGamelist),
-            other => Err(format!("unknown action kind '{other}'")),
-        }
+        let spelling = value.trim().to_ascii_lowercase();
+        Self::all()
+            .iter()
+            .copied()
+            .find(|kind| kind.spellings().contains(&spelling.as_str()))
+            .ok_or_else(|| format!("unknown action kind '{spelling}'"))
     }
 }
 

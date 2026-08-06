@@ -20,7 +20,6 @@ enum Action {
     FetchCache(CacheKind),
     ClearCache(CacheKind),
     AnalyzeDuplicates,
-    ApplyDuplicates,
 }
 
 pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
@@ -77,8 +76,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             }
             Action::FetchCache(kind) => catalog_ops::run_cache_fetch(app, &ctx, kind),
             Action::ClearCache(kind) => catalog_ops::run_cache_clear(app, &ctx, kind),
-            Action::AnalyzeDuplicates => run_duplicate_cleanup(app, false),
-            Action::ApplyDuplicates => run_duplicate_cleanup(app, true),
+            Action::AnalyzeDuplicates => run_duplicate_analysis(app),
         }
     }
 }
@@ -89,9 +87,11 @@ fn show_deduplicate_card(
     busy: bool,
     action: &mut Option<Action>,
 ) {
-    card(ui, "Repair duplicate catalog records", |ui| {
+    card(ui, "Catalog entries that contradict each other", |ui| {
         ui.label(
-            "Analyze exact media duplicates and every catalog/archive/library reference. Analysis never changes data.",
+            "Find media that claim to be the same edition of the same release while their bytes \
+             disagree. Byte-identical copies cannot exist any more — they share one id — so what \
+             turns up here is a real conflict for you to judge. Nothing is changed.",
         );
         if ui
             .add_enabled(!busy, egui::Button::new("Analyze duplicates"))
@@ -101,30 +101,21 @@ fn show_deduplicate_card(
         }
         if let Some(report) = &app.ui_state.tools_state.data.deduplication_report {
             ui.label(format!(
-                "{} exact group(s), {} affected reference(s), {} suspected non-identical group(s)",
-                report.exact_groups.len(),
-                report.affected_references,
-                report.suspected_groups
+                "{} group(s) that claim to be the same but are not",
+                report.suspected_groups.len()
             ));
-            for group in report.exact_groups.iter().take(8) {
+            for group in report.suspected_groups.iter().take(8) {
                 ui.weak(format!(
-                    "{} ← {}",
-                    group.canonical_media_id,
-                    group.duplicate_media_ids.join(", ")
+                    "{}: {}",
+                    group.platform_id,
+                    group.media_ids.join(", ")
                 ));
-            }
-            if !report.exact_groups.is_empty()
-                && ui
-                    .add_enabled(!busy, egui::Button::new("Confirm and apply exact cleanup"))
-                    .clicked()
-            {
-                *action = Some(Action::ApplyDuplicates);
             }
         }
     });
 }
 
-fn run_duplicate_cleanup(app: &mut RetroJunkApp, apply: bool) {
+fn run_duplicate_analysis(app: &mut RetroJunkApp) {
     let Some(path) = app.db_path.clone() else {
         app.push_error(
             "Catalog cleanup",
@@ -132,11 +123,7 @@ fn run_duplicate_cleanup(app: &mut RetroJunkApp, apply: bool) {
         );
         return;
     };
-    let result = if apply {
-        retro_junk_backend::ops::catalog_ops::deduplicate(&path)
-    } else {
-        retro_junk_backend::ops::catalog_ops::analyze_duplicates(&path)
-    };
+    let result = retro_junk_backend::ops::catalog_ops::analyze_duplicates(&path);
     match result {
         Ok(report) => app.ui_state.tools_state.data.deduplication_report = Some(report),
         Err(error) => app.push_error("Catalog cleanup", error),

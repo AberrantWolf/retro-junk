@@ -314,12 +314,11 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
             carrier_kind: retro_junk_archive::CarrierKind::Cartridge,
             format: retro_junk_archive::RepresentationFormat::Rom,
             catalog_binding: retro_junk_archive::CatalogBinding {
-                catalog_release_id: "release-game".to_owned(),
-                catalog_media_id: "media-game".to_owned(),
                 source: "no-intro".to_owned(),
                 dat_name: "Game".to_owned(),
                 ..Default::default()
             },
+            join_release: None,
             source_package: retro_junk_archive::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -402,7 +401,7 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
             .unwrap();
     assert_eq!(details.title, "Game");
     assert_eq!(details.catalog_source, "no-intro");
-    assert_eq!(details.release_binding_state, "resolved");
+    assert_eq!(details.release_binding_state, "bound");
     let binding: (String, Option<String>, String) = conn
         .query_row(
             "SELECT catalog_media_id,representation_id,match_method FROM library_entry_media_bindings WHERE library_entry_id=1",
@@ -913,12 +912,11 @@ fn archive_verified_playable(
             format: retro_junk_archive::RepresentationFormat::Rom,
             // Deliberately unresolvable: this machine has no catalog rows.
             catalog_binding: retro_junk_archive::CatalogBinding {
-                catalog_release_id: "missing-release".to_owned(),
-                catalog_media_id: "missing-media".to_owned(),
                 source: "no-intro".to_owned(),
                 dat_name: catalog_game.to_owned(),
                 ..Default::default()
             },
+            join_release: None,
             source_package: retro_junk_archive::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -1266,6 +1264,7 @@ fn a_multi_disc_row_owns_every_archived_disc_in_its_playlist_directory() {
                 carrier_kind: retro_junk_archive::CarrierKind::OpticalDisc,
                 format: retro_junk_archive::RepresentationFormat::Iso,
                 catalog_binding: retro_junk_archive::CatalogBinding::default(),
+                join_release: None,
                 source_package: retro_junk_archive::SourcePackageRecord::default(),
                 expected_files: Vec::new(),
                 physical_copy_id,
@@ -2002,15 +2001,15 @@ fn a_rebuilt_playable_projects_its_newest_build_instead_of_failing_the_reindex()
     assert_eq!(rows, 1);
 }
 
-/// A media id encodes the DAT release it was minted against, so an archive
-/// written on one machine binds carriers to ids a differently versioned import
-/// on another machine never creates. Verified on the reference archive
-/// 2026-07-31: 201 of 248 carriers read as `unresolved` after a full local
-/// import, which in turn hid every catalog-derived binding behind them. The
-/// digests the archive recorded do survive the trip, so the projection
-/// re-resolves from those rather than trusting the id.
+/// A carrier's catalog identity comes from the digests recorded beside it and
+/// nothing else. Manifests name no catalog row, because an id built from a
+/// title moved whenever a title was corrected, and an archive written on one
+/// machine named rows a differently versioned import on another machine never
+/// created. Verified on the reference archive 2026-07-31: 201 of 248 carriers
+/// read as unbound when the id was trusted, which in turn hid every
+/// catalog-derived binding behind them.
 #[test]
-fn a_carrier_whose_recorded_media_id_is_absent_re_resolves_from_its_track_digests() {
+fn a_carrier_resolves_to_its_catalog_medium_from_its_recorded_track_digests() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("archive");
     let playable_root = temp.path().join("playable");
@@ -2066,11 +2065,11 @@ fn a_carrier_whose_recorded_media_id_is_absent_re_resolves_from_its_track_digest
     assert_eq!(
         media.as_deref(),
         Some("rel:rebound-game-usa-nes"),
-        "the carrier re-resolves from the digests it recorded"
+        "the carrier resolves from the digests it recorded"
     );
     assert_eq!(
-        state, "rederived",
-        "and says so, rather than claiming the recorded id resolved"
+        state, "bound",
+        "there is one bound state, because there is one way to bind"
     );
 }
 
@@ -2156,7 +2155,7 @@ fn a_round_trip_verified_disc_adopts_its_catalog_digests_without_a_second_read()
         [],
     )
     .unwrap();
-    bind_carrier_to_media(&root, "Disc Game", "med");
+    record_carrier_track_digests(&root, "Disc Game", 652_028_496, "a2aee128");
 
     let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
     retro_junk_db::reconcile_archive_snapshot(
@@ -2202,8 +2201,10 @@ fn set_build_flags(root: &std::path::Path, title: &str, output_sha256: &str) {
     }
 }
 
-/// Point `title`'s carrier at a catalog medium in its portable manifest.
-fn bind_carrier_to_media(root: &std::path::Path, title: &str, media_id: &str) {
+/// Record on `title`'s carrier the track digests a catalog matched it on. This
+/// is the whole of what a carrier says about its catalog identity — there is no
+/// row id in a manifest to point at one.
+fn record_carrier_track_digests(root: &std::path::Path, title: &str, size: u64, sha1: &str) {
     let snapshot = retro_junk_archive::scan_archive(root).unwrap();
     let carrier = snapshot
         .releases
@@ -2212,7 +2213,13 @@ fn bind_carrier_to_media(root: &std::path::Path, title: &str, media_id: &str) {
         .map(|release| &release.physical_copies[0].carriers[0])
         .unwrap();
     let mut manifest = carrier.manifest.clone();
-    media_id.clone_into(&mut manifest.catalog_binding.catalog_media_id);
+    manifest.catalog_binding.expected_tracks = vec![retro_junk_archive::TrackDigest {
+        number: 1,
+        size,
+        crc32: String::new(),
+        md5: String::new(),
+        sha1: sha1.to_owned(),
+    }];
     retro_junk_archive::write_toml_atomic(&carrier.directory.join("carrier.toml"), &manifest)
         .unwrap();
 }
@@ -2291,7 +2298,7 @@ fn applying_a_homebrew_mark_rebuilds_its_catalog_rows_and_claims_its_file() {
         platform_id: "gb".to_owned(),
         region: "usa".to_owned(),
         name: "Finchy Quest".to_owned(),
-        parent_work_id: String::new(),
+        parent_media_id: String::new(),
         parent_dat_name: String::new(),
         content: retro_junk_archive::MarkedContent {
             size: 262_144,
@@ -2332,10 +2339,11 @@ fn applying_a_homebrew_mark_rebuilds_its_catalog_rows_and_claims_its_file() {
     assert_eq!(works, 1);
 }
 
-/// A mod's parent is resolved by DAT name, because media ids are minted per
-/// DAT release and do not survive a re-import elsewhere. A machine whose
-/// catalog lacks that DAT keeps the decision rather than manufacturing an
-/// orphan work for it, and it resolves once the DAT arrives.
+/// A mod names its parent by that parent's catalog media id — folded from the
+/// parent's own digests, so it means the same thing on every machine that
+/// imports the same DAT. A machine whose catalog lacks that DAT keeps the
+/// decision rather than manufacturing an orphan work for it, and it resolves
+/// the moment the DAT arrives.
 #[test]
 fn a_mod_waits_for_the_parent_dat_instead_of_inventing_one() {
     let temp = tempfile::tempdir().unwrap();
@@ -2352,7 +2360,7 @@ fn a_mod_waits_for_the_parent_dat_instead_of_inventing_one() {
         platform_id: "nes".to_owned(),
         region: "usa".to_owned(),
         name: "Castlevania II (Fan Enhancement)".to_owned(),
-        parent_work_id: String::new(),
+        parent_media_id: "med".to_owned(),
         parent_dat_name: "Castlevania II - Simon's Quest (USA)".to_owned(),
         content: retro_junk_archive::MarkedContent {
             size: 262_144,
@@ -2400,13 +2408,15 @@ fn a_mod_waits_for_the_parent_dat_instead_of_inventing_one() {
     );
 }
 
-/// A DAT that retitles a game mints new catalog ids on the next import, and
-/// every archive manifest bound to the old ids is orphaned. The carrier
-/// recovers on its own by re-resolving from the digests the archive recorded;
-/// the release above it must recover too, or a fully identified set of discs
-/// still reads as unidentified with no way to say why.
+/// A DAT that retitles a game used to mint a whole new set of catalog ids on
+/// the next import, orphaning every archive manifest bound to the old ones.
+/// Manifests carry no catalog ids at all now, so a retitle is a relabel: the
+/// carrier resolves from the digests the archive recorded, and the release
+/// above it takes the identity its carriers proved. Without that second step a
+/// fully identified set of discs still reads as unidentified, with no way to
+/// say why.
 #[test]
-fn a_retitled_catalog_rebinds_the_release_from_its_carriers_content() {
+fn a_release_takes_the_catalog_identity_its_carriers_prove_by_content() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("archive");
     retro_junk_archive::initialize_archive(
@@ -2433,15 +2443,14 @@ fn a_retitled_catalog_rebinds_the_release_from_its_carriers_content() {
             carrier_label: String::new(),
             carrier_kind: retro_junk_archive::CarrierKind::Cartridge,
             format: retro_junk_archive::RepresentationFormat::Rom,
-            // Bound against catalog ids minted from the old title.
+            // Identified when the catalog still used the old title. The name
+            // is all the manifest keeps, and it is allowed to be stale.
             catalog_binding: retro_junk_archive::CatalogBinding {
-                catalog_work_id: "nes:game".to_owned(),
-                catalog_release_id: "nes:game:nes:usa".to_owned(),
-                catalog_media_id: "nes:game:nes:usa:1".to_owned(),
                 source: "no-intro".to_owned(),
                 dat_name: "Game".to_owned(),
                 ..Default::default()
             },
+            join_release: None,
             source_package: retro_junk_archive::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
@@ -2522,21 +2531,17 @@ fn a_retitled_catalog_rebinds_the_release_from_its_carriers_content() {
     assert_eq!(
         release_id.as_deref(),
         Some("nes:game-the-adventure:nes:usa"),
-        "the release did not recover the identity its carrier proved by content"
+        "the release did not take the identity its carrier proved by content"
     );
     assert_eq!(work_id.as_deref(), Some("nes:game-the-adventure"));
-    assert_eq!(state, "rederived");
+    assert_eq!(state, "bound");
 
-    // And the claim the manifest still makes is preserved, so the difference
-    // between "recovered" and "never identified" stays visible.
-    let claimed: String = conn
-        .query_row(
-            "SELECT claimed_release_id FROM archive_releases WHERE id=?1",
-            [archive_release_id.as_str()],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(claimed, "nes:game:nes:usa");
+    // The stale name on disk is untouched and harmless: it is a label, and
+    // nothing resolved through it.
+    assert_eq!(
+        snapshot.releases[0].manifest.catalog_binding.dat_name,
+        "Game"
+    );
 }
 
 /// An archive can already contain two live build records claiming one
@@ -2574,6 +2579,7 @@ fn two_live_builds_claiming_one_representation_project_the_newer() {
             carrier_kind: retro_junk_archive::CarrierKind::OpticalDisc,
             format: retro_junk_archive::RepresentationFormat::CueBin,
             catalog_binding: retro_junk_archive::CatalogBinding::default(),
+            join_release: None,
             source_package: retro_junk_archive::SourcePackageRecord::default(),
             expected_files: Vec::new(),
             physical_copy_id: None,
