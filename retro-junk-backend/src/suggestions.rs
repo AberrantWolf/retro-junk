@@ -216,6 +216,9 @@ fn apply_scrape(
         owner: ctx.owner.clone(),
         lock: ctx.lock,
         reconcile: ctx.reconcile,
+        // Its own scan: this context outlives one action, and the caller's
+        // scan is not ours to share or to invalidate.
+        archive: crate::executor::ArchiveScan::default(),
     };
     // The archive lock is taken by `execute_action`, exactly as for a derived
     // scrape; applying is the same action with the review already done.

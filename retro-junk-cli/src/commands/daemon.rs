@@ -97,6 +97,7 @@ fn run_start(
         owner: ExecContext::owner_string("daemon"),
         lock: LockEtiquette::DaemonFailFast,
         reconcile: ReconcileMode::AtBatchEnd,
+        archive: retro_junk_backend::ArchiveScan::default(),
     };
     daemon::write_pid_file()?;
     let cancelled = Arc::new(AtomicBool::new(false));

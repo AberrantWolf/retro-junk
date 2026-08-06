@@ -7,8 +7,8 @@
 //! orchestrations own behavior, evidence, and idempotence.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use retro_junk_db::convergence::{ActionKind, ProposedAction, WorkTarget};
@@ -77,6 +77,22 @@ pub enum ReconcileMode {
     AtBatchEnd,
 }
 
+/// The archive as this run last saw it, walked at most once until something
+/// changes it.
+///
+/// Walking the archive is the most expensive thing a short action does, and
+/// most actions need it only to find the one release they are about. The
+/// projection stage dispatches two actions per release, so a library of three
+/// hundred releases used to pay for six hundred complete walks of whatever the
+/// archive is stored on — for a USB or network volume, almost the entire run.
+///
+/// So the walk happens once and every action reads the same result. Anything
+/// that changes the archive throws it away ([`ExecContext::archive_changed`]),
+/// because a scan that outlived a mutation would hand the next action a tree
+/// that no longer exists.
+#[derive(Default)]
+pub struct ArchiveScan(Mutex<Option<Arc<retro_junk_archive::ArchiveIndexSnapshot>>>);
+
 /// Everything an execution needs besides the action itself.
 pub struct ExecContext {
     pub profile: retro_junk_archive::CollectionProfile,
@@ -89,6 +105,9 @@ pub struct ExecContext {
     pub owner: String,
     pub lock: LockEtiquette,
     pub reconcile: ReconcileMode,
+    /// Shared scan for this run. Build it with `ArchiveScan::default()`; it
+    /// fills itself the first time an action asks. See [`ArchiveScan`].
+    pub archive: ArchiveScan,
 }
 
 impl ExecContext {
@@ -101,6 +120,67 @@ impl ExecContext {
             .unwrap_or_else(|| "local".to_owned());
         format!("{host}:{}:{role}", std::process::id())
     }
+
+    /// The archive, walking it only if this run has not already.
+    ///
+    /// Every caller gets the same snapshot, so asking twice is free and no
+    /// action has to thread one down from its caller to avoid a second walk.
+    pub fn archive(&self) -> Result<Arc<retro_junk_archive::ArchiveIndexSnapshot>, WorkError> {
+        let mut held = self
+            .archive
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(snapshot) = held.as_ref() {
+            return Ok(Arc::clone(snapshot));
+        }
+        let snapshot = Arc::new(
+            retro_junk_archive::scan_archive(&self.profile.archive_root).map_err(WorkError::msg)?,
+        );
+        *held = Some(Arc::clone(&snapshot));
+        Ok(snapshot)
+    }
+
+    /// A scan taken now, whatever this run last saw, which then becomes the
+    /// shared one.
+    ///
+    /// For refreshing the projection, which is the act of writing down what is
+    /// on disk *at this moment*. That happens straight after the action that
+    /// changed the archive and before the run has marked the old scan stale, so
+    /// accepting a cached answer there would record the archive as it used to
+    /// be. Handing the fresh scan back to the cache means the next action does
+    /// not walk the tree again for it.
+    pub fn rescan_archive(
+        &self,
+    ) -> Result<Arc<retro_junk_archive::ArchiveIndexSnapshot>, WorkError> {
+        self.archive_changed();
+        self.archive()
+    }
+
+    /// Forget the scan: the archive on disk is no longer what it described.
+    pub fn archive_changed(&self) {
+        *self
+            .archive
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
+/// Does running this leave the archive different from how a scan last found
+/// it?
+///
+/// Only the two projection kinds do not: they write into the frontend's media
+/// tree and its gamelists, which are downstream of the archive rather than
+/// part of it. Everything else appends evidence, publishes a dump, or renames
+/// an output.
+///
+/// Written as "everything except", so a kind added later is treated as
+/// changing the archive until someone decides otherwise. The failure from
+/// guessing the other way — an action reading a tree that has moved on — is
+/// silent, and this one only costs a re-scan.
+const fn changes_the_archive(kind: ActionKind) -> bool {
+    !matches!(kind, ActionKind::ProjectAssets | ActionKind::SyncGamelist)
 }
 
 /// What happened to one action.
@@ -263,6 +343,11 @@ pub fn execute_action(
     };
 
     let result = dispatch(ctx, action, &mut conn, &beating_progress, cancelled);
+    // Whatever the outcome: a kind that writes into the archive may have got
+    // partway before failing, so the shared scan is stale either way.
+    if changes_the_archive(action.kind) {
+        ctx.archive_changed();
+    }
     drop(archive_lock);
 
     let (outcome, verdict) = match result {
@@ -341,7 +426,7 @@ pub fn force_rebuild_playable(
     // The adopt dispatch only reconciles under `ReconcileMode::PerAction`; a
     // forced rebuild needs the release's real post-adoption state regardless
     // of the caller's reconcile mode, so it reconciles explicitly here.
-    let snapshot = scan(ctx)?;
+    let snapshot = ctx.rescan_archive()?;
     let mut conn = retro_junk_db::open_database(&ctx.db_path).map_err(WorkError::msg)?;
     retro_junk_db::reconcile_archive_snapshot(
         &mut conn,
@@ -412,7 +497,7 @@ fn dispatch(
     };
     match action.kind {
         ActionKind::VerifyIntegrity => {
-            let snapshot = scan(ctx)?;
+            let snapshot = ctx.archive()?;
             let dump_id = dump_target(&action.target)?;
             let report = verify_archive_integrity(&snapshot, Some(dump_id), progress, cancelled)
                 .map_err(ops_err)?;
@@ -431,7 +516,7 @@ fn dispatch(
             Ok(Vec::new())
         }
         ActionKind::VerifyCatalog => {
-            let snapshot = scan(ctx)?;
+            let snapshot = ctx.archive()?;
             let dump_id = dump_target(&action.target)?;
             let report = verify_catalog_files(
                 &snapshot,
@@ -453,7 +538,7 @@ fn dispatch(
             Ok(Vec::new())
         }
         ActionKind::AuditRedumper => {
-            let snapshot = scan(ctx)?;
+            let snapshot = ctx.archive()?;
             let dump_id = dump_target(&action.target)?;
             let report = identify_archived_carriers(
                 &IdentifyCarriersRequest {
@@ -481,7 +566,7 @@ fn dispatch(
             Ok(Vec::new())
         }
         ActionKind::AdoptPlayable => {
-            let snapshot = scan(ctx)?;
+            let snapshot = ctx.archive()?;
             let release_id = release_target(&action.target)?;
             let adoption = retro_junk_lib::archive_ops::AdoptionRequest {
                 snapshot: &snapshot,
@@ -581,7 +666,7 @@ fn dispatch(
             Ok(Vec::new())
         }
         ActionKind::ProjectAssets => {
-            let snapshot = scan(ctx)?;
+            let snapshot = ctx.archive()?;
             let release = indexed_release(&snapshot, &action.target)?;
             let media_directory = ctx.roots.media_root.join(&action.playable_platform_id);
             retro_junk_lib::archive_assets::project_release_assets(
@@ -594,7 +679,7 @@ fn dispatch(
             Ok(Vec::new())
         }
         ActionKind::SyncGamelist => {
-            let snapshot = scan(ctx)?;
+            let snapshot = ctx.archive()?;
             let release = indexed_release(&snapshot, &action.target)?;
             retro_junk_lib::archive_assets::sync_esde_gamelist_for_release(
                 release,
@@ -610,10 +695,6 @@ fn dispatch(
             kind = action.kind.as_str()
         ))),
     }
-}
-
-fn scan(ctx: &ExecContext) -> Result<retro_junk_archive::ArchiveIndexSnapshot, WorkError> {
-    retro_junk_archive::scan_archive(&ctx.profile.archive_root).map_err(WorkError::msg)
 }
 
 fn dump_target(target: &WorkTarget) -> Result<&str, WorkError> {
@@ -664,7 +745,7 @@ fn reconcile_if_per_action(
     conn: &mut retro_junk_db::Connection,
 ) -> Result<(), WorkError> {
     if ctx.reconcile == ReconcileMode::PerAction {
-        let snapshot = scan(ctx)?;
+        let snapshot = ctx.rescan_archive()?;
         retro_junk_db::reconcile_archive_snapshot(
             conn,
             &snapshot,
@@ -675,3 +756,7 @@ fn reconcile_if_per_action(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/executor_tests.rs"]
+mod executor_tests;

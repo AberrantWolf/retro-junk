@@ -235,8 +235,9 @@ fn reconcile(
         0,
         0,
     );
-    let snapshot = retro_junk_archive::scan_archive(&ctx.profile.archive_root)
-        .map_err(|error| WorkError::Message(error.to_string()))?;
+    // Fresh by definition — a stage just changed the archive — and kept, so
+    // the next stage's actions read this walk instead of paying for another.
+    let snapshot = ctx.rescan_archive()?;
     retro_junk_db::reconcile_archive_snapshot(
         conn,
         &snapshot,

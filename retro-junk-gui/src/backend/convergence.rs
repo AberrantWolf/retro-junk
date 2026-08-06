@@ -43,6 +43,7 @@ pub fn exec_context(app: &RetroJunkApp) -> Result<retro_junk_backend::ExecContex
         // the projection current so the row updates as soon as it finishes.
         lock: retro_junk_backend::LockEtiquette::InteractiveWait,
         reconcile: retro_junk_backend::ReconcileMode::PerAction,
+        archive: retro_junk_backend::ArchiveScan::default(),
     })
 }
 

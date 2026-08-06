@@ -32,8 +32,8 @@ pub use adoption::{
     ignore_playables, ignore_rules, open_adoption_suggestion, unignore_playables,
 };
 pub use executor::{
-    ActionOutcome, ExecContext, ForceRebuildOutcome, LockEtiquette, ReconcileMode, ScrapeSettings,
-    ToolPaths, WorkError, execute_action, force_rebuild_playable,
+    ActionOutcome, ArchiveScan, ExecContext, ForceRebuildOutcome, LockEtiquette, ReconcileMode,
+    ScrapeSettings, ToolPaths, WorkError, execute_action, force_rebuild_playable,
 };
 pub use policy::{AutoImportMode, AutomationPolicy, BindConfidence};
 pub use suggestions::{

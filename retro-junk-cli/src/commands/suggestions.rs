@@ -326,5 +326,6 @@ fn exec_context(profile: Option<&str>, db: Option<PathBuf>) -> Result<ExecContex
         owner: ExecContext::owner_string("cli"),
         lock: LockEtiquette::InteractiveWait,
         reconcile: ReconcileMode::PerAction,
+        archive: retro_junk_backend::ArchiveScan::default(),
     })
 }

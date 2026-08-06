@@ -78,6 +78,7 @@ pub(crate) fn exec_context(
         owner: ExecContext::owner_string("cli"),
         lock: LockEtiquette::InteractiveWait,
         reconcile: ReconcileMode::AtBatchEnd,
+        archive: retro_junk_backend::ArchiveScan::default(),
     })
 }
 

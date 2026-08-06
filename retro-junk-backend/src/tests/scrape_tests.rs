@@ -239,6 +239,7 @@ fn context(only_when_unambiguous: bool) -> ExecContext {
         owner: "test".to_owned(),
         lock: crate::executor::LockEtiquette::DaemonFailFast,
         reconcile: crate::executor::ReconcileMode::AtBatchEnd,
+        archive: crate::executor::ArchiveScan::default(),
     }
 }
 
