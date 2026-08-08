@@ -236,6 +236,13 @@ pub(crate) const fn changes_the_archive(kind: ActionKind) -> bool {
     !matches!(kind, ActionKind::ProjectAssets | ActionKind::SyncGamelist)
 }
 
+/// Whether a completed action still owes a whole-snapshot reconcile.
+/// Scraping changes the archive, but its handler projects the exact release
+/// file delta before it returns.
+pub(crate) const fn requires_full_reconcile(kind: ActionKind) -> bool {
+    changes_the_archive(kind) && !matches!(kind, ActionKind::Scrape)
+}
+
 /// What happened to one action.
 #[derive(Debug)]
 pub enum ActionOutcome {
@@ -455,6 +462,10 @@ fn claim_and_dispatch(
         progress(phase, unit, current, total);
     };
 
+    if changes_the_archive(action.kind) {
+        retro_junk_archive::advance_projection_generation(&ctx.profile.archive_root)
+            .map_err(WorkError::msg)?;
+    }
     let result = dispatch(ctx, action, conn, &beating_progress, cancelled);
     // Whatever the outcome: a kind that writes into the archive may have got
     // partway before failing, so the shared scan is stale either way.
@@ -760,8 +771,24 @@ fn dispatch(
                     1,
                 );
             }
-            if ctx.reconcile == ReconcileMode::PerAction && report.published > 0 {
-                reconcile_if_per_action(ctx, conn)?;
+            if !report.changed_releases.is_empty() {
+                let releases = report
+                    .changed_releases
+                    .iter()
+                    .map(|release_id| {
+                        retro_junk_archive::scan_archive_release(
+                            &ctx.profile.archive_root,
+                            *release_id,
+                        )
+                        .map_err(WorkError::msg)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                retro_junk_db::reconcile_archive_supporting_files(
+                    conn,
+                    &ctx.profile.archive_root,
+                    &releases,
+                )
+                .map_err(WorkError::msg)?;
             }
             Ok(Vec::new())
         }

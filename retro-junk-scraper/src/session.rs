@@ -262,6 +262,8 @@ pub struct ScrapeRunResult {
     pub fatal: Option<String>,
     /// Supporting files newly added to the archive.
     pub published: usize,
+    /// Releases whose authoritative supporting-file set changed.
+    pub changed_releases: Vec<ArchiveReleaseId>,
 }
 
 impl ScrapeRunResult {
@@ -428,7 +430,9 @@ pub async fn run_scrape(request: &ScrapeRequest<'_>) -> ScrapeRunResult {
     }
 
     let (mut outcomes, pending) = split_outcomes(raw);
-    result.published = publish_and_project(request, &pending, &mut outcomes);
+    let (published, changed_releases) = publish_and_project(request, &pending, &mut outcomes);
+    result.published = published;
+    result.changed_releases = changed_releases;
     result.outcomes = outcomes;
 
     if let Some(archive) = request.archive
@@ -877,15 +881,16 @@ fn split_outcomes(raw: Vec<RawOutcome>) -> (Vec<TargetOutcome>, Vec<PendingPubli
 /// Publish downloaded files into the archive, then project them to the
 /// frontend tree.
 ///
-/// One batch for the whole run: `add_release_files` scans the archive index
-/// once, and the archive lock is taken once rather than per file.
+/// One batch for the whole run: `add_release_files` resolves only the release
+/// subtrees represented in the batch, and the archive lock is taken once
+/// rather than per file.
 fn publish_and_project(
     request: &ScrapeRequest<'_>,
     pending: &[PendingPublication],
     outcomes: &mut [TargetOutcome],
-) -> usize {
+) -> (usize, Vec<ArchiveReleaseId>) {
     let (Some(archive), false) = (request.archive, pending.is_empty()) else {
-        return 0;
+        return (0, Vec::new());
     };
     let _ = request.events.send(ScrapeEvent::Publishing {
         files: pending.len(),
@@ -925,12 +930,12 @@ fn publish_and_project(
                 // otherwise a caller records converged work whose media never
                 // entered the archive.
                 mark_publication_failure(outcomes, pending, "cancelled before publication");
-                return 0;
+                return (0, Vec::new());
             }
             Err(error) => {
                 log::error!("Could not lock the archive to publish scraped media: {error}");
                 mark_publication_failure(outcomes, pending, &error.to_string());
-                return 0;
+                return (0, Vec::new());
             }
         }
     } else {
@@ -945,7 +950,7 @@ fn publish_and_project(
         Err(error) => {
             log::error!("Could not add scraped media to the archive: {error}");
             mark_publication_failure(outcomes, pending, &error.to_string());
-            return 0;
+            return (0, Vec::new());
         }
     };
 
@@ -977,7 +982,17 @@ fn publish_and_project(
         }
     }
 
-    published.iter().filter(|result| result.added).count()
+    let changed_releases = published
+        .iter()
+        .filter(|result| result.added)
+        .map(|result| result.release_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    (
+        published.iter().filter(|result| result.added).count(),
+        changed_releases,
+    )
 }
 
 /// Turn the targets whose downloads could not be published into failures.

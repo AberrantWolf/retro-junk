@@ -434,10 +434,30 @@ impl RetroJunkApp {
                     &profile_id,
                 ) {
                     Ok(Some(indexed_at)) => {
-                        log::info!(
-                            "startup: archive projection committed at {indexed_at}; \
-                             skipping startup refresh"
-                        );
+                        let projected =
+                            retro_junk_backend::queries::collection::projection_source_generation(
+                                connection,
+                                &profile_id,
+                            )
+                            .unwrap_or(None);
+                        let authoritative =
+                            retro_junk_archive::projection_generation(&profile.archive_root)
+                                .unwrap_or(0);
+                        if projected == Some(authoritative) {
+                            log::info!(
+                                "startup: archive projection committed at {indexed_at}; \
+                                 skipping startup refresh"
+                            );
+                        } else {
+                            log::info!(
+                                "startup: archive generation is {authoritative}, projection is {}; refreshing",
+                                projected.map_or_else(
+                                    || "missing".to_owned(),
+                                    |value| value.to_string()
+                                )
+                            );
+                            refresh_profile = Some(profile.clone());
+                        }
                     }
                     Ok(None) => refresh_profile = Some(profile.clone()),
                     Err(error) => {
@@ -812,8 +832,6 @@ impl RetroJunkApp {
                     entry_count,
                     changes,
                 }) => {
-                    let bindings_may_have_changed =
-                        !changes.affected_entries.is_empty() || !changes.removed_entries.is_empty();
                     self.library_controller.apply_change_set(&changes);
                     self.browser.entry_counts.insert(console_id, entry_count);
                     if let Some(index) = self.browser.find_by_folder(&folder_name) {
@@ -837,18 +855,11 @@ impl RetroJunkApp {
                     if self.ui_state.refresh_archive_after_console_scan.as_deref()
                         == Some(folder_name.as_str())
                     {
+                        // The build already reconciled the archive projection,
+                        // and the scan commit now repairs bindings for its own
+                        // changed rows. Nothing on the archive filesystem
+                        // changed during this scan.
                         self.ui_state.refresh_archive_after_console_scan = None;
-                        if let Some(profile) = self.settings.library.active_profile().cloned() {
-                            let _ = self
-                                .message_tx
-                                .send(crate::state::AppMessage::StartArchiveRefresh { profile });
-                        }
-                    } else if bindings_may_have_changed
-                        && let Some(profile) = self.settings.library.active_profile().cloned()
-                    {
-                        let _ = self
-                            .message_tx
-                            .send(crate::state::AppMessage::StartArchiveRefresh { profile });
                     }
                 }
                 Ok(crate::backend::library_store::LibraryStoreValue::ConsoleSummaries(

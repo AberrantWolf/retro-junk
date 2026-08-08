@@ -18,10 +18,16 @@ pub(crate) fn run_archive(
     action: ArchiveAction,
     ctx: &retro_junk_lib::AnalysisContext,
 ) -> Result<(), CliError> {
-    let _archive_lock = archive_mutation_root(&action)
+    let mutation_root = archive_mutation_root(&action).map(std::path::Path::to_path_buf);
+    let _archive_lock = mutation_root
+        .as_deref()
         .map(retro_junk_archive::ArchiveLock::acquire)
         .transpose()
         .map_err(|error| CliError::other(error.to_string()))?;
+    if let Some(root) = mutation_root.as_deref() {
+        retro_junk_archive::advance_projection_generation(root)
+            .map_err(|error| CliError::other(error.to_string()))?;
+    }
     match action {
         ArchiveAction::Init { archive_root, name } => run_init(archive_root, name),
         ArchiveAction::Import {

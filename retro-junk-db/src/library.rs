@@ -985,6 +985,11 @@ pub fn reconcile_console_scan(
     for id in &removed {
         tx.execute("DELETE FROM library_entries WHERE id=?1", [id.0])?;
     }
+    // A scan changes the library side of the archive bridge, not the archive
+    // itself. Repair the affected bindings in this same transaction so new
+    // rows can consume archive evidence immediately and no filesystem reindex
+    // is needed afterward.
+    crate::archive::rebuild_library_entry_bindings_for_entries(&tx, &affected)?;
     name_from_archive_evidence(&tx, token.console_id, &mut affected, &mut revisions)?;
     if affected.is_empty()
         && removed.is_empty()

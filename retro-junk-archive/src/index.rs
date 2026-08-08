@@ -17,6 +17,8 @@ pub enum IndexError {
     },
     #[error("archive root manifest is missing: {0}")]
     MissingRootManifest(String),
+    #[error("archive scan cancelled")]
+    Cancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +91,21 @@ pub struct IndexedBuild {
 }
 
 pub fn scan_archive(root: &Path) -> Result<ArchiveIndexSnapshot, IndexError> {
+    scan_archive_inner(root, None)
+}
+
+/// Scan the archive while honoring cancellation between release subtrees.
+pub fn scan_archive_cancellable(
+    root: &Path,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<ArchiveIndexSnapshot, IndexError> {
+    scan_archive_inner(root, Some(cancel))
+}
+
+fn scan_archive_inner(
+    root: &Path,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<ArchiveIndexSnapshot, IndexError> {
     let root_path = crate::layout::root_manifest_path(root);
     if !root_path.is_file() {
         return Err(IndexError::MissingRootManifest(
@@ -98,6 +115,9 @@ pub fn scan_archive(root: &Path) -> Result<ArchiveIndexSnapshot, IndexError> {
     let (manifest, manifest_sha256) = read_toml_with_digest(&root_path)?;
     let mut release_directories = Vec::new();
     for platform_dir in child_directories(root)? {
+        if cancel.is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Err(IndexError::Cancelled);
+        }
         if platform_dir.file_name().and_then(|v| v.to_str()) == Some(".retro-junk") {
             continue;
         }
@@ -107,13 +127,47 @@ pub fn scan_archive(root: &Path) -> Result<ArchiveIndexSnapshot, IndexError> {
             }
         }
     }
-    let mut releases = scan_releases(release_directories)?;
+    let mut releases = scan_releases(release_directories, cancel)?;
     releases.sort_by(|a, b| a.directory.cmp(&b.directory));
     Ok(ArchiveIndexSnapshot {
         root: root.to_path_buf(),
         manifest,
         manifest_sha256,
         releases,
+    })
+}
+
+/// Read one release subtree without walking every other release in the
+/// archive.
+///
+/// Known mutations already carry the release id they changed. Making those
+/// callers construct a whole [`ArchiveIndexSnapshot`] turned a one-file
+/// artwork publication into thousands of unrelated manifest reads.
+pub fn scan_archive_release(
+    root: &Path,
+    release_id: crate::ArchiveReleaseId,
+) -> Result<IndexedRelease, IndexError> {
+    for platform_dir in child_directories(root)? {
+        if platform_dir.file_name().and_then(|value| value.to_str()) == Some(".retro-junk") {
+            continue;
+        }
+        for release_dir in child_directories(&platform_dir)? {
+            let manifest_path = release_dir.join("release.toml");
+            if !manifest_path.is_file() {
+                continue;
+            }
+            let manifest: ReleaseManifest = crate::read_toml(&manifest_path)?;
+            if manifest.archive_release_id == release_id {
+                return scan_release(&release_dir, &manifest_path);
+            }
+        }
+    }
+    Err(IndexError::Io {
+        path: root.display().to_string(),
+        source: std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("archive release {release_id} was not found"),
+        ),
     })
 }
 
@@ -124,11 +178,17 @@ pub fn scan_archive(root: &Path) -> Result<ArchiveIndexSnapshot, IndexError> {
 /// parse work — so overlapping the reads is what makes it fast. Releases are
 /// independent and read-only here, and the caller sorts the result, so
 /// concurrency changes only the wall clock.
-fn scan_releases(directories: Vec<PathBuf>) -> Result<Vec<IndexedRelease>, IndexError> {
+fn scan_releases(
+    directories: Vec<PathBuf>,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Vec<IndexedRelease>, IndexError> {
     if directories.len() < 2 {
         return directories
             .into_iter()
             .map(|directory| {
+                if cancel.is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed)) {
+                    return Err(IndexError::Cancelled);
+                }
                 let manifest_path = directory.join("release.toml");
                 scan_release(&directory, &manifest_path)
             })
@@ -148,6 +208,11 @@ fn scan_releases(directories: Vec<PathBuf>) -> Result<Vec<IndexedRelease>, Index
                 scope.spawn(move || {
                     let mut scanned = Vec::new();
                     loop {
+                        if cancel
+                            .is_some_and(|cancel| cancel.load(std::sync::atomic::Ordering::Relaxed))
+                        {
+                            return Err(IndexError::Cancelled);
+                        }
                         let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         let Some(directory) = directories.get(index) else {
                             return Ok(scanned);

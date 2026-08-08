@@ -27,6 +27,8 @@ const HEARTBEAT_HINT: Duration = Duration::from_secs(20);
 pub struct ScrapeReport {
     /// Supporting files newly added to the archive.
     pub published: usize,
+    /// Releases whose supporting-file projection must be refreshed.
+    pub changed_releases: Vec<retro_junk_archive::ArchiveReleaseId>,
     /// Set when the match was too weak to publish unattended.
     pub needs_review: Option<WeakMatch>,
 }
@@ -70,6 +72,7 @@ pub fn scrape_release_artwork(
     if ctx.scrape.only_when_unambiguous && gap.identity <= ScrapeIdentityTier::Filename {
         return Ok(ScrapeReport {
             published: 0,
+            changed_releases: Vec::new(),
             needs_review: Some(WeakMatch {
                 archive_release_id: gap.archive_release_id.clone(),
                 label: action.label.clone(),
@@ -135,6 +138,7 @@ pub fn scrape_release_artwork(
         }
         _ => Ok(ScrapeReport {
             published: run.published,
+            changed_releases: run.changed_releases,
             needs_review: None,
         }),
     }

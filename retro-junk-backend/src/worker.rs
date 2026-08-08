@@ -225,7 +225,7 @@ pub fn run_once(
                     // run pay for a whole extra archive walk to write down that
                     // the frontend tree, which is not part of the archive, had
                     // been refreshed.
-                    stage_mutated |= crate::executor::changes_the_archive(action.kind);
+                    stage_mutated |= crate::executor::requires_full_reconcile(action.kind);
                 }
                 ActionOutcome::Failed(reason) => log::warn!("{}: {reason}", action.label),
                 _ => {}

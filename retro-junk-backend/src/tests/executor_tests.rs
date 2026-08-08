@@ -113,6 +113,16 @@ fn only_the_projection_kinds_leave_the_archive_alone() {
     }
 }
 
+/// Scraping owns a narrower release-file projection update, so the batch
+/// worker must not follow it with the whole-archive reconcile that caused the
+/// original one-artwork refresh stall.
+#[test]
+fn scraping_does_not_request_a_full_reconcile() {
+    assert!(changes_the_archive(ActionKind::Scrape));
+    assert!(!requires_full_reconcile(ActionKind::Scrape));
+    assert!(requires_full_reconcile(ActionKind::VerifyIntegrity));
+}
+
 /// The lock is taken for the batch, not for each item. Proven from the outside:
 /// with the archive already held by someone else, *every* item reports busy —
 /// if the lock were still per item, only the first would, and the rest would

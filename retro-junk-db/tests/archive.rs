@@ -470,6 +470,27 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
     );
     assert_eq!(page.logical_count, 1);
     assert!(!page.archived_playable_gaps[0].needs_playable);
+    // An unchanged deep refresh must preserve the release subtree instead of
+    // deleting and reinserting it. This sentinel is deliberately not a real
+    // binding state: reconstruction would reset it to `unbound`/`bound`.
+    conn.execute(
+        "UPDATE archive_releases SET binding_state='unchanged-sentinel'",
+        [],
+    )
+    .unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &temp.path().join("playable"),
+        &temp.path().join("work"),
+    )
+    .unwrap();
+    let unchanged_state: String = conn
+        .query_row("SELECT binding_state FROM archive_releases", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(unchanged_state, "unchanged-sentinel");
     conn.execute("DELETE FROM library_entry_media_bindings", [])
         .unwrap();
     let gaps = retro_junk_db::query_entry_list(

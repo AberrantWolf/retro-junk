@@ -1,6 +1,6 @@
 //! Rebuildable `SQLite` projection of portable preservation manifests.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use retro_junk_archive::{
@@ -8,6 +8,7 @@ use retro_junk_archive::{
     preservation_presence,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use sha2::{Digest, Sha256};
 
 use crate::operations::OperationError;
 
@@ -1031,6 +1032,67 @@ fn match_complete_catalog_media_inner(
 ///
 /// The filesystem has already committed before this transaction begins. A DB
 /// failure can therefore be repaired by calling this function again.
+fn release_projection_fingerprint(
+    release: &retro_junk_archive::IndexedRelease,
+    playable_root: &Path,
+) -> String {
+    let mut digest = Sha256::new();
+    digest.update(release.directory.to_string_lossy().as_bytes());
+    digest.update(release.manifest_sha256.as_bytes());
+    for file in &release.supporting_files {
+        digest.update(file.directory.to_string_lossy().as_bytes());
+        digest.update(file.manifest_sha256.as_bytes());
+        digest.update(file.manifest.file.sha256.as_bytes());
+    }
+    for physical_copy in &release.physical_copies {
+        digest.update(physical_copy.directory.to_string_lossy().as_bytes());
+        digest.update(physical_copy.manifest_sha256.as_bytes());
+        for file in &physical_copy.supporting_files {
+            digest.update(file.directory.to_string_lossy().as_bytes());
+            digest.update(file.manifest_sha256.as_bytes());
+            digest.update(file.manifest.file.sha256.as_bytes());
+        }
+        for carrier in &physical_copy.carriers {
+            digest.update(carrier.directory.to_string_lossy().as_bytes());
+            digest.update(carrier.manifest_sha256.as_bytes());
+            for dump in &carrier.dumps {
+                digest.update(dump.directory.to_string_lossy().as_bytes());
+                digest.update(dump.manifest_sha256.as_bytes());
+                for file in &dump.manifest.files {
+                    let path = dump.directory.join("raw").join(&file.path);
+                    match std::fs::symlink_metadata(path) {
+                        Ok(metadata) => {
+                            digest.update([1]);
+                            digest.update(metadata.len().to_le_bytes());
+                        }
+                        Err(_) => digest.update([0]),
+                    }
+                }
+                for verification in &dump.verifications {
+                    if let Ok(bytes) = serde_json::to_vec(&verification.evidence) {
+                        digest.update(bytes);
+                    }
+                }
+                for build in &dump.builds {
+                    if let Ok(bytes) = serde_json::to_vec(&build.evidence) {
+                        digest.update(bytes);
+                    }
+                    let (path, presence) = projected_playable_path(
+                        playable_root,
+                        &release.manifest.platform_id,
+                        &release.manifest.region,
+                        &dump.manifest_sha256,
+                        &build.evidence,
+                    );
+                    digest.update(path.as_bytes());
+                    digest.update(presence.as_str().as_bytes());
+                }
+            }
+        }
+    }
+    format!("{:x}", digest.finalize())
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn reconcile_archive_snapshot(
     conn: &mut Connection,
@@ -1038,8 +1100,70 @@ pub fn reconcile_archive_snapshot(
     playable_root: &Path,
     workspace_root: &Path,
 ) -> Result<(), OperationError> {
-    let tx = conn.transaction()?;
     let profile_id = snapshot.manifest.profile_id.to_string();
+    let catalog_generation: u64 =
+        conn.query_row("SELECT COALESCE(MAX(rowid),0) FROM import_log", [], |row| {
+            row.get(0)
+        })?;
+    let existing_profile: Option<(String, String, String, String, u64)> = conn
+        .query_row(
+            "SELECT manifest_sha256,archive_root,playable_root,workspace_root,catalog_generation
+             FROM archive_profiles WHERE id=?1",
+            [&profile_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let force_all = existing_profile.as_ref().is_none_or(
+        |(
+            manifest_sha256,
+            projected_archive,
+            projected_playable,
+            projected_workspace,
+            projected_catalog,
+        )| {
+            manifest_sha256 != &snapshot.manifest_sha256
+                || projected_archive != snapshot.root.to_string_lossy().as_ref()
+                || projected_playable != playable_root.to_string_lossy().as_ref()
+                || projected_workspace != workspace_root.to_string_lossy().as_ref()
+                || *projected_catalog != catalog_generation
+        },
+    );
+    let fingerprints = snapshot
+        .releases
+        .iter()
+        .map(|release| {
+            (
+                release.manifest.archive_release_id.to_string(),
+                release_projection_fingerprint(release, playable_root),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let existing_releases = conn
+        .prepare("SELECT id,projection_fingerprint FROM archive_releases WHERE profile_id=?1")?
+        .query_map([&profile_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<Result<HashMap<_, _>, _>>()?;
+    let changed = fingerprints
+        .iter()
+        .filter(|(id, fingerprint)| force_all || existing_releases.get(*id) != Some(*fingerprint))
+        .map(|(id, _)| id.clone())
+        .collect::<HashSet<_>>();
+    let removed = existing_releases
+        .keys()
+        .filter(|id| !fingerprints.contains_key(*id))
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    let tx = conn.transaction()?;
     // Decisions a person made about ambiguous carriers. Read from beside the
     // collection rather than from this projection, which is about to be
     // rewritten — that is the whole reason they are not stored here.
@@ -1047,24 +1171,37 @@ pub fn reconcile_archive_snapshot(
         &retro_junk_archive::collection_root_for(&snapshot.root, playable_root),
     )
     .unwrap_or_default();
-    // Policies intentionally have no polymorphic foreign key. Remove carrier
-    // policies owned by this projection before cascading its archive rows, or
-    // a rebuild would leave stale rows and collide on reinsertion.
+    for release_id in changed.iter().chain(&removed) {
+        tx.execute(
+            "DELETE FROM playable_policies
+             WHERE scope_type IN ('carrier','carrier_override')
+               AND scope_id IN (
+                   SELECT c.id FROM carriers c
+                   JOIN physical_copies pc ON pc.id=c.physical_copy_id
+                   WHERE pc.archive_release_id=?1
+               )",
+            [release_id],
+        )?;
+        tx.execute("DELETE FROM archive_releases WHERE id=?1", [release_id])?;
+    }
     tx.execute(
-        "DELETE FROM playable_policies WHERE scope_type IN ('carrier','carrier_override') AND (
-             scope_id IN (
-                 SELECT c.id FROM carriers c
-                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                 WHERE ar.profile_id=?1
-             ) OR NOT EXISTS(SELECT 1 FROM carriers c WHERE c.id=scope_id)
-         )",
-        [&profile_id],
+        "DELETE FROM playable_policies
+         WHERE scope_type IN ('carrier','carrier_override')
+           AND NOT EXISTS(SELECT 1 FROM carriers c WHERE c.id=scope_id)",
+        [],
     )?;
-    tx.execute("DELETE FROM archive_profiles WHERE id=?1", [&profile_id])?;
     tx.execute(
-        "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,playable_root,workspace_root,indexed_at)
-         VALUES(?1,?2,'retro-junk-archive.toml',?3,?4,?5,?6,datetime('now'))",
+        "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,playable_root,workspace_root,source_generation,catalog_generation,indexed_at)
+         VALUES(?1,?2,'retro-junk-archive.toml',?3,?4,?5,?6,?7,?8,datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET
+           display_name=excluded.display_name,
+           manifest_sha256=excluded.manifest_sha256,
+           archive_root=excluded.archive_root,
+           playable_root=excluded.playable_root,
+           workspace_root=excluded.workspace_root,
+           source_generation=excluded.source_generation,
+           catalog_generation=excluded.catalog_generation,
+           indexed_at=excluded.indexed_at",
         params![
             profile_id,
             snapshot.manifest.display_name,
@@ -1072,18 +1209,24 @@ pub fn reconcile_archive_snapshot(
             snapshot.root.to_string_lossy(),
             playable_root.to_string_lossy(),
             workspace_root.to_string_lossy(),
+            retro_junk_archive::projection_generation(&snapshot.root).unwrap_or(0),
+            catalog_generation,
         ],
     )?;
 
-    for release in &snapshot.releases {
+    for release in snapshot
+        .releases
+        .iter()
+        .filter(|release| changed.contains(&release.manifest.archive_release_id.to_string()))
+    {
         // A release has no catalog identity of its own to read: its manifest
         // describes what the archive holds, and the catalog identity comes up
         // from its carriers once they have each resolved by content. That
         // happens in `bind_releases_from_carriers`, after every carrier below
         // has been projected — so the row starts unbound and is filled in.
         tx.execute(
-            "INSERT INTO archive_releases(id,profile_id,catalog_work_id,catalog_release_id,platform_id,title,region,revision,variant,manifest_path,manifest_sha256,binding_state)
-             VALUES(?1,?2,NULL,NULL,?3,?4,?5,?6,?7,?8,?9,'unbound')",
+            "INSERT INTO archive_releases(id,profile_id,catalog_work_id,catalog_release_id,platform_id,title,region,revision,variant,manifest_path,manifest_sha256,projection_fingerprint,binding_state)
+             VALUES(?1,?2,NULL,NULL,?3,?4,?5,?6,?7,?8,?9,?10,'unbound')",
             params![
                 release.manifest.archive_release_id.to_string(),
                 profile_id,
@@ -1094,6 +1237,7 @@ pub fn reconcile_archive_snapshot(
                 release.manifest.variant,
                 relative(&snapshot.root, &release.directory.join("release.toml")),
                 release.manifest_sha256,
+                fingerprints[&release.manifest.archive_release_id.to_string()],
             ],
         )?;
         for file in &release.supporting_files {
@@ -1433,6 +1577,103 @@ pub fn reconcile_archive_snapshot(
     Ok(())
 }
 
+/// Refresh only the supporting-file rows for releases whose artwork or other
+/// release-level media changed.
+///
+/// The release, carrier, dump, and representation projections are unaffected
+/// by adding artwork, so rebuilding the complete archive projection here is
+/// both unnecessary and disproportionately expensive.
+pub fn reconcile_archive_supporting_files(
+    conn: &mut Connection,
+    archive_root: &Path,
+    releases: &[retro_junk_archive::IndexedRelease],
+) -> Result<(), OperationError> {
+    let tx = conn.transaction()?;
+    for release in releases {
+        let release_id = release.manifest.archive_release_id.to_string();
+        let playable_root: String = tx.query_row(
+            "SELECT ap.playable_root FROM archive_profiles ap
+             JOIN archive_releases ar ON ar.profile_id=ap.id
+             WHERE ar.id=?1",
+            [&release_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "DELETE FROM archive_release_files WHERE archive_release_id=?1",
+            [&release_id],
+        )?;
+        tx.execute(
+            "DELETE FROM physical_copy_files
+             WHERE physical_copy_id IN (
+                 SELECT id FROM physical_copies WHERE archive_release_id=?1
+             )",
+            [&release_id],
+        )?;
+        for file in &release.supporting_files {
+            tx.execute(
+                "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,source,source_url,caption,captured_at,manifest_path,manifest_sha256)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                params![
+                    file.manifest.supporting_file_id.to_string(),
+                    release_id,
+                    release_file_category_key(file.manifest.category),
+                    file.manifest.asset_type,
+                    relative(archive_root, &file.directory.join(&file.manifest.file.path)),
+                    file.manifest.file.size,
+                    file.manifest.file.sha256,
+                    file.manifest.source,
+                    file.manifest.source_url,
+                    file.manifest.caption,
+                    file.manifest.captured_at,
+                    relative(archive_root, &file.directory.join("supporting-file.toml")),
+                    file.manifest_sha256,
+                ],
+            )?;
+        }
+        for physical_copy in &release.physical_copies {
+            for file in &physical_copy.supporting_files {
+                tx.execute(
+                    "INSERT INTO physical_copy_files(id,physical_copy_id,category,asset_type,relative_path,sha256,caption,source)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                    params![
+                        file.manifest.supporting_file_id.to_string(),
+                        physical_copy.manifest.physical_copy_id.to_string(),
+                        physical_copy_file_category_key(file.manifest.category),
+                        file.manifest.asset_type,
+                        relative(
+                            archive_root,
+                            &file.directory.join(&file.manifest.file.path),
+                        ),
+                        file.manifest.file.sha256,
+                        file.manifest.caption,
+                        file.manifest.source,
+                    ],
+                )?;
+            }
+        }
+        tx.execute(
+            "UPDATE archive_releases SET projection_fingerprint=?1 WHERE id=?2",
+            params![
+                release_projection_fingerprint(release, Path::new(&playable_root)),
+                release_id,
+            ],
+        )?;
+    }
+    if let Some(release) = releases.first() {
+        tx.execute(
+            "UPDATE archive_profiles
+             SET source_generation=?1,indexed_at=datetime('now')
+             WHERE id=(SELECT profile_id FROM archive_releases WHERE id=?2)",
+            params![
+                retro_junk_archive::projection_generation(archive_root).unwrap_or(0),
+                release.manifest.archive_release_id.to_string(),
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 /// Give a release the catalog identity its own carriers proved by content.
 ///
 /// This is how an archive release gets a catalog identity at all. Nothing on
@@ -1512,13 +1753,39 @@ fn bind_releases_from_carriers(conn: &Connection) -> Result<(), OperationError> 
 // archived carrier's own copy should be readable end to end.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn rebuild_library_entry_bindings(conn: &Connection) -> Result<(), OperationError> {
+    rebuild_library_entry_bindings_scoped(conn, None)
+}
+
+/// Rebuild archive bindings for only the library rows a scan actually
+/// changed. New rows need this before archive-derived naming runs; waiting for
+/// a whole archive refresh made their result depend on a later UI message.
+pub(crate) fn rebuild_library_entry_bindings_for_entries(
+    conn: &Connection,
+    entries: &[crate::library::LibraryEntryId],
+) -> Result<(), OperationError> {
+    for entry in entries {
+        rebuild_library_entry_bindings_scoped(conn, Some(entry.0))?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn rebuild_library_entry_bindings_scoped(
+    conn: &Connection,
+    entry_id: Option<u64>,
+) -> Result<(), OperationError> {
+    let entry_filter = entry_id.map_or_else(String::new, |id| format!(" AND le.id={id}"));
+    let binding_filter =
+        entry_id.map_or_else(String::new, |id| format!(" AND library_entry_id={id}"));
     conn.execute(
-        "DELETE FROM library_entry_media_bindings
+        &format!(
+            "DELETE FROM library_entry_media_bindings
          WHERE match_method IN (
              'archive_projection',
              'archive_output_path',
              'archive_release_projection'
-         )",
+         ){binding_filter}"
+        ),
         [],
     )?;
     // A playable build is already provenance evidence: its manifest records
@@ -1536,7 +1803,7 @@ pub(crate) fn rebuild_library_entry_bindings(conn: &Connection) -> Result<(), Op
          WHERE rep.role='playable'
            AND rep.location_role='playable'
            AND rep.presence_state='present'
-           AND {holds_playable}",
+           AND {holds_playable}{entry_filter}",
             holds_playable = playable_path_is_within_library_entry()
         ),
         [],
@@ -1565,7 +1832,8 @@ pub(crate) fn rebuild_library_entry_bindings(conn: &Connection) -> Result<(), Op
          WHERE c.catalog_media_id IS NOT NULL
            AND ((le.sha1<>'' AND m.sha1<>'' AND le.sha1=m.sha1)
                 OR (le.md5<>'' AND m.md5<>'' AND le.md5=m.md5)
-                OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))",
+                OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))
+           {entry_filter}",
             holds_playable = playable_path_is_within_library_entry()
         ),
         [],
@@ -1577,7 +1845,8 @@ pub(crate) fn rebuild_library_entry_bindings(conn: &Connection) -> Result<(), Op
     // one archived/playable game without pretending that one matched disc is
     // evidence that the other archive carriers are verified.
     conn.execute(
-        "WITH entry_releases(library_entry_id,release_id) AS (
+        &format!(
+            "WITH entry_releases(library_entry_id,release_id) AS (
              SELECT DISTINCT le.id,m.release_id
              FROM library_entries le
              JOIN library_consoles lc ON lc.id=le.console_id
@@ -1624,7 +1893,9 @@ pub(crate) fn rebuild_library_entry_bindings(conn: &Connection) -> Result<(), Op
          JOIN library_entries le ON le.id=er.library_entry_id
          JOIN library_consoles lc ON lc.id=le.console_id
          JOIN library_roots lr ON lr.id=lc.root_id
-         WHERE ap.playable_root=lr.root_path",
+         WHERE ap.playable_root=lr.root_path
+           {entry_filter}"
+        ),
         [],
     )?;
     Ok(())
@@ -1995,6 +2266,20 @@ pub fn archive_profile_indexed_at(
         )
         .optional()?;
     Ok(indexed_at)
+}
+
+pub fn archive_profile_source_generation(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<Option<u64>, OperationError> {
+    let generation = conn
+        .query_row(
+            "SELECT source_generation FROM archive_profiles WHERE id=?1",
+            [profile_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(generation)
 }
 
 /// Increment the rebuildable policy projection after the authoritative root

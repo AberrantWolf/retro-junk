@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use egui_extras::{Column, TableBuilder};
 use retro_junk_backend::completion::{Fraction, FractionLevel};
@@ -535,43 +534,58 @@ fn show_editor(
     });
     let editor_snapshot = editor.clone();
     if save {
-        match save_editor(&editor_snapshot, &profile.archive_root) {
-            Ok(()) => {
-                crate::backend::archive::start_archive_operation(app, profile, false);
-            }
+        let playable_policy = if editor_snapshot.desired_format.is_empty() {
+            Ok(None)
+        } else {
+            parse_format(&editor_snapshot.desired_format).map(|format| {
+                Some(retro_junk_archive::DesiredPlayablePolicy {
+                    format,
+                    retain_canonical_intermediate: editor_snapshot.retain_intermediate,
+                    allow_unverified: editor_snapshot.allow_unverified,
+                    options: std::collections::BTreeMap::new(),
+                })
+            })
+        };
+        match playable_policy {
+            Ok(playable_policy) => crate::backend::archive::start_update_collection_details(
+                app,
+                profile,
+                retro_junk_backend::ops::archive::UpdateCollectionDetailsRequest {
+                    physical_copy_manifest_path: editor_snapshot
+                        .physical_copy_manifest_path
+                        .clone(),
+                    carrier_manifest_path: editor_snapshot.carrier_manifest_path.clone(),
+                    label: editor_snapshot.label.clone(),
+                    condition: editor_snapshot.condition.clone(),
+                    notes: editor_snapshot.notes.clone(),
+                    date_acquired: editor_snapshot.date_acquired.clone(),
+                    provenance: editor_snapshot.provenance.clone(),
+                    playable_policy,
+                },
+            ),
             Err(error) => app.push_error("Collection details", error),
         }
     }
     if let Some((category, asset_type)) = add_file
         && let Some(source_file) = rfd::FileDialog::new().pick_file()
     {
-        let result = (|| -> Result<(), String> {
-            let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
-                .map_err(|error| error.to_string())?;
-            let physical_copy_id = editor_snapshot
-                .physical_copy_id
-                .parse::<retro_junk_archive::PhysicalCopyId>()
-                .map_err(|error| error.to_string())?;
-            retro_junk_archive::add_physical_copy_file(
-                &profile.archive_root,
-                retro_junk_archive::NewPhysicalCopyFile {
+        match editor_snapshot
+            .physical_copy_id
+            .parse::<retro_junk_archive::PhysicalCopyId>()
+        {
+            Ok(physical_copy_id) => crate::backend::archive::start_add_physical_copy_file(
+                app,
+                profile,
+                retro_junk_backend::ops::archive::AddPhysicalCopyFileRequest {
                     physical_copy_id,
-                    source_file: &source_file,
+                    source_file,
                     category,
-                    asset_type,
-                    source: "user",
-                    caption: "",
+                    asset_type: asset_type.to_owned(),
+                    source: "user".to_owned(),
+                    caption: String::new(),
                 },
-                &AtomicBool::new(false),
-            )
-            .map_err(|error| error.to_string())?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => {
-                crate::backend::archive::start_archive_operation(app, profile, false);
-            }
-            Err(error) => app.push_error("Physical-copy file", error),
+            ),
+            Err(error) => app.push_error("Physical-copy file", error.to_string()),
         }
     }
     if add_release_artwork
@@ -579,32 +593,24 @@ fn show_editor(
             .add_filter("Artwork", &["png", "jpg", "jpeg", "webp"])
             .pick_file()
     {
-        let result = (|| -> Result<(), String> {
-            let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
-                .map_err(|error| error.to_string())?;
-            let release_id = editor_snapshot
-                .archive_release_id
-                .parse::<retro_junk_archive::ArchiveReleaseId>()
-                .map_err(|error| error.to_string())?;
-            retro_junk_archive::add_release_file(
-                &profile.archive_root,
-                retro_junk_archive::NewReleaseFile {
+        match editor_snapshot
+            .archive_release_id
+            .parse::<retro_junk_archive::ArchiveReleaseId>()
+        {
+            Ok(release_id) => crate::backend::archive::start_add_release_file(
+                app,
+                profile,
+                retro_junk_backend::ops::archive::AddReleaseFileRequest {
                     release_id,
-                    source_file: &source_file,
+                    source_file,
                     category: retro_junk_archive::ReleaseFileCategory::Artwork,
-                    asset_type: &editor_snapshot.release_asset_type,
-                    source: "user",
-                    source_url: "",
-                    caption: "",
+                    asset_type: editor_snapshot.release_asset_type.clone(),
+                    source: "user".to_owned(),
+                    source_url: String::new(),
+                    caption: String::new(),
                 },
-                &AtomicBool::new(false),
-            )
-            .map_err(|error| error.to_string())?;
-            Ok(())
-        })();
-        match result {
-            Ok(()) => crate::backend::archive::start_archive_operation(app, profile, false),
-            Err(error) => app.push_error("Release artwork", error),
+            ),
+            Err(error) => app.push_error("Release artwork", error.to_string()),
         }
     }
     if let Some(source) = ingest_source {
@@ -616,36 +622,6 @@ fn show_editor(
             Some(editor_snapshot.platform_id.clone()),
         );
     }
-}
-
-fn save_editor(editor: &PhysicalCopyEditor, archive_root: &std::path::Path) -> Result<(), String> {
-    let _archive_lock = retro_junk_archive::ArchiveLock::acquire(archive_root)
-        .map_err(|error| error.to_string())?;
-    let mut item: retro_junk_archive::PhysicalCopyManifest =
-        retro_junk_archive::read_toml(&editor.physical_copy_manifest_path)
-            .map_err(|error| error.to_string())?;
-    item.label.clone_from(&editor.label);
-    item.condition.clone_from(&editor.condition);
-    item.notes.clone_from(&editor.notes);
-    item.date_acquired.clone_from(&editor.date_acquired);
-    item.provenance.clone_from(&editor.provenance);
-    retro_junk_archive::write_toml_atomic(&editor.physical_copy_manifest_path, &item)
-        .map_err(|error| error.to_string())?;
-    let mut medium: retro_junk_archive::CarrierManifest =
-        retro_junk_archive::read_toml(&editor.carrier_manifest_path)
-            .map_err(|error| error.to_string())?;
-    medium.playable_policy = if editor.desired_format.is_empty() {
-        None
-    } else {
-        Some(retro_junk_archive::DesiredPlayablePolicy {
-            format: parse_format(&editor.desired_format)?,
-            retain_canonical_intermediate: editor.retain_intermediate,
-            allow_unverified: editor.allow_unverified,
-            options: std::collections::BTreeMap::new(),
-        })
-    };
-    retro_junk_archive::write_toml_atomic(&editor.carrier_manifest_path, &medium)
-        .map_err(|error| error.to_string())
 }
 
 fn parse_format(value: &str) -> Result<retro_junk_archive::RepresentationFormat, String> {
@@ -776,6 +752,10 @@ fn start_dump_import(
         ProgressDisplay::Bytes,
         move |op_id, cancel, sender| {
             let progress_sender = sender.clone();
+            let archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
+            retro_junk_archive::advance_projection_generation(&profile.archive_root)
+                .map_err(|error| error.to_string())?;
             let result = retro_junk_archive_import::execute_import(
                 plan,
                 consume,
@@ -812,8 +792,9 @@ fn start_dump_import(
                     });
                 },
             )
-            .map_err(|error| error.to_string())
-            .and_then(|result| {
+            .map_err(|error| error.to_string());
+            drop(archive_lock);
+            let result = result.and_then(|result| {
                 if let Some(db_path) = db_path {
                     let _ = progress_sender.send(AppMessage::OperationPhase {
                         op_id,

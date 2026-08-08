@@ -9,6 +9,19 @@ use crate::{
 };
 
 #[test]
+fn cancellable_archive_scan_stops_before_walking_release_trees() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    initialize_archive(&root, &ArchiveRootManifest::new("Cancelled scan")).unwrap();
+    let cancel = AtomicBool::new(true);
+
+    assert!(matches!(
+        crate::scan_archive_cancellable(&root, &cancel),
+        Err(crate::index::IndexError::Cancelled)
+    ));
+}
+
+#[test]
 fn rejects_parent_traversal() {
     assert!(normalize_relative_path(std::path::Path::new("../escape")).is_err());
 }
@@ -720,9 +733,16 @@ fn release_assets_are_copied_and_indexed_as_authoritative_originals() {
         caption: "front cover",
     };
     crate::add_release_file(&archive, request, &AtomicBool::new(false)).unwrap();
+    let generation_after_add = crate::projection_generation(&archive).unwrap();
     let duplicate =
         crate::add_release_files(&archive, &[request], &AtomicBool::new(false)).unwrap();
     assert!(!duplicate[0].added);
+    assert_eq!(duplicate[0].release_id, ingested.release.archive_release_id);
+    assert_eq!(
+        crate::projection_generation(&archive).unwrap(),
+        generation_after_add,
+        "an idempotent publication must not dirty the projection"
+    );
     let receipt = temp.path().join("receipt.txt");
     std::fs::write(&receipt, b"provenance").unwrap();
     crate::add_physical_copy_file(

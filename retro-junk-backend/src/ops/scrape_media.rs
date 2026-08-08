@@ -172,6 +172,7 @@ pub fn scrape_media(
     } = request;
 
     let mut report = ScrapeMediaReport::default();
+    let mut changed_releases = Vec::new();
     let total = work.len() as u64;
     (ctx.progress)("Scraping media", ProgressUnit::Items, 0, total);
 
@@ -300,6 +301,7 @@ pub fn scrape_media(
         report.fatal_errors.extend(fatal_events.into_inner());
 
         report.archive_assets_changed = run.published > 0;
+        changed_releases.clone_from(&run.changed_releases);
         for outcome in &run.outcomes {
             let Some(item) = work.get(outcome.key as usize) else {
                 continue;
@@ -336,6 +338,21 @@ pub fn scrape_media(
             }
         }
     });
+
+    if !changed_releases.is_empty()
+        && let (Some(profile), Some(db_path)) = (archive_profile.as_ref(), db_path)
+    {
+        (ctx.progress)("Updating artwork index", ProgressUnit::Items, 0, 1);
+        if let Err(error) =
+            super::archive::reconcile_release_files(profile, db_path, &changed_releases, ctx.cancel)
+        {
+            report
+                .fatal_errors
+                .push(format!("Could not update archived artwork index: {error}"));
+        } else {
+            (ctx.progress)("Updating artwork index", ProgressUnit::Items, 1, 1);
+        }
+    }
 
     report
 }

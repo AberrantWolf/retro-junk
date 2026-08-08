@@ -7,6 +7,7 @@ pub mod adopt;
 pub mod assets;
 pub mod collection;
 pub mod evidence;
+pub mod generation;
 pub mod ignore;
 pub mod index;
 pub mod ingest;
@@ -28,10 +29,14 @@ pub use adopt::{
 pub use evidence::{
     dump_catalog_attempted, dump_catalog_evidence, dump_catalog_verified, dump_has_current_evidence,
 };
+pub use generation::{
+    advance_projection_generation, projection_generation, projection_generation_path,
+};
 pub use ignore::{IgnoreRule, IgnoreRules, ignore_directory, load_rules, remove_rule, write_rule};
 pub use index::{
     ArchiveIndexSnapshot, IndexedBuild, IndexedCarrier, IndexedDump, IndexedPhysicalCopy,
     IndexedPhysicalCopyFile, IndexedRelease, IndexedReleaseFile, IndexedVerification, scan_archive,
+    scan_archive_cancellable, scan_archive_release,
 };
 pub use ingest::{
     FileDigests, IngestError, IngestPlan, IngestProgress, IngestRequest, execute_ingest,

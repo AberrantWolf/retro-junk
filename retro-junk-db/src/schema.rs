@@ -48,7 +48,7 @@ pub const PROJECTION_TABLES: &[&str] = &[
 
 /// Bumped whenever a projection table's shape changes. Unlike
 /// [`CURRENT_VERSION`], this never needs a migration arm.
-pub const PROJECTION_VERSION: i32 = 3;
+pub const PROJECTION_VERSION: i32 = 4;
 
 /// Drop and rebuild the projection when its recorded shape is not the one
 /// this build expects.
@@ -359,6 +359,8 @@ const TABLES: &[(&str, &str)] = &[
           archive_root TEXT NOT NULL,
           playable_root TEXT NOT NULL DEFAULT '',
           workspace_root TEXT NOT NULL DEFAULT '',
+          source_generation INTEGER NOT NULL DEFAULT 0,
+          catalog_generation INTEGER NOT NULL DEFAULT 0,
           indexed_at TEXT NOT NULL DEFAULT (datetime('now')))",
     ),
     (
@@ -374,6 +376,7 @@ const TABLES: &[(&str, &str)] = &[
           variant TEXT NOT NULL DEFAULT '',
           manifest_path TEXT NOT NULL,
           manifest_sha256 TEXT NOT NULL,
+          projection_fingerprint TEXT NOT NULL DEFAULT '',
           binding_state TEXT NOT NULL DEFAULT 'unbound',
           UNIQUE(profile_id, manifest_path))",
     ),

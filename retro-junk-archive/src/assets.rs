@@ -54,6 +54,7 @@ pub struct NewPhysicalCopyFile<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddedReleaseFile {
+    pub release_id: ArchiveReleaseId,
     pub destination: PathBuf,
     pub added: bool,
 }
@@ -68,6 +69,7 @@ pub fn add_physical_copy_file(
             request.source_file.display().to_string(),
         ));
     }
+    crate::advance_projection_generation(archive_root)?;
     let snapshot = crate::scan_archive(archive_root)?;
     let physical_copy = snapshot
         .releases
@@ -179,10 +181,14 @@ pub fn add_release_files(
             ));
         }
     }
-    let snapshot = crate::scan_archive(archive_root)?;
     let mut release_directories = HashMap::new();
     let mut existing = HashMap::<(ArchiveReleaseId, &'static str, String, String), PathBuf>::new();
-    for release in snapshot.releases {
+    let requested_release_ids = requests
+        .iter()
+        .map(|request| request.release_id)
+        .collect::<std::collections::HashSet<_>>();
+    for release_id in requested_release_ids {
+        let release = crate::scan_archive_release(archive_root, release_id)?;
         let release_id = release.manifest.archive_release_id;
         for file in release.supporting_files {
             existing.insert(
@@ -199,6 +205,7 @@ pub fn add_release_files(
     }
 
     let mut output = Vec::with_capacity(requests.len());
+    let mut generation_advanced = false;
     for request in requests {
         let (source_size, source_hash) = sha256_file(request.source_file, cancel)?;
         let key = (
@@ -209,6 +216,7 @@ pub fn add_release_files(
         );
         if let Some(destination) = existing.get(&key) {
             output.push(AddedReleaseFile {
+                release_id: request.release_id,
                 destination: destination.clone(),
                 added: false,
             });
@@ -217,6 +225,10 @@ pub fn add_release_files(
         let release_directory = release_directories
             .get(&request.release_id)
             .ok_or(SupportingFileError::ReleaseNotFound(request.release_id))?;
+        if !generation_advanced {
+            crate::advance_projection_generation(archive_root)?;
+            generation_advanced = true;
+        }
         let destination = add_release_file_at(
             release_directory,
             request,
@@ -226,6 +238,7 @@ pub fn add_release_files(
         )?;
         existing.insert(key, destination.clone());
         output.push(AddedReleaseFile {
+            release_id: request.release_id,
             destination,
             added: true,
         });

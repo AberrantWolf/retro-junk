@@ -25,3 +25,12 @@ pub fn projection_indexed_at(
 ) -> Result<Option<String>, String> {
     retro_junk_db::archive_profile_indexed_at(conn, profile_id).map_err(|error| error.to_string())
 }
+
+/// Generation of the authoritative archive tree represented by this profile.
+pub fn projection_source_generation(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<Option<u64>, String> {
+    retro_junk_db::archive_profile_source_generation(conn, profile_id)
+        .map_err(|error| error.to_string())
+}

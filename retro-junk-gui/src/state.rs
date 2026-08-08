@@ -818,7 +818,8 @@ pub enum AppMessage {
         generated: usize,
         failures: Vec<String>,
     },
-    /// Authoritative archive artwork changed; rebuild the Library projection.
+    /// Authoritative archive artwork changed; refresh affected presentation
+    /// data after the backend has committed its targeted projection update.
     ArchiveAssetsChanged,
     ModSearchResults {
         query: String,
@@ -1677,13 +1678,10 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         AppMessage::ArchiveAssetsChanged => {
             app.ui_state.collection_profile_id = None;
             app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
-            if let Some(profile) = app.settings.library.active_profile().cloned() {
-                let _ = app
-                    .message_tx
-                    .send(AppMessage::StartArchiveRefresh { profile });
-            } else {
-                refresh_library_availability(app, ctx);
-            }
+            // The publishing backend has already reconciled the precise
+            // release-file rows. This message invalidates presentation data;
+            // it must never turn a one-file scrape into a whole archive walk.
+            refresh_library_availability(app, ctx);
         }
 
         AppMessage::StartFolderScan => {
