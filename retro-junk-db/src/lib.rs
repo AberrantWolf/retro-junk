@@ -12,6 +12,7 @@ pub mod facts;
 pub mod identify;
 pub mod library;
 pub mod operations;
+pub mod projection_state;
 pub mod queries;
 pub mod schema;
 pub mod work;

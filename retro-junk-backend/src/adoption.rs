@@ -203,7 +203,7 @@ fn adopt_as_master_derivative(
         retro_junk_archive::ArchiveLock::acquire_wait(&ctx.profile.archive_root, cancelled)
             .map_err(WorkError::msg)?
     else {
-        return Err(WorkError::Message("operation cancelled".to_owned()));
+        return Err(WorkError::Cancelled);
     };
     let snapshot =
         retro_junk_archive::scan_archive(&ctx.profile.archive_root).map_err(WorkError::msg)?;

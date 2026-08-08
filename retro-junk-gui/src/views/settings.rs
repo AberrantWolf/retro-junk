@@ -837,10 +837,11 @@ fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         "What the daemon and background runs do unattended. Safe, idempotent work (verify, build, project) defaults to automatic; imports touch files you placed, so they default to review.",
     );
     ui.add_space(4.0);
-    let policy = app
+    let mut policy = app
         .ui_state
         .automation_policy
-        .get_or_insert_with(retro_junk_backend::AutomationPolicy::load);
+        .clone()
+        .unwrap_or_else(retro_junk_backend::AutomationPolicy::load);
     let mut changed = false;
     changed |= ui
         .checkbox(
@@ -920,7 +921,7 @@ fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             ui.label("daily requests in reserve for manual scraping");
         });
     }
-    changed |= show_expected_artwork(ui, policy);
+    changed |= show_expected_artwork(ui, &mut policy);
     changed |= ui
         .checkbox(
             &mut policy.verify_published_bytes,
@@ -935,12 +936,25 @@ fn show_automation_section(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.label("hours (0 = off)");
     });
     if changed {
-        // The badge counts against this set on every paint, so refresh the
-        // resolved copy rather than re-parsing the names per row.
-        app.ui_state.expected_assets = policy.scrape_selection();
-        if let Err(error) = policy.save() {
-            app.push_error("Automation settings", error.to_string());
+        if let Err(unknown) = policy.validate_scrape_asset_types() {
+            app.push_error(
+                "Automation settings",
+                format!("Unknown artwork identifier(s): {}", unknown.join(", ")),
+            );
+            return;
         }
+        match policy.save() {
+            Ok(()) => {
+                // Publish the in-memory policy only after the atomic save has
+                // committed, so a failed write cannot make this process use
+                // settings that will disappear on restart.
+                app.ui_state.expected_assets = policy.scrape_selection();
+                app.ui_state.automation_policy = Some(policy);
+            }
+            Err(error) => app.push_error("Automation settings", error.to_string()),
+        }
+    } else {
+        app.ui_state.automation_policy.get_or_insert(policy);
     }
 }
 
@@ -959,6 +973,12 @@ fn show_expected_artwork(
     ui.add_space(4.0);
     ui.label("Artwork a game is expected to have:");
     ui.weak("Also what the artwork badge counts and what a scrape fetches.");
+    if let Err(unknown) = policy.validate_scrape_asset_types() {
+        ui.colored_label(
+            egui::Color32::LIGHT_RED,
+            format!("Unknown artwork identifier(s): {}", unknown.join(", ")),
+        );
+    }
     let mut selected = policy.scrape_selection();
     ui.horizontal_wrapped(|ui| {
         for asset_type in AssetSelection::all().types {

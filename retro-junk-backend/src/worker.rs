@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 use retro_junk_db::convergence::{ActionKind, Scope, derive_convergence};
 use retro_junk_io::{PhaseProgressFn, ProgressUnit};
 
-use crate::executor::{ActionOutcome, ExecContext, WorkError, execute_action};
+use crate::executor::{ActionOutcome, ExecContext, WorkError, execute_actions};
 use crate::policy::AutomationPolicy;
 
 /// Counters for one run.
@@ -35,6 +35,7 @@ impl RunStats {
             ActionOutcome::Completed { .. } => self.completed += 1,
             ActionOutcome::ClaimHeld(_) | ActionOutcome::ArchiveBusy => self.skipped_busy += 1,
             ActionOutcome::Blocked(_) => self.blocked += 1,
+            ActionOutcome::Failed(_) => self.failed += 1,
             ActionOutcome::Cancelled => self.cancelled += 1,
         }
     }
@@ -59,7 +60,12 @@ const STAGES: &[&[ActionKind]] = &[
     &[ActionKind::AdoptPlayable],
     &[ActionKind::BuildPlayable],
     &[ActionKind::Scrape],
-    &[ActionKind::ProjectAssets, ActionKind::SyncGamelist],
+    // Two stages, not one: a gamelist entry names the artwork files it found in
+    // the media tree, so every asset has to be projected before any gamelist is
+    // written. The stage boundary is what guarantees that ordering, and it only
+    // applies between stages.
+    &[ActionKind::ProjectAssets],
+    &[ActionKind::SyncGamelist],
 ];
 
 /// Behavior differences between explicit runs and the daemon loop.
@@ -139,15 +145,17 @@ pub fn run_once(
         .map_err(|error| WorkError::Message(error.to_string()))?;
     let mut stage_mutated = false;
     let mut any_completed = false;
+    let mut exhausted = false;
     for stage in STAGES {
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
-        let is_projection_stage = stage.contains(&ActionKind::ProjectAssets);
+        let is_projection_stage =
+            stage.contains(&ActionKind::ProjectAssets) || stage.contains(&ActionKind::SyncGamelist);
         if is_projection_stage && projections == ProjectionPass::OnlyAfterMutation && !any_completed
         {
             // Nothing changed this run: existing projections are current.
-            break;
+            continue;
         }
         // Re-derive at each stage boundary so verification results unlock
         // builds and fresh builds unlock projections within one run. The
@@ -157,23 +165,18 @@ pub fn run_once(
             reconcile(ctx, &mut conn, progress)?;
             stage_mutated = false;
         }
-        let actions = derive_convergence(&conn, scope, &ctx.scrape.expected_assets)?
-            .into_iter()
-            .filter(|action| stage.contains(&action.kind))
-            .collect::<Vec<_>>();
-        let queued = actions.len();
-        for (position, action) in actions.into_iter().enumerate() {
-            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                stats.cancelled += 1;
-                break;
-            }
-            if let Some(kinds) = only
-                && !kinds.contains(&action.kind)
-            {
+        // Everything this stage could do, narrowed to what will actually run
+        // before anything is dispatched. Gating afterwards made the queue
+        // counter describe a different set of work than the one executing —
+        // `--only gamelist` reported "[3/600]" — and made the daemon pay a
+        // claim and a lock cycle to discover it was not allowed to proceed.
+        let mut queue = Vec::new();
+        for action in derive_convergence(&conn, scope, &ctx.scrape.expected_assets)? {
+            if !stage.contains(&action.kind) {
                 continue;
             }
-            if limit.is_some_and(|limit| executed >= limit) {
-                break;
+            if only.is_some_and(|kinds| !kinds.contains(&action.kind)) {
+                continue;
             }
             if mode == RunMode::Daemon {
                 if !daemon_may_run(action.kind, policy) {
@@ -195,26 +198,42 @@ pub fn run_once(
                 stats.blocked += 1;
                 continue;
             }
-            executed += 1;
-            // Say where in the queue this is. Each action reports progress for
-            // its own single target — an audit says "dump 1 of 1" — so without
-            // the queue position a run over forty discs looks exactly like one
-            // disc being reworked over and over.
-            let queue_position = format!("[{}/{queued}] ", position + 1);
-            let placed = |phase: &str, unit: ProgressUnit, current: u64, total: u64| {
-                progress(&format!("{queue_position}{phase}"), unit, current, total);
-            };
-            placed(&action.label, ProgressUnit::Items, 0, 0);
-            let outcome = execute_action(ctx, &action, &placed, cancelled)?;
-            if matches!(outcome, ActionOutcome::Completed { .. }) {
-                stage_mutated = true;
-                any_completed = true;
-            } else if let ActionOutcome::Blocked(reason) = &outcome {
-                log::warn!("{}: {}", action.label, reason);
-                stats.failed += 1;
-                continue;
+            if let Some(limit) = limit
+                && executed + queue.len() >= limit
+            {
+                exhausted = true;
+                break;
+            }
+            queue.push(action);
+        }
+        executed += queue.len();
+        // A limit reached exactly at the end of a stage is still reached: without
+        // this, every remaining stage paid for a full derivation only to find its
+        // first action was one too many.
+        exhausted |= limit.is_some_and(|limit| executed >= limit);
+
+        // One batch, so the connection, the whole-archive lock, and the walk
+        // behind the shared scan are paid for once for the whole stage rather
+        // than once per item.
+        let outcomes = execute_actions(ctx, &queue, progress, cancelled)?;
+        for (action, outcome) in queue.iter().zip(outcomes) {
+            match &outcome {
+                ActionOutcome::Completed { .. } => {
+                    any_completed = true;
+                    // Only work that changed the archive owes a reconcile.
+                    // Keying this on "did anything complete" made a converged
+                    // run pay for a whole extra archive walk to write down that
+                    // the frontend tree, which is not part of the archive, had
+                    // been refreshed.
+                    stage_mutated |= crate::executor::changes_the_archive(action.kind);
+                }
+                ActionOutcome::Failed(reason) => log::warn!("{}: {reason}", action.label),
+                _ => {}
             }
             stats.absorb(&outcome);
+        }
+        if exhausted {
+            break;
         }
     }
     // The final stage's mutations still owe one projection refresh.

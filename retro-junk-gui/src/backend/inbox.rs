@@ -62,12 +62,14 @@ pub fn apply(
         OperationKind::ArchiveImport,
         "archive".to_owned(),
         ProgressDisplay::Count,
-        move |op_id, cancel, sender| {
+        move |_op_id, cancel, sender| {
             let result =
                 retro_junk_backend::apply_suggestion_choice(&exec, id, choice.as_deref(), &cancel)
                     .map_err(|error| error.to_string());
-            let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
             let _ = sender.send(AppMessage::InboxChanged);
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::ArchiveOperationComplete { result }
+            })
         },
     );
     ctx.request_repaint_after(std::time::Duration::from_millis(20));
@@ -100,8 +102,10 @@ pub fn apply_many(app: &mut RetroJunkApp, ids: Vec<i64>, ctx: &egui::Context) {
                 &OpCtx::new(&cancel, &progress),
                 on_applied,
             );
-            let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
             let _ = sender.send(AppMessage::InboxChanged);
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::ArchiveOperationComplete { result }
+            })
         },
     );
     ctx.request_repaint_after(std::time::Duration::from_millis(20));
@@ -250,8 +254,10 @@ pub fn retry_package(app: &mut RetroJunkApp, package: &IncomingPackage, ctx: &eg
                 &path,
                 &OpCtx::new(&cancel, &progress),
             );
-            let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
             let _ = sender.send(AppMessage::InboxChanged);
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::ArchiveOperationComplete { result }
+            })
         },
     );
     ctx.request_repaint_after(std::time::Duration::from_millis(20));

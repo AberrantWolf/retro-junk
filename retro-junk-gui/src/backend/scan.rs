@@ -39,7 +39,7 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
         String::new(),
         ProgressDisplay::Count,
         move |_op_id, cancel, tx| {
-            match retro_junk_backend::ops::scan::discover_console_folders(
+            let lifecycle = match retro_junk_backend::ops::scan::discover_console_folders(
                 &context,
                 &root,
                 archive_root.as_deref(),
@@ -59,13 +59,16 @@ pub fn scan_root_folder(app: &mut RetroJunkApp, root: PathBuf, ctx: &egui::Conte
                             });
                         }
                     }
+                    Ok(())
                 }
                 Err(e) => {
                     log::warn!("Failed to scan root folder: {e}");
+                    Err(e.to_string())
                 }
-            }
+            };
             let _ = tx.send(AppMessage::FolderScanComplete);
             ctx.request_repaint();
+            lifecycle
         },
     );
 }
@@ -176,7 +179,7 @@ fn start_console_scan(app: &mut RetroJunkApp, target: ConsoleScanTarget, ctx: &e
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             let progress = forward_phases(op_id, tx.clone());
-            match retro_junk_backend::ops::scan::scan_console(
+            let lifecycle = match retro_junk_backend::ops::scan::scan_console(
                 &context,
                 db_path.as_deref(),
                 &request,
@@ -193,22 +196,26 @@ fn start_console_scan(app: &mut RetroJunkApp, target: ConsoleScanTarget, ctx: &e
                         loose_disc_files: outcome.loose_disc_files,
                         fingerprint: outcome.fingerprint,
                     });
+                    Ok(())
                 }
                 Err(ConsoleScanError::Failed(message)) => {
+                    let lifecycle_error = message.clone();
                     let _ = tx.send(AppMessage::ConsoleScanFailed {
                         folder_name: folder_name.clone(),
                         error: Some(message),
                     });
+                    Err(lifecycle_error)
                 }
                 Err(ConsoleScanError::Cancelled) => {
                     let _ = tx.send(AppMessage::ConsoleScanFailed {
                         folder_name: folder_name.clone(),
                         error: None,
                     });
+                    Ok(())
                 }
-            }
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
+            };
             ctx.request_repaint();
+            lifecycle
         },
     );
 }
@@ -233,6 +240,7 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
 
     let context = app.context.clone();
     let folder_name = console.folder_name.clone();
+    let folder_path = console.folder_path.clone();
     let platform = console.platform;
     let db_path = app.db_path.clone();
     let ctx = ctx.clone();
@@ -253,6 +261,7 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
             if let Some(entries) = retro_junk_backend::ops::scan::analyze_entries(
                 &context,
                 platform,
+                &folder_path,
                 db_path.as_deref(),
                 selected,
                 &OpCtx::new(&cancel, &progress),
@@ -263,8 +272,8 @@ pub fn rescan_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 });
             }
 
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
             ctx.request_repaint();
+            Ok(())
         },
     );
 }

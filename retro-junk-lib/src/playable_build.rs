@@ -27,13 +27,10 @@ pub struct PlayableBuildRequest {
     /// Concrete console folder in the playable library (for example `psx`
     /// even when the archive/catalog canonical identifier is `ps1`).
     pub playable_platform_id: String,
-    /// Logical catalog disc count. Values greater than one enable playlist
-    /// projection only after every disc in this physical set has been built.
-    pub expected_disc_count: u32,
-    /// DAT-canonical filename stem used by the ordinary Rename operation.
-    pub canonical_output_stem: String,
-    /// DAT-canonical release name with any per-disc suffix removed.
-    pub canonical_release_name: String,
+    /// The single naming authority used for the output, playlist and later
+    /// conformance checks. Catalog and archive fallback facts travel together
+    /// so callers cannot derive a file name and release name independently.
+    pub canonical_name: crate::naming::CanonicalName,
 }
 
 #[derive(Debug, Clone)]
@@ -260,7 +257,7 @@ pub fn build_playable(
             1,
             1,
         );
-        if request.expected_disc_count > 1 {
+        if request.canonical_name.expected_disc_count > 1 {
             project_selected_playlist(request, &request.dump_id)?;
         }
         return Ok(PlayableBuildOutcome {
@@ -283,7 +280,7 @@ pub fn build_playable(
             dump.manifest.format, request.format
         ))),
     }?;
-    if request.expected_disc_count > 1 {
+    if request.canonical_name.expected_disc_count > 1 {
         progress("Updating multi-disc playlist", ProgressUnit::Items, 0, 0);
         project_selected_playlist(request, &request.dump_id)?;
     }
@@ -819,24 +816,28 @@ pub(crate) fn find_input(
 ///
 /// The caller resolved the catalog name already (it has the connection); an
 /// empty one leaves the archive manifest to name the file.
-fn name_inputs<'a>(
-    request: &'a PlayableBuildRequest,
-    release: &'a IndexedRelease,
-    carrier: &'a IndexedCarrier,
-) -> crate::naming::NameInputs<'a> {
-    crate::naming::NameInputs {
-        // A resolved catalog stem is already whole-medium-corrected, so it is
-        // passed as the name itself rather than re-derived from a rom_name.
-        dat_name: request.canonical_output_stem.trim(),
-        rom_name: "",
-        medium_has_tracks: false,
-        title: &release.manifest.title,
-        region: &release.manifest.region,
-        revision: &release.manifest.revision,
-        variant: &release.manifest.variant,
-        disc_number: carrier.manifest.sequence_number,
-        disc_count: request.expected_disc_count,
+fn name_inputs(
+    request: &PlayableBuildRequest,
+    release: &IndexedRelease,
+    carrier: &IndexedCarrier,
+) -> crate::naming::CanonicalName {
+    let mut name = request.canonical_name.clone();
+    if name.title.is_empty() {
+        name.title.clone_from(&release.manifest.title);
     }
+    if name.region.is_empty() {
+        name.region.clone_from(&release.manifest.region);
+    }
+    if name.revision.is_empty() {
+        name.revision.clone_from(&release.manifest.revision);
+    }
+    if name.variant.is_empty() {
+        name.variant.clone_from(&release.manifest.variant);
+    }
+    if name.disc_number == 0 {
+        name.disc_number = carrier.manifest.sequence_number;
+    }
+    name
 }
 
 fn playable_output_stem(
@@ -860,7 +861,7 @@ fn playable_output_directory(
     let base = request
         .playable_root
         .join(retro_junk_archive::slugify(platform));
-    if request.expected_disc_count > 1 && carrier.manifest.sequence_number > 0 {
+    if request.canonical_name.expected_disc_count > 1 && carrier.manifest.sequence_number > 0 {
         base.join(format!("{}.m3u", canonical_release_name(request, release)))
     } else {
         base
@@ -870,17 +871,20 @@ fn playable_output_directory(
 /// What a multi-disc set's `.m3u` directory is called: the release's name
 /// with no disc suffix, since the folder holds every disc.
 fn canonical_release_name(request: &PlayableBuildRequest, release: &IndexedRelease) -> String {
-    crate::naming::canonical_release_stem(&crate::naming::NameInputs {
-        dat_name: request.canonical_release_name.trim(),
-        rom_name: "",
-        medium_has_tracks: false,
-        title: &release.manifest.title,
-        region: &release.manifest.region,
-        revision: &release.manifest.revision,
-        variant: &release.manifest.variant,
-        disc_number: 0,
-        disc_count: 0,
-    })
+    let mut name = request.canonical_name.clone();
+    if name.title.is_empty() {
+        name.title.clone_from(&release.manifest.title);
+    }
+    if name.region.is_empty() {
+        name.region.clone_from(&release.manifest.region);
+    }
+    if name.revision.is_empty() {
+        name.revision.clone_from(&release.manifest.revision);
+    }
+    if name.variant.is_empty() {
+        name.variant.clone_from(&release.manifest.variant);
+    }
+    crate::naming::canonical_release_stem(&name)
 }
 
 fn project_selected_playlist(
@@ -904,7 +908,7 @@ fn project_selected_playlist(
     let mut discs = Vec::new();
     for carrier in &copy.carriers {
         let sequence = carrier.manifest.sequence_number;
-        if sequence == 0 || sequence > request.expected_disc_count {
+        if sequence == 0 || sequence > request.canonical_name.expected_disc_count {
             continue;
         }
         // Each disc is listed at the location it is actually in. A disc whose
@@ -934,7 +938,7 @@ fn project_selected_playlist(
     }
     discs.sort_by_key(|(sequence, _)| *sequence);
     discs.dedup_by_key(|(sequence, _)| *sequence);
-    if discs.len() != request.expected_disc_count as usize
+    if discs.len() != request.canonical_name.expected_disc_count as usize
         || discs
             .iter()
             .enumerate()
@@ -1033,9 +1037,10 @@ mod tests {
             retain_intermediate: false,
             options: std::collections::BTreeMap::new(),
             playable_platform_id: "nes".to_owned(),
-            expected_disc_count: 1,
-            canonical_output_stem: String::new(),
-            canonical_release_name: String::new(),
+            canonical_name: crate::naming::CanonicalName {
+                expected_disc_count: 1,
+                ..Default::default()
+            },
         };
         let outcome = build_playable(&request, &|_, _, _, _| {}, &AtomicBool::new(false)).unwrap();
         assert_eq!(
@@ -1109,9 +1114,13 @@ mod tests {
             retain_intermediate: false,
             options: std::collections::BTreeMap::new(),
             playable_platform_id: "psx".to_owned(),
-            expected_disc_count: 2,
-            canonical_output_stem: format!("Two Disc Game (USA) (Disc {sequence})"),
-            canonical_release_name: "Two Disc Game (USA)".to_owned(),
+            canonical_name: crate::naming::CanonicalName {
+                dat_name: format!("Two Disc Game (USA) (Disc {sequence})"),
+                rom_name: format!("Two Disc Game (USA) (Disc {sequence}).bin"),
+                disc_number: sequence,
+                expected_disc_count: 2,
+                ..Default::default()
+            },
         };
         build_playable(
             &request(ingested[0].clone(), 1),
@@ -1209,9 +1218,11 @@ cp "$input" "$output"
             retain_intermediate: false,
             options: std::collections::BTreeMap::new(),
             playable_platform_id: "gamecube".to_owned(),
-            expected_disc_count: 1,
-            canonical_output_stem: "Game".to_owned(),
-            canonical_release_name: "Game".to_owned(),
+            canonical_name: crate::naming::CanonicalName {
+                dat_name: "Game".to_owned(),
+                expected_disc_count: 1,
+                ..Default::default()
+            },
         };
         let outcome = build_playable(&request, &|_, _, _, _| {}, &AtomicBool::new(false)).unwrap();
         assert_eq!(std::fs::read(&outcome.output).unwrap(), b"disc image");

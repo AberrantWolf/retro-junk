@@ -2416,6 +2416,7 @@ fn a_mod_waits_for_the_parent_dat_instead_of_inventing_one() {
 /// fully identified set of discs still reads as unidentified, with no way to
 /// say why.
 #[test]
+#[allow(clippy::too_many_lines)]
 fn a_release_takes_the_catalog_identity_its_carriers_prove_by_content() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("archive");

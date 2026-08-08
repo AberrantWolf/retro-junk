@@ -78,7 +78,9 @@ pub fn run_action(
                 &action,
                 &OpCtx::new(&cancel, &progress),
             );
-            let _ = sender.send(AppMessage::PlayableBuildComplete { op_id, result });
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::PlayableBuildComplete { op_id, result }
+            })
         },
     );
     ctx.request_repaint_after(std::time::Duration::from_millis(20));
@@ -107,10 +109,24 @@ pub fn run_scope(app: &mut RetroJunkApp, scope: Scope, ctx: &egui::Context) {
                 &scope,
                 &OpCtx::new(&cancel, &progress),
             );
-            let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::ArchiveOperationComplete { result }
+            })
         },
     );
     ctx.request_repaint_after(std::time::Duration::from_millis(20));
+}
+
+/// Converge a hand-picked set of releases — a multi-row selection.
+///
+/// The same run as [`run_scope`] with the scope narrowed to the chosen rows, so
+/// selecting one game and selecting eight differ only in how much work the
+/// batch carries, not in what happens to each one.
+pub fn run_releases(app: &mut RetroJunkApp, releases: Vec<String>, ctx: &egui::Context) {
+    if releases.is_empty() {
+        return;
+    }
+    run_scope(app, Scope::Releases(releases), ctx);
 }
 
 /// Re-run one action kind for one archive release — the badge popover's
@@ -144,7 +160,9 @@ pub fn run_release_kind(
                 &label,
                 &OpCtx::new(&cancel, &progress),
             );
-            let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::ArchiveOperationComplete { result }
+            })
         },
     );
     ctx.request_repaint_after(std::time::Duration::from_millis(20));
@@ -181,7 +199,9 @@ pub fn force_rebuild_playable(
                 &label,
                 &OpCtx::new(&cancel, &progress),
             );
-            let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::ArchiveOperationComplete { result }
+            })
         },
     );
     ctx.request_repaint_after(std::time::Duration::from_millis(20));

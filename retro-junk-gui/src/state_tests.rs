@@ -254,7 +254,6 @@ fn completed_hash_batch_persists_after_its_console_projection_is_evicted() {
             disc_identifications_json: None,
             broken_references_json: None,
             ambiguous_candidates_json: None,
-            cue_compat_issues_json: None,
         };
         let scanned = retro_junk_db::ScannedLibraryEntry {
             entry_key: retro_junk_db::file_source_key(Path::new("game.bin")).unwrap(),
@@ -626,29 +625,90 @@ fn operation_phase_replaces_completed_byte_progress_with_matching_status() {
         "ps1".into(),
         ProgressDisplay::Bytes,
     );
-    operation.progress_current = 100;
-    operation.progress_total = 100;
+    operation.phase = OperationPhase {
+        label: "Reading files".into(),
+        optional_step: None,
+        progress: OperationProgress::Determinate {
+            completed: 100,
+            total: 100,
+            unit: OperationUnit::Bytes,
+        },
+    };
     app.operations.push(operation);
 
     handle_message(
         &mut app,
         AppMessage::OperationPhase {
             op_id: 42,
-            description: "Matching 20 hashed file(s) against the catalog".into(),
-            display: ProgressDisplay::Count,
-            current: 0,
-            total: 0,
+            phase: OperationPhase {
+                label: "Matching 20 hashed file(s) against the catalog".into(),
+                optional_step: None,
+                progress: OperationProgress::Determinate {
+                    completed: 0,
+                    total: 20,
+                    unit: OperationUnit::Items,
+                },
+            },
         },
         &dummy_ctx(),
     );
 
     let operation = &app.operations[0];
     assert_eq!(
-        operation.description,
+        operation.phase.label,
         "Matching 20 hashed file(s) against the catalog"
     );
-    assert_eq!(operation.display, ProgressDisplay::Count);
-    assert_eq!(operation.progress_total, 0);
+    assert_eq!(
+        operation.phase.progress,
+        OperationProgress::Determinate {
+            completed: 0,
+            total: 20,
+            unit: OperationUnit::Items,
+        }
+    );
+}
+
+#[test]
+fn progress_updates_coalesce_and_success_finishes_the_declared_total() {
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let sender = AppMessageSender::new(tx);
+    for completed in 0..100 {
+        sender
+            .send(AppMessage::OperationPhase {
+                op_id: 7,
+                phase: OperationPhase {
+                    label: "Hashing".into(),
+                    optional_step: None,
+                    progress: OperationProgress::Determinate {
+                        completed,
+                        total: 100,
+                        unit: OperationUnit::Items,
+                    },
+                },
+            })
+            .unwrap();
+    }
+    let pending = sender.drain_operation_phases();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        pending[0].1.progress,
+        OperationProgress::Determinate {
+            completed: 99,
+            total: 100,
+            unit: OperationUnit::Items,
+        }
+    );
+
+    sender.finish_determinate_phase(7);
+    let final_phase = sender.drain_operation_phases();
+    assert_eq!(
+        final_phase[0].1.progress,
+        OperationProgress::Determinate {
+            completed: 100,
+            total: 100,
+            unit: OperationUnit::Items,
+        }
+    );
 }
 
 #[test]
@@ -699,7 +759,6 @@ fn chd_compress_complete_does_not_patch_loaded_entry_projection() {
         warnings: Vec::new(),
     });
     entry.broken_references = Some(Vec::new());
-    entry.cue_compat_issues = Some(Vec::new());
     app.browser.consoles.push(test_console("psx", vec![entry]));
 
     let job = retro_junk_lib::chd_convert::CompressionJob {
@@ -740,7 +799,6 @@ fn chd_compress_complete_does_not_patch_loaded_entry_projection() {
     assert_eq!(path, &input, "completion must not patch UI-owned state");
     assert!(console.entries[0].hashes.is_some());
     assert!(console.entries[0].broken_references.is_some());
-    assert!(console.entries[0].cue_compat_issues.is_some());
 }
 
 #[test]

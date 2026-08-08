@@ -151,7 +151,7 @@ pub fn restore_archived_media_for_release(
         OperationKind::Other,
         folder_name,
         ProgressDisplay::Count,
-        move |op_id, cancel, tx| {
+        move |_op_id, cancel, tx| {
             let result = retro_junk_backend::ops::assets::restore_archived_release_assets(
                 &profile.archive_root,
                 &release_id,
@@ -159,7 +159,9 @@ pub fn restore_archived_media_for_release(
                 frontend_stems,
                 &cancel,
             );
-            let _ = tx.send(AppMessage::AssetProjectionComplete { op_id, result });
+            crate::backend::worker::deliver_result(&tx, result, |result| {
+                AppMessage::AssetProjectionComplete { result }
+            })
         },
     );
 }
@@ -409,14 +411,16 @@ fn scrape_media_for_selection(
                     error: failure.error,
                 });
             }
+            let fatal_error =
+                (!report.fatal_errors.is_empty()).then(|| report.fatal_errors.join("; "));
             for message in report.fatal_errors {
                 let _ = tx.send(AppMessage::ScrapeFatalError { message, op_id });
             }
             if report.archive_assets_changed {
                 let _ = tx.send(AppMessage::ArchiveAssetsChanged);
             }
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
             ui_ctx.request_repaint();
+            fatal_error.map_or(Ok(()), Err)
         },
     );
 }
@@ -517,7 +521,7 @@ pub fn regenerate_miximages_for_selection(
                 },
                 &OpCtx::new(&cancel, &progress),
             );
-            match outcome {
+            let lifecycle = match outcome {
                 Ok(report) => {
                     deliver_media_updates(
                         &tx,
@@ -533,16 +537,19 @@ pub fn regenerate_miximages_for_selection(
                         generated: report.generated,
                         failures: report.failures,
                     });
+                    Ok(())
                 }
                 Err(error) => {
+                    let lifecycle_error = error.clone();
                     let _ = tx.send(AppMessage::MiximageComplete {
                         generated: 0,
                         failures: vec![error],
                     });
+                    Err(lifecycle_error)
                 }
-            }
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
+            };
             ui_ctx.request_repaint();
+            lifecycle
         },
     );
 }

@@ -692,7 +692,6 @@ pub fn build_release_playable(
 
     // Canonical output names from the catalog media bound to each carrier.
     let mut canonical_names = HashMap::new();
-    let mut catalog_game_names = Vec::new();
     for carrier in &gap.carriers {
         let Some(media_id) = carrier.catalog_media_id.as_deref() else {
             continue;
@@ -702,7 +701,6 @@ pub fn build_release_playable(
         else {
             continue;
         };
-        catalog_game_names.push(media.dat_name.clone());
         // A playable is the whole medium. For a multi-track disc the catalog's
         // `rom_name` is its largest *track* file, so naming the container after
         // it produced "… (Track 1).chd" — and the same stem then reached the
@@ -712,18 +710,23 @@ pub fn build_release_playable(
             .is_empty();
         canonical_names.insert(
             carrier.carrier_id.clone(),
-            retro_junk_dat::tracks::whole_medium_stem(
-                &media.dat_name,
-                &media.rom_name,
-                multi_track,
-            ),
+            crate::naming::CanonicalName {
+                dat_name: media.dat_name,
+                rom_name: media.rom_name,
+                medium_has_tracks: multi_track,
+                title: gap.title.clone(),
+                region: gap.region.clone(),
+                disc_number: carrier.sequence_number,
+                expected_disc_count: gap.expected_disc_count,
+                ..Default::default()
+            },
         );
     }
-    let game_name_refs = catalog_game_names
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    let canonical_release_name = retro_junk_core::disc::derive_base_game_name(&game_name_refs);
+    let canonical_release_name = canonical_names
+        .values()
+        .next()
+        .map(crate::naming::canonical_release_stem)
+        .unwrap_or_default();
 
     let mut built = Vec::new();
     for carrier in &gap.carriers {
@@ -748,12 +751,16 @@ pub fn build_release_playable(
                 retain_intermediate: gap.retain_intermediate,
                 options: request.options.clone(),
                 playable_platform_id: request.playable_platform_id.clone(),
-                expected_disc_count: gap.expected_disc_count,
-                canonical_output_stem: canonical_names
+                canonical_name: canonical_names
                     .get(&carrier.carrier_id)
                     .cloned()
-                    .unwrap_or_default(),
-                canonical_release_name: canonical_release_name.clone(),
+                    .unwrap_or_else(|| crate::naming::CanonicalName {
+                        title: gap.title.clone(),
+                        region: gap.region.clone(),
+                        disc_number: carrier.sequence_number,
+                        expected_disc_count: gap.expected_disc_count,
+                        ..Default::default()
+                    }),
             },
             &|description, unit, current, total| {
                 progress(
@@ -976,6 +983,7 @@ pub fn adopt_moved_playables(
 /// Conservative by construction: only current complete-track evidence counts,
 /// a carrier that already has a current build is left alone, and a digest
 /// matching more than one unbound file adopts none of them.
+#[allow(clippy::too_many_lines)]
 pub fn adopt_unbuilt_playables(
     request: &AdoptionRequest<'_>,
     conn: &retro_junk_db::Connection,

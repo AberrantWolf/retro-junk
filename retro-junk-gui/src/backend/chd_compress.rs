@@ -66,7 +66,7 @@ pub fn open_compress_dialog(app: &mut RetroJunkApp, console_idx: usize, entry_in
         OperationKind::ChdCompress,
         scope,
         ProgressDisplay::Count,
-        move |op_id, _cancel, tx| {
+        move |_op_id, _cancel, tx| {
             let prompt = retro_junk_backend::ops::chd_compress::plan_prompt(
                 &context,
                 platform,
@@ -76,7 +76,7 @@ pub fn open_compress_dialog(app: &mut RetroJunkApp, console_idx: usize, entry_in
                 crate::widgets::icons::ARROW_RIGHT,
             );
             let _ = tx.send(AppMessage::ChdCompressPromptReady { prompt });
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
+            Ok(())
         },
     );
 }
@@ -127,15 +127,13 @@ pub fn start_compression(app: &mut RetroJunkApp, ctx: &egui::Context) {
             // description set at spawn time stays put.
             let progress_tx = tx.clone();
             let progress_ctx = ctx.clone();
-            let progress =
-                move |_phase: &str, _unit: retro_junk_io::ProgressUnit, current, total| {
-                    let _ = progress_tx.send(AppMessage::OperationProgress {
-                        op_id,
-                        current,
-                        total,
-                    });
-                    progress_ctx.request_repaint();
-                };
+            let progress = move |phase: &str, unit: retro_junk_io::ProgressUnit, current, total| {
+                let _ = progress_tx.send(AppMessage::OperationPhase {
+                    op_id,
+                    phase: crate::state::OperationPhase::reported(phase, unit, current, total),
+                });
+                progress_ctx.request_repaint();
+            };
             let results = retro_junk_backend::ops::chd_compress::run_compression(
                 &chdman,
                 &items,
@@ -147,8 +145,8 @@ pub fn start_compression(app: &mut RetroJunkApp, ctx: &egui::Context) {
                 rescan_target,
                 results,
             });
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
             ctx.request_repaint();
+            Ok(())
         },
     );
 }

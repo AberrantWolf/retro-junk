@@ -89,7 +89,9 @@ pub fn run_action(
             "the archive is busy; {} will be retried",
             action.label
         )),
-        Ok(crate::ActionOutcome::Blocked(reason)) => Err(reason),
+        Ok(crate::ActionOutcome::Blocked(reason) | crate::ActionOutcome::Failed(reason)) => {
+            Err(reason)
+        }
         Ok(crate::ActionOutcome::Cancelled) => Err(format!("{} was cancelled", action.label)),
         Err(error) => Err(error.to_string()),
     }

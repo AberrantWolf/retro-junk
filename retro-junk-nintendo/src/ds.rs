@@ -13,8 +13,8 @@ use retro_junk_core::ReadSeek;
 use std::io::SeekFrom;
 
 use retro_junk_core::{
-    AnalysisError, AnalysisOptions, ChecksumAlgorithm, ExpectedChecksum, Platform, RomAnalyzer,
-    RomIdentification,
+    AnalysisError, AnalysisOptions, ChecksumAlgorithm, DumpExtent, ExpectedChecksum, Platform,
+    RomAnalyzer, RomIdentification,
 };
 
 // ---------------------------------------------------------------------------
@@ -248,12 +248,11 @@ fn record_size_and_trim(id: &mut RomIdentification, header: &NdsHeader, file_siz
             id.expected_size = file_size;
 
             if file_size == used_size {
-                id.extra.insert("dump_status".into(), "Trimmed".into());
+                id.dump_extent = Some(DumpExtent::Trimmed);
             } else if chip_capacity.is_some_and(|cap| file_size == cap) {
-                id.extra.insert("dump_status".into(), "Untrimmed".into());
+                id.dump_extent = Some(DumpExtent::Full);
             } else {
-                id.extra
-                    .insert("dump_status".into(), "Partially trimmed".into());
+                id.dump_extent = Some(DumpExtent::PartiallyTrimmed);
             }
         } else if file_size > used_size && chip_capacity.is_none() {
             // No valid chip capacity to compare; file has all the data it needs
@@ -262,10 +261,20 @@ fn record_size_and_trim(id: &mut RomIdentification, header: &NdsHeader, file_siz
             // file_size < used_size → actually truncated
             // file_size > chip_capacity → oversized (shouldn't happen normally)
             id.expected_size = used_size;
+            id.dump_extent = Some(if file_size < used_size {
+                DumpExtent::Truncated
+            } else {
+                DumpExtent::Oversized
+            });
         }
     } else if let Some(cap) = chip_capacity {
         // Fallback: use device capacity if used ROM size is missing
         id.expected_size = cap;
+        id.dump_extent = Some(match file_size.cmp(&cap) {
+            std::cmp::Ordering::Less => DumpExtent::Truncated,
+            std::cmp::Ordering::Equal => DumpExtent::Full,
+            std::cmp::Ordering::Greater => DumpExtent::Oversized,
+        });
     }
 
     // Report device (cartridge chip) capacity for informational purposes

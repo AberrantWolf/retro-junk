@@ -134,8 +134,8 @@ pub fn rename_selected_entries(app: &mut RetroJunkApp, console_idx: usize, ctx: 
                 rescan_target,
                 results,
             });
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
             ctx.request_repaint();
+            Ok(())
         },
     );
 }

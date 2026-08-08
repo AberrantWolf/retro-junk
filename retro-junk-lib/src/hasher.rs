@@ -142,66 +142,6 @@ pub fn compute_all_hashes(
     compute_hashes_internal(reader, analyzer, HashAlgorithms::All, None, file_path)
 }
 
-/// Specification for padding bytes to prepend/append when computing hashes.
-#[derive(Debug, Clone)]
-pub struct PaddingSpec {
-    /// Bytes of fill to prepend before the file data
-    pub prepend_size: u64,
-    /// Bytes of fill to append after the file data
-    pub append_size: u64,
-    /// Fill byte value (typically 0x00 or 0xFF)
-    pub fill_byte: u8,
-}
-
-/// Compute CRC32 and SHA1 of a file with virtual padding prepended/appended.
-///
-/// Hashes `[prepend padding] + [file data after header skip] + [append padding]`
-/// in a single streaming pass. Padding bytes are NOT run through the normalizer
-/// (0x00 and 0xFF are byte-order invariant).
-///
-/// Returns `data_size = prepend + (file_size - skip) + append`.
-pub fn compute_crc32_sha1_with_padding(
-    reader: &mut dyn ReadSeek,
-    analyzer: &dyn RomAnalyzer,
-    padding: &PaddingSpec,
-) -> Result<FileHashes, DatError> {
-    let (file_data_size, mut normalizer) = setup_stream(reader, analyzer)?;
-    let total_data_size = padding.prepend_size + file_data_size + padding.append_size;
-
-    let mut hasher = MultiHasher::new(HashAlgorithms::Crc32Sha1, total_data_size, None);
-
-    // Phase 1: prepend padding (not normalized)
-    stream_padding(padding.prepend_size, padding.fill_byte, |chunk| {
-        hasher.update(chunk);
-    });
-
-    // Phase 2: file data (normalized if applicable)
-    stream_chunks(reader, &mut normalizer, |chunk| {
-        hasher.update(chunk);
-    })?;
-
-    // Phase 3: append padding (not normalized)
-    stream_padding(padding.append_size, padding.fill_byte, |chunk| {
-        hasher.update(chunk);
-    });
-
-    Ok(hasher.finalize())
-}
-
-/// Stream `size` bytes of `fill_byte` in `CHUNK_SIZE` blocks to the callback.
-fn stream_padding(size: u64, fill_byte: u8, mut on_chunk: impl FnMut(&[u8])) {
-    if size == 0 {
-        return;
-    }
-    let fill_buf = vec![fill_byte; CHUNK_SIZE];
-    let mut remaining = size;
-    while remaining > 0 {
-        let n = std::cmp::min(remaining, CHUNK_SIZE as u64) as usize;
-        on_chunk(&fill_buf[..n]);
-        remaining -= n as u64;
-    }
-}
-
 #[cfg(test)]
 #[path = "tests/hasher_tests.rs"]
 mod tests;

@@ -129,6 +129,14 @@ pub(crate) fn run_sync(args: SyncArgs) -> Result<(), CliError> {
     reconcile_projection(&exec)?;
     let conn = retro_junk_db::open_database(&exec.db_path)
         .map_err(|error| CliError::database(error.to_string()))?;
+    if args.force_projections {
+        // Projections are derived as current from the archive facts they were
+        // made from, which cannot see a media file somebody deleted by hand.
+        // Forgetting makes the next derivation propose them all again.
+        let forgotten = retro_junk_db::projection_state::forget_projections(&conn, &scope)
+            .map_err(|error| CliError::database(error.to_string()))?;
+        log::info!("Forgot {forgotten} projection record(s); they will be redone");
+    }
 
     if args.dry_run {
         let actions = derive_convergence(&conn, &scope, &exec.scrape.expected_assets)

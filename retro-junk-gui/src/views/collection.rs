@@ -6,8 +6,7 @@ use retro_junk_backend::completion::{Fraction, FractionLevel};
 
 use crate::app::RetroJunkApp;
 use crate::state::{
-    AppMessage, BackgroundOperation, DumpImportDialogState, OperationKind, PhysicalCopyEditor,
-    ProgressDisplay, next_operation_id,
+    AppMessage, DumpImportDialogState, OperationKind, PhysicalCopyEditor, ProgressDisplay,
 };
 
 enum ImportModalAction {
@@ -67,7 +66,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             .clicked()
             && let Some(source) = rfd::FileDialog::new().pick_folder()
         {
-            start_dump_import_planning(app, &profile, source, false);
+            start_dump_import_planning(app, &profile, source, false, None);
         }
         if ui
             .add_enabled(
@@ -80,7 +79,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
                 .set_directory(&profile.playable_root)
                 .pick_folder()
         {
-            start_dump_import_planning(app, &profile, source, true);
+            start_dump_import_planning(app, &profile, source, true, None);
         }
     });
     if !archive_initialized {
@@ -359,7 +358,6 @@ fn load_editor(
         desired_format: details.desired_format.unwrap_or_default().replace('_', "-"),
         retain_intermediate: details.retain_intermediate,
         allow_unverified: details.allow_unverified,
-        ingest_format: "rom".to_owned(),
         release_asset_type: "cover".to_owned(),
     })
 }
@@ -476,15 +474,6 @@ fn show_editor(
             &mut editor.retain_intermediate,
             "Retain canonical intermediate",
         );
-        ui.end_row();
-        ui.label("New dump format");
-        egui::ComboBox::from_id_salt("archive_ingest_format")
-            .selected_text(&editor.ingest_format)
-            .show_ui(ui, |ui| {
-                for format in ["rom", "redumper-raw", "cue-bin", "iso"] {
-                    ui.selectable_value(&mut editor.ingest_format, format.to_owned(), format);
-                }
-            });
         ui.end_row();
         ui.label("");
         ui.checkbox(
@@ -619,10 +608,13 @@ fn show_editor(
         }
     }
     if let Some(source) = ingest_source {
-        match parse_format(&editor_snapshot.ingest_format) {
-            Ok(format) => start_archive_ingest(app, profile, &editor_snapshot, source, format),
-            Err(error) => app.push_error("Archive ingest", error),
-        }
+        start_dump_import_planning(
+            app,
+            profile,
+            source,
+            false,
+            Some(editor_snapshot.platform_id.clone()),
+        );
     }
 }
 
@@ -684,33 +676,18 @@ fn start_dump_import_planning(
     profile: &retro_junk_archive::CollectionProfile,
     source: std::path::PathBuf,
     promote_playable: bool,
+    platform_hint: Option<String>,
 ) {
     let Some(db_path) = app.db_path.clone() else {
         app.push_error("Import dumps", "Catalog database is unavailable".to_owned());
         return;
     };
-    let op_id = next_operation_id();
-    let cancel = Arc::new(AtomicBool::new(false));
-    app.operations.push(BackgroundOperation::new(
-        op_id,
-        format!("Enumerating package files in {}", source.display()),
-        Arc::clone(&cancel),
-        OperationKind::ArchiveImport,
-        "archive".to_owned(),
-        ProgressDisplay::Bytes,
-    ));
-    app.ui_state.dump_import_dialog = Some(DumpImportDialogState::Planning {
-        op_id,
-        source: source.clone(),
-    });
-    let sender = app.message_tx.clone();
-    let progress_sender = sender.clone();
     let context = Arc::clone(&app.context);
     let playable_root = promote_playable.then(|| source.clone());
     let request = retro_junk_archive_import::DumpImportRequest {
-        source,
+        source: source.clone(),
         archive_root: profile.archive_root.clone(),
-        platform_hint: None,
+        platform_hint,
         owner_id: "default".to_owned(),
         new_physical_copy: false,
         redumper_path: None,
@@ -721,45 +698,64 @@ fn start_dump_import_planning(
         chdman_path: None,
         discard_redundant_bin_cue: false,
     };
-    let handle = std::thread::spawn(move || {
-        let result = (|| {
-            let catalog = retro_junk_backend::queries::open_catalog(&db_path)?;
-            retro_junk_archive_import::plan_import(
-                request,
-                context.as_ref(),
-                &catalog,
-                &cancel,
-                |current, total| {
-                    let _ = progress_sender.send(AppMessage::OperationProgress {
-                        op_id,
-                        current,
-                        total,
-                    });
-                },
-                |phase| {
-                    let display = match phase.kind {
-                        retro_junk_archive_import::PlanningProgressKind::Bytes => {
-                            ProgressDisplay::Bytes
-                        }
-                        retro_junk_archive_import::PlanningProgressKind::Items
-                        | retro_junk_archive_import::PlanningProgressKind::Indeterminate => {
-                            ProgressDisplay::Count
-                        }
-                    };
-                    let _ = progress_sender.send(AppMessage::OperationPhase {
-                        op_id,
-                        description: phase.description,
-                        display,
-                        current: phase.current,
-                        total: phase.total,
-                    });
-                },
-            )
-            .map_err(|error| error.to_string())
-        })();
-        let _ = sender.send(AppMessage::ArchiveImportPlanReady { op_id, result });
+    let op_id = crate::backend::worker::spawn_background_op(
+        app,
+        format!("Enumerating package files in {}", source.display()),
+        OperationKind::ArchiveImport,
+        "archive".to_owned(),
+        ProgressDisplay::Bytes,
+        move |op_id, cancel, sender| {
+            let progress_sender = sender.clone();
+            let result = (|| {
+                let catalog = retro_junk_backend::queries::open_catalog(&db_path)?;
+                retro_junk_archive_import::plan_import(
+                    request,
+                    context.as_ref(),
+                    &catalog,
+                    &cancel,
+                    |current, total| {
+                        let _ = progress_sender.send(AppMessage::OperationPhase {
+                            op_id,
+                            phase: crate::state::OperationPhase::reported(
+                                "Enumerating package files",
+                                retro_junk_io::ProgressUnit::Bytes,
+                                current,
+                                total,
+                            ),
+                        });
+                    },
+                    |phase| {
+                        let unit = match phase.kind {
+                            retro_junk_archive_import::PlanningProgressKind::Bytes => {
+                                retro_junk_io::ProgressUnit::Bytes
+                            }
+                            retro_junk_archive_import::PlanningProgressKind::Items
+                            | retro_junk_archive_import::PlanningProgressKind::Indeterminate => {
+                                retro_junk_io::ProgressUnit::Items
+                            }
+                        };
+                        let _ = progress_sender.send(AppMessage::OperationPhase {
+                            op_id,
+                            phase: crate::state::OperationPhase::reported(
+                                phase.description,
+                                unit,
+                                phase.current,
+                                phase.total,
+                            ),
+                        });
+                    },
+                )
+                .map_err(|error| error.to_string())
+            })();
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::ArchiveImportPlanReady { op_id, result }
+            })
+        },
+    );
+    app.ui_state.dump_import_dialog = Some(DumpImportDialogState::Planning {
+        op_id,
+        source: source.clone(),
     });
-    app.op_threads.insert(op_id, handle);
 }
 
 fn start_dump_import(
@@ -768,79 +764,95 @@ fn start_dump_import(
     plan: retro_junk_archive_import::DumpImportPlan,
     consume: bool,
 ) {
-    let op_id = next_operation_id();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let mut operation = BackgroundOperation::new(
-        op_id,
-        "Importing preservation dumps".to_owned(),
-        Arc::clone(&cancel),
-        OperationKind::ArchiveImport,
-        "archive".to_owned(),
-        ProgressDisplay::Bytes,
-    );
-    operation.progress_total = plan.total_source_bytes;
-    app.operations.push(operation);
-    app.ui_state.dump_import_dialog = Some(DumpImportDialogState::Importing { op_id });
-    let sender = app.message_tx.clone();
-    let progress_sender = sender.clone();
+    let total_source_bytes = plan.total_source_bytes;
     let db_path = app.db_path.clone();
     let profile = profile.clone();
     let media_dir_setting = app.settings.general.assets_dir.clone();
-    let handle = std::thread::spawn(move || {
-        let result = retro_junk_archive_import::execute_import(
-            plan,
-            consume,
-            &cancel,
-            |progress| {
-                let _ = progress_sender.send(AppMessage::OperationProgress {
-                    op_id,
-                    current: progress.copied_bytes,
-                    total: progress.total_bytes,
-                });
-            },
-            |phase| {
-                let display = match phase.kind {
-                    retro_junk_archive_import::PlanningProgressKind::Bytes => {
-                        ProgressDisplay::Bytes
-                    }
-                    retro_junk_archive_import::PlanningProgressKind::Items
-                    | retro_junk_archive_import::PlanningProgressKind::Indeterminate => {
-                        ProgressDisplay::Count
-                    }
-                };
-                let _ = progress_sender.send(AppMessage::OperationPhase {
-                    op_id,
-                    description: phase.description,
-                    display,
-                    current: phase.current,
-                    total: phase.total,
-                });
-            },
-        )
-        .map_err(|error| error.to_string())
-        .and_then(|result| {
-            if let Some(db_path) = db_path {
-                let _ = progress_sender.send(AppMessage::OperationPhase {
-                    op_id,
-                    description: "Refreshing the collection index".to_owned(),
-                    display: ProgressDisplay::Count,
-                    current: 0,
-                    total: 0,
-                });
-                let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
-                    .map_err(|error| error.to_string())?;
-                retro_junk_backend::ops::archive::reindex_after_change(
-                    &profile,
-                    &db_path,
-                    &media_dir_setting,
-                    &cancel,
-                )?;
-            }
-            Ok(result)
-        });
-        let _ = sender.send(AppMessage::ArchiveImportComplete { op_id, result });
-    });
-    app.op_threads.insert(op_id, handle);
+    let op_id = crate::backend::worker::spawn_background_op(
+        app,
+        "Importing preservation dumps".to_owned(),
+        OperationKind::ArchiveImport,
+        "archive".to_owned(),
+        ProgressDisplay::Bytes,
+        move |op_id, cancel, sender| {
+            let progress_sender = sender.clone();
+            let result = retro_junk_archive_import::execute_import(
+                plan,
+                consume,
+                &cancel,
+                |progress| {
+                    let _ = progress_sender.send(AppMessage::OperationPhase {
+                        op_id,
+                        phase: crate::state::OperationPhase::reported(
+                            "Copying preservation dumps",
+                            retro_junk_io::ProgressUnit::Bytes,
+                            progress.copied_bytes,
+                            progress.total_bytes,
+                        ),
+                    });
+                },
+                |phase| {
+                    let unit = match phase.kind {
+                        retro_junk_archive_import::PlanningProgressKind::Bytes => {
+                            retro_junk_io::ProgressUnit::Bytes
+                        }
+                        retro_junk_archive_import::PlanningProgressKind::Items
+                        | retro_junk_archive_import::PlanningProgressKind::Indeterminate => {
+                            retro_junk_io::ProgressUnit::Items
+                        }
+                    };
+                    let _ = progress_sender.send(AppMessage::OperationPhase {
+                        op_id,
+                        phase: crate::state::OperationPhase::reported(
+                            phase.description,
+                            unit,
+                            phase.current,
+                            phase.total,
+                        ),
+                    });
+                },
+            )
+            .map_err(|error| error.to_string())
+            .and_then(|result| {
+                if let Some(db_path) = db_path {
+                    let _ = progress_sender.send(AppMessage::OperationPhase {
+                        op_id,
+                        phase: crate::state::OperationPhase::reported(
+                            "Refreshing the collection index",
+                            retro_junk_io::ProgressUnit::Items,
+                            0,
+                            0,
+                        ),
+                    });
+                    let _archive_lock =
+                        retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
+                            .map_err(|error| error.to_string())?;
+                    retro_junk_backend::ops::archive::reindex_after_change(
+                        &profile,
+                        &db_path,
+                        &media_dir_setting,
+                        &cancel,
+                    )?;
+                }
+                Ok(result)
+            });
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::ArchiveImportComplete { op_id, result }
+            })
+        },
+    );
+    if let Some(operation) = app
+        .operations
+        .iter_mut()
+        .find(|operation| operation.id == op_id)
+    {
+        operation.phase.progress = crate::state::OperationProgress::Determinate {
+            completed: 0,
+            total: total_source_bytes,
+            unit: crate::state::OperationUnit::Bytes,
+        };
+    }
+    app.ui_state.dump_import_dialog = Some(DumpImportDialogState::Importing { op_id });
 }
 
 pub fn show_import_modal(ctx: &egui::Context, app: &mut RetroJunkApp) {
@@ -1158,25 +1170,32 @@ fn show_import_progress(ui: &mut egui::Ui, app: &RetroJunkApp, op_id: u64) {
         .iter()
         .find(|operation| operation.id == op_id)
     {
-        ui.strong(&operation.description);
-        if operation.progress_total > 0 {
-            ui.add(egui::ProgressBar::new(operation.progress_fraction()).show_percentage());
-            ui.weak(match operation.display {
-                ProgressDisplay::Bytes => format!(
-                    "{} / {}",
-                    format_bytes(operation.progress_current),
-                    format_bytes(operation.progress_total)
-                ),
-                ProgressDisplay::Count => format!(
-                    "{} / {} items",
-                    operation.progress_current, operation.progress_total
-                ),
-                ProgressDisplay::Percent => {
-                    format!("{:.0}%", operation.progress_fraction() * 100.0)
-                }
-            });
-        } else {
-            ui.weak("Working…");
+        ui.strong(&operation.title);
+        if operation.phase.label != operation.title {
+            ui.weak(&operation.phase.label);
+        }
+        match operation.phase.progress {
+            crate::state::OperationProgress::Indeterminate => {
+                ui.weak("Working…");
+            }
+            crate::state::OperationProgress::Determinate {
+                completed,
+                total,
+                unit,
+            } => {
+                let fraction = if total == 0 {
+                    0.0
+                } else {
+                    completed as f32 / total as f32
+                };
+                ui.add(egui::ProgressBar::new(fraction).show_percentage());
+                ui.weak(match unit {
+                    crate::state::OperationUnit::Bytes => {
+                        format!("{} / {}", format_bytes(completed), format_bytes(total))
+                    }
+                    crate::state::OperationUnit::Items => format!("{completed} / {total} items"),
+                });
+            }
         }
     }
 }
@@ -1319,85 +1338,4 @@ fn paint_cell_text(ui: &mut egui::Ui, text: &str) {
         font_id,
         color,
     );
-}
-
-fn start_archive_ingest(
-    app: &mut RetroJunkApp,
-    profile: &retro_junk_archive::CollectionProfile,
-    editor: &PhysicalCopyEditor,
-    source: std::path::PathBuf,
-    format: retro_junk_archive::RepresentationFormat,
-) {
-    let op_id = next_operation_id();
-    let cancel = Arc::new(AtomicBool::new(false));
-    app.operations.push(BackgroundOperation::new(
-        op_id,
-        format!("Ingesting {}", source.display()),
-        Arc::clone(&cancel),
-        OperationKind::Other,
-        "archive".to_owned(),
-        ProgressDisplay::Bytes,
-    ));
-    let sender = app.message_tx.clone();
-    let profile = profile.clone();
-    let carrier_manifest_path = editor.carrier_manifest_path.clone();
-    let db_path = app.db_path.clone();
-    let media_dir_setting = app.settings.general.assets_dir.clone();
-    let handle = std::thread::spawn(move || {
-        let result = (|| -> Result<String, String> {
-            let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
-                .map_err(|error| error.to_string())?;
-            let medium: retro_junk_archive::CarrierManifest =
-                retro_junk_archive::read_toml(&carrier_manifest_path)
-                    .map_err(|error| error.to_string())?;
-            let manifest = retro_junk_archive::DumpManifest::new(medium.carrier_id, format);
-            let media_directory = carrier_manifest_path
-                .parent()
-                .ok_or_else(|| "media manifest has no parent directory".to_owned())?;
-            let destination = retro_junk_archive::ArchiveLayout::dump_dir(
-                media_directory,
-                &manifest.captured_at,
-                manifest.dump_id,
-            );
-            let plan = retro_junk_archive::plan_ingest(&source, &destination)
-                .map_err(|error| error.to_string())?;
-            let total = plan.total_bytes;
-            let _ = sender.send(AppMessage::OperationProgress {
-                op_id,
-                current: 0,
-                total,
-            });
-            let dump = retro_junk_archive::execute_ingest(
-                retro_junk_archive::IngestRequest {
-                    plan,
-                    manifest,
-                    verify_published_bytes: true,
-                },
-                &cancel,
-                |progress| {
-                    let _ = sender.send(AppMessage::OperationProgress {
-                        op_id,
-                        current: progress.copied_bytes,
-                        total: progress.total_bytes,
-                    });
-                },
-            )
-            .map_err(|error| error.to_string())?;
-            if let Some(db_path) = db_path {
-                retro_junk_backend::ops::archive::reindex_after_change(
-                    &profile,
-                    &db_path,
-                    &media_dir_setting,
-                    &cancel,
-                )?;
-            }
-            Ok(format!(
-                "Archived dump {} from {}; the source was retained",
-                dump.dump_id,
-                source.display()
-            ))
-        })();
-        let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
-    });
-    app.op_threads.insert(op_id, handle);
 }

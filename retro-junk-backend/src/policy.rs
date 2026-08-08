@@ -112,16 +112,25 @@ fn default_scrape_asset_types() -> Vec<String> {
 impl AutomationPolicy {
     /// The expected artwork set, as the rest of the workspace speaks it.
     ///
-    /// An empty or unrecognized list falls back to the default rather than
-    /// meaning "expect nothing", which would silently report every release as
-    /// fully scraped.
+    /// An explicitly empty list means no artwork is expected or fetched. A
+    /// missing field is populated by serde/default before this method runs.
     #[must_use]
     pub fn scrape_selection(&self) -> retro_junk_frontend::AssetSelection {
-        let selection = retro_junk_frontend::AssetSelection::from_names(&self.scrape_asset_types);
-        if selection.types.is_empty() {
-            retro_junk_frontend::AssetSelection::default()
+        retro_junk_frontend::AssetSelection::from_names(&self.scrape_asset_types)
+    }
+
+    /// Validate configured identifiers without silently discarding typos.
+    pub fn validate_scrape_asset_types(&self) -> Result<(), Vec<String>> {
+        let unknown = self
+            .scrape_asset_types
+            .iter()
+            .filter(|name| retro_junk_frontend::AssetType::from_name(name).is_none())
+            .cloned()
+            .collect::<Vec<_>>();
+        if unknown.is_empty() {
+            Ok(())
         } else {
-            selection
+            Err(unknown)
         }
     }
 
@@ -163,6 +172,12 @@ impl AutomationPolicy {
     }
 
     pub fn save_to(&self, path: &Path) -> io::Result<()> {
+        if let Err(unknown) = self.validate_scrape_asset_types() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown artwork identifier(s): {}", unknown.join(", ")),
+            ));
+        }
         let mut doc: toml::Value = std::fs::read_to_string(path)
             .ok()
             .and_then(|contents| contents.parse().ok())

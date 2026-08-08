@@ -36,7 +36,6 @@ pub const RESCAN: &str = phosphor::ARROW_CLOCKWISE;
 pub const SCRAPE: &str = phosphor::DOWNLOAD_SIMPLE;
 pub const MIXIMAGE: &str = phosphor::IMAGES_SQUARE;
 pub const RENAME: &str = phosphor::PENCIL_SIMPLE;
-pub const FIX_CUE: &str = phosphor::WRENCH;
 pub const COMPRESS: &str = phosphor::ARCHIVE;
 pub const REGION: &str = phosphor::GLOBE;
 pub const TAG: &str = phosphor::TAG;

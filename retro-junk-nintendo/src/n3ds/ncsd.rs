@@ -137,23 +137,29 @@ fn record_size_and_trim(id: &mut RomIdentification, ncsd: &NcsdHeader, file_size
             id.expected_size = file_size;
 
             if file_size == used_size {
-                id.extra.insert("dump_status".into(), "Trimmed".into());
+                id.dump_extent = Some(retro_junk_core::DumpExtent::Trimmed);
             } else if file_size == image_size {
-                id.extra.insert("dump_status".into(), "Untrimmed".into());
+                id.dump_extent = Some(retro_junk_core::DumpExtent::Full);
             } else {
-                id.extra
-                    .insert("dump_status".into(), "Partially trimmed".into());
+                id.dump_extent = Some(retro_junk_core::DumpExtent::PartiallyTrimmed);
             }
         } else if file_size < used_size {
             // file_size < used_size -> genuinely truncated
             id.expected_size = used_size;
+            id.dump_extent = Some(retro_junk_core::DumpExtent::Truncated);
         } else {
             // file_size > image_size -> oversized (shouldn't happen normally)
             id.expected_size = image_size;
+            id.dump_extent = Some(retro_junk_core::DumpExtent::Oversized);
         }
     } else if image_size > 0 {
         // No filled_size available; fall back to image_size
         id.expected_size = image_size;
+        id.dump_extent = Some(match file_size.cmp(&image_size) {
+            std::cmp::Ordering::Less => retro_junk_core::DumpExtent::Truncated,
+            std::cmp::Ordering::Equal => retro_junk_core::DumpExtent::Full,
+            std::cmp::Ordering::Greater => retro_junk_core::DumpExtent::Oversized,
+        });
     }
 }
 

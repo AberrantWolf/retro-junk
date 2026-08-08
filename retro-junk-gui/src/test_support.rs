@@ -58,7 +58,6 @@ pub fn test_entry(game_entry: GameEntry) -> LibraryEntry {
         screen_title: String::new(),
         disc_identifications: None,
         broken_references: None,
-        cue_compat_issues: None,
         disambiguation: None,
         tag: None,
     }

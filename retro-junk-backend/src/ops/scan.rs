@@ -8,11 +8,10 @@
 //! be committed by the store. The frontend only schedules the call and
 //! renders what comes back.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use retro_junk_core::RomAnalyzer;
-use retro_junk_disc::cue::check_cue_compat;
 use retro_junk_io::ProgressUnit;
 use retro_junk_lib::rename;
 use retro_junk_lib::scanner;
@@ -21,8 +20,8 @@ use retro_junk_lib::{AnalysisContext, AnalysisOptions, ConsoleFolder, Platform};
 use super::OpCtx;
 use crate::fingerprint::FolderFingerprint;
 use crate::library::{
-    CueCompatIssue, EntryStatus, LibraryEntry, apply_multi_disc_analysis_results,
-    apply_single_analysis_result, detail_to_entry, scanned_entry_for_folder,
+    EntryStatus, LibraryEntry, apply_multi_disc_analysis_results, apply_single_analysis_result,
+    detail_to_entry, scanned_entry_for_folder,
 };
 use crate::store::CompletedConsoleScan;
 
@@ -229,10 +228,17 @@ pub fn scan_console(
         })
         .collect();
 
-    let snapshots =
+    let (snapshots, unchanged) =
         scan_entry_snapshots(entries, &request.folder_path, request.console_id, db_path);
-    let analyzed = analyze_entry_snapshots(snapshots, registered.analyzer.as_ref(), db_path, ctx)
-        .ok_or(ConsoleScanError::Cancelled)?;
+    let analyzed = analyze_entry_snapshots(
+        snapshots,
+        registered.analyzer.as_ref(),
+        &request.folder_path,
+        &unchanged,
+        db_path,
+        ctx,
+    )
+    .ok_or(ConsoleScanError::Cancelled)?;
 
     let fingerprint = crate::fingerprint::compute_fingerprint(&request.folder_path);
     let snapshot = analyzed
@@ -258,15 +264,26 @@ pub fn scan_console(
 
 /// Re-analyze the given entries without rediscovering the folder. Returns
 /// `None` when cancelled or when no analyzer is registered for the platform.
+///
+/// Nothing is treated as unchanged here: someone asked for these to be read
+/// again, which is the whole point of the command.
 pub fn analyze_entries(
     context: &AnalysisContext,
     platform: Platform,
+    console_folder: &Path,
     db_path: Option<&Path>,
     entries: Vec<LibraryEntry>,
     ctx: &OpCtx,
 ) -> Option<Vec<LibraryEntry>> {
     let registered = context.get_by_platform(platform)?;
-    analyze_entry_snapshots(entries, registered.analyzer.as_ref(), db_path, ctx)
+    analyze_entry_snapshots(
+        entries,
+        registered.analyzer.as_ref(),
+        console_folder,
+        &HashSet::new(),
+        db_path,
+        ctx,
+    )
 }
 
 fn fresh_scan_entry(game_entry: scanner::GameEntry) -> LibraryEntry {
@@ -287,7 +304,6 @@ fn fresh_scan_entry(game_entry: scanner::GameEntry) -> LibraryEntry {
         screen_title: String::new(),
         disc_identifications: None,
         broken_references: None,
-        cue_compat_issues: None,
         disambiguation: None,
         tag: None,
     }
@@ -298,12 +314,18 @@ fn fresh_scan_entry(game_entry: scanner::GameEntry) -> LibraryEntry {
 /// Opens its own connection to the catalog database from `db_path` — on the
 /// scan worker thread, never a UI thread — and drops it before analysis
 /// begins. Frontend state is deliberately not consulted.
+/// Pair every discovered entry with what the database already holds for it,
+/// and say which ones came back unchanged.
+///
+/// "Unchanged" means the path, size and modification time are what the last
+/// scan recorded — so the file is the same file, and everything derived purely
+/// from its bytes still stands.
 fn scan_entry_snapshots(
     game_entries: Vec<scanner::GameEntry>,
     folder_path: &Path,
     console_id: Option<retro_junk_db::LibraryConsoleId>,
     db_path: Option<&Path>,
-) -> Vec<LibraryEntry> {
+) -> (Vec<LibraryEntry>, HashSet<usize>) {
     let mut existing: HashMap<String, (String, LibraryEntry)> = console_id
         .zip(db_path)
         .and_then(|(console_id, path)| {
@@ -322,9 +344,11 @@ fn scan_entry_snapshots(
         })
         .unwrap_or_default();
 
-    game_entries
+    let mut unchanged = HashSet::new();
+    let entries = game_entries
         .into_iter()
-        .map(|game_entry| {
+        .enumerate()
+        .map(|(index, game_entry)| {
             let current = serde_json::to_string(&game_entry).ok().and_then(|json| {
                 let key =
                     retro_junk_db::source_key_from_game_entry_json(&json, folder_path).ok()?;
@@ -338,11 +362,13 @@ fn scan_entry_snapshots(
                 && stored_fingerprint == fingerprint
             {
                 entry.game_entry = game_entry;
+                unchanged.insert(index);
                 return entry;
             }
             fresh_scan_entry(game_entry)
         })
-        .collect()
+        .collect();
+    (entries, unchanged)
 }
 
 /// Quick-analyze every entry, then resolve catalog candidates for the whole
@@ -351,6 +377,8 @@ fn scan_entry_snapshots(
 fn analyze_entry_snapshots(
     mut entries: Vec<LibraryEntry>,
     analyzer: &dyn RomAnalyzer,
+    console_folder: &Path,
+    reused: &HashSet<usize>,
     db_path: Option<&Path>,
     ctx: &OpCtx,
 ) -> Option<Vec<LibraryEntry>> {
@@ -368,6 +396,9 @@ fn analyze_entry_snapshots(
             )>,
             queries: Vec<usize>,
         },
+        /// The file has not changed since the last scan recorded what it is,
+        /// so only the catalog answer is asked again.
+        Unchanged { entry_index: usize, query: usize },
     }
     struct EvidenceQuery {
         serial: String,
@@ -398,8 +429,40 @@ fn analyze_entry_snapshots(
         if ctx.cancelled() {
             return None;
         }
-        entry.broken_references = Some(rename::check_broken_references(&entry.game_entry));
-        entry.cue_compat_issues = Some(check_cue_compat_for_entry(&entry.game_entry));
+        entry.broken_references = Some(rename::check_broken_references(
+            &entry.game_entry,
+            console_folder,
+        ));
+
+        // The fingerprint that let this entry be reused already proved the
+        // bytes have not moved or changed, and identification is a pure
+        // function of them — so opening the file to work out again what the
+        // scan already knows buys nothing. The catalog is still re-queried,
+        // because that changes underneath an unchanged file whenever a DAT is
+        // imported.
+        //
+        // Single files only: a multi-disc set's identification is assembled
+        // from several results and a derived whole-set status, and it is a
+        // small minority of any library, so it keeps the simple path.
+        if reused.contains(&entry_index)
+            && let Some(identification) = entry.identification.as_ref()
+            && matches!(entry.game_entry, scanner::GameEntry::SingleFile(_))
+        {
+            let query = evidence.len();
+            evidence.push(EvidenceQuery {
+                serial: retro_junk_lib::catalog_match::catalog_serial_key(analyzer, identification)
+                    .unwrap_or_default(),
+                hash: hash_query(entry.hashes.as_ref()),
+            });
+            pending.push(PendingAnalysis::Unchanged { entry_index, query });
+            (ctx.progress)(
+                "Analyzing entries",
+                ProgressUnit::Items,
+                (entry_index + 1) as u64,
+                total as u64,
+            );
+            continue;
+        }
 
         match &entry.game_entry {
             scanner::GameEntry::SingleFile(_) => {
@@ -544,6 +607,12 @@ fn analyze_entry_snapshots(
                 result,
                 matches.get(query).map_or(&[], Vec::as_slice),
             ),
+            PendingAnalysis::Unchanged { entry_index, query } => {
+                crate::library::apply_catalog_resolution(
+                    &mut entries[entry_index],
+                    matches.get(query).map_or(&[], Vec::as_slice),
+                );
+            }
             PendingAnalysis::Multi {
                 entry_index,
                 results,
@@ -558,44 +627,6 @@ fn analyze_entry_snapshots(
         }
     }
     Some(entries)
-}
-
-/// Check CUE sheet compatibility for an entry's CUE files.
-fn check_cue_compat_for_entry(entry: &scanner::GameEntry) -> Vec<CueCompatIssue> {
-    let mut issues = Vec::new();
-    for path in entry.cue_files() {
-        let Ok(content) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let report = check_cue_compat(&content);
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?")
-            .to_string();
-        if report.is_standard() {
-            let layout = retro_junk_disc::cue::parse_cue(&content).and_then(|sheet| {
-                retro_junk_disc::track_layout::cue_track_spans(
-                    &sheet,
-                    path.parent().unwrap_or(Path::new(".")),
-                )
-            });
-            if let Err(error) = layout {
-                issues.push(CueCompatIssue {
-                    file_name,
-                    summary: format!("Invalid logical track layout: {error}"),
-                    can_auto_fix: false,
-                });
-            }
-        } else {
-            issues.push(CueCompatIssue {
-                file_name,
-                summary: report.summary(),
-                can_auto_fix: report.can_auto_fix(),
-            });
-        }
-    }
-    issues
 }
 
 #[cfg(test)]

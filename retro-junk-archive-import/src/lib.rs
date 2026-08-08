@@ -37,6 +37,7 @@ pub enum ImportError {
     },
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct DumpImportRequest {
     pub source: PathBuf,
@@ -152,6 +153,9 @@ pub struct CatalogCandidate {
     pub release_id: String,
     pub work_id: String,
     pub title: String,
+    pub dat_name: String,
+    pub rom_name: String,
+    pub medium_has_tracks: bool,
     pub platform_id: String,
     pub region: String,
     pub revision: String,
@@ -362,7 +366,7 @@ pub fn plan_import(
         let format = detect_format(&source, &package);
         let carrier_kind = carrier_kind_for_format(&format);
         let inferred_platform = (!request.make_playable)
-            .then(|| request.playable_root.as_deref())
+            .then_some(request.playable_root.as_deref())
             .flatten()
             .and_then(|root| infer_playable_platform(root, &source, context));
         let normalized_platform_hint = request.platform_hint.as_deref().map(catalog_platform_hint);
@@ -785,7 +789,7 @@ pub fn execute_import(
                 });
                 let binding = CatalogBinding {
                     source: selected.source.clone(),
-                    dat_name: selected.title.clone(),
+                    dat_name: selected.dat_name.clone(),
                     source_version: selected.source_version.clone(),
                     serials: if selected.serial.is_empty() {
                         Vec::new()
@@ -1719,10 +1723,10 @@ fn exact_catalog_matches(
         }
     }
     if matches!(format, RepresentationFormat::RedumperRaw) && source.is_dir() {
-        if let Some(log_match) = redumper_log_catalog_match(source, package, catalog)? {
-            if !request.make_playable {
-                return Ok(log_match);
-            }
+        if let Some(log_match) = redumper_log_catalog_match(source, package, catalog)?
+            && !request.make_playable
+        {
+            return Ok(log_match);
         }
         let executable = request
             .redumper_path
@@ -2134,6 +2138,9 @@ impl From<retro_junk_db::CompleteCatalogMediaMatch> for CatalogCandidate {
             release_id: value.release_id,
             work_id: value.work_id,
             title: value.game,
+            dat_name: value.dat_name,
+            rom_name: value.rom_name,
+            medium_has_tracks: value.medium_has_tracks,
             platform_id: value.platform_id,
             region: value.region,
             revision: value.revision,
@@ -2634,6 +2641,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn combined_catalogs_keep_separate_regional_physical_platforms() {
         let request = DumpImportRequest {
             source: PathBuf::from("/roms"),
@@ -2654,6 +2662,9 @@ mod tests {
             release_id: "release".to_owned(),
             work_id: "work".to_owned(),
             title: "Game".to_owned(),
+            dat_name: "Game".to_owned(),
+            rom_name: "Game.nes".to_owned(),
+            medium_has_tracks: false,
             platform_id: "nes".to_owned(),
             region: "Japan".to_owned(),
             revision: String::new(),
@@ -3171,9 +3182,17 @@ fn build_imported_playable(
                 &candidate.archive_platform_id,
                 &selected.region,
             ),
-            expected_disc_count: selected.release_disc_count.max(1),
-            canonical_output_stem: selected.title.clone(),
-            canonical_release_name: selected.title.clone(),
+            canonical_name: retro_junk_lib::naming::CanonicalName {
+                dat_name: selected.dat_name.clone(),
+                rom_name: selected.rom_name.clone(),
+                medium_has_tracks: selected.medium_has_tracks,
+                title: selected.title.clone(),
+                region: selected.region.clone(),
+                revision: selected.revision.clone(),
+                variant: selected.variant.clone(),
+                disc_number: selected.sequence_number,
+                expected_disc_count: selected.release_disc_count.max(1),
+            },
         },
         &|description, unit, current, total| {
             on_phase(PlanningProgress {

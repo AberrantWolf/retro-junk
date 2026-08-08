@@ -50,12 +50,13 @@ pub fn generate_gamelist(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui:
                 &media_dir_setting,
                 &OpCtx::new(&cancel, &progress),
             );
+            let lifecycle = result.as_ref().map(|_| ()).map_err(Clone::clone);
             let _ = tx.send(AppMessage::ExportComplete {
                 folder_name,
                 result,
             });
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
             ctx.request_repaint();
+            lifecycle
         },
     );
 }

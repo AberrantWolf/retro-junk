@@ -18,6 +18,7 @@ use crate::library::{
     ArchivedPlayableGap, ArchivedScrapeIdentity, GapScope, LibraryError, ScrapeIdentityTier,
     query_forced_playable_gap, query_playable_gaps,
 };
+use crate::projection_state::{ProjectionOf, projection_is_current};
 
 /// What a proposed action would do. `#[non_exhaustive]`: miximage staleness
 /// derivation arrives in a later phase.
@@ -134,16 +135,42 @@ pub enum WorkTarget {
     Dump(String),
     /// An archive release (`archive_releases.id`).
     Release(String),
+    /// One frontend system folder — that is, one `gamelist.xml` — written
+    /// `"{profile_id}/{directory}"`.
+    ///
+    /// A gamelist is per folder, not per game, so this is the honest size of
+    /// the work: targeting a release meant a folder holding a hundred games
+    /// derived a hundred actions that rewrote one file. The profile is part of
+    /// the id because two collections can both have a `psx` folder and their
+    /// claims must not collide.
+    Console(String),
     /// A filesystem path (incoming packages).
     Path(String),
 }
 
 impl WorkTarget {
+    /// A console target for one profile's system folder.
+    #[must_use]
+    pub fn console(profile_id: &str, directory: &str) -> Self {
+        Self::Console(format!("{profile_id}/{directory}"))
+    }
+
+    /// The profile and folder a console target names, or `None` for any other
+    /// kind of target.
+    #[must_use]
+    pub fn console_parts(&self) -> Option<(&str, &str)> {
+        match self {
+            Self::Console(id) => id.split_once('/'),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Dump(_) => "dump",
             Self::Release(_) => "release",
+            Self::Console(_) => "console",
             Self::Path(_) => "path",
         }
     }
@@ -151,7 +178,7 @@ impl WorkTarget {
     #[must_use]
     pub fn id(&self) -> &str {
         match self {
-            Self::Dump(id) | Self::Release(id) | Self::Path(id) => id,
+            Self::Dump(id) | Self::Release(id) | Self::Console(id) | Self::Path(id) => id,
         }
     }
 }
@@ -214,6 +241,9 @@ pub enum Scope {
     Release {
         archive_release_id: String,
     },
+    /// A hand-picked set of archive releases — a multi-row selection in the
+    /// GUI. Empty means nothing is in scope, not everything.
+    Releases(Vec<String>),
 }
 
 /// Derive every pending convergence action in scope, in worker stage order
@@ -230,64 +260,139 @@ pub fn derive_convergence(
         derive_build_actions(conn, &profile_id, &mut actions)?;
         derive_scrape_actions(conn, &profile_id, expected_assets, &mut actions)?;
         derive_projection_actions(conn, &profile_id, &mut actions)?;
+        derive_gamelist_actions(conn, &profile_id, &mut actions)?;
     }
     // Scope narrowing happens after derivation: the queries are
     // profile-scoped and cheap, and release/platform filters compose better
     // in one place than woven through every statement.
-    match scope {
-        Scope::AllProfiles | Scope::Profile(_) => {}
-        Scope::Platform { platform_id, .. } => {
-            actions.retain(|action| action.platform_id.eq_ignore_ascii_case(platform_id));
-        }
-        Scope::Release { archive_release_id } => {
-            actions.retain(|action| {
-                action.release_id(conn).as_deref() == Some(archive_release_id.as_str())
-            });
-        }
-    }
+    let wanted = ScopeReleases::for_scope(scope);
+    actions.retain(|action| wanted.admits(conn, action));
     actions.sort_by_key(|action| action.kind);
     Ok(actions)
 }
 
-impl ProposedAction {
-    /// The archive release an action belongs to.
-    fn release_id(&self, conn: &Connection) -> Option<String> {
-        release_for_target(conn, &self.target)
+/// Which archive releases a scope narrows to, resolved once for a whole
+/// derivation rather than re-queried per action.
+///
+/// The per-action form ran one `release_for_target` query for every action in
+/// the profile's entire backlog, on every GUI badge click — for a scope that
+/// names a single release.
+enum ScopeReleases {
+    /// Nothing is filtered out.
+    Everything,
+    /// Only actions belonging to one of these releases.
+    Only(BTreeSet<String>),
+    /// Only actions whose owning release is on this archive platform.
+    Platform(String),
+}
+
+impl ScopeReleases {
+    fn for_scope(scope: &Scope) -> Self {
+        match scope {
+            Scope::AllProfiles | Scope::Profile(_) => Self::Everything,
+            Scope::Platform { platform_id, .. } => Self::Platform(platform_id.clone()),
+            Scope::Release { archive_release_id } => {
+                Self::Only(std::iter::once(archive_release_id.clone()).collect())
+            }
+            Scope::Releases(ids) => Self::Only(ids.iter().cloned().collect()),
+        }
+    }
+
+    fn admits(&self, conn: &Connection, action: &ProposedAction) -> bool {
+        match self {
+            Self::Everything => true,
+            Self::Platform(platform_id) => {
+                // A console action spans a whole frontend folder, which is
+                // where one archive platform's releases land; the folder name
+                // it carries is the answer for that platform.
+                if action.target.console_parts().is_some() {
+                    action
+                        .playable_platform_id
+                        .eq_ignore_ascii_case(platform_id)
+                        || releases_for_target(conn, &action.target).iter().any(|id| {
+                            release_platform(conn, id)
+                                .is_some_and(|found| found.eq_ignore_ascii_case(platform_id))
+                        })
+                } else {
+                    action.platform_id.eq_ignore_ascii_case(platform_id)
+                }
+            }
+            Self::Only(wanted) => releases_for_target(conn, &action.target)
+                .iter()
+                .any(|id| wanted.contains(id)),
+        }
     }
 }
 
-/// The archive release a work target belongs to: direct for release
-/// targets, resolved through the owning carrier for dump targets, and none
-/// for filesystem paths (incoming packages are not archived yet).
-///
-/// One definition, so derivation's scope filter and the error/claim
-/// surfaces group work the same way.
+fn release_platform(conn: &Connection, archive_release_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT platform_id FROM archive_releases WHERE id=?1",
+        [archive_release_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// The archive release a work target belongs to, when it belongs to exactly
+/// one. Prefer [`releases_for_target`], which also answers for the targets that
+/// span several.
 #[must_use]
 pub fn release_for_target(conn: &Connection, target: &WorkTarget) -> Option<String> {
+    releases_for_target(conn, target).into_iter().next()
+}
+
+/// Every archive release a work target covers.
+///
+/// Direct for release targets; resolved through the owning carrier for dump
+/// targets; every release publishing into the folder for console targets; and
+/// none for filesystem paths, since an incoming package is not archived yet.
+///
+/// One definition, so derivation's scope filter and the error and claim
+/// surfaces group work the same way. A console target resolving to many is what
+/// keeps a gamelist failure visible on the rows it affects: attributing it to
+/// no release at all would drop it silently, which is how those surfaces lose
+/// errors today.
+#[must_use]
+pub fn releases_for_target(conn: &Connection, target: &WorkTarget) -> Vec<String> {
+    let collect = |sql: &str, parameters: &[&dyn rusqlite::ToSql]| -> Vec<String> {
+        let Ok(mut statement) = conn.prepare(sql) else {
+            return Vec::new();
+        };
+        let Ok(rows) = statement.query_map(parameters, |row| row.get::<_, String>(0)) else {
+            return Vec::new();
+        };
+        rows.filter_map(Result::ok).collect()
+    };
     match target {
-        WorkTarget::Release(id) => Some(id.clone()),
-        WorkTarget::Dump(dump_id) => conn
-            .query_row(
-                "SELECT ar.id FROM dump_events de
-                 JOIN carriers c ON c.id=de.carrier_id
-                 JOIN physical_copies pc ON pc.id=c.physical_copy_id
-                 JOIN archive_releases ar ON ar.id=pc.archive_release_id
-                 WHERE de.id=?1",
-                [dump_id.as_str()],
-                |row| row.get(0),
-            )
-            .optional()
-            .ok()
-            .flatten(),
-        WorkTarget::Path(_) => None,
+        WorkTarget::Release(id) => vec![id.clone()],
+        WorkTarget::Dump(dump_id) => collect(
+            "SELECT ar.id FROM dump_events de
+             JOIN carriers c ON c.id=de.carrier_id
+             JOIN physical_copies pc ON pc.id=c.physical_copy_id
+             JOIN archive_releases ar ON ar.id=pc.archive_release_id
+             WHERE de.id=?1",
+            &[&dump_id.as_str()],
+        ),
+        WorkTarget::Console(_) => match target.console_parts() {
+            Some((profile_id, directory)) => collect(
+                CONSOLE_RELEASES_SQL,
+                &[&profile_id as &dyn rusqlite::ToSql, &directory],
+            ),
+            None => Vec::new(),
+        },
+        WorkTarget::Path(_) => Vec::new(),
     }
 }
 
 /// Every open error, grouped by the archive release it belongs to.
 ///
-/// Verification errors are recorded against a dump, but the UI shows one
-/// row per release, so the grouping has to happen somewhere; doing it here
-/// keeps [`release_for_target`] the only place that knows the join.
+/// Verification errors are recorded against a dump and gamelist errors against
+/// a whole folder, but the UI shows one row per release, so the grouping has to
+/// happen somewhere; doing it here keeps [`releases_for_target`] the only place
+/// that knows the joins. A folder's failure appears on every release in it,
+/// which is honest: none of them reached the frontend.
 pub fn errors_by_release(
     conn: &Connection,
 ) -> Result<BTreeMap<String, Vec<(ActionKind, crate::work::WorkError)>>, LibraryError> {
@@ -300,16 +405,31 @@ pub fn errors_by_release(
         let Ok(kind) = error.action_kind.parse::<ActionKind>() else {
             continue;
         };
-        let target = match error.target_kind.as_str() {
-            "dump" => WorkTarget::Dump(error.target_id.clone()),
-            "release" => WorkTarget::Release(error.target_id.clone()),
-            _ => WorkTarget::Path(error.target_id.clone()),
-        };
-        if let Some(release_id) = release_for_target(conn, &target) {
-            grouped.entry(release_id).or_default().push((kind, error));
+        for release_id in
+            releases_for_target(conn, &stored_target(&error.target_kind, &error.target_id))
+        {
+            grouped
+                .entry(release_id)
+                .or_default()
+                .push((kind, error.clone()));
         }
     }
     Ok(grouped)
+}
+
+/// Rebuild a work target from the two strings the coordination tables store.
+///
+/// The inverse of [`WorkTarget::kind`] and [`WorkTarget::id`], and the one
+/// place that mapping is written down — an unrecognized kind becomes a path
+/// target, which resolves to no release rather than to the wrong one.
+#[must_use]
+pub fn stored_target(target_kind: &str, target_id: &str) -> WorkTarget {
+    match target_kind {
+        "dump" => WorkTarget::Dump(target_id.to_owned()),
+        "release" => WorkTarget::Release(target_id.to_owned()),
+        "console" => WorkTarget::Console(target_id.to_owned()),
+        _ => WorkTarget::Path(target_id.to_owned()),
+    }
 }
 
 /// Every blocked action, grouped by the archive release it belongs to.
@@ -329,14 +449,19 @@ pub fn blocked_by_release(
         let Some(reason) = action.blocked.clone() else {
             continue;
         };
-        if let Some(release_id) = action.release_id(conn) {
+        for release_id in releases_for_target(conn, &action.target) {
             grouped
                 .entry(release_id)
                 .or_default()
-                .push((action.kind, reason));
+                .push((action.kind, reason.clone()));
         }
     }
     Ok(grouped)
+}
+
+/// The collections a scope touches, in a stable order.
+pub fn profiles_for_scope(conn: &Connection, scope: &Scope) -> Result<Vec<String>, LibraryError> {
+    profiles_in_scope(conn, scope)
 }
 
 fn profiles_in_scope(conn: &Connection, scope: &Scope) -> Result<Vec<String>, LibraryError> {
@@ -353,6 +478,24 @@ fn profiles_in_scope(conn: &Connection, scope: &Scope) -> Result<Vec<String>, Li
             .optional()?
             .into_iter()
             .collect(),
+        Scope::Releases(ids) => {
+            // A selection can in principle span collections; derive over each
+            // once, in a stable order.
+            let mut profiles = BTreeSet::new();
+            for id in ids {
+                if let Some(profile_id) = conn
+                    .query_row(
+                        "SELECT profile_id FROM archive_releases WHERE id=?1",
+                        [id.as_str()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                {
+                    profiles.insert(profile_id);
+                }
+            }
+            profiles.into_iter().collect()
+        }
         Scope::AllProfiles => {
             let mut statement = conn.prepare("SELECT id FROM archive_profiles ORDER BY id")?;
             statement
@@ -627,19 +770,54 @@ pub fn forced_build_action(
 }
 
 /// Releases with archived artwork and a present playable output owe current
-/// frontend projections. The executor's projection is idempotent (existing
-/// identical files are current, not errors); the worker throttles how often
-/// these re-run.
+/// frontend projections.
+///
+/// `category IN ('artwork','video')` matches [`RELEASE_ARTWORK_SQL`]: gating on
+/// `'artwork'` alone meant a release holding only a video never projected it,
+/// while the scrape derivation counted that video as artwork the release had.
 const PROJECTION_CANDIDATES_SQL: &str = "
     SELECT DISTINCT ar.id, ar.platform_id, ar.region, ar.title,
            EXISTS(SELECT 1 FROM archive_release_files arf
-                  WHERE arf.archive_release_id=ar.id AND arf.category='artwork')
+                  WHERE arf.archive_release_id=ar.id
+                    AND arf.category IN ('artwork','video')) AS has_artwork
     FROM archive_releases ar
     JOIN physical_copies pc ON pc.archive_release_id=ar.id
     JOIN carriers c ON c.physical_copy_id=pc.id
     JOIN representations rep ON rep.carrier_id=c.id
     WHERE ar.profile_id=?1
       AND rep.role='playable' AND rep.presence_state='present'";
+
+/// The frontend folders one profile publishes into, taken from where its
+/// playable files actually are.
+///
+/// Presence resolution already wrote the resolved location into
+/// `representations.relative_path`, so this is the folder holding the file
+/// rather than the folder the naming rule would compute — which matters for a
+/// release filed somewhere the rule would not pick today, whose gamelist is the
+/// one in the folder it is really in.
+const CONSOLE_FOLDERS_SQL: &str = "
+    SELECT DISTINCT substr(rep.relative_path, 1, instr(rep.relative_path,'/')-1)
+    FROM archive_releases ar
+    JOIN physical_copies pc ON pc.archive_release_id=ar.id
+    JOIN carriers c ON c.physical_copy_id=pc.id
+    JOIN representations rep ON rep.carrier_id=c.id
+    WHERE ar.profile_id=?1
+      AND rep.role='playable' AND rep.presence_state='present'
+      AND instr(rep.relative_path,'/') > 0
+    ORDER BY 1";
+
+/// Every release publishing into one folder — the releases a console's gamelist
+/// lists, and the rows a console-scoped error or failure belongs to.
+const CONSOLE_RELEASES_SQL: &str = "
+    SELECT DISTINCT ar.id
+    FROM archive_releases ar
+    JOIN physical_copies pc ON pc.archive_release_id=ar.id
+    JOIN carriers c ON c.physical_copy_id=pc.id
+    JOIN representations rep ON rep.carrier_id=c.id
+    WHERE ar.profile_id=?1
+      AND rep.role='playable' AND rep.presence_state='present'
+      AND substr(rep.relative_path, 1, instr(rep.relative_path,'/')-1) = ?2
+    ORDER BY ar.id";
 
 fn derive_projection_actions(
     conn: &Connection,
@@ -659,33 +837,89 @@ fn derive_projection_actions(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     for (release_id, platform_id, region, title, has_artwork) in rows {
-        let playable_platform_id =
-            retro_junk_frontend::esde::system_directory(&platform_id, Some(&region));
-        let label = dump_label(&title, &region, 0);
-        if has_artwork {
-            actions.push(ProposedAction {
-                kind: ActionKind::ProjectAssets,
-                target: WorkTarget::Release(release_id.clone()),
-                profile_id: profile_id.to_owned(),
-                platform_id: platform_id.clone(),
-                playable_platform_id: playable_platform_id.clone(),
-                label: label.clone(),
-                blocked: None,
-                build: None,
-            });
+        if !has_artwork || projection_is_current(conn, ProjectionOf::assets(&release_id))? {
+            continue;
         }
         actions.push(ProposedAction {
-            kind: ActionKind::SyncGamelist,
+            kind: ActionKind::ProjectAssets,
             target: WorkTarget::Release(release_id),
             profile_id: profile_id.to_owned(),
+            playable_platform_id: retro_junk_frontend::esde::system_directory(
+                &platform_id,
+                Some(&region),
+            ),
             platform_id,
-            playable_platform_id,
-            label,
+            label: dump_label(&title, &region, 0),
             blocked: None,
             build: None,
         });
     }
     Ok(())
+}
+
+/// One gamelist action per frontend folder, not per game.
+fn derive_gamelist_actions(
+    conn: &Connection,
+    profile_id: &str,
+    actions: &mut Vec<ProposedAction>,
+) -> Result<(), LibraryError> {
+    for directory in console_folders(conn, profile_id)? {
+        if projection_is_current(conn, ProjectionOf::gamelist(profile_id, &directory))? {
+            continue;
+        }
+        actions.push(ProposedAction {
+            kind: ActionKind::SyncGamelist,
+            target: WorkTarget::console(profile_id, &directory),
+            profile_id: profile_id.to_owned(),
+            // A folder is a frontend identity; the archive platforms landing in
+            // it are whatever they are, so there is no single one to name.
+            platform_id: String::new(),
+            playable_platform_id: directory.clone(),
+            label: directory,
+            blocked: None,
+            build: None,
+        });
+    }
+    Ok(())
+}
+
+/// A projection is done when it is current, which is exactly the candidates the
+/// derivation did not propose.
+///
+/// Counting them the other way — as always outstanding, because they are always
+/// safe to redo — is what made a fully converged library report hundreds of
+/// pending projections forever.
+fn count_projections_done(
+    conn: &Connection,
+    profile_id: &str,
+    summary: &mut ConvergenceSummary,
+) -> Result<(), LibraryError> {
+    let projectable: u64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM ({PROJECTION_CANDIDATES_SQL}) WHERE has_artwork"),
+        [profile_id],
+        |row| row.get(0),
+    )?;
+    let assets = summary
+        .per_kind
+        .entry(ActionKind::ProjectAssets)
+        .or_default();
+    assets.done += projectable.saturating_sub(assets.pending);
+
+    let folders = u64::try_from(console_folders(conn, profile_id)?.len()).unwrap_or(u64::MAX);
+    let gamelists = summary
+        .per_kind
+        .entry(ActionKind::SyncGamelist)
+        .or_default();
+    gamelists.done += folders.saturating_sub(gamelists.pending);
+    Ok(())
+}
+
+fn console_folders(conn: &Connection, profile_id: &str) -> Result<Vec<String>, LibraryError> {
+    let mut statement = conn.prepare(CONSOLE_FOLDERS_SQL)?;
+    let folders = statement
+        .query_map([profile_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(folders)
 }
 
 /// Every release's artwork holdings, whether or not it has any. The `LEFT
@@ -958,6 +1192,7 @@ pub fn summarize_convergence(
             .entry(ActionKind::BuildPlayable)
             .or_default()
             .done += satisfied;
+        count_projections_done(conn, &profile_id, &mut summary)?;
         // Adoption is repair, not a stage every release passes through: a
         // release whose playables are all where their evidence says needs no
         // adoption and counts as done, so the chip reads 0 pending rather

@@ -32,7 +32,9 @@ pub(crate) fn start_archive_operation(
                 verify,
                 &OpCtx::new(&cancel, &progress),
             );
-            let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::ArchiveOperationComplete { result }
+            })
         },
     );
 }
@@ -62,7 +64,9 @@ pub(crate) fn start_catalog_identification_operation(
                 &db_path,
                 &OpCtx::new(&cancel, &progress),
             );
-            let _ = sender.send(AppMessage::ArchiveOperationComplete { op_id, result });
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                AppMessage::ArchiveOperationComplete { result }
+            })
         },
     );
 }

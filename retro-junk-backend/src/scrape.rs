@@ -113,7 +113,7 @@ pub fn scrape_release_artwork(
     })?;
 
     if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err(WorkError::Message("operation cancelled".to_owned()));
+        return Err(WorkError::Cancelled);
     }
     if let Some(message) = run.fatal {
         return Err(WorkError::Message(message));

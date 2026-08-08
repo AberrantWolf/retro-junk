@@ -22,6 +22,44 @@ fn schema_is_idempotent() {
 }
 
 #[test]
+fn v28_removes_only_persisted_cue_compatibility_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("v27.db");
+    {
+        let connection = rusqlite::Connection::open(&db_path).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_version(version INTEGER NOT NULL);
+                 INSERT INTO schema_version(version) VALUES(27);
+                 CREATE TABLE library_entries(
+                    id INTEGER PRIMARY KEY,
+                    display_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    cue_compat_issues_json TEXT
+                 );
+                 INSERT INTO library_entries(id,display_name,status,cue_compat_issues_json)
+                 VALUES(1,'Final Fantasy VIII','matched','[]');",
+            )
+            .unwrap();
+    }
+
+    let connection = open_database(&db_path).unwrap();
+    let retained: (String, String) = connection
+        .query_row(
+            "SELECT display_name,status FROM library_entries WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(retained, ("Final Fantasy VIII".into(), "matched".into()));
+    assert!(
+        connection
+            .prepare("SELECT cue_compat_issues_json FROM library_entries LIMIT 0")
+            .is_err()
+    );
+}
+
+#[test]
 fn v20_adds_work_identity_to_archive_releases() {
     let dir = tempfile::tempdir().unwrap();
     let db_path = dir.path().join("v19.db");

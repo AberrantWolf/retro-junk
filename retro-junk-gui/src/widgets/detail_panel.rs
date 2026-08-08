@@ -455,47 +455,6 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             }
         }
 
-        // CUE sheet compatibility issues
-        if let Some(ref issues) = entry.cue_compat_issues
-            && !issues.is_empty()
-        {
-            let has_unfixable = issues.iter().any(|i| !i.can_auto_fix);
-
-            ui.add_space(4.0);
-            ui.separator();
-            let header = if has_unfixable {
-                crate::widgets::icons::labeled(
-                    crate::widgets::icons::WARNING,
-                    "CUE Sheet Compatibility (requires re-dump)",
-                )
-            } else {
-                crate::widgets::icons::labeled(crate::widgets::icons::WARNING, "CUE Sheet Compatibility")
-            };
-            ui.label(
-                egui::RichText::new(header)
-                    .strong()
-                    .color(STATUS_WARN_STRONG),
-            );
-            ui.add_space(2.0);
-
-            for issue in issues {
-                let (suffix, color) = if issue.can_auto_fix {
-                    ("fixable", STATUS_WARN_STRONG)
-                } else {
-                    ("re-dump required", STATUS_ERR)
-                };
-                note(
-                    ui,
-                    0.0,
-                    egui::RichText::new(format!(
-                        "{}: {} ({})",
-                        issue.file_name, issue.summary, suffix
-                    ))
-                    .color(color),
-                );
-            }
-        }
-
         // Hashes (single-file entries only; multi-disc hashes shown per-disc above)
         if entry.disc_identifications.is_none()
             && let Some(ref hashes) = entry.hashes

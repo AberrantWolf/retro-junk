@@ -20,8 +20,8 @@ use retro_junk_lib::AnalysisContext;
 
 use crate::settings::AppSettings;
 use crate::state::{
-    AppMessage, AppMessageEnvelope, AppMessageSender, BackgroundOperation, CueFixOutcome,
-    CueFixResult, FocusedPanel, LibraryBrowserState, RenameOutcome, RenameResult, ToolsState, View,
+    AppMessage, AppMessageEnvelope, AppMessageSender, BackgroundOperation, FocusedPanel,
+    LibraryBrowserState, RenameOutcome, RenameResult, ToolsState, View,
 };
 use crate::util;
 use crate::views;
@@ -35,8 +35,6 @@ pub enum ResultsDialog {
     None,
     /// Results from the last rename operation.
     Rename(Vec<RenameResult>),
-    /// Results from the last CUE fix operation.
-    CueFix(Vec<CueFixResult>),
     /// Results from the last CHD compression.
     ChdCompress(Vec<crate::state::ChdCompressResult>),
 }
@@ -97,18 +95,10 @@ pub struct UiState {
     pub results_dialog: ResultsDialog,
     /// Pending CHD compression awaiting user confirmation.
     pub chd_compress_prompt: Option<crate::state::ChdCompressPrompt>,
-    /// A pending repair plan awaiting the user's answer, with the console it
-    /// belongs to. Repairs rewrite files in place, so nothing runs until it
-    /// is accepted.
-    pub repair_prompt: Option<(String, Box<crate::state::RepairPrompt>)>,
     /// An ambiguous entry the user is choosing an identity for. The tool will
     /// not guess between catalog entries, so this is how the question gets
     /// answered.
     pub disambiguate_prompt: Option<crate::widgets::disambiguate_dialog::DisambiguatePrompt>,
-    /// Whether a repair keeps a `.bak` copy first. On by default: a repair
-    /// exists because the file is nearly right, and an unrecoverable mistake
-    /// would cost the dump.
-    pub repair_create_backup: bool,
     /// Cached chdman detection for the Settings view.
     pub chdman_probe: ChdmanProbe,
     /// Cached `ScreenScraper` credential provenance for the Settings view.
@@ -214,9 +204,7 @@ impl Default for UiState {
             detail_panel_open: true,
             results_dialog: ResultsDialog::None,
             chd_compress_prompt: None,
-            repair_prompt: None,
             disambiguate_prompt: None,
-            repair_create_backup: true,
             chdman_probe: ChdmanProbe::Idle,
             credential_status: None,
             scraper_account: None,
@@ -646,6 +634,9 @@ impl RetroJunkApp {
         const MAX_MESSAGES_PER_FRAME: usize = 64;
         const MESSAGE_BUDGET: Duration = Duration::from_millis(4);
         self.process_store_replies(ctx, MAX_MESSAGES_PER_FRAME);
+        for (op_id, phase) in self.message_tx.drain_operation_phases() {
+            crate::state::handle_message(self, AppMessage::OperationPhase { op_id, phase }, ctx);
+        }
         let started = std::time::Instant::now();
         let mut processed = 0;
         while processed < MAX_MESSAGES_PER_FRAME && started.elapsed() < MESSAGE_BUDGET {
@@ -833,7 +824,15 @@ impl RetroJunkApp {
                     if self.ui_state.selected_console == Some(console_id) {
                         self.request_console_page(console_id, ctx);
                     }
-                    self.refresh_console_summaries(ctx);
+                    // Summaries cover the whole root, so refreshing after
+                    // every console makes an auto-scan batch re-query the
+                    // entire library once per folder — on the same single
+                    // store thread the commits queue behind. During a batch
+                    // the refresh waits for the end; a lone scan still
+                    // refreshes immediately.
+                    if self.ui_state.auto_scan_op_id.is_none() {
+                        self.refresh_console_summaries(ctx);
+                    }
                     crate::state::finish_auto_scan(self, &folder_name, true, ctx);
                     if self.ui_state.refresh_archive_after_console_scan.as_deref()
                         == Some(folder_name.as_str())
@@ -1690,13 +1689,6 @@ impl eframe::App for RetroJunkApp {
                 rename_results_summary,
                 rename_results_row,
             ),
-            ResultsDialog::CueFix(items) => widgets::results_dialog::show_results_dialog(
-                ctx,
-                "Fix CUE Results",
-                items,
-                cue_fix_results_summary,
-                cue_fix_results_row,
-            ),
             ResultsDialog::ChdCompress(items) => widgets::results_dialog::show_results_dialog(
                 ctx,
                 "Compress to CHD Results",
@@ -1711,7 +1703,6 @@ impl eframe::App for RetroJunkApp {
 
         // Compress-to-CHD confirmation dialog
         widgets::chd_compress_dialog::show(ctx, self);
-        widgets::repair_dialog::show(ctx, self);
         widgets::disambiguate_dialog::show(ctx, self);
 
         views::collection::show_import_modal(ctx, self);
@@ -1944,52 +1935,6 @@ fn show_organize_preview_dialog(ctx: &egui::Context, app: &mut RetroJunkApp) {
         crate::backend::organize::execute_organize_plan(app, folder_name, plan, ctx);
     } else if dismiss || outcome.dismissed {
         app.ui_state.pending_organize_plan = None;
-    }
-}
-
-/// Summary line for the CUE-fix results dialog ([`widgets::results_dialog`]).
-fn cue_fix_results_summary(items: &[CueFixResult]) -> String {
-    let fixed = items
-        .iter()
-        .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
-        .count();
-    let already = items
-        .iter()
-        .filter(|r| matches!(r.outcome, CueFixOutcome::AlreadyStandard))
-        .count();
-    let failed = items
-        .iter()
-        .filter(|r| {
-            matches!(
-                r.outcome,
-                CueFixOutcome::Unfixable { .. } | CueFixOutcome::Error { .. }
-            )
-        })
-        .count();
-    format!("{fixed} fixed, {already} already standard, {failed} failed")
-}
-
-/// One row of the CUE-fix results dialog.
-fn cue_fix_results_row(ui: &mut egui::Ui, item: &CueFixResult) {
-    use widgets::results_dialog::{STATUS_ERR, STATUS_OK, STATUS_WARN};
-
-    match &item.outcome {
-        CueFixOutcome::Fixed { summary } => {
-            ui.colored_label(STATUS_OK, "Fixed");
-            ui.label(format!("{} ({})", item.file_name, summary));
-        }
-        CueFixOutcome::AlreadyStandard => {
-            ui.colored_label(egui::Color32::GRAY, "OK");
-            ui.label(format!("{} already standard", item.file_name));
-        }
-        CueFixOutcome::Unfixable { reason } => {
-            ui.colored_label(STATUS_WARN, "Unfixable");
-            ui.label(format!("{}: {}", item.file_name, reason));
-        }
-        CueFixOutcome::Error { message } => {
-            ui.colored_label(STATUS_ERR, "Error");
-            ui.label(format!("{}: {}", item.file_name, message));
-        }
     }
 }
 

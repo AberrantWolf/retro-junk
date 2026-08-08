@@ -2,6 +2,99 @@
 
 ## 0.4.0
 
+- The library scan stopped doing three things it did not need to do. Together
+  these dominated a first launch on a network or USB volume, and none of them
+  read a byte of ROM content — the scan never has.
+
+  **A folder's playlists were checked once per game in it.** For every entry,
+  `check_broken_references` listed the entire console folder and asked the
+  filesystem about every file in it, reading every `.cue` it found. A folder of
+  168 games did 168 listings and 28,224 metadata lookups, and every game came
+  back with the same folder-wide answer — so one broken cue put a warning on
+  every game beside it, naming a file that had nothing to do with them. An
+  entry now reads only its own descriptor files, which for a cartridge is none
+  at all. A multi-disc set's own `.m3u` is read explicitly, because the scanner
+  drops playlist lines whose file is missing and that is exactly the breakage
+  being looked for.
+
+  **Unchanged files were re-identified anyway.** The scan fingerprints each
+  file (path, size, modification time), finds the stored entry matches, hands
+  back everything it knows — and then opened the file and worked it all out
+  again. For a compressed disc image that means decompressing far enough into
+  the image to walk its filesystem and read the boot record. Skipping it where
+  the fingerprint already proved the bytes are the same took `psx` from 4.38s
+  to 1.84s and `saturnjp` from 3.41s to 1.04s. The catalog is still re-queried,
+  since that changes underneath an unchanged file whenever a DAT is imported.
+
+  **The whole library's summaries were recomputed after every console.** An
+  auto-scan of thirty folders ran thirty whole-root queries, on the same single
+  worker thread the scan commits queue behind. A batch now refreshes once at
+  the end; a single console scan still refreshes immediately.
+
+- A queue now processes [1..N] things once instead of one thing N times. Every
+  convergence action used to open the database twice, take and release the
+  whole-archive lock, and search the archive scan for its release — so a run
+  over six hundred actions opened 1,201 connections and cycled the lock six
+  hundred times, on the USB and network volumes this is meant for. The executor
+  takes a batch: the connections, the lock, and the walk are acquired once, and
+  only the claim stays per item, because the claim is what says which item is
+  being worked on and lets another process pick up the ones this batch has not
+  reached. `execute_action` is now that same function with one item in it, so
+  there is one claim → dispatch → release protocol rather than two that could
+  drift. Holding the lock across the batch also closes a hole the shared scan
+  opened: releasing it between items let another process change the archive
+  while the cached walk still described the old tree.
+
+- Gamelists are written per console folder, not per game. `gamelist.xml` is one
+  file per system directory, but the work was scoped to a release — so a
+  reference collection derived 305 actions that between them rewrote 19 files,
+  and the folder holding 111 games had its list parsed and rewritten about a
+  hundred times per run. One action now covers a folder, reads its file once,
+  and writes it once. The folder is taken from where the playable files
+  actually are rather than from what the naming rule would compute, which also
+  settles a disagreement: the gamelist asked the filesystem while artwork
+  projection asked the planner, so a `world`-region NES release built into
+  `famicom` had its entry written to `famicom/` and its artwork copied into
+  `nes/`, leaving the entry pointing at art that was not there. Both now ask
+  `release_publish_directory`.
+
+- A gamelist entry can finally be corrected. The writer only ever inserted an
+  entry whose path was absent, so a release whose catalog title was fixed, or
+  whose artwork arrived after its first sync, kept the name and the empty art
+  tags it was created with forever. An existing `<game>` block now has the tags
+  this project renders replaced and everything else — `<favorite>`,
+  `<playcount>`, `<lastplayed>`, a description someone typed — preserved
+  exactly as found. A tag the new render does not produce is left alone rather
+  than blanked.
+
+- `status` stops reporting work that is already done. Both projection kinds
+  derived unconditionally for every release with a present playable, so a fully
+  converged library reported hundreds of pending projections forever and every
+  explicit run redid all of them. A projection now records a fingerprint of the
+  archive facts it was made from; derivation proposes it only when that no
+  longer matches. Since a fingerprint of sources cannot see a media file
+  deleted outside retro-junk, `sync --force-projections` forgets the records
+  for a scope and `archive project-assets` still projects unconditionally.
+
+- The GUI can converge a multi-row selection. Selecting several games and
+  choosing "Converge Selected" runs every pending action for them as one batch;
+  single selection is the same path with one item.
+
+- Smaller fixes found in the same code: an action that ran and failed was
+  counted as blocked in one place and failed in another, so `Blocked` meant
+  both "never started" and "did not work" — they are separate outcomes now. A
+  run that only refreshed the frontend paid for a whole extra archive walk,
+  because "should we reconcile" was keyed on "did anything complete" rather
+  than on whether the archive changed. Cancellation was recognized by comparing
+  an error's text to the literal `"operation cancelled"`, so rewording that
+  message would have silently reclassified cancellations as failures; it is a
+  typed variant now. `sync --only gamelist` reported a queue position out of
+  the unfiltered total (`[3/600]`). `--limit` still paid a full derivation for
+  every remaining stage after it was reached. A release holding only a video
+  never projected it, because the projection gate looked for `artwork` while
+  the scrape derivation counted `artwork` and `video`. And finding a release in
+  the shared scan was a search through every release, once per release.
+
 - Catalog identity comes from a game's bytes, not from its name. Work, release
   and media ids used to be built out of the title — `{platform}:{slug(title)}`
   and derivations of it — so the title was part of the primary key, and every

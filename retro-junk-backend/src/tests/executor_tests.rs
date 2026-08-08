@@ -1,6 +1,21 @@
-//! The run's shared archive scan, and when it must be thrown away.
+//! The run's shared archive scan, and what a batch acquires once.
 
 use super::*;
+
+/// A projection action for a console that does not exist — it needs no archive
+/// content to reach the executor's coordination, which is what these check.
+fn console_action(directory: &str) -> ProposedAction {
+    ProposedAction {
+        kind: ActionKind::SyncGamelist,
+        target: WorkTarget::console("prof", directory),
+        profile_id: "prof".to_owned(),
+        platform_id: String::new(),
+        playable_platform_id: directory.to_owned(),
+        label: directory.to_owned(),
+        blocked: None,
+        build: None,
+    }
+}
 
 /// An `ExecContext` pointed at a real, empty archive. Only the fields the
 /// scan cache touches matter here.
@@ -96,4 +111,81 @@ fn only_the_projection_kinds_leave_the_archive_alone() {
             "{kind:?} is on the wrong side of the archive-mutation rule"
         );
     }
+}
+
+/// The lock is taken for the batch, not for each item. Proven from the outside:
+/// with the archive already held by someone else, *every* item reports busy —
+/// if the lock were still per item, only the first would, and the rest would
+/// each go on to contend separately.
+#[test]
+fn the_archive_lock_governs_the_whole_batch() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive_root = temp.path().join("archive");
+    let mut ctx = context(&archive_root);
+    // The daemon's etiquette, so a busy archive is reported rather than waited
+    // on — an interactive wait would block this test forever, which is itself
+    // the behavior being relied on.
+    ctx.lock = LockEtiquette::DaemonFailFast;
+
+    let held = retro_junk_archive::ArchiveLock::acquire(&archive_root).expect("lock the archive");
+    let batch = [console_action("psx"), console_action("snes")];
+    let outcomes = execute_actions(
+        &ctx,
+        &batch,
+        &crate::ops::SILENT_PROGRESS,
+        &AtomicBool::new(false),
+    )
+    .expect("the batch reports rather than errors");
+    drop(held);
+
+    assert_eq!(outcomes.len(), batch.len(), "one outcome per action");
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, ActionOutcome::ArchiveBusy)),
+        "a busy archive stops the batch, not just its first item: {outcomes:?}"
+    );
+}
+
+/// Cancelling stops the batch where it is and says so for the rest, rather
+/// than reporting work that never ran as failed.
+#[test]
+fn a_cancelled_batch_reports_every_remaining_item() {
+    let temp = tempfile::tempdir().unwrap();
+    let ctx = context(&temp.path().join("archive"));
+    let batch = [console_action("psx"), console_action("snes")];
+
+    let outcomes = execute_actions(
+        &ctx,
+        &batch,
+        &crate::ops::SILENT_PROGRESS,
+        &AtomicBool::new(true),
+    )
+    .expect("cancellation is an outcome, not an error");
+
+    assert_eq!(outcomes.len(), batch.len());
+    assert!(
+        outcomes
+            .iter()
+            .all(|outcome| matches!(outcome, ActionOutcome::Cancelled)),
+        "{outcomes:?}"
+    );
+}
+
+/// An empty batch must not open a connection or reach for the lock — the
+/// worker hands over an empty stage on every idle daemon tick.
+#[test]
+fn an_empty_batch_touches_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ctx = context(&temp.path().join("archive"));
+    ctx.db_path = temp.path().join("does-not-exist").join("catalog.db");
+
+    let outcomes = execute_actions(
+        &ctx,
+        &[],
+        &crate::ops::SILENT_PROGRESS,
+        &AtomicBool::new(false),
+    )
+    .expect("an empty batch cannot fail");
+    assert!(outcomes.is_empty());
 }

@@ -20,8 +20,7 @@ pub use retro_junk_backend::ops::catalog_ops::{CacheKind, SsEnrichOptions, parse
 
 /// Send the terminal message pair: remove the progress bar, then signal that
 /// catalog data changed (refresh + clear the in-flight guard).
-fn finish(tx: &crate::state::AppMessageSender, op_id: u64, ctx: &egui::Context) {
-    let _ = tx.send(AppMessage::OperationComplete { op_id });
+fn finish(tx: &crate::state::AppMessageSender, _op_id: u64, ctx: &egui::Context) {
     let _ = tx.send(AppMessage::CatalogDataChanged);
     ctx.request_repaint();
 }
@@ -46,10 +45,12 @@ fn spawn_catalog_op(
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             let progress = forward_phases(op_id, tx.clone());
-            if let Err(e) = work(&OpCtx::new(&cancel, &progress)) {
+            let result = work(&OpCtx::new(&cancel, &progress));
+            if let Err(e) = &result {
                 log::error!("{e}");
             }
             finish(&tx, op_id, &egui_ctx);
+            result
         },
     );
 }

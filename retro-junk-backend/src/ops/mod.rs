@@ -13,7 +13,6 @@ pub mod chd_compress;
 pub mod convergence;
 pub mod daemon;
 pub mod export;
-pub mod fix_cue;
 pub mod hash;
 pub mod inbox;
 pub mod miximage;
@@ -22,7 +21,6 @@ pub mod playable_build;
 pub mod playable_policy;
 pub mod rename;
 pub mod rename_playable;
-pub mod repair;
 pub mod scan;
 pub mod scrape_media;
 

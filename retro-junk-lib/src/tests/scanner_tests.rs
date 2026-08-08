@@ -53,7 +53,7 @@ fn playlist_claims_top_level_discs_as_one_logical_game() {
     assert_eq!(entries[0].all_files().len(), 2);
 }
 
-/// Copying a library onto exFAT or an SMB share leaves macOS AppleDouble
+/// Copying a library onto exFAT or an SMB share leaves macOS `AppleDouble`
 /// sidecars beside every file. They carry the shadowed file's extension, so
 /// scanning must reject them by name or each real game gains a phantom twin.
 #[test]

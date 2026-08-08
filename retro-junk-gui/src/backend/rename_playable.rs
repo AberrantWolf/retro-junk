@@ -48,7 +48,9 @@ pub(crate) fn start(app: &mut RetroJunkApp, only_release: Option<String>, _ctx: 
                 lines.extend(report.failures);
                 lines.join("\n")
             });
-            let _ = tx.send(AppMessage::ArchiveOperationComplete { op_id, result });
+            crate::backend::worker::deliver_result(&tx, result, |result| {
+                AppMessage::ArchiveOperationComplete { result }
+            })
         },
     );
 }

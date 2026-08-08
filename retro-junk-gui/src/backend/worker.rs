@@ -5,7 +5,8 @@ use retro_junk_io::ProgressUnit;
 
 use crate::app::RetroJunkApp;
 use crate::state::{
-    AppMessage, BackgroundOperation, OperationKind, ProgressDisplay, next_operation_id,
+    AppMessage, BackgroundOperation, OperationKind, OperationOutcome, OperationPhase,
+    ProgressDisplay, next_operation_id,
 };
 
 /// Build the progress callback that shared operations report through.
@@ -21,12 +22,22 @@ pub(crate) fn forward_phases(
     move |description, unit, current, total| {
         let _ = sender.send(AppMessage::OperationPhase {
             op_id,
-            description: description.to_owned(),
-            display: ProgressDisplay::for_report(unit, total),
-            current,
-            total,
+            phase: OperationPhase::reported(description, unit, current, total),
         });
     }
+}
+
+/// Deliver an operation-specific result while also returning the lifecycle
+/// result consumed by the shared runner. This keeps result payloads and the
+/// terminal activity outcome in agreement.
+pub(crate) fn deliver_result<T>(
+    sender: &crate::state::AppMessageSender,
+    result: Result<T, String>,
+    message: impl FnOnce(Result<T, String>) -> AppMessage,
+) -> Result<(), String> {
+    let outcome = result.as_ref().map(|_| ()).map_err(Clone::clone);
+    let _ = sender.send(message(result));
+    outcome
 }
 
 /// Spawn a background operation with the standard boilerplate:
@@ -47,7 +58,9 @@ pub fn spawn_background_op<F>(
     work: F,
 ) -> u64
 where
-    F: FnOnce(u64, Arc<AtomicBool>, crate::state::AppMessageSender) + Send + 'static,
+    F: FnOnce(u64, Arc<AtomicBool>, crate::state::AppMessageSender) -> Result<(), String>
+        + Send
+        + 'static,
 {
     let op_id = next_operation_id();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -63,7 +76,30 @@ where
     ));
 
     let handle = std::thread::spawn(move || {
-        work(op_id, cancel, tx);
+        let terminal_tx = tx.clone();
+        let terminal_cancel = cancel.clone();
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(op_id, cancel, tx)));
+        let outcome = match result {
+            Err(payload) => OperationOutcome::Failed(payload.downcast_ref::<&str>().map_or_else(
+                || {
+                    payload
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .unwrap_or_else(|| "background worker panicked".to_owned())
+                },
+                |message| (*message).to_owned(),
+            )),
+            Ok(_) if terminal_cancel.load(std::sync::atomic::Ordering::Relaxed) => {
+                OperationOutcome::Cancelled
+            }
+            Ok(Ok(())) => OperationOutcome::Succeeded,
+            Ok(Err(error)) => OperationOutcome::Failed(error),
+        };
+        if matches!(outcome, OperationOutcome::Succeeded) {
+            terminal_tx.finish_determinate_phase(op_id);
+        }
+        let _ = terminal_tx.send(AppMessage::OperationComplete { op_id, outcome });
     });
     app.op_threads.insert(op_id, handle);
 

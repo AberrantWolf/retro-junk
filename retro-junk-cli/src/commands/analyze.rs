@@ -7,7 +7,6 @@ use log::Level;
 use owo_colors::OwoColorize;
 use owo_colors::Stream::Stdout;
 
-use retro_junk_disc::cue::check_cue_compat;
 use retro_junk_lib::display::{HARDWARE_KEYS, SizeVerdict, compute_size_verdict, prettify_key};
 use retro_junk_lib::{AnalysisContext, AnalysisOptions, RomAnalyzer, RomIdentification};
 
@@ -180,34 +179,6 @@ fn analyze_and_print(
                 "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
                 e,
             );
-        }
-    }
-
-    // Check CUE sheet compatibility
-    if path
-        .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("cue"))
-        && let Ok(content) = std::fs::read_to_string(path)
-    {
-        let report = check_cue_compat(&content);
-        if !report.is_standard() {
-            if report.can_auto_fix() {
-                log::warn!(
-                    "    {}{} {}: {} (fix with: retro-junk fix-cue)",
-                    indent,
-                    "\u{26A0}".if_supports_color(Stdout, |t| t.yellow()),
-                    file_name,
-                    report.summary(),
-                );
-            } else {
-                log::warn!(
-                    "    {}{} {}: {} (re-dump required)",
-                    indent,
-                    "\u{2718}".if_supports_color(Stdout, |t| t.red()),
-                    file_name,
-                    report.summary(),
-                );
-            }
         }
     }
 }

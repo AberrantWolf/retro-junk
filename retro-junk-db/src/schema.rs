@@ -29,6 +29,8 @@ pub enum SchemaError {
 ///
 /// Order matters — children first, so the drops respect foreign keys.
 pub const PROJECTION_TABLES: &[&str] = &[
+    "projected_assets",
+    "projected_gamelists",
     "library_entry_media_bindings",
     "playable_policies",
     "derivations",
@@ -46,7 +48,7 @@ pub const PROJECTION_TABLES: &[&str] = &[
 
 /// Bumped whenever a projection table's shape changes. Unlike
 /// [`CURRENT_VERSION`], this never needs a migration arm.
-pub const PROJECTION_VERSION: i32 = 2;
+pub const PROJECTION_VERSION: i32 = 3;
 
 /// Drop and rebuild the projection when its recorded shape is not the one
 /// this build expects.
@@ -93,7 +95,7 @@ pub fn ensure_projection_shape(conn: &Connection) -> Result<(), SchemaError> {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 27;
+pub const CURRENT_VERSION: i32 = 28;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -345,7 +347,6 @@ const TABLES: &[(&str, &str)] = &[
           disc_identifications_json TEXT,
           broken_references_json TEXT,
           ambiguous_candidates_json TEXT,
-          cue_compat_issues_json TEXT,
           hash_source TEXT NOT NULL DEFAULT '',
           UNIQUE(console_id, entry_key))",
     ),
@@ -468,6 +469,24 @@ const TABLES: &[(&str, &str)] = &[
           recipe_version INTEGER NOT NULL,
           evidence_path TEXT NOT NULL,
           created_at TEXT NOT NULL)",
+    ),
+    // What the frontend tree was last projected from. The fingerprint is a
+    // digest of the archive facts the output depends on, so derivation can
+    // tell "already done" from "owed" instead of proposing every projection
+    // forever. See `projection_state.rs`.
+    (
+        "projected_assets",
+        "(archive_release_id TEXT PRIMARY KEY
+              REFERENCES archive_releases(id) ON DELETE CASCADE,
+          profile_id TEXT NOT NULL,
+          fingerprint TEXT NOT NULL)",
+    ),
+    (
+        "projected_gamelists",
+        "(profile_id TEXT NOT NULL,
+          console TEXT NOT NULL,
+          fingerprint TEXT NOT NULL,
+          PRIMARY KEY(profile_id, console))",
     ),
     (
         "playable_policies",
@@ -1139,6 +1158,26 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 if has_works {
                     conn.execute_batch(
                         "CREATE INDEX IF NOT EXISTS idx_works_name ON works(canonical_name);",
+                    )?;
+                }
+            }
+            27 => {
+                // Compatibility warnings and automatic CUE rewriting were
+                // removed. The warning cache is derived and must not survive
+                // as a dormant persisted feature; dropping this one column
+                // preserves every unrelated library-entry field in place.
+                let has_library: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='library_entries')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_library
+                    && conn
+                        .prepare("SELECT cue_compat_issues_json FROM library_entries LIMIT 0")
+                        .is_ok()
+                {
+                    conn.execute_batch(
+                        "ALTER TABLE library_entries DROP COLUMN cue_compat_issues_json;",
                     )?;
                 }
             }

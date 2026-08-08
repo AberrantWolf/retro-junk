@@ -356,7 +356,10 @@ fn test_device_capacity() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     // file_size == used_rom_size and both < chip_capacity → trimmed, OK
     assert_eq!(result.expected_size, 0x10000);
-    assert_eq!(result.extra.get("dump_status").unwrap(), "Trimmed");
+    assert_eq!(
+        result.dump_extent,
+        Some(retro_junk_core::DumpExtent::Trimmed)
+    );
     assert_eq!(result.extra.get("cartridge_capacity").unwrap(), "64 MB");
 }
 
@@ -375,7 +378,7 @@ fn test_untrimmed_rom() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.file_size, capacity as u64);
     assert_eq!(result.expected_size, capacity as u64); // OK, not oversized
-    assert_eq!(result.extra.get("dump_status").unwrap(), "Untrimmed");
+    assert_eq!(result.dump_extent, Some(retro_junk_core::DumpExtent::Full));
 }
 
 #[test]
@@ -390,7 +393,10 @@ fn test_trimmed_rom() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.file_size, 0x10000);
     assert_eq!(result.expected_size, 0x10000); // OK, not truncated
-    assert_eq!(result.extra.get("dump_status").unwrap(), "Trimmed");
+    assert_eq!(
+        result.dump_extent,
+        Some(retro_junk_core::DumpExtent::Trimmed)
+    );
 }
 
 #[test]
@@ -408,8 +414,8 @@ fn test_partially_trimmed_rom() {
     assert_eq!(result.file_size, 0xC000);
     assert_eq!(result.expected_size, 0xC000); // OK
     assert_eq!(
-        result.extra.get("dump_status").unwrap(),
-        "Partially trimmed"
+        result.dump_extent,
+        Some(retro_junk_core::DumpExtent::PartiallyTrimmed)
     );
 }
 
@@ -429,6 +435,26 @@ fn test_actually_truncated_rom() {
     let result = analyzer.analyze(&mut Cursor::new(rom), &options).unwrap();
     assert_eq!(result.file_size, 0x10000);
     assert_eq!(result.expected_size, 0x20000); // shows TRUNCATED
+    assert_eq!(
+        result.dump_extent,
+        Some(retro_junk_core::DumpExtent::Truncated)
+    );
+}
+
+#[test]
+fn test_oversized_rom() {
+    let mut rom = make_nds_rom();
+    rom[0x014] = 0; // declared chip capacity = 128 KB
+    rom.resize(0x30000, 0xFF); // actual file = 192 KB
+    recompute_header_checksum(&mut rom);
+
+    let result = DsAnalyzer
+        .analyze(&mut Cursor::new(rom), &AnalysisOptions::default())
+        .unwrap();
+    assert_eq!(
+        result.dump_extent,
+        Some(retro_junk_core::DumpExtent::Oversized)
+    );
 }
 
 #[test]

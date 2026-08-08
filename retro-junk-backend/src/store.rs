@@ -672,7 +672,6 @@ mod tests {
                 disc_identifications_json: None,
                 broken_references_json: None,
                 ambiguous_candidates_json: None,
-                cue_compat_issues_json: None,
             },
         }
     }

@@ -399,7 +399,6 @@ pub struct LibraryEntryRow {
     pub disc_identifications_json: Option<String>,
     pub broken_references_json: Option<String>,
     pub ambiguous_candidates_json: Option<String>,
-    pub cue_compat_issues_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -507,7 +506,6 @@ pub struct LibraryEntryListItem {
     pub detected_regions: Vec<String>,
     pub has_hash_warnings: bool,
     pub has_broken_references: bool,
-    pub has_cue_compat_issues: bool,
     pub revision: u64,
     pub source_revision: u64,
     /// True when this playable entry is bound to a catalog medium represented
@@ -1303,7 +1301,6 @@ pub struct EntryAnalysisUpdate {
     pub disc_identifications_json: Option<String>,
     pub broken_references_json: Option<String>,
     pub ambiguous_candidates_json: Option<String>,
-    pub cue_compat_issues_json: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1342,7 +1339,7 @@ pub fn apply_entry_analysis(
     a: &EntryAnalysisUpdate,
 ) -> Result<LibraryChangeSet, LibraryError> {
     mutate_entry(conn, id, expected_source_revision, |tx| {
-        tx.execute("UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_warnings_json=?6,disc_verification=?7,dat_game_name=?8,dat_rom_name=?9,dat_match_method=?10,cover_title=?11,screen_title=?12,identification_json=?13,disc_identifications_json=?14,broken_references_json=?15,ambiguous_candidates_json=?16,cue_compat_issues_json=?17,revision=revision+1 WHERE id=?18",params![a.status,a.crc32,a.sha1,a.md5,a.data_size,a.hash_warnings_json,a.disc_verification,a.dat_game_name,a.dat_rom_name,a.dat_match_method,a.cover_title,a.screen_title,a.identification_json,a.disc_identifications_json,a.broken_references_json,a.ambiguous_candidates_json,a.cue_compat_issues_json,id.0])?;
+        tx.execute("UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_warnings_json=?6,disc_verification=?7,dat_game_name=?8,dat_rom_name=?9,dat_match_method=?10,cover_title=?11,screen_title=?12,identification_json=?13,disc_identifications_json=?14,broken_references_json=?15,ambiguous_candidates_json=?16,revision=revision+1 WHERE id=?17",params![a.status,a.crc32,a.sha1,a.md5,a.data_size,a.hash_warnings_json,a.disc_verification,a.dat_game_name,a.dat_rom_name,a.dat_match_method,a.cover_title,a.screen_title,a.identification_json,a.disc_identifications_json,a.broken_references_json,a.ambiguous_candidates_json,id.0])?;
         restore_archive_evidence_name(tx, id)?;
         Ok(())
     })
@@ -1383,7 +1380,7 @@ pub fn apply_entry_analysis_batch(
             scope = Some((console_id, root_id));
         }
         let a = &command.update;
-        tx.execute("UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_warnings_json=?6,disc_verification=?7,dat_game_name=?8,dat_rom_name=?9,dat_match_method=?10,cover_title=?11,screen_title=?12,identification_json=?13,disc_identifications_json=?14,broken_references_json=?15,ambiguous_candidates_json=?16,cue_compat_issues_json=?17,revision=revision+1 WHERE id=?18",params![a.status,a.crc32,a.sha1,a.md5,a.data_size,a.hash_warnings_json,a.disc_verification,a.dat_game_name,a.dat_rom_name,a.dat_match_method,a.cover_title,a.screen_title,a.identification_json,a.disc_identifications_json,a.broken_references_json,a.ambiguous_candidates_json,a.cue_compat_issues_json,command.entry_id.0])?;
+        tx.execute("UPDATE library_entries SET status=?1,crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_warnings_json=?6,disc_verification=?7,dat_game_name=?8,dat_rom_name=?9,dat_match_method=?10,cover_title=?11,screen_title=?12,identification_json=?13,disc_identifications_json=?14,broken_references_json=?15,ambiguous_candidates_json=?16,revision=revision+1 WHERE id=?17",params![a.status,a.crc32,a.sha1,a.md5,a.data_size,a.hash_warnings_json,a.disc_verification,a.dat_game_name,a.dat_rom_name,a.dat_match_method,a.cover_title,a.screen_title,a.identification_json,a.disc_identifications_json,a.broken_references_json,a.ambiguous_candidates_json,command.entry_id.0])?;
         affected.push(command.entry_id);
     }
     let Some((console_id, root_id)) = scope else {
@@ -1716,7 +1713,6 @@ pub fn query_entry_list(
         "SELECT id,display_name,status,tag,region_override,data_size,
                 dat_game_name,
                 broken_references_json IS NOT NULL AND broken_references_json <> '[]',
-                cue_compat_issues_json IS NOT NULL AND cue_compat_issues_json <> '[]',
                 revision,source_revision,identification_json,hash_warnings_json,
                 disc_identifications_json,entry_key,game_entry_json,
                 {archived_expr},
@@ -1740,12 +1736,12 @@ pub fn query_entry_list(
     );
     let mut stmt = conn.prepare(&sql)?;
     let map_row = |r: &rusqlite::Row<'_>| {
-        let identification_json: Option<String> = r.get(11)?;
-        let hash_warnings_json: Option<String> = r.get(12)?;
-        let disc_identifications_json: Option<String> = r.get(13)?;
-        let entry_key: String = r.get(14)?;
-        let game_entry_json: String = r.get(15)?;
-        let projected_format: Option<String> = r.get(17)?;
+        let identification_json: Option<String> = r.get(10)?;
+        let hash_warnings_json: Option<String> = r.get(11)?;
+        let disc_identifications_json: Option<String> = r.get(12)?;
+        let entry_key: String = r.get(13)?;
+        let game_entry_json: String = r.get(14)?;
+        let projected_format: Option<String> = r.get(16)?;
         let (internal_name, detected_regions) =
             project_identification(identification_json.as_deref());
         Ok(LibraryEntryListItem {
@@ -1761,15 +1757,14 @@ pub fn query_entry_list(
             has_hash_warnings: json_array_is_nonempty(hash_warnings_json.as_deref())
                 || disc_hash_warnings_are_nonempty(disc_identifications_json.as_deref()),
             has_broken_references: r.get(7)?,
-            has_cue_compat_issues: r.get(8)?,
-            revision: r.get(9)?,
-            source_revision: r.get(10)?,
-            archived: r.get(16)?,
+            revision: r.get(8)?,
+            source_revision: r.get(9)?,
+            archived: r.get(15)?,
             archive_complete: false,
             playable_format: projected_format
                 .unwrap_or_else(|| playable_format(&entry_key, &game_entry_json)),
-            preferred_format: r.get(18)?,
-            archive_release_id: r.get(19)?,
+            preferred_format: r.get(17)?,
+            archive_release_id: r.get(18)?,
         })
     };
     let mut rows = if let Some(selected) = logical_selection {
@@ -2780,7 +2775,7 @@ pub fn load_entry_detail(
     conn: &Connection,
     id: LibraryEntryId,
 ) -> Result<Option<LibraryEntryDetail>, LibraryError> {
-    let sql = "SELECT console_id,entry_key,revision,source_revision,source_fingerprint,display_name,game_entry_json,status,tag,crc32,sha1,md5,data_size,hash_warnings_json,disc_verification,dat_game_name,dat_rom_name,dat_match_method,region_override,cover_title,screen_title,identification_json,disc_identifications_json,broken_references_json,ambiguous_candidates_json,cue_compat_issues_json FROM library_entries WHERE id=?1";
+    let sql = "SELECT console_id,entry_key,revision,source_revision,source_fingerprint,display_name,game_entry_json,status,tag,crc32,sha1,md5,data_size,hash_warnings_json,disc_verification,dat_game_name,dat_rom_name,dat_match_method,region_override,cover_title,screen_title,identification_json,disc_identifications_json,broken_references_json,ambiguous_candidates_json FROM library_entries WHERE id=?1";
     Ok(conn
         .query_row(sql, [id.0], |r| {
             Ok(LibraryEntryDetail {
@@ -2811,7 +2806,6 @@ pub fn load_entry_detail(
                     disc_identifications_json: r.get(22)?,
                     broken_references_json: r.get(23)?,
                     ambiguous_candidates_json: r.get(24)?,
-                    cue_compat_issues_json: r.get(25)?,
                 },
             })
         })
@@ -2833,7 +2827,7 @@ pub fn load_entry_details(
                 display_name,game_entry_json,status,tag,crc32,sha1,md5,data_size,
                 hash_warnings_json,disc_verification,dat_game_name,dat_rom_name,dat_match_method,region_override,cover_title,
                 screen_title,identification_json,disc_identifications_json,
-                broken_references_json,ambiguous_candidates_json,cue_compat_issues_json
+                broken_references_json,ambiguous_candidates_json
          FROM library_entries WHERE id IN ({placeholders})"
     );
     Ok(conn
@@ -2867,7 +2861,6 @@ pub fn load_entry_details(
                     disc_identifications_json: r.get(23)?,
                     broken_references_json: r.get(24)?,
                     ambiguous_candidates_json: r.get(25)?,
-                    cue_compat_issues_json: r.get(26)?,
                 },
             })
         })?
@@ -2912,7 +2905,7 @@ pub fn load_entry_details_for_console(
                       display_name,game_entry_json,status,tag,crc32,sha1,md5,data_size,
                       hash_warnings_json,disc_verification,dat_game_name,dat_rom_name,dat_match_method,region_override,
                       cover_title,screen_title,identification_json,disc_identifications_json,
-                      broken_references_json,ambiguous_candidates_json,cue_compat_issues_json
+                      broken_references_json,ambiguous_candidates_json
                FROM library_entries WHERE console_id=?1
                ORDER BY display_name COLLATE NOCASE,id";
     Ok(conn
@@ -2946,7 +2939,6 @@ pub fn load_entry_details_for_console(
                     disc_identifications_json: r.get(22)?,
                     broken_references_json: r.get(23)?,
                     ambiguous_candidates_json: r.get(24)?,
-                    cue_compat_issues_json: r.get(25)?,
                 },
             })
         })?
@@ -2964,10 +2956,10 @@ fn insert_scanned_entry(
             status,tag,crc32,sha1,md5,data_size,hash_warnings_json,disc_verification,dat_game_name,dat_rom_name,
             dat_match_method,region_override,cover_title,screen_title,
             identification_json,disc_identifications_json,broken_references_json,
-            ambiguous_candidates_json,cue_compat_issues_json
+            ambiguous_candidates_json
          ) VALUES(
             ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,
-            ?18,?19,?20,?21,?22,?23,?24
+            ?18,?19,?20,?21,?22,?23
          )",
         params![
             cid.0,
@@ -2993,7 +2985,6 @@ fn insert_scanned_entry(
             e.row.disc_identifications_json,
             e.row.broken_references_json,
             e.row.ambiguous_candidates_json,
-            e.row.cue_compat_issues_json,
         ],
     )?;
     Ok(())
@@ -3012,9 +3003,8 @@ fn update_changed_source(
             md5=?10,data_size=?11,hash_warnings_json=?12,disc_verification=?13,dat_game_name=?14,dat_rom_name=?15,
             dat_match_method=?16,cover_title=?17,screen_title=?18,
             identification_json=?19,disc_identifications_json=?20,
-            broken_references_json=?21,ambiguous_candidates_json=?22,
-            cue_compat_issues_json=?23
-         WHERE id=?24",
+            broken_references_json=?21,ambiguous_candidates_json=?22
+         WHERE id=?23",
         params![
             e.entry_key.as_str(),
             e.row.display_name,
@@ -3038,7 +3028,6 @@ fn update_changed_source(
             e.row.disc_identifications_json,
             e.row.broken_references_json,
             e.row.ambiguous_candidates_json,
-            e.row.cue_compat_issues_json,
             id,
         ],
     )?;

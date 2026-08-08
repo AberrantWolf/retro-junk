@@ -192,3 +192,74 @@ fn single_file_media_still_take_their_rom_name() {
         "Game (USA) (Byte Swapped).v64"
     );
 }
+
+/// A broken playlist belongs to the game whose playlist it is. This used to
+/// report the whole folder's breakage on every game in it, so one bad cue put
+/// a warning naming a stranger's file on every game beside it — and it cost a
+/// directory listing plus a metadata lookup per file, per game, to do so.
+#[test]
+fn a_broken_reference_is_reported_only_on_the_entry_that_owns_it() {
+    let dir = TempDir::new().unwrap();
+    let folder = dir.path();
+    std::fs::write(
+        folder.join("Broken (USA).cue"),
+        "FILE \"Broken (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n",
+    )
+    .unwrap();
+    std::fs::write(
+        folder.join("Fine (USA).cue"),
+        "FILE \"Fine (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n",
+    )
+    .unwrap();
+    std::fs::write(folder.join("Fine (USA).bin"), b"data").unwrap();
+    // No "Broken (USA).bin" — that is the breakage.
+
+    let broken = check_broken_references(
+        &GameEntry::SingleFile(folder.join("Broken (USA).cue")),
+        folder,
+    );
+    assert_eq!(broken.len(), 1, "{broken:?}");
+    assert_eq!(broken[0].missing_targets, vec!["Broken (USA).bin"]);
+
+    let fine = check_broken_references(
+        &GameEntry::SingleFile(folder.join("Fine (USA).cue")),
+        folder,
+    );
+    assert!(
+        fine.is_empty(),
+        "a complete game was blamed for its neighbour's missing file: {fine:?}"
+    );
+
+    // A cartridge has no playlist of its own, so it reads nothing at all.
+    std::fs::write(folder.join("Cart (USA).nes"), b"rom").unwrap();
+    assert!(
+        check_broken_references(
+            &GameEntry::SingleFile(folder.join("Cart (USA).nes")),
+            folder
+        )
+        .is_empty()
+    );
+}
+
+/// A multi-disc entry's files are the discs the playlist names, and the
+/// scanner drops any line whose file is missing — so the playlist itself has
+/// to be read, or the one breakage it exists to report is invisible.
+#[test]
+fn a_multi_disc_entry_checks_its_own_playlist() {
+    let dir = TempDir::new().unwrap();
+    let folder = dir.path();
+    let set = folder.join("Cool Game (USA).m3u");
+    std::fs::create_dir_all(&set).unwrap();
+    std::fs::write(set.join("Disc 1.chd"), b"disc").unwrap();
+    std::fs::write(set.join("Cool Game (USA).m3u"), "Disc 1.chd\nDisc 2.chd\n").unwrap();
+
+    let broken = check_broken_references(
+        &GameEntry::MultiDisc {
+            name: "Cool Game (USA).m3u".to_owned(),
+            files: vec![set.join("Disc 1.chd")],
+        },
+        folder,
+    );
+    assert_eq!(broken.len(), 1, "{broken:?}");
+    assert_eq!(broken[0].missing_targets, vec!["Disc 2.chd"]);
+}

@@ -80,6 +80,15 @@ where
 ///
 /// Text fields use the empty string and sizes use 0 when the format has no
 /// such value; the platform is authoritative from [`RomAnalyzer::platform`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DumpExtent {
+    Full,
+    Trimmed,
+    PartiallyTrimmed,
+    Truncated,
+    Oversized,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RomIdentification {
     /// Serial number (e.g., "SLUS-00123" for PS1, "NUS-NSME-USA" for N64).
@@ -110,6 +119,11 @@ pub struct RomIdentification {
     /// truncated or padded dumps.
     #[serde(default, deserialize_with = "null_default")]
     pub expected_size: u64,
+
+    /// Physical dump extent when the format exposes both used content and
+    /// carrier capacity. Trimming unused capacity is valid; truncation is not.
+    #[serde(default)]
+    pub dump_extent: Option<DumpExtent>,
 
     /// Maker/publisher code. Empty when absent.
     #[serde(default, deserialize_with = "null_default")]

@@ -189,39 +189,6 @@ pub(crate) struct CompressArgs {
     pub roms: ConsoleFilterArgs,
 }
 
-/// Arguments for the `fix-cue` command.
-#[derive(Args)]
-pub(crate) struct FixCueArgs {
-    /// Show planned fixes without executing
-    #[arg(short = 'n', long)]
-    pub dry_run: bool,
-
-    /// Don't create .cue.bak backup files
-    #[arg(long)]
-    pub no_backup: bool,
-
-    #[command(flatten)]
-    pub roms: ConsoleFilterArgs,
-}
-
-/// Arguments for the `repair` command.
-#[derive(Args)]
-pub(crate) struct RepairArgs {
-    /// Show planned repairs without executing
-    #[arg(short = 'n', long)]
-    pub dry_run: bool,
-
-    /// Don't create .bak backup files
-    #[arg(long)]
-    pub no_backup: bool,
-
-    #[command(flatten)]
-    pub roms: ConsoleFilterArgs,
-
-    #[command(flatten)]
-    pub dat: DatDirArg,
-}
-
 /// Arguments for the `scrape` command.
 // Each bool mirrors an independent clap flag; grouping them into enums would
 // change the CLI surface.
@@ -318,6 +285,10 @@ pub(crate) struct SyncArgs {
     /// Restrict to specific action kinds
     #[arg(long, value_delimiter = ',', value_parser = action_kind_values())]
     pub only: Vec<String>,
+    /// Redo artwork projection and gamelists even where they are already
+    /// current (for a media file deleted outside retro-junk)
+    #[arg(long)]
+    pub force_projections: bool,
     /// Print the derived plan without executing; non-zero exit when
     /// anything is blocked
     #[arg(long)]
@@ -483,12 +454,6 @@ pub(crate) enum Commands {
     /// compressed. Originals are kept unless --delete-sources is given,
     /// and are never deleted when verification fails.
     Compress(CompressArgs),
-
-    /// Fix CDRWin-format CUE sheets for wider emulator compatibility
-    FixCue(FixCueArgs),
-
-    /// [Experimental] Repair trimmed/truncated ROMs by padding to match DAT checksums
-    Repair(RepairArgs),
 
     /// Scrape metadata and media into ES-DE gamelists via ScreenScraper.fr
     Scrape(ScrapeArgs),

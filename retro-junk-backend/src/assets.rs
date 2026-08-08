@@ -33,6 +33,25 @@ pub enum AssetStatus {
     Complete,
 }
 
+/// Renderable artwork state from the authoritative completion projection.
+/// Archived release facts stay separate from playable-library asset scans;
+/// callers choose which projection they are presenting instead of taking an
+/// optimistic maximum across the two stores.
+#[must_use]
+pub fn asset_status_from_completion(fraction: crate::completion::Fraction) -> AssetStatus {
+    match fraction {
+        crate::completion::Fraction::Unknown(_) => AssetStatus::Unknown,
+        crate::completion::Fraction::Known { have: 0, .. } => AssetStatus::None,
+        crate::completion::Fraction::Known { have, want } if want == 0 || have >= want => {
+            AssetStatus::Complete
+        }
+        crate::completion::Fraction::Known { have, want } => AssetStatus::Partial {
+            found: u8::try_from(have).unwrap_or(u8::MAX),
+            total: u8::try_from(want).unwrap_or(u8::MAX),
+        },
+    }
+}
+
 fn asset_status_from_paths(media: &HashMap<AssetType, PathBuf>) -> AssetStatus {
     let total = SCRAPEABLE_ASSET_TYPES.len() as u8;
     let found = SCRAPEABLE_ASSET_TYPES

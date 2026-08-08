@@ -135,26 +135,51 @@ pub fn rename_playable(
             ..RenamePlayableReport::default()
         });
     }
-    // Renaming onto an existing file would destroy it, and a name collision
-    // here means something the tool did not expect — two playables that the
-    // rule says share one name. Stop and let a person look.
-    if target.exists() {
-        return Err(RenamePlayableError::TargetExists(
-            target.display().to_string(),
-        ));
-    }
     let old_stem = file_stem(&source);
     let new_stem = file_stem(&target);
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let source_digests = retro_junk_archive::hash_file_digests(&source, &cancelled)
+        .map_err(|error| RenamePlayableError::Message(error.to_string()))?;
 
-    std::fs::rename(&source, &target).map_err(io(&source))?;
-
-    let mut report = RenamePlayableReport {
-        from: relative_path.clone(),
-        to: relative_to(request.playable_root, &target),
-        ..RenamePlayableReport::default()
+    // A canonical file may already exist when an older playable set and a
+    // newly archive-generated set converge. Only identical bytes prove they
+    // are interchangeable here. The displaced old name is retained in a
+    // timestamped hidden backup; a differing or unreadable identity remains
+    // an untouched conflict.
+    let (published, move_target) = if target.exists() {
+        let target_digests = retro_junk_archive::hash_file_digests(&target, &cancelled)
+            .map_err(|error| RenamePlayableError::Message(error.to_string()))?;
+        if source_digests.sha256 != target_digests.sha256
+            || source_digests.size != target_digests.size
+        {
+            return Err(RenamePlayableError::TargetExists(
+                target.display().to_string(),
+            ));
+        }
+        let backup_root = request
+            .playable_root
+            .join(".retro-junk-backups")
+            .join(chrono::Utc::now().format("%Y%m%dT%H%M%S%.fZ").to_string());
+        let backup = backup_root.join(&relative_path);
+        if backup.exists() {
+            return Err(RenamePlayableError::TargetExists(
+                backup.display().to_string(),
+            ));
+        }
+        if let Some(parent) = backup.parent() {
+            std::fs::create_dir_all(parent).map_err(io(parent))?;
+        }
+        (target.clone(), backup)
+    } else {
+        (target.clone(), target.clone())
     };
-    report.media_renamed = rename_companion_media(request.media_root, &old_stem, &new_stem);
-    report.playlists_updated = rewrite_playlists(parent, &source, &target);
+
+    let report = RenamePlayableReport {
+        from: relative_path.clone(),
+        to: relative_to(request.playable_root, &published),
+        media_renamed: companion_media_moves(request.media_root, &old_stem, &new_stem).len(),
+        playlists_updated: playlist_rewrites(parent, &source, &published).len(),
+    };
 
     // Append, never rewrite: the earlier record is still true about where the
     // file used to be, and the archive keeps its history.
@@ -168,9 +193,6 @@ pub fn rename_playable(
     // also preserves what was verified about these bytes: re-deriving
     // `round_trip_verified` would quietly downgrade a playable that had been
     // proven to reproduce its master.
-    let digests =
-        retro_junk_archive::hash_file_digests(&target, &std::sync::atomic::AtomicBool::new(false))
-            .map_err(|error| RenamePlayableError::Message(error.to_string()))?;
     let evidence = retro_junk_archive::BuildEvidence {
         build_id: retro_junk_archive::BuildId::new(),
         performed_at: chrono::Utc::now().to_rfc3339(),
@@ -178,11 +200,28 @@ pub fn rename_playable(
         // Re-hashed rather than copied: the bytes should be identical, but
         // recording a digest this run did not observe would be a claim
         // rather than a measurement.
-        output_sha256: digests.sha256,
-        output_size: digests.size,
+        output_sha256: source_digests.sha256,
+        output_size: source_digests.size,
         ..current.clone()
     };
-    retro_junk_archive::write_build_evidence(&dump.directory, &evidence)
+    let evidence_path = dump
+        .directory
+        .join("evidence")
+        .join(format!("build-{}.json", evidence.build_id));
+    let evidence_json = serde_json::to_string_pretty(&evidence)
+        .map_err(|error| RenamePlayableError::Message(error.to_string()))?;
+
+    let mut transaction = crate::fs_txn::FsTransaction::new();
+    transaction.rename(&source, &move_target);
+    for (from, to) in companion_media_moves(request.media_root, &old_stem, &new_stem) {
+        transaction.rename(from, to);
+    }
+    for (path, contents) in playlist_rewrites(parent, &source, &published) {
+        transaction.write_file(path, contents);
+    }
+    transaction.write_file(evidence_path, evidence_json);
+    transaction
+        .commit()
         .map_err(|error| RenamePlayableError::Message(error.to_string()))?;
     Ok(report)
 }
@@ -205,14 +244,18 @@ fn relative_to(root: &Path, path: &Path) -> String {
 ///
 /// Best-effort by design: artwork that cannot be moved is re-scrapable, and
 /// failing the rename over it would leave the playable at its wrong name.
-fn rename_companion_media(media_root: Option<&Path>, old_stem: &str, new_stem: &str) -> usize {
+fn companion_media_moves(
+    media_root: Option<&Path>,
+    old_stem: &str,
+    new_stem: &str,
+) -> Vec<(PathBuf, PathBuf)> {
     let Some(media_root) = media_root else {
-        return 0;
+        return Vec::new();
     };
     if old_stem.is_empty() || new_stem.is_empty() || !media_root.is_dir() {
-        return 0;
+        return Vec::new();
     }
-    let mut moved = 0;
+    let mut moves = Vec::new();
     let mut directories = vec![media_root.to_path_buf()];
     while let Some(directory) = directories.pop() {
         let Ok(entries) = std::fs::read_dir(&directory) else {
@@ -236,29 +279,29 @@ fn rename_companion_media(media_root: Option<&Path>, old_stem: &str, new_stem: &
             } else {
                 format!("{new_stem}.{extension}")
             });
-            if !target.exists() && std::fs::rename(&path, &target).is_ok() {
-                moved += 1;
+            if !target.exists() {
+                moves.push((path, target));
             }
         }
     }
-    moved
+    moves
 }
 
 /// Point any playlist in the same directory at the new filename.
 ///
 /// A multi-disc set's `.m3u` lists its discs by name, so a renamed disc that
 /// is not also renamed in the playlist breaks the set.
-fn rewrite_playlists(directory: &Path, source: &Path, target: &Path) -> usize {
+fn playlist_rewrites(directory: &Path, source: &Path, target: &Path) -> Vec<(PathBuf, String)> {
     let (Some(old_name), Some(new_name)) = (
         source.file_name().and_then(|name| name.to_str()),
         target.file_name().and_then(|name| name.to_str()),
     ) else {
-        return 0;
+        return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(directory) else {
-        return 0;
+        return Vec::new();
     };
-    let mut updated = 0;
+    let mut updates = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
         if path
@@ -274,11 +317,9 @@ fn rewrite_playlists(directory: &Path, source: &Path, target: &Path) -> usize {
             continue;
         }
         let rewritten = contents.replace(old_name, new_name);
-        if std::fs::write(&path, rewritten).is_ok() {
-            updated += 1;
-        }
+        updates.push((path, rewritten));
     }
-    updated
+    updates
 }
 
 /// Where a playable's companion media live for one console folder.

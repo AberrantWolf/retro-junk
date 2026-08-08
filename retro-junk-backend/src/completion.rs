@@ -540,16 +540,16 @@ fn stale_names(facts: &retro_junk_db::facts::ReleaseFacts) -> Vec<Attention> {
             let current = std::path::Path::new(&playable.relative_path)
                 .file_name()
                 .and_then(|name| name.to_str())?;
-            let inputs = retro_junk_lib::naming::NameInputs {
-                dat_name: &playable.dat_name,
-                rom_name: &playable.rom_name,
+            let inputs = retro_junk_lib::naming::CanonicalName {
+                dat_name: playable.dat_name.clone(),
+                rom_name: playable.rom_name.clone(),
                 medium_has_tracks: playable.medium_has_tracks,
-                title: &facts.title,
-                region: &facts.region,
-                revision: &facts.revision,
-                variant: "",
+                title: facts.title.clone(),
+                region: facts.region.clone(),
+                revision: facts.revision.clone(),
+                variant: String::new(),
                 disc_number: playable.disc_number,
-                disc_count,
+                expected_disc_count: disc_count,
             };
             if retro_junk_lib::naming::name_conforms(current, &inputs) {
                 return None;

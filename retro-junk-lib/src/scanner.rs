@@ -247,7 +247,9 @@ pub fn collect_m3u_disc_files<S: BuildHasher>(
 }
 
 /// Find the `.m3u` playlist file inside a directory (if any).
-fn find_m3u_playlist(dir: &Path) -> Option<PathBuf> {
+/// The `.m3u` playlist inside a multi-disc directory, if one is there.
+#[must_use]
+pub fn find_m3u_playlist(dir: &Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     entries.flatten().map(|e| e.path()).find(|p| {
         p.is_file()

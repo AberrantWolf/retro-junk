@@ -16,10 +16,7 @@ pub mod sector;
 pub mod track_layout;
 
 // Re-export primary types for convenience
-pub use cue::{
-    AutoFix, CueCompatReport, CueFile, CueIndex, CueSheet, CueTrack, check_cue_compat,
-    convert_cue_to_standard,
-};
+pub use cue::{CueFile, CueIndex, CueSheet, CueTrack};
 pub use format::{DiscFormat, detect_disc_format};
 pub use hash::{SectorMode, hash_disc_container};
 pub use iso9660::{DirectoryRecord, PrimaryVolumeDescriptor, find_file_in_root, read_pvd};

@@ -1,45 +1,35 @@
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-
-use crate::state::{BackgroundOperation, OperationKind, ProgressDisplay};
+use crate::state::{OperationProgress, OperationUnit};
 
 use super::format_progress;
 
-fn op(display: ProgressDisplay, current: u64, total: u64) -> BackgroundOperation {
-    let mut op = BackgroundOperation::new(
-        1,
-        "test".to_string(),
-        Arc::new(AtomicBool::new(false)),
-        OperationKind::Other,
-        String::new(),
-        display,
-    );
-    op.progress_current = current;
-    op.progress_total = total;
-    op
+fn progress(unit: OperationUnit, completed: u64, total: u64) -> OperationProgress {
+    OperationProgress::Determinate {
+        completed,
+        total,
+        unit,
+    }
 }
 
 #[test]
 fn count_formats_as_fraction() {
-    assert_eq!(format_progress(&op(ProgressDisplay::Count, 3, 10)), "3/10");
+    assert_eq!(
+        format_progress(&progress(OperationUnit::Items, 3, 10)),
+        "3/10"
+    );
 }
 
 #[test]
 fn bytes_formats_with_units() {
-    let text = format_progress(&op(ProgressDisplay::Bytes, 1024 * 1024, 10 * 1024 * 1024));
+    let text = format_progress(&progress(
+        OperationUnit::Bytes,
+        1024 * 1024,
+        10 * 1024 * 1024,
+    ));
     assert!(text.contains("MB"), "expected byte units in {text:?}");
     assert!(text.contains('/'));
 }
 
 #[test]
-fn percent_formats_as_rounded_percentage() {
-    assert_eq!(
-        format_progress(&op(ProgressDisplay::Percent, 42, 100)),
-        "42%"
-    );
-}
-
-#[test]
-fn percent_with_zero_total_is_zero_percent() {
-    assert_eq!(format_progress(&op(ProgressDisplay::Percent, 0, 0)), "0%");
+fn indeterminate_has_no_numeric_label() {
+    assert_eq!(format_progress(&OperationProgress::Indeterminate), "");
 }

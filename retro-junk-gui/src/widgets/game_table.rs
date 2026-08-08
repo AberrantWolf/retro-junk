@@ -171,6 +171,10 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
         .iter()
         .map(|release| {
             let summary = &release.summary;
+            let completion = retro_junk_backend::completion::Completion::for_release(
+                &release.facts,
+                &app.ui_state.expected_assets,
+            );
             let bound_entry_ids = release
                 .playable_library_entries
                 .iter()
@@ -180,23 +184,11 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 entry_id: None,
                 bound_entry_ids: bound_entry_ids.clone(),
                 archive_release_id: Some(summary.archive_release_id.clone()),
-                status: crate::state::RowStatus::Archive(
-                    retro_junk_backend::completion::Completion::for_release(
-                        &release.facts,
-                        &app.ui_state.expected_assets,
-                    )
-                    .overall(),
-                ),
+                status: crate::state::RowStatus::Archive(completion.overall()),
                 has_broken_refs: false,
                 has_hash_warnings: false,
-                has_cue_compat_issues: false,
-                asset_status: aggregate_asset_status(
-                    bound_entry_ids
-                        .iter()
-                        .filter_map(|id| app.browser.asset_statuses.get(id).copied())
-                        .chain(std::iter::once(archive_asset_status(
-                            &release.archived_assets,
-                        ))),
+                asset_status: retro_junk_backend::assets::asset_status_from_completion(
+                    completion.artwork,
                 ),
                 name: summary.title.clone(),
                 file_path: bound_entry_ids.iter().find_map(|id| {
@@ -223,13 +215,14 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                     entry_id: Some(projection.id),
                     bound_entry_ids: Vec::new(),
                     archive_release_id: None,
-                    status: crate::state::RowStatus::Entry(projection_status(
-                        &projection.status,
-                        &projection.tag,
-                    )),
+                    status: crate::state::RowStatus::Entry(
+                        retro_junk_backend::library::projected_entry_status(
+                            &projection.status,
+                            &projection.tag,
+                        ),
+                    ),
                     has_broken_refs: projection.has_broken_references,
                     has_hash_warnings: projection.has_hash_warnings,
-                    has_cue_compat_issues: projection.has_cue_compat_issues,
                     asset_status: app
                         .browser
                         .asset_statuses
@@ -549,7 +542,6 @@ fn show_status_cell(ui: &mut egui::Ui, data: &RowData) {
         data.status.clone(),
         data.has_broken_refs,
         data.has_hash_warnings,
-        data.has_cue_compat_issues,
         data.asset_status,
     );
     let mut tip = data.status.tooltip();
@@ -559,9 +551,6 @@ fn show_status_cell(ui: &mut egui::Ui, data: &RowData) {
     }
     if data.has_hash_warnings {
         let _ = write!(tip, "\n{} Hash warnings (see detail panel)", icons::WARNING);
-    }
-    if data.has_cue_compat_issues {
-        let _ = write!(tip, "\n{} Non-standard CUE sheet format", icons::WARNING);
     }
     match data.asset_status {
         AssetStatus::Unknown => {}
@@ -724,24 +713,6 @@ fn show_row_context_menu(
         {
             backend::rename::rename_selected_entries(app, console_idx, ctx);
             ui.close();
-        }
-
-        // Fix CUE Sheet — only show when at least one selected entry has CUE compat issues
-        {
-            let console = &app.browser.consoles[console_idx];
-            let has_cue_issues = app.ui_state.selected_entries.iter().any(|&i| {
-                console
-                    .entry_by_id(i)
-                    .is_some_and(super::super::state::LibraryEntry::has_cue_compat_issues)
-            });
-            if has_cue_issues
-                && ui
-                    .button(icons::labeled(icons::FIX_CUE, "Fix CUE Sheet"))
-                    .clicked()
-            {
-                backend::fix_cue::fix_cue_for_selection(app, console_idx, ctx);
-                ui.close();
-            }
         }
 
         // Compress to CHD — only for consoles whose analyzer supports it. The
@@ -1025,6 +996,31 @@ fn show_multi_row_context_menu(
         ui.label("Loading the complete selection…");
     }
 
+    // One batch for the whole selection: the executor takes the archive lock,
+    // the database connection, and the archive walk once for all of them, so
+    // eight rows cost barely more than one.
+    if !selected_releases.is_empty()
+        && ui
+            .add_enabled(
+                details_ready,
+                egui::Button::new(icons::labeled(icons::RESCAN, "Converge Selected")),
+            )
+            .on_hover_text(
+                "Run every pending action for the selected games: verify, build, scrape, project",
+            )
+            .clicked()
+    {
+        backend::convergence::run_releases(
+            app,
+            selected_releases
+                .iter()
+                .map(|release| release.summary.archive_release_id.clone())
+                .collect(),
+            ctx,
+        );
+        ui.close();
+    }
+
     let scrape_ready = details_ready
         && selected_releases
             .iter()
@@ -1270,7 +1266,6 @@ struct RowData {
     status: crate::state::RowStatus,
     has_broken_refs: bool,
     has_hash_warnings: bool,
-    has_cue_compat_issues: bool,
     asset_status: AssetStatus,
     name: String,
     file_path: Option<PathBuf>,
@@ -1408,58 +1403,6 @@ fn archive_playable_formats(release: &retro_junk_db::ArchivedLibraryListItem) ->
     }
 }
 
-fn aggregate_asset_status(statuses: impl Iterator<Item = AssetStatus>) -> AssetStatus {
-    let mut saw_status = false;
-    let mut best = AssetStatus::Unknown;
-    for status in statuses {
-        saw_status = true;
-        best = match (best, status) {
-            (AssetStatus::Complete, _) | (_, AssetStatus::Complete) => AssetStatus::Complete,
-            (
-                AssetStatus::Partial {
-                    found: left,
-                    total: left_total,
-                },
-                AssetStatus::Partial {
-                    found: right,
-                    total: right_total,
-                },
-            ) => AssetStatus::Partial {
-                found: left.max(right),
-                total: left_total.max(right_total),
-            },
-            (AssetStatus::Partial { found, total }, _)
-            | (_, AssetStatus::Partial { found, total }) => AssetStatus::Partial { found, total },
-            (AssetStatus::None, _) | (_, AssetStatus::None) => AssetStatus::None,
-            _ => AssetStatus::Unknown,
-        };
-    }
-    if saw_status {
-        best
-    } else {
-        AssetStatus::Unknown
-    }
-}
-
-fn archive_asset_status(assets: &[retro_junk_db::ArchivedReleaseAsset]) -> AssetStatus {
-    let asset_count = assets
-        .iter()
-        .map(|asset| asset.asset_type.as_str())
-        .collect::<HashSet<_>>()
-        .len();
-    if asset_count == 0 {
-        AssetStatus::None
-    } else {
-        let total = u8::try_from(crate::state::SCRAPEABLE_ASSET_TYPES.len()).unwrap_or(u8::MAX);
-        let found = u8::try_from(asset_count).unwrap_or(u8::MAX).min(total);
-        if found == total {
-            AssetStatus::Complete
-        } else {
-            AssetStatus::Partial { found, total }
-        }
-    }
-}
-
 fn select_archive_release(
     app: &mut RetroJunkApp,
     release_id: &str,
@@ -1537,20 +1480,6 @@ fn display_format(format: &str) -> String {
         "unknown format".to_owned()
     } else {
         format.to_ascii_uppercase().replace('_', "-")
-    }
-}
-
-fn projection_status(status: &str, tag: &str) -> EntryStatus {
-    match tag {
-        "homebrew" => EntryStatus::Tagged(retro_junk_catalog::CatalogTag::Homebrew),
-        "modded" => EntryStatus::Tagged(retro_junk_catalog::CatalogTag::Modded),
-        _ => match status {
-            "matched" => EntryStatus::Matched,
-            "likely" => EntryStatus::LikelyMatched,
-            "ambiguous" => EntryStatus::Ambiguous,
-            "unrecognized" => EntryStatus::Unrecognized,
-            _ => EntryStatus::Unknown,
-        },
     }
 }
 
@@ -1742,7 +1671,6 @@ mod interaction_tests;
 
 #[cfg(test)]
 mod tests {
-    use super::projection_status;
     use crate::state::EntryStatus;
     use retro_junk_catalog::CatalogTag;
     use retro_junk_lib::scanner::GameEntry;
@@ -1750,15 +1678,21 @@ mod tests {
     #[test]
     fn projected_tags_override_stored_analysis_status() {
         assert_eq!(
-            projection_status("unrecognized", "homebrew"),
+            retro_junk_backend::library::projected_entry_status("unrecognized", "homebrew"),
             EntryStatus::Tagged(CatalogTag::Homebrew)
         );
         assert_eq!(
-            projection_status("matched", "modded"),
+            retro_junk_backend::library::projected_entry_status("matched", "modded"),
             EntryStatus::Tagged(CatalogTag::Modded)
         );
-        assert_eq!(projection_status("ambiguous", ""), EntryStatus::Ambiguous);
-        assert_eq!(projection_status("likely", ""), EntryStatus::LikelyMatched);
+        assert_eq!(
+            retro_junk_backend::library::projected_entry_status("ambiguous", ""),
+            EntryStatus::Ambiguous
+        );
+        assert_eq!(
+            retro_junk_backend::library::projected_entry_status("likely", ""),
+            EntryStatus::LikelyMatched
+        );
     }
 
     #[test]

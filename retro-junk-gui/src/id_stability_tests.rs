@@ -150,7 +150,6 @@ fn panel_toggles_do_not_reassign_widget_ids() {
             detected_regions: Vec::new(),
             has_hash_warnings: false,
             has_broken_references: false,
-            has_cue_compat_issues: false,
             revision: 0,
             source_revision: 0,
             archived: false,

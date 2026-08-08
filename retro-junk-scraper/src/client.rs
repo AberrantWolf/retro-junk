@@ -193,11 +193,11 @@ impl ScreenScraperClient {
     /// to prevent hangs when `ScreenScraper` stalls mid-transfer.
     pub async fn download_media(&self, url: &str) -> Result<Vec<u8>, ScrapeError> {
         tokio::time::timeout(MEDIA_TIMEOUT, async {
+            const PREALLOC_CAP: usize = 64 * 1024 * 1024;
             let mut resp = self.http.get(url).send().await?.error_for_status()?;
             // Content-Length is a server claim, not a promise — cap what it
             // can pre-allocate. A genuinely larger body still downloads; the
             // vector just grows past the hint the normal way.
-            const PREALLOC_CAP: usize = 64 * 1024 * 1024;
             let mut bytes = Vec::with_capacity(
                 resp.content_length()
                     .and_then(|length| usize::try_from(length).ok())

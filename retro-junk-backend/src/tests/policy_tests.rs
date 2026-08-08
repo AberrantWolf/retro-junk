@@ -100,19 +100,56 @@ fn the_expected_artwork_set_survives_a_save_and_load() {
     );
 }
 
-/// An unreadable or empty list must not mean "expect nothing" — that would
-/// silently report every release as fully scraped and derive no work at all.
+/// An explicitly empty list means artwork is disabled, while unknown names
+/// are rejected visibly instead of being reinterpreted as defaults.
 #[test]
-fn an_unusable_artwork_list_falls_back_to_the_default_set() {
+fn empty_and_invalid_artwork_lists_remain_distinct() {
+    let empty = AutomationPolicy {
+        scrape_asset_types: Vec::new(),
+        ..AutomationPolicy::default()
+    };
+    assert!(empty.scrape_selection().types.is_empty());
+    assert!(empty.validate_scrape_asset_types().is_ok());
+
     let policy = AutomationPolicy {
         scrape_asset_types: vec!["not-an-asset-type".to_owned()],
         ..AutomationPolicy::default()
     };
-
     assert_eq!(
-        policy.scrape_selection().types,
-        retro_junk_frontend::AssetSelection::default().types
+        policy.validate_scrape_asset_types(),
+        Err(vec!["not-an-asset-type".to_owned()])
     );
+    let directory = tempfile::tempdir().unwrap();
+    assert_eq!(
+        policy
+            .save_to(&directory.path().join("settings.toml"))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+}
+
+#[test]
+fn a_failed_save_does_not_replace_the_existing_policy_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("settings.toml");
+    let original = AutomationPolicy::default();
+    original.save_to(&path).unwrap();
+
+    // Turning the intended parent into a regular file forces the atomic save
+    // to fail before the committed settings can be replaced.
+    let blocked_parent = directory.path().join("blocked");
+    std::fs::write(&blocked_parent, b"not a directory").unwrap();
+    let changed = AutomationPolicy {
+        auto_build: false,
+        ..original.clone()
+    };
+    assert!(
+        changed
+            .save_to(&blocked_parent.join("settings.toml"))
+            .is_err()
+    );
+    assert_eq!(AutomationPolicy::load_from(&path), original);
 }
 
 /// Adoption repairs the archive's record of a file that already exists, so

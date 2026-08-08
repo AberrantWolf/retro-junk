@@ -21,75 +21,61 @@ pub use types::{
     SetProblemKind, UnmatchedFile,
 };
 
-/// Check a game entry for broken CUE/M3U references.
+/// Check one game entry's own CUE/M3U files for references to files that are
+/// not there.
 ///
-/// For `SingleFile` entries, checks the parent directory for CUE/M3U files.
-/// For `MultiDisc` entries, checks each disc file's parent directory.
-/// Returns an empty vec if no broken references are found.
+/// Only the entry's own descriptor files are read. This used to list the whole
+/// console folder and check every playlist in it, once per game — so the answer
+/// was the same folder-wide list for every entry, and a single broken cue put a
+/// "broken references" warning on every game sitting beside it, naming a file
+/// that had nothing to do with them. It was also quadratic: a folder of 168
+/// games did 168 directory listings and 28,224 metadata lookups to produce that
+/// one answer, which on a USB or network volume is most of a library scan. An
+/// orphaned descriptor that belongs to no entry is not lost — the scanner makes
+/// a `.cue` an entry in its own right, so it is checked as itself.
 #[must_use]
-pub fn check_broken_references(entry: &GameEntry) -> Vec<BrokenReference> {
-    let dirs: Vec<PathBuf> = match entry {
-        GameEntry::SingleFile(path) => path
-            .parent()
-            .map(|d| vec![d.to_path_buf()])
-            .unwrap_or_default(),
-        GameEntry::MultiDisc { files, .. } => {
-            let mut seen = std::collections::HashSet::new();
-            files
-                .iter()
-                .filter_map(|p| p.parent().map(std::path::Path::to_path_buf))
-                .filter(|d| seen.insert(d.clone()))
-                .collect()
-        }
-    };
-
-    let mut broken = Vec::new();
+pub fn check_broken_references(entry: &GameEntry, console_folder: &Path) -> Vec<BrokenReference> {
     let formats: &[&dyn RefFileFormat] = &[&CueFormat, &M3uFormat];
-
-    for dir in &dirs {
-        let Ok(entries) = fs::read_dir(dir) else {
+    let mut descriptors: Vec<PathBuf> = entry.all_files().to_vec();
+    // A multi-disc entry's files are the discs the playlist names, not the
+    // playlist itself — and the scanner drops any line whose file is missing,
+    // which is precisely the breakage this reports. So the playlist has to be
+    // read as the entry's own descriptor.
+    if let GameEntry::MultiDisc { name, .. } = entry
+        && let Some(playlist) = crate::scanner::find_m3u_playlist(&console_folder.join(name))
+    {
+        descriptors.push(playlist);
+    }
+    let mut broken = Vec::new();
+    for path in &descriptors {
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+        let Some(&format) = formats
+            .iter()
+            .find(|format| extension.eq_ignore_ascii_case(format.extension()))
+        else {
             continue;
         };
-
-        for dir_entry in entries.flatten() {
-            let path = dir_entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-            for &fmt in formats {
-                if !ext.eq_ignore_ascii_case(fmt.extension()) {
-                    continue;
-                }
-
-                let Ok(content) = fs::read_to_string(&path) else {
-                    continue;
-                };
-
-                let missing: Vec<String> = content
-                    .lines()
-                    .filter_map(|line| {
-                        let ref_line = fmt.extract_reference(line)?;
-                        if dir.join(&ref_line.filename).exists() {
-                            None
-                        } else {
-                            Some(ref_line.filename)
-                        }
-                    })
-                    .collect();
-
-                if !missing.is_empty() {
-                    broken.push(BrokenReference {
-                        ref_file: path.clone(),
-                        format: fmt.label().to_string(),
-                        missing_targets: missing,
-                    });
-                }
-            }
+        let (Some(directory), Ok(contents)) = (path.parent(), fs::read_to_string(path)) else {
+            continue;
+        };
+        let missing: Vec<String> = contents
+            .lines()
+            .filter_map(|line| {
+                let reference = format.extract_reference(line)?;
+                (!directory.join(&reference.filename).exists()).then_some(reference.filename)
+            })
+            .collect();
+        if !missing.is_empty() {
+            broken.push(BrokenReference {
+                ref_file: path.clone(),
+                format: format.label().to_string(),
+                missing_targets: missing,
+            });
         }
     }
-
     broken
 }
 
@@ -136,11 +122,11 @@ pub fn target_filename_for_rename(
     let whole_medium = retro_junk_dat::tracks::is_track_member(dat_rom_name)
         && !ext.eq_ignore_ascii_case(rom_extension);
     crate::naming::canonical_filename(
-        &crate::naming::NameInputs {
-            dat_name: dat_game_name,
-            rom_name: dat_rom_name,
+        &crate::naming::CanonicalName {
+            dat_name: dat_game_name.to_owned(),
+            rom_name: dat_rom_name.to_owned(),
             medium_has_tracks: whole_medium,
-            ..crate::naming::NameInputs::default()
+            ..Default::default()
         },
         ext,
     )

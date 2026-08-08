@@ -32,7 +32,6 @@ fn make_entry(name: &str, status: &str) -> LibraryEntryRow {
         disc_identifications_json: None,
         broken_references_json: None,
         ambiguous_candidates_json: None,
-        cue_compat_issues_json: None,
     }
 }
 
@@ -93,7 +92,6 @@ fn reconcile_test_console(
                 disc_identifications_json: source.disc_identifications_json.clone(),
                 broken_references_json: source.broken_references_json.clone(),
                 ambiguous_candidates_json: source.ambiguous_candidates_json.clone(),
-                cue_compat_issues_json: source.cue_compat_issues_json.clone(),
             },
         )?;
         set_entry_tag(

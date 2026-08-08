@@ -143,6 +143,19 @@ impl Fixture {
         self.playable(carrier, format, "missing");
     }
 
+    /// A present playable filed under a named frontend folder — the folder the
+    /// gamelist derivation groups on.
+    fn playable_in(&mut self, carrier: &str, format: &str, directory: &str) {
+        let representation = self.id("repp");
+        self.conn
+            .execute(
+                "INSERT INTO representations(id,carrier_id,role,format,location_role,relative_path,presence_state,input_manifest_sha256)
+                 VALUES(?1,?2,'playable',?3,'playable',?4||'/'||?1||'.chd','present','msha')",
+                (&representation, carrier, format, directory),
+            )
+            .unwrap();
+    }
+
     fn playable(&mut self, carrier: &str, format: &str, presence: &str) {
         let representation = self.id("repp");
         self.conn
@@ -232,6 +245,18 @@ impl Fixture {
                 "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,captured_at,manifest_path,manifest_sha256)
                  VALUES(?1,?2,'artwork','box-front','artwork/box.png',10,'s','2026-01-01','f.toml','h')",
                 (&file, release),
+            )
+            .unwrap();
+    }
+
+    /// A second, distinct archived asset — a new source for the projection.
+    fn artwork_named(&mut self, release: &str, asset_type: &str) {
+        let file = self.id("art");
+        self.conn
+            .execute(
+                "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,captured_at,manifest_path,manifest_sha256)
+                 VALUES(?1,?2,'artwork',?3,'artwork/'||?3||'.png',11,'s2','2026-01-01','f.toml','h')",
+                (&file, release, asset_type),
             )
             .unwrap();
     }
@@ -428,13 +453,128 @@ fn satisfied_release_owes_only_projections() {
     let actions = fixture.derive();
     assert_eq!(
         kinds_for(&actions, &release),
-        vec![&ActionKind::ProjectAssets, &ActionKind::SyncGamelist]
+        vec![&ActionKind::ProjectAssets]
     );
+    // The gamelist is per folder, not per game, so it is derived against the
+    // folder the playable actually sits in rather than against this release.
+    let gamelists = actions
+        .iter()
+        .filter(|action| action.kind == ActionKind::SyncGamelist)
+        .collect::<Vec<_>>();
+    assert_eq!(gamelists.len(), 1, "one gamelist action per folder");
+    assert_eq!(gamelists[0].target.kind(), "console");
     assert!(
         !actions
             .iter()
             .any(|action| action.kind == ActionKind::BuildPlayable),
         "satisfied release must not re-derive a build"
+    );
+}
+
+/// A projection that has already been made is not pending work. Without this,
+/// `status` on a fully converged library reported hundreds of outstanding
+/// projections forever and every explicit run redid all of them.
+#[test]
+fn a_recorded_projection_stops_being_derived_until_its_source_changes() {
+    use retro_junk_db::projection_state::{ProjectionOf, forget_projections, record_projection};
+
+    let mut fixture = Fixture::new();
+    fixture.media("m1", 0);
+    let (release, copy) = fixture.release("Done Game");
+    fixture.bind_release(&release);
+    let (carrier, dump) =
+        fixture.carrier_with_dump(&copy, Some("m1"), 0, "iso", "verified", "not_attempted", 1);
+    fixture.catalog_verify(&dump);
+    fixture.policy(&carrier, "chd");
+    fixture.playable_in(&carrier, "chd", "psx");
+    fixture.artwork(&release);
+
+    let projections = |fixture: &Fixture| {
+        fixture
+            .derive()
+            .into_iter()
+            .filter(|action| {
+                matches!(
+                    action.kind,
+                    ActionKind::ProjectAssets | ActionKind::SyncGamelist
+                )
+            })
+            .count()
+    };
+    assert_eq!(projections(&fixture), 2, "nothing projected yet");
+
+    record_projection(&fixture.conn, ProjectionOf::assets(&release)).unwrap();
+    record_projection(&fixture.conn, ProjectionOf::gamelist("prof", "psx")).unwrap();
+    assert_eq!(
+        projections(&fixture),
+        0,
+        "already-current projections are not pending work"
+    );
+
+    // New artwork is a new source, so the projection is owed again — and the
+    // gamelist too, since its entries name the artwork files.
+    fixture.artwork_named(&release, "screenshot");
+    assert_eq!(
+        projections(&fixture),
+        2,
+        "fresh artwork must reach the frontend"
+    );
+
+    record_projection(&fixture.conn, ProjectionOf::assets(&release)).unwrap();
+    record_projection(&fixture.conn, ProjectionOf::gamelist("prof", "psx")).unwrap();
+    assert_eq!(projections(&fixture), 0);
+
+    // The escape hatch for a destination somebody deleted by hand, which no
+    // source-side fingerprint can see.
+    forget_projections(&fixture.conn, &Scope::Profile("prof".to_owned())).unwrap();
+    assert_eq!(projections(&fixture), 2);
+}
+
+/// The whole point of moving the gamelist to the folder: a folder holding many
+/// games is one action that writes one file, not one action per game rewriting
+/// the same file over and over.
+#[test]
+fn one_gamelist_action_covers_every_game_in_a_folder() {
+    let mut fixture = Fixture::new();
+    let mut releases = Vec::new();
+    for (index, title) in ["First Game", "Second Game", "Third Game"]
+        .iter()
+        .enumerate()
+    {
+        let media = format!("m{index}");
+        fixture.media(&media, 0);
+        let (release, copy) = fixture.release(title);
+        fixture.bind_release(&release);
+        let (carrier, dump) = fixture.carrier_with_dump(
+            &copy,
+            Some(&media),
+            0,
+            "iso",
+            "verified",
+            "not_attempted",
+            1,
+        );
+        fixture.catalog_verify(&dump);
+        fixture.policy(&carrier, "chd");
+        fixture.playable_in(&carrier, "chd", "psx");
+        releases.push(release);
+    }
+
+    let gamelists = fixture
+        .derive()
+        .into_iter()
+        .filter(|action| action.kind == ActionKind::SyncGamelist)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        gamelists.len(),
+        1,
+        "three games in one folder must be one gamelist action, not three"
+    );
+    assert_eq!(gamelists[0].playable_platform_id, "psx");
+    assert_eq!(
+        retro_junk_db::convergence::releases_for_target(&fixture.conn, &gamelists[0].target).len(),
+        releases.len(),
+        "the action has to know every release whose entry it writes"
     );
 }
 

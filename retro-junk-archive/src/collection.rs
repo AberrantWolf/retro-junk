@@ -417,6 +417,7 @@ fn upgrade_legacy_regional_release(
 /// away stays where it was put, and moving it back would take a migration
 /// that walks in the other direction. Weigh that before deleting an arm that
 /// real archives could have exercised.
+#[must_use]
 pub fn regional_physical_platform(platform: &str, region: &str) -> Option<&'static str> {
     let platform = platform.trim().to_ascii_lowercase();
     let region = region.trim().to_ascii_lowercase();

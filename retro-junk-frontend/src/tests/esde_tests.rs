@@ -121,7 +121,6 @@ fn upsert_adds_new_game_without_replacing_user_metadata() {
     let dir = tempfile::tempdir().unwrap();
     let rom_dir = dir.path().join("roms");
     let metadata_dir = dir.path().join("metadata");
-    let media_dir = dir.path().join("media");
     std::fs::create_dir_all(&metadata_dir).unwrap();
     std::fs::write(
         metadata_dir.join("gamelist.xml"),
@@ -131,11 +130,100 @@ fn upsert_adds_new_game_without_replacing_user_metadata() {
     let mut game = make_game("New Game", "");
     game.rom_filename = "new.rom".to_owned();
 
-    assert!(upsert_game_metadata(&game, &rom_dir, &metadata_dir, &media_dir).unwrap());
-    assert!(!upsert_game_metadata(&game, &rom_dir, &metadata_dir, &media_dir).unwrap());
+    assert!(upsert_game_metadata(&game, &rom_dir, &metadata_dir).unwrap());
+    assert!(!upsert_game_metadata(&game, &rom_dir, &metadata_dir).unwrap());
     let xml = std::fs::read_to_string(metadata_dir.join("gamelist.xml")).unwrap();
     assert!(xml.contains("<favorite>true</favorite>"));
     assert_eq!(xml.matches("<path>./new.rom</path>").count(), 1);
+}
+
+/// The bug this merge exists for: a release whose catalog title was corrected,
+/// or whose artwork arrived after its first sync, used to keep the name and the
+/// empty art tags it was created with forever — the writer only ever inserted
+/// entries, never refreshed one. Refreshing must not cost the person the fields
+/// they own.
+#[test]
+fn upserting_an_existing_entry_refreshes_our_tags_and_keeps_theirs() {
+    let dir = tempfile::tempdir().unwrap();
+    let rom_dir = dir.path().join("roms");
+    let metadata_dir = dir.path().join("metadata");
+    std::fs::create_dir_all(&metadata_dir).unwrap();
+    std::fs::write(
+        metadata_dir.join("gamelist.xml"),
+        "<?xml version=\"1.0\"?>\n<gameList>\n  <game>\n    <path>./game.chd</path>\n\
+         \x20   <name>Wrong Title</name>\n    <desc>Typed by hand</desc>\n\
+         \x20   <favorite>true</favorite>\n    <playcount>12</playcount>\n  </game>\n</gameList>\n",
+    )
+    .unwrap();
+
+    let cover = dir.path().join("media").join("covers").join("game.png");
+    std::fs::create_dir_all(cover.parent().unwrap()).unwrap();
+    std::fs::write(&cover, b"art").unwrap();
+    let mut game = make_game("Corrected Title", "");
+    game.rom_filename = "game.chd".to_owned();
+    game.assets.insert(crate::AssetType::Cover, cover);
+
+    assert!(upsert_game_metadata(&game, &rom_dir, &metadata_dir).unwrap());
+    let xml = std::fs::read_to_string(metadata_dir.join("gamelist.xml")).unwrap();
+
+    assert!(xml.contains("<name>Corrected Title</name>"), "{xml}");
+    assert!(!xml.contains("Wrong Title"), "{xml}");
+    assert!(
+        xml.contains("<cover>"),
+        "artwork never reached the entry: {xml}"
+    );
+    // Ours to rewrite stops at the tags we render. A description someone typed
+    // is not one of them, and neither is anything the frontend keeps.
+    assert!(xml.contains("<desc>Typed by hand</desc>"), "{xml}");
+    assert!(xml.contains("<favorite>true</favorite>"), "{xml}");
+    assert!(xml.contains("<playcount>12</playcount>"), "{xml}");
+    assert_eq!(xml.matches("<path>./game.chd</path>").count(), 1, "{xml}");
+
+    // Nothing left to change, so nothing is rewritten.
+    assert!(!upsert_game_metadata(&game, &rom_dir, &metadata_dir).unwrap());
+}
+
+/// One read and one write for many games, and each lands in the right block.
+#[test]
+fn upserting_many_games_touches_each_entry_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let rom_dir = dir.path().join("roms");
+    let metadata_dir = dir.path().join("metadata");
+    std::fs::create_dir_all(&metadata_dir).unwrap();
+    std::fs::write(
+        metadata_dir.join("gamelist.xml"),
+        "<?xml version=\"1.0\"?>\n<gameList>\n  <game>\n    <path>./a.chd</path>\n\
+         \x20   <name>Stale A</name>\n    <favorite>true</favorite>\n  </game>\n</gameList>\n",
+    )
+    .unwrap();
+
+    let games = ["a", "b", "c"]
+        .iter()
+        .map(|stem| {
+            let mut game = make_game(&format!("Game {stem}"), "");
+            game.rom_filename = format!("{stem}.chd");
+            game
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        crate::esde::upsert_games(&games, &rom_dir, &metadata_dir).unwrap(),
+        3
+    );
+
+    let xml = std::fs::read_to_string(metadata_dir.join("gamelist.xml")).unwrap();
+    for stem in ["a", "b", "c"] {
+        assert_eq!(
+            xml.matches(&format!("<path>./{stem}.chd</path>")).count(),
+            1
+        );
+    }
+    assert!(xml.contains("<name>Game a</name>"), "{xml}");
+    assert!(xml.contains("<favorite>true</favorite>"), "{xml}");
+    assert_eq!(
+        crate::esde::upsert_games(&games, &rom_dir, &metadata_dir).unwrap(),
+        0,
+        "a second pass rewrote a file nothing had changed"
+    );
 }
 
 /// A gamelist entry outlives the file it points at, because upserting is keyed

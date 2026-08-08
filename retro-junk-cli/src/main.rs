@@ -169,9 +169,7 @@ fn run(
         Commands::Analyze(_)
             | Commands::Rename(_)
             | Commands::Organize(_)
-            | Commands::FixCue(_)
             | Commands::Compress(_)
-            | Commands::Repair(_)
             | Commands::Scrape(_)
     );
     let library_path = if needs_library_path {
@@ -198,14 +196,8 @@ fn run(
         Commands::Organize(args) => {
             commands::organize::run_organize(ctx, args, &library_path, quiet)?;
         }
-        Commands::FixCue(args) => {
-            commands::fix_cue::run_fix_cue(ctx, &args, &library_path, quiet)?;
-        }
         Commands::Compress(args) => {
             commands::compress::run_compress(ctx, &args, &library_path, quiet)?;
-        }
-        Commands::Repair(args) => {
-            commands::repair::run_repair(ctx, args, &library_path, quiet)?;
         }
         Commands::Scrape(args) => {
             commands::scrape::run_scrape(ctx, args, &library_path, quiet)?;

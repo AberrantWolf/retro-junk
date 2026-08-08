@@ -24,7 +24,6 @@ fn row(path: &str, display: &str) -> LibraryEntryRow {
         disc_identifications_json: None,
         broken_references_json: None,
         ambiguous_candidates_json: None,
-        cue_compat_issues_json: None,
     }
 }
 
@@ -81,7 +80,6 @@ fn setup(entries: &[LibraryEntryRow]) -> (Connection, LibraryRootId, LibraryCons
                 disc_identifications_json: source.disc_identifications_json.clone(),
                 broken_references_json: source.broken_references_json.clone(),
                 ambiguous_candidates_json: source.ambiguous_candidates_json.clone(),
-                cue_compat_issues_json: source.cue_compat_issues_json.clone(),
             },
         )
         .unwrap();
@@ -550,7 +548,6 @@ fn analysis_batch_commits_valid_entries_and_skips_stale_sources() {
         disc_identifications_json: None,
         broken_references_json: Some("[]".into()),
         ambiguous_candidates_json: Some("[]".into()),
-        cue_compat_issues_json: Some("[]".into()),
     };
     let changes = apply_entry_analysis_batch(
         &mut conn,
@@ -671,7 +668,6 @@ fn stale_analysis_and_stale_scan_are_atomic_noops() {
         disc_identifications_json: None,
         broken_references_json: None,
         ambiguous_candidates_json: None,
-        cue_compat_issues_json: None,
     };
     assert!(matches!(
         apply_entry_analysis(&mut conn, id, 0, &update),
@@ -685,7 +681,6 @@ fn hash_updates_are_partial_and_reject_changed_sources() {
     let mut initial = row("game.nes", "game.nes");
     initial.identification_json = Some(r#"{"serial_number":"TEST"}"#.into());
     initial.broken_references_json = Some(r#"[{"path":"missing.bin"}]"#.into());
-    initial.cue_compat_issues_json = Some(r#"[{"summary":"keep me"}]"#.into());
     let (mut conn, _, console) = setup(&[initial.clone()]);
     let detail = load_entry_details_for_console(&conn, console)
         .unwrap()
@@ -716,10 +711,6 @@ fn hash_updates_are_partial_and_reject_changed_sources() {
     assert_eq!(
         updated.row.broken_references_json,
         initial.broken_references_json
-    );
-    assert_eq!(
-        updated.row.cue_compat_issues_json,
-        initial.cue_compat_issues_json
     );
 
     let token = begin_console_scan(&conn, console).unwrap();

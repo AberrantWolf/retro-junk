@@ -20,7 +20,6 @@ fn projected_rows(count: u64) -> Vec<retro_junk_db::LibraryEntryListItem> {
             detected_regions: Vec::new(),
             has_hash_warnings: false,
             has_broken_references: false,
-            has_cue_compat_issues: false,
             revision: 0,
             source_revision: 0,
             archived: false,

@@ -12,7 +12,7 @@ use retro_junk_frontend::AssetType;
 
 // -- Asset status --
 
-pub use retro_junk_backend::assets::{AssetStatus, SCRAPEABLE_ASSET_TYPES, asset_availability};
+pub use retro_junk_backend::assets::{AssetStatus, asset_availability};
 
 /// URI used by egui's file loader. Unlike `include_bytes`, this lets us evict
 /// all decoded data and textures when the detail selection changes.
@@ -233,51 +233,6 @@ impl RowStatus {
     }
 }
 
-/// What a repair would do, shown before anything is written.
-///
-/// A repair rewrites files in place, so the user answers first. Only counts
-/// and a short sample are kept: a console can hold thousands of files, and
-/// the dialog exists to convey scale and let the user say no.
-#[derive(Debug, Clone, Default)]
-pub struct RepairPrompt {
-    pub repairable: usize,
-    pub already_correct: usize,
-    pub no_match: usize,
-    /// A few file names, so the user can see what kind of thing this is.
-    pub sample: Vec<String>,
-    /// Consoles that could not be checked, with the reason.
-    pub skipped: Vec<String>,
-}
-
-impl RepairPrompt {
-    #[must_use]
-    pub fn from_report(report: &retro_junk_backend::ops::repair::RepairPlanReport) -> Self {
-        let mut prompt = Self {
-            repairable: report.repairable_count(),
-            skipped: report.skipped.clone(),
-            ..Self::default()
-        };
-        for console in &report.consoles {
-            prompt.already_correct += console.plan.already_correct.len();
-            prompt.no_match += console.plan.no_match.len();
-            for action in console.plan.repairable.iter().take(8) {
-                if prompt.sample.len() >= 8 {
-                    break;
-                }
-                prompt.sample.push(format!(
-                    "{} — {}",
-                    action
-                        .file_path
-                        .file_name()
-                        .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
-                    action.method.description()
-                ));
-            }
-        }
-        prompt
-    }
-}
-
 // -- Fragile mount prompt --
 
 /// A pending library-root switch awaiting user confirmation because the path
@@ -394,10 +349,6 @@ pub enum TagDialog {
 // path for the app-level results dialog and completion handlers.
 pub use retro_junk_backend::ops::rename::{RenameOutcome, RenameResult};
 
-// -- CUE fix results --
-
-pub use retro_junk_backend::ops::fix_cue::{CueFixOutcome, CueFixResult};
-
 // -- CHD compression --
 
 // Re-export shim: these moved to the backend; keep the whole set visible at
@@ -421,7 +372,6 @@ pub enum OperationKind {
     Scan,
     Hash,
     Rename,
-    CueFix,
     ChdCompress,
     ArchiveImport,
     Other,
@@ -473,52 +423,91 @@ pub struct PhysicalCopyEditor {
     pub desired_format: String,
     pub retain_intermediate: bool,
     pub allow_unverified: bool,
-    pub ingest_format: String,
     pub release_asset_type: String,
 }
 
-/// How a `BackgroundOperation`'s `progress_current/progress_total` pair should
-/// be rendered. Replaces two mutually-exclusive bools with a type that makes
-/// the "count vs. bytes vs. percent" choice unrepresentable as invalid.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ProgressDisplay {
-    /// "3/10"
-    #[default]
-    Count,
-    /// "234.5 MB / 4.7 GB"
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationUnit {
+    Items,
     Bytes,
-    /// "42%" (`progress_current/progress_total` is an abstract unit scale)
-    Percent,
 }
 
-impl ProgressDisplay {
-    /// How to render what a running operation just reported.
-    ///
-    /// The operation says whether its numbers are bytes or work items, so this
-    /// never has to guess. Guessing was a real bug: identifying a single disc
-    /// reports "0 of 1 dumps", and reading that as bytes rendered "0 B / 1 B"
-    /// beside a progress bar that then sat still for the several minutes the
-    /// disc actually took.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationProgress {
+    Indeterminate,
+    Determinate {
+        completed: u64,
+        total: u64,
+        unit: OperationUnit,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OperationStep {
+    pub current: u64,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationPhase {
+    pub label: String,
+    pub optional_step: Option<OperationStep>,
+    pub progress: OperationProgress,
+}
+
+impl OperationPhase {
     #[must_use]
-    pub fn for_report(unit: retro_junk_io::ProgressUnit, total: u64) -> Self {
-        match (total, unit) {
-            // A byte count with a real total is the only case that renders as
-            // "412 MB / 1.1 GB"; everything else, zero total included, reads
-            // better as a plain fraction.
-            (0, _) | (_, retro_junk_io::ProgressUnit::Items) => Self::Count,
-            (_, retro_junk_io::ProgressUnit::Bytes) => Self::Bytes,
+    pub fn reported(
+        label: impl Into<String>,
+        unit: retro_junk_io::ProgressUnit,
+        completed: u64,
+        total: u64,
+    ) -> Self {
+        let progress = if total == 0 {
+            OperationProgress::Indeterminate
+        } else {
+            OperationProgress::Determinate {
+                completed: completed.min(total),
+                total,
+                unit: match unit {
+                    retro_junk_io::ProgressUnit::Items => OperationUnit::Items,
+                    retro_junk_io::ProgressUnit::Bytes => OperationUnit::Bytes,
+                },
+            }
+        };
+        Self {
+            label: label.into(),
+            optional_step: None,
+            progress,
         }
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationOutcome {
+    Succeeded,
+    Cancelled,
+    Failed(String),
+}
+
+/// Initial rendering hint retained for callers that create an operation
+/// before its first typed phase arrives. Once work reports a phase, the unit
+/// lives in [`OperationProgress`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProgressDisplay {
+    #[default]
+    Count,
+    Bytes,
+    Percent,
+}
+
 pub struct BackgroundOperation {
     pub id: u64,
-    pub description: String,
-    pub progress_current: u64,
-    pub progress_total: u64,
+    pub title: String,
+    pub phase: OperationPhase,
     pub cancel_token: Arc<AtomicBool>,
-    /// How to render `progress_current/progress_total`.
-    pub display: ProgressDisplay,
+    pub cancellable: bool,
+    pub cancel_requested: bool,
     /// What kind of work this operation represents.
     pub kind: OperationKind,
     /// Console folder this operation is scoped to (used by the
@@ -529,29 +518,25 @@ pub struct BackgroundOperation {
 impl BackgroundOperation {
     pub fn new(
         id: u64,
-        description: String,
+        title: String,
         cancel_token: Arc<AtomicBool>,
         kind: OperationKind,
         scope: String,
-        display: ProgressDisplay,
+        _display: ProgressDisplay,
     ) -> Self {
         Self {
             id,
-            description,
-            progress_current: 0,
-            progress_total: 0,
+            phase: OperationPhase {
+                label: title.clone(),
+                optional_step: None,
+                progress: OperationProgress::Indeterminate,
+            },
+            title,
             cancel_token,
-            display,
+            cancellable: true,
+            cancel_requested: false,
             kind,
             scope,
-        }
-    }
-
-    pub fn progress_fraction(&self) -> f32 {
-        if self.progress_total == 0 {
-            0.0
-        } else {
-            self.progress_current as f32 / self.progress_total as f32
         }
     }
 }
@@ -585,6 +570,8 @@ pub struct AppMessageEnvelope {
 pub struct AppMessageSender {
     sender: std::sync::mpsc::Sender<AppMessageEnvelope>,
     session_generation: crate::backend::library_store::UiSessionGeneration,
+    pending_progress: Arc<std::sync::Mutex<HashMap<u64, OperationPhase>>>,
+    pending_progress_ids: Arc<std::sync::Mutex<HashSet<u64>>>,
 }
 
 impl AppMessageSender {
@@ -592,6 +579,8 @@ impl AppMessageSender {
         Self {
             sender,
             session_generation: 0,
+            pending_progress: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pending_progress_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
     }
 
@@ -602,6 +591,8 @@ impl AppMessageSender {
         Self {
             sender: self.sender.clone(),
             session_generation,
+            pending_progress: self.pending_progress.clone(),
+            pending_progress_ids: self.pending_progress_ids.clone(),
         }
     }
 
@@ -609,10 +600,77 @@ impl AppMessageSender {
         &self,
         payload: AppMessage,
     ) -> Result<(), std::sync::mpsc::SendError<AppMessageEnvelope>> {
+        if let AppMessage::OperationPhase { op_id, phase } = payload {
+            self.pending_progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(op_id, phase);
+            self.pending_progress_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(op_id);
+            return Ok(());
+        }
         self.sender.send(AppMessageEnvelope {
             session_generation: self.session_generation,
             payload,
         })
+    }
+
+    /// Take the newest phase for each operation. Progress is deliberately not
+    /// queued with results/lifecycle messages: a fast byte loop can replace
+    /// its own stale update but can never delay completion.
+    pub fn drain_operation_phases(&self) -> Vec<(u64, OperationPhase)> {
+        let ids = std::mem::take(
+            &mut *self
+                .pending_progress_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let phases = self
+            .pending_progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ids.into_iter()
+            .filter_map(|id| phases.get(&id).cloned().map(|phase| (id, phase)))
+            .collect()
+    }
+
+    /// Complete a determinate phase at its declared stable total. Unknown
+    /// totals remain indeterminate.
+    pub fn finish_determinate_phase(&self, op_id: u64) {
+        {
+            let mut phases = self
+                .pending_progress
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(phase) = phases.get_mut(&op_id) else {
+                return;
+            };
+            if let OperationProgress::Determinate {
+                completed, total, ..
+            } = &mut phase.progress
+            {
+                *completed = *total;
+            } else {
+                return;
+            }
+        }
+        self.pending_progress_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(op_id);
+    }
+
+    pub fn forget_operation(&self, op_id: u64) {
+        self.pending_progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&op_id);
+        self.pending_progress_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&op_id);
     }
 }
 
@@ -639,7 +697,6 @@ pub enum AppMessage {
         profile: retro_junk_archive::CollectionProfile,
     },
     ArchiveOperationComplete {
-        op_id: u64,
         result: Result<String, String>,
     },
     /// Backlog summary + open errors for one scope (B5/B4). The scope rides
@@ -673,7 +730,6 @@ pub enum AppMessage {
         result: Result<PhysicalCopyEditor, String>,
     },
     PlayablePolicyUpdated {
-        op_id: u64,
         result: Result<retro_junk_archive::ArchiveRootManifest, String>,
     },
     PlayableBuildComplete {
@@ -681,7 +737,6 @@ pub enum AppMessage {
         result: Result<Option<std::path::PathBuf>, String>,
     },
     AssetProjectionComplete {
-        op_id: u64,
         result: Result<retro_junk_lib::archive_assets::AssetProjectionReport, String>,
     },
     ArchiveImportPlanReady {
@@ -800,25 +855,6 @@ pub enum AppMessage {
         errors: Vec<String>,
     },
 
-    // -- CUE fix --
-    CueFixComplete {
-        folder_name: String,
-        rescan_target: Option<crate::backend::scan::ConsoleScanTarget>,
-        results: Vec<CueFixResult>,
-    },
-
-    // -- Repair --
-    /// A repair plan is ready for the user to accept or decline.
-    RepairPlanReady {
-        folder_name: String,
-        prompt: Box<RepairPrompt>,
-    },
-    RepairComplete {
-        folder_name: String,
-        repaired: usize,
-        failed: usize,
-    },
-
     // -- CHD compression --
     /// Background planning (D1) finished: chdman probed + `plan_batch` run for
     /// every selected entry, off the UI thread. Stores the prompt so the
@@ -846,20 +882,13 @@ pub enum AppMessage {
     },
 
     // -- Operations --
-    OperationProgress {
-        op_id: u64,
-        current: u64,
-        total: u64,
-    },
     OperationPhase {
         op_id: u64,
-        description: String,
-        display: ProgressDisplay,
-        current: u64,
-        total: u64,
+        phase: OperationPhase,
     },
     OperationComplete {
         op_id: u64,
+        outcome: OperationOutcome,
     },
 
     // -- Catalog data operations --
@@ -892,7 +921,6 @@ impl AppMessage {
                 | Self::ArchiveImportPlanReady { .. }
                 | Self::ArchiveImportComplete { .. }
                 | Self::ChdmanProbeResult { .. }
-                | Self::OperationProgress { .. }
                 | Self::OperationPhase { .. }
                 | Self::OperationComplete { .. }
                 | Self::CatalogDataChanged
@@ -902,7 +930,6 @@ impl AppMessage {
                 | Self::EntryHashBatchComplete { .. }
                 | Self::RenameComplete { .. }
                 | Self::OrganizeComplete { .. }
-                | Self::CueFixComplete { .. }
                 | Self::ChdCompressComplete { .. }
         )
     }
@@ -946,7 +973,11 @@ pub fn start_auto_scan_batch(app: &mut crate::app::RetroJunkApp, ctx: &egui::Con
         String::new(),
         ProgressDisplay::Count,
     );
-    op.progress_total = total;
+    op.phase.progress = OperationProgress::Determinate {
+        completed: 0,
+        total,
+        unit: OperationUnit::Items,
+    };
     app.operations.push(op);
     app.ui_state.auto_scan_op_id = Some(op_id);
     start_next_auto_scan(app, ctx);
@@ -976,9 +1007,11 @@ fn start_next_auto_scan(app: &mut crate::app::RetroJunkApp, ctx: &egui::Context)
             return;
         }
     }
-    // Queue drained — remove the batch op from the activity bar.
+    // Queue drained — remove the batch op from the activity bar, and pick up
+    // the whole-root summary refresh the batch deferred.
     if let Some(op_id) = app.ui_state.auto_scan_op_id.take() {
         app.operations.retain(|o| o.id != op_id);
+        app.refresh_console_summaries(ctx);
     }
 }
 
@@ -999,7 +1032,12 @@ pub fn finish_auto_scan(
             .iter_mut()
             .find(|operation| operation.id == op_id)
     {
-        operation.progress_current = (operation.progress_current + 1).min(operation.progress_total);
+        if let OperationProgress::Determinate {
+            completed, total, ..
+        } = &mut operation.phase.progress
+        {
+            *completed = (*completed + 1).min(*total);
+        }
     }
     start_next_auto_scan(app, ctx);
 }
@@ -1128,30 +1166,15 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
         }
 
-        AppMessage::ArchiveOperationComplete { op_id, result } => {
-            app.operations.retain(|operation| operation.id != op_id);
-            if let Some(handle) = app.op_threads.remove(&op_id) {
-                let _ = handle.join();
+        AppMessage::ArchiveOperationComplete { result } => match result {
+            Ok(message) => {
+                log::info!("{message}");
+                app.ui_state.collection_profile_id = None;
+                app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
+                refresh_library_availability(app, ctx);
             }
-            match result {
-                Ok(message) => {
-                    log::info!("{message}");
-                    app.notify(message);
-                    app.ui_state.collection_profile_id = None;
-                    app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
-                    refresh_library_availability(app, ctx);
-                }
-                Err(error) => app.push_error("Archive operation", error),
-            }
-            if app.ui_state.archive_refresh_pending
-                && let Some(profile) = app.settings.library.active_profile().cloned()
-            {
-                app.ui_state.archive_refresh_pending = false;
-                let _ = app
-                    .message_tx
-                    .send(AppMessage::StartArchiveRefresh { profile });
-            }
-        }
+            Err(error) => log::error!("Archive operation failed: {error}"),
+        },
         AppMessage::CollectionSummariesReady { profile_id, result } => {
             app.ui_state.collection_summaries_loading = false;
             let current = app
@@ -1186,42 +1209,28 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 Err(error) => app.push_error("Collection details", error),
             }
         }
-        AppMessage::PlayablePolicyUpdated { op_id, result } => {
-            app.operations.retain(|operation| operation.id != op_id);
-            if let Some(handle) = app.op_threads.remove(&op_id) {
-                let _ = handle.join();
-            }
-            match result {
-                Ok(manifest) => {
-                    if let Some(profile) = app.settings.library.active_profile_mut() {
-                        profile.platform_defaults = manifest.platform_defaults;
-                    }
-                    if let Err(error) = crate::settings::save_settings(&app.settings) {
-                        app.push_error("Save playable policy", error.to_string());
-                    }
-                    app.ui_state.collection_profile_id = None;
-                    app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
-                    refresh_library_availability(app, ctx);
+        AppMessage::PlayablePolicyUpdated { result } => match result {
+            Ok(manifest) => {
+                if let Some(profile) = app.settings.library.active_profile_mut() {
+                    profile.platform_defaults = manifest.platform_defaults;
                 }
-                Err(error) => app.push_error("Playable policy", error),
+                if let Err(error) = crate::settings::save_settings(&app.settings) {
+                    app.push_error("Save playable policy", error.to_string());
+                }
+                app.ui_state.collection_profile_id = None;
+                app.ui_state.collection_summaries = std::sync::Arc::new(Vec::new());
+                refresh_library_availability(app, ctx);
             }
-        }
+            Err(error) => log::error!("Playable policy failed: {error}"),
+        },
         AppMessage::PlayableBuildComplete { op_id, result } => {
-            app.operations.retain(|operation| operation.id != op_id);
-            if let Some(handle) = app.op_threads.remove(&op_id) {
-                let _ = handle.join();
-            }
             let more_archive_work = app
                 .operations
                 .iter()
-                .any(|operation| operation.scope == "archive");
+                .any(|operation| operation.id != op_id && operation.scope == "archive");
             match result {
                 Ok(Some(output)) => {
                     log::info!("Built playable copy {}", output.display());
-                    app.notify(format!(
-                        "Built {}",
-                        output.file_name().unwrap_or_default().to_string_lossy()
-                    ));
                     if more_archive_work {
                         log::info!("Deferring library refresh until queued archive work completes");
                         return;
@@ -1250,7 +1259,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
                 Ok(None) => {
                     log::info!("Catalog-verified archived release");
-                    app.notify("Catalog-verified archived release");
                     if more_archive_work {
                         log::info!("Deferring library refresh until queued archive work completes");
                         return;
@@ -1266,36 +1274,29 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                         refresh_library_availability(app, ctx);
                         let _ = app.message_tx.send(AppMessage::StartFolderScan);
                     }
-                    app.push_error("Archive action", error);
+                    log::error!("Archive action failed: {error}");
                 }
             }
         }
-        AppMessage::AssetProjectionComplete { op_id, result } => {
-            app.operations.retain(|operation| operation.id != op_id);
-            if let Some(handle) = app.op_threads.remove(&op_id) {
-                let _ = handle.join();
-            }
-            match result {
-                Ok(report) => {
-                    log::info!(
-                        "Restored {} archived media file(s); {} already current",
-                        report.copied,
-                        report.current
-                    );
-                    if report.copied > 0 {
-                        app.notify(format!("Restored {} archived media file(s)", report.copied));
-                    }
-                    if let Some(console_id) = app.ui_state.selected_console {
-                        app.request_console_page(console_id, ctx);
-                    }
+        AppMessage::AssetProjectionComplete { result } => match result {
+            Ok(report) => {
+                log::info!(
+                    "Restored {} archived media file(s); {} already current",
+                    report.copied,
+                    report.current
+                );
+                if let Some(console_id) = app.ui_state.selected_console {
+                    app.request_console_page(console_id, ctx);
                 }
-                Err(error) => app.push_error("Restore archived media", error),
             }
-        }
+            Err(error) => log::error!("Restore archived media failed: {error}"),
+        },
         AppMessage::ArchiveImportPlanReady { op_id, result } => {
-            app.operations.retain(|operation| operation.id != op_id);
-            if let Some(handle) = app.op_threads.remove(&op_id) {
-                let _ = handle.join();
+            if !matches!(
+                app.ui_state.dump_import_dialog.as_ref(),
+                Some(DumpImportDialogState::Planning { op_id: current, .. }) if *current == op_id
+            ) {
+                return;
             }
             match result {
                 Ok(plan) => {
@@ -1309,16 +1310,16 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
                 Err(error) => {
                     app.ui_state.dump_import_dialog = None;
-                    if !error.to_ascii_lowercase().contains("cancelled") {
-                        app.push_error("Archive import planning", error);
-                    }
+                    log::error!("Archive import planning failed: {error}");
                 }
             }
         }
         AppMessage::ArchiveImportComplete { op_id, result } => {
-            app.operations.retain(|operation| operation.id != op_id);
-            if let Some(handle) = app.op_threads.remove(&op_id) {
-                let _ = handle.join();
+            if !matches!(
+                app.ui_state.dump_import_dialog.as_ref(),
+                Some(DumpImportDialogState::Importing { op_id: current }) if *current == op_id
+            ) {
+                return;
             }
             match result {
                 Ok(result) => {
@@ -1329,7 +1330,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
                 Err(error) => {
                     app.ui_state.dump_import_dialog = None;
-                    app.push_error("Archive import", error);
+                    log::error!("Archive import failed: {error}");
                 }
             }
         }
@@ -1389,9 +1390,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         }
 
         AppMessage::FolderScanComplete => {
-            app.operations
-                .retain(|op| op.description != "Scanning folders...");
-
             let populated_aliases = app
                 .browser
                 .consoles
@@ -1514,7 +1512,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
                 }
             }
             if let Some(error) = error {
-                app.push_error("Library scan", error);
+                log::error!("Library scan failed: {error}");
             }
             finish_auto_scan(app, &folder_name, false, ctx);
         }
@@ -1660,8 +1658,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::ScrapeFatalError { message, op_id } => {
             log::error!("Scrape fatal error: {message}");
-            app.push_error("Scrape Failed", &message);
-            app.operations.retain(|op| op.id != op_id);
+            let _ = op_id;
         }
 
         AppMessage::MiximageComplete {
@@ -1701,11 +1698,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
         } => match result {
             Ok(path) => {
                 log::info!("Exported gamelist.xml for {folder_name}: {path}");
-                app.notify(format!("Exported gamelist.xml for {folder_name}"));
             }
             Err(error) => {
                 log::warn!("Export failed for {folder_name}: {error}");
-                app.push_error("Export Failed", format!("{folder_name}: {error}"));
             }
         },
 
@@ -1804,44 +1799,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             }
         }
 
-        AppMessage::CueFixComplete {
-            folder_name,
-            rescan_target,
-            results,
-        } => {
-            let fixed = results
-                .iter()
-                .filter(|r| matches!(r.outcome, CueFixOutcome::Fixed { .. }))
-                .count();
-            let already = results
-                .iter()
-                .filter(|r| matches!(r.outcome, CueFixOutcome::AlreadyStandard))
-                .count();
-            let failed = results
-                .iter()
-                .filter(|r| {
-                    matches!(
-                        r.outcome,
-                        CueFixOutcome::Unfixable { .. } | CueFixOutcome::Error { .. }
-                    )
-                })
-                .count();
-            log::info!(
-                "CUE fix {folder_name}: {fixed} fixed, {already} already standard, {failed} failed"
-            );
-            if fixed > 0 {
-                if let Some(target) = rescan_target {
-                    crate::backend::scan::restart_console_scan(app, target, ctx);
-                } else {
-                    app.push_error(
-                        "Library rescan",
-                        format!("No durable console ID for {folder_name}"),
-                    );
-                }
-            }
-            app.ui_state.results_dialog = crate::app::ResultsDialog::CueFix(results);
-        }
-
         AppMessage::ChdCompressComplete {
             folder_name,
             rescan_target,
@@ -1876,34 +1833,22 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             app.ui_state.results_dialog = crate::app::ResultsDialog::ChdCompress(results);
         }
 
-        AppMessage::OperationProgress {
-            op_id,
-            current,
-            total,
-        } => {
+        AppMessage::OperationPhase { op_id, phase } => {
             if let Some(op) = app.operations.iter_mut().find(|op| op.id == op_id) {
-                op.progress_current = current;
-                op.progress_total = total;
+                op.phase = phase;
             }
         }
 
-        AppMessage::OperationPhase {
-            op_id,
-            description,
-            display,
-            current,
-            total,
-        } => {
-            if let Some(op) = app.operations.iter_mut().find(|op| op.id == op_id) {
-                op.description = description;
-                op.display = display;
-                op.progress_current = current;
-                op.progress_total = total;
-            }
-        }
-
-        AppMessage::OperationComplete { op_id } => {
+        AppMessage::OperationComplete { op_id, outcome } => {
+            let operation = app
+                .operations
+                .iter()
+                .find(|op| op.id == op_id)
+                .map(|op| (op.title.clone(), op.scope.clone()));
+            let (title, scope) =
+                operation.unwrap_or_else(|| ("Background operation".to_owned(), String::new()));
             app.operations.retain(|op| op.id != op_id);
+            app.message_tx.forget_operation(op_id);
             // The worker thread is at (or immediately reaching) its end
             // after sending this message, so the join is effectively
             // instant. Reclaiming the handle here (rather than only in
@@ -1911,6 +1856,24 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             // long session.
             if let Some(handle) = app.op_threads.remove(&op_id) {
                 let _ = handle.join();
+            }
+            match outcome {
+                OperationOutcome::Succeeded => app.notify(format!("{title} completed")),
+                OperationOutcome::Cancelled => app.notify(format!("{title} cancelled")),
+                OperationOutcome::Failed(error) => app.push_error(&title, error),
+            }
+            if scope == "archive"
+                && app.ui_state.archive_refresh_pending
+                && !app
+                    .operations
+                    .iter()
+                    .any(|operation| operation.scope == "archive")
+                && let Some(profile) = app.settings.library.active_profile().cloned()
+            {
+                app.ui_state.archive_refresh_pending = false;
+                let _ = app
+                    .message_tx
+                    .send(AppMessage::StartArchiveRefresh { profile });
             }
         }
 
@@ -2019,51 +1982,6 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
         AppMessage::ChdCompressPromptReady { prompt } => {
             app.ui_state.chd_compress_prompt = Some(prompt);
-        }
-
-        AppMessage::RepairPlanReady {
-            folder_name,
-            prompt,
-        } => {
-            if prompt.repairable == 0 {
-                app.push_error(
-                    "Repair",
-                    if prompt.no_match == 0 {
-                        "Every file already matches the catalog".to_owned()
-                    } else {
-                        format!(
-                            "Nothing here can be repaired ({} file(s) match no catalog entry)",
-                            prompt.no_match
-                        )
-                    },
-                );
-            } else {
-                app.ui_state.repair_prompt = Some((folder_name, prompt));
-            }
-        }
-
-        AppMessage::RepairComplete {
-            folder_name,
-            repaired,
-            failed,
-        } => {
-            log::info!("Repaired {repaired} file(s) in {folder_name}, {failed} failed");
-            if failed > 0 {
-                app.push_error(
-                    "Repair",
-                    format!("{failed} file(s) could not be repaired; see the log"),
-                );
-            }
-            // Repair rewrote bytes, so the cached hashes and match verdicts
-            // for those files describe something that is no longer there.
-            if let Some(index) = app
-                .browser
-                .consoles
-                .iter()
-                .position(|console| console.folder_name == folder_name)
-            {
-                crate::backend::scan::quick_scan_console(app, index, ctx);
-            }
         }
 
         AppMessage::ChdmanProbeResult { key, result } => {

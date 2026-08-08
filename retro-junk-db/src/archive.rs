@@ -408,6 +408,11 @@ pub struct CompleteCatalogMediaMatch {
     pub release_id: String,
     pub work_id: String,
     pub game: String,
+    /// Media-level DAT name and member filename. These are retained separately
+    /// from the release title because playable naming must distinguish a
+    /// whole multi-track medium from the track file used for hash matching.
+    pub dat_name: String,
+    pub rom_name: String,
     pub source: String,
     pub source_version: String,
     pub platform_id: String,
@@ -458,7 +463,7 @@ pub fn match_catalog_serial_any_platform(
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
                 r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
-                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
+                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),m.dat_name,m.rom_name
          FROM media m JOIN releases r ON r.id=m.release_id
          LEFT JOIN media_serial_keys msk ON msk.media_id=m.id
          WHERE msk.serial_key=?1 OR
@@ -480,6 +485,8 @@ pub fn match_catalog_serial_any_platform(
             serial: row.get(10)?,
             sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
             medium_has_tracks: row.get::<_, i64>(12)? != 0,
+            dat_name: row.get(13)?,
+            rom_name: row.get(14)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -513,7 +520,7 @@ fn match_catalog_file_inner(
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
                 r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
-                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
+                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),m.dat_name,m.rom_name
          FROM media m JOIN releases r ON r.id=m.release_id
          WHERE (?1='' OR r.platform_id=?1) AND m.file_size=?2
            AND (m.sha1<>'' OR m.md5<>'' OR m.crc32<>'')
@@ -551,6 +558,8 @@ fn match_catalog_file_inner(
                 serial: row.get(10)?,
                 sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
                 medium_has_tracks: row.get::<_, i64>(12)? != 0,
+                dat_name: row.get(13)?,
+                rom_name: row.get(14)?,
             })
         },
     )?;
@@ -881,7 +890,7 @@ fn match_single_track_catalog_media(
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
                 r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
-                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
+                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),m.dat_name,m.rom_name
          FROM media m JOIN releases r ON r.id=m.release_id
          WHERE (?1='' OR r.platform_id=?1) AND m.file_size=?2
            AND NOT EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
@@ -920,6 +929,8 @@ fn match_single_track_catalog_media(
                 serial: row.get(10)?,
                 sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
                 medium_has_tracks: row.get::<_, i64>(12)? != 0,
+                dat_name: row.get(13)?,
+                rom_name: row.get(14)?,
             })
         },
     )?;
@@ -948,7 +959,7 @@ fn match_complete_catalog_media_inner(
                           WHERE il.source_type=m.dat_source
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
                 r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
-                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
+                EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),m.dat_name,m.rom_name
          FROM media_tracks mt
          JOIN media m ON m.id=mt.media_id
          JOIN releases r ON r.id=m.release_id
@@ -977,6 +988,8 @@ fn match_complete_catalog_media_inner(
                 serial: row.get(10)?,
                 sequence_number: u32::try_from(row.get::<_, i64>(11)?).unwrap_or(0),
                 medium_has_tracks: row.get::<_, i64>(12)? != 0,
+                dat_name: row.get(13)?,
+                rom_name: row.get(14)?,
             })
         },
     )?;

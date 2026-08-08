@@ -203,23 +203,11 @@ fn apply_scrape(
     let payload: ScrapeSuggestionPayload = serde_json::from_str(&suggestion.payload_json)
         .map_err(|error| WorkError::Message(format!("unreadable scrape suggestion: {error}")))?;
 
-    let mut confirmed = ExecContext {
-        profile: ctx.profile.clone(),
-        db_path: ctx.db_path.clone(),
-        tools: ctx.tools.clone(),
-        scrape: crate::executor::ScrapeSettings {
-            only_when_unambiguous: false,
-            ..ctx.scrape.clone()
-        },
-        roots: ctx.roots.clone(),
-        analyzers: std::sync::Arc::clone(&ctx.analyzers),
-        owner: ctx.owner.clone(),
-        lock: ctx.lock,
-        reconcile: ctx.reconcile,
-        // Its own scan: this context outlives one action, and the caller's
-        // scan is not ours to share or to invalidate.
-        archive: crate::executor::ArchiveScan::default(),
-    };
+    let mut confirmed = ctx.clone();
+    confirmed.scrape.only_when_unambiguous = false;
+    // Its own scan: this context outlives one action, and the caller's scan is
+    // not ours to share or to invalidate.
+    confirmed.archive = crate::executor::ArchiveScan::default();
     // The archive lock is taken by `execute_action`, exactly as for a derived
     // scrape; applying is the same action with the review already done.
     confirmed.scrape.expected_assets =
@@ -243,10 +231,9 @@ fn apply_scrape(
             retro_junk_db::work::resolve_suggestion(&mut conn, suggestion.id, "applied")?;
             Ok(format!("Scraped {}", payload.label))
         }
-        crate::executor::ActionOutcome::Blocked(reason) => Err(WorkError::Message(reason)),
-        crate::executor::ActionOutcome::Cancelled => {
-            Err(WorkError::Message("operation cancelled".to_owned()))
-        }
+        crate::executor::ActionOutcome::Blocked(reason)
+        | crate::executor::ActionOutcome::Failed(reason) => Err(WorkError::Message(reason)),
+        crate::executor::ActionOutcome::Cancelled => Err(WorkError::Cancelled),
         crate::executor::ActionOutcome::ClaimHeld(held) => Err(WorkError::Message(format!(
             "another run holds this release ({})",
             held.owner

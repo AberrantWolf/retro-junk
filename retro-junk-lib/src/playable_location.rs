@@ -32,6 +32,35 @@ pub fn release_system_directory(release: &IndexedRelease) -> String {
     )
 }
 
+/// The folder a release actually publishes into.
+///
+/// Almost always [`release_system_directory`], but not always: an output can
+/// sit somewhere the naming rule would not pick today — a `world`-region NES
+/// release filed under `famicom` — and the folder that holds the file is the
+/// folder whose gamelist lists it and whose media tree holds its artwork. So
+/// the file on disk wins, and the computed answer is the fallback for a release
+/// with nothing built yet.
+///
+/// One definition, because the two halves of a projection used to disagree:
+/// the gamelist trusted the filesystem while asset projection trusted the
+/// planner, so an off-folder release got its entry written to `famicom/` and
+/// its artwork copied into `nes/`, leaving the entry's `<image>` pointing at
+/// nothing.
+#[must_use]
+pub fn release_publish_directory(release: &IndexedRelease, playable_root: &Path) -> String {
+    retro_junk_archive::current_release_builds(release)
+        .into_iter()
+        .map(|evidence| release_output_relative(release, playable_root, evidence))
+        .find_map(|relative| {
+            Path::new(&relative)
+                .components()
+                .next()
+                .and_then(|component| component.as_os_str().to_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| release_system_directory(release))
+}
+
 /// Where one of a release's build outputs is, relative to the playable root.
 ///
 /// Says nothing about whether the output is current — use

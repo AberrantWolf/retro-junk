@@ -101,22 +101,12 @@ pub struct LibraryEntry {
     pub disc_identifications: Option<Vec<DiscIdentification>>,
     /// Broken CUE/M3U references. `None` = not yet checked, `Some(empty)` = checked and clean.
     pub broken_references: Option<Vec<BrokenReference>>,
-    /// CUE sheet compatibility issues. `None` = not yet checked, `Some(empty)` = checked and clean.
-    pub cue_compat_issues: Option<Vec<CueCompatIssue>>,
     /// User-applied tag (homebrew or modded).
     pub tag: Option<CatalogTag>,
     /// The catalog medium a person chose for this file when the evidence left
     /// more than one possible. Read from the collection's marks, never from a
     /// database row, so it survives a rename and a rebuild.
     pub disambiguation: Option<String>,
-}
-
-/// A CUE sheet compatibility issue detected during scan.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CueCompatIssue {
-    pub file_name: String,
-    pub summary: String,
-    pub can_auto_fix: bool,
 }
 
 impl LibraryEntry {
@@ -140,13 +130,6 @@ impl LibraryEntry {
         } else {
             Vec::new()
         }
-    }
-
-    /// Whether this entry has detected CUE sheet compatibility issues.
-    pub fn has_cue_compat_issues(&self) -> bool {
-        self.cue_compat_issues
-            .as_ref()
-            .is_some_and(|issues| !issues.is_empty())
     }
 }
 
@@ -829,12 +812,6 @@ pub fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json:
         .map(serde_json::to_string)
         .transpose()?;
 
-    let cue_compat_issues_json = entry
-        .cue_compat_issues
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
-
     let ambiguous_candidates_json = if entry.ambiguous_candidates.is_empty() {
         None
     } else {
@@ -862,7 +839,6 @@ pub fn entry_to_row(entry: &LibraryEntry) -> Result<LibraryEntryRow, serde_json:
         disc_identifications_json,
         broken_references_json,
         ambiguous_candidates_json,
-        cue_compat_issues_json,
     })
 }
 
@@ -889,7 +865,6 @@ pub fn entry_analysis_update(
         disc_identifications_json: row.disc_identifications_json,
         broken_references_json: row.broken_references_json,
         ambiguous_candidates_json: row.ambiguous_candidates_json,
-        cue_compat_issues_json: row.cue_compat_issues_json,
     })
 }
 
@@ -976,11 +951,6 @@ pub fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
 
-    let cue_compat_issues = row
-        .cue_compat_issues_json
-        .as_deref()
-        .and_then(|s| serde_json::from_str(s).ok());
-
     let ambiguous_candidates: Vec<String> = row
         .ambiguous_candidates_json
         .as_deref()
@@ -1005,7 +975,6 @@ pub fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
         screen_title: row.screen_title,
         disc_identifications,
         broken_references,
-        cue_compat_issues,
         tag,
     })
 }
@@ -1032,8 +1001,14 @@ fn status_to_str(status: EntryStatus) -> (&'static str, Option<&'static str>) {
     }
 }
 
-fn str_to_status(s: &str) -> EntryStatus {
-    match s {
+/// Parse the persisted list projection exactly once at the backend boundary,
+/// including the tag override that determines the effective row status.
+#[must_use]
+pub fn projected_entry_status(status: &str, tag: &str) -> EntryStatus {
+    if let Some(tag) = str_to_tag(tag) {
+        return EntryStatus::Tagged(tag);
+    }
+    match status {
         "unrecognized" => EntryStatus::Unrecognized,
         "ambiguous" => EntryStatus::Ambiguous,
         "likely" => EntryStatus::LikelyMatched,
@@ -1042,6 +1017,10 @@ fn str_to_status(s: &str) -> EntryStatus {
         // "unknown", "tagged" (tag column provides the real tag), and anything else
         _ => EntryStatus::Unknown,
     }
+}
+
+fn str_to_status(s: &str) -> EntryStatus {
+    projected_entry_status(s, "")
 }
 
 fn str_to_tag(s: &str) -> Option<CatalogTag> {

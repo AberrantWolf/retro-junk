@@ -379,7 +379,7 @@ fn test_cci_untrimmed() {
 
     assert_eq!(result.file_size, file_size);
     assert_eq!(result.expected_size, file_size);
-    assert_eq!(result.extra.get("dump_status").unwrap(), "Untrimmed");
+    assert_eq!(result.dump_extent, Some(retro_junk_core::DumpExtent::Full));
 }
 
 #[test]
@@ -401,7 +401,10 @@ fn test_cci_trimmed() {
 
     assert_eq!(result.file_size, file_size);
     assert_eq!(result.expected_size, file_size); // OK, not red
-    assert_eq!(result.extra.get("dump_status").unwrap(), "Trimmed");
+    assert_eq!(
+        result.dump_extent,
+        Some(retro_junk_core::DumpExtent::Trimmed)
+    );
 }
 
 #[test]
@@ -425,8 +428,8 @@ fn test_cci_partially_trimmed() {
     assert_eq!(result.file_size, file_size);
     assert_eq!(result.expected_size, file_size); // OK
     assert_eq!(
-        result.extra.get("dump_status").unwrap(),
-        "Partially trimmed"
+        result.dump_extent,
+        Some(retro_junk_core::DumpExtent::PartiallyTrimmed)
     );
 }
 
@@ -451,5 +454,25 @@ fn test_cci_genuinely_truncated() {
 
     assert_eq!(result.file_size, file_size);
     assert_eq!(result.expected_size, u64::from(filled)); // genuinely truncated
-    assert!(!result.extra.contains_key("dump_status")); // no status for truncated
+    assert_eq!(
+        result.dump_extent,
+        Some(retro_junk_core::DumpExtent::Truncated)
+    );
+}
+
+#[test]
+fn test_cci_oversized() {
+    let mut rom = make_cci();
+    rom.resize(rom.len() + 0x2000, 0xFF);
+    let file_size = rom.len() as u64;
+    let result = analyze_cci(
+        &mut Cursor::new(rom),
+        file_size,
+        &AnalysisOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        result.dump_extent,
+        Some(retro_junk_core::DumpExtent::Oversized)
+    );
 }

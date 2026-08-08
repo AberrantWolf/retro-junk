@@ -234,3 +234,45 @@ fn a_name_collision_stops_rather_than_destroying_the_other_file() {
         "the existing file was overwritten"
     );
 }
+
+#[test]
+fn an_equivalent_canonical_copy_wins_and_the_old_name_is_backed_up() {
+    let temp = tempfile::tempdir().unwrap();
+    let fixture = archive_with_playable(temp.path(), "Game (USA) (Track 1).chd");
+    let old = fixture.playable_root.join("psx/Game (USA) (Track 1).chd");
+    let canonical = fixture.playable_root.join("psx/Game (USA).chd");
+    std::fs::copy(&old, &canonical).unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(&fixture.archive).unwrap();
+    let report = rename_playable(&RenamePlayableRequest {
+        snapshot: &snapshot,
+        playable_root: &fixture.playable_root,
+        representation_id: &fixture.representation_id,
+        canonical_file_name: "Game (USA).chd",
+        media_root: None,
+    })
+    .unwrap();
+
+    assert_eq!(report.to, "psx/Game (USA).chd");
+    assert!(canonical.is_file());
+    assert!(!old.exists());
+    let backups = fixture.playable_root.join(".retro-junk-backups");
+    let backed_up = std::fs::read_dir(&backups)
+        .unwrap()
+        .filter_map(Result::ok)
+        .any(|entry| entry.path().join("psx/Game (USA) (Track 1).chd").is_file());
+    assert!(backed_up, "the displaced playable was not retained");
+
+    // The newest evidence points at the canonical copy, so convergence is a
+    // no-op when the same representation is inspected again.
+    let rescanned = retro_junk_archive::scan_archive(&fixture.archive).unwrap();
+    let second = rename_playable(&RenamePlayableRequest {
+        snapshot: &rescanned,
+        playable_root: &fixture.playable_root,
+        representation_id: &fixture.representation_id,
+        canonical_file_name: "Game (USA).chd",
+        media_root: None,
+    })
+    .unwrap();
+    assert_eq!(second.from, second.to);
+}

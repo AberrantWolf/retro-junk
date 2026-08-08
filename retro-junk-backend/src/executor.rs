@@ -1,10 +1,14 @@
 //! The single execution path for convergence actions.
 //!
 //! GUI queue buttons, CLI `sync`, and the daemon all call
-//! [`execute_action`]: claim → archive lock → dispatch to the shared
-//! implementations in `retro_junk_lib::archive_ops` → optional reconcile →
-//! release claim. The executor adds coordination only — never logic; the
-//! orchestrations own behavior, evidence, and idempotence.
+//! [`execute_actions`]: take the archive lock and the database connections
+//! once, then per item claim → dispatch to the shared implementations in
+//! `retro_junk_lib::archive_ops` → optional reconcile → release the claim.
+//! [`execute_action`] is the same thing with one item in it, so there is one
+//! protocol rather than a batch path and a single path that could drift.
+//!
+//! The executor adds coordination only — never logic; the orchestrations own
+//! behavior, evidence, and idempotence.
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -82,18 +86,61 @@ pub enum ReconcileMode {
 ///
 /// Walking the archive is the most expensive thing a short action does, and
 /// most actions need it only to find the one release they are about. The
-/// projection stage dispatches two actions per release, so a library of three
-/// hundred releases used to pay for six hundred complete walks of whatever the
-/// archive is stored on — for a USB or network volume, almost the entire run.
+/// projection stage dispatches an action per release, so a library of three
+/// hundred releases used to pay for three hundred complete walks of whatever
+/// the archive is stored on — for a USB or network volume, almost the entire
+/// run.
 ///
 /// So the walk happens once and every action reads the same result. Anything
 /// that changes the archive throws it away ([`ExecContext::archive_changed`]),
 /// because a scan that outlived a mutation would hand the next action a tree
 /// that no longer exists.
-#[derive(Default)]
-pub struct ArchiveScan(Mutex<Option<Arc<retro_junk_archive::ArchiveIndexSnapshot>>>);
+///
+/// Cloning shares the same cache rather than starting an empty one, so a
+/// context copied for a nested operation still reads the walk its parent
+/// already paid for. A copy that genuinely wants a fresh view assigns
+/// `ArchiveScan::default()`.
+#[derive(Default, Clone)]
+pub struct ArchiveScan(Arc<Mutex<Option<Arc<ScannedArchive>>>>);
+
+/// One walk of the archive, plus the lookup that makes finding a release in it
+/// constant rather than a search.
+///
+/// Kept together on purpose: the positions are indices into this snapshot's own
+/// release list, so they cannot outlive it or be applied to another one. Before
+/// this, every projection action scanned the whole release list comparing
+/// stringified ids — a full pass over a library did that once per release, so
+/// the comparisons grew with the square of the collection.
+pub struct ScannedArchive {
+    pub snapshot: Arc<retro_junk_archive::ArchiveIndexSnapshot>,
+    positions: std::collections::HashMap<String, usize>,
+}
+
+impl ScannedArchive {
+    fn index(snapshot: Arc<retro_junk_archive::ArchiveIndexSnapshot>) -> Self {
+        let positions = snapshot
+            .releases
+            .iter()
+            .enumerate()
+            .map(|(position, release)| (release.manifest.archive_release_id.to_string(), position))
+            .collect();
+        Self {
+            snapshot,
+            positions,
+        }
+    }
+
+    /// The release with this archive id, if the archive still holds it.
+    #[must_use]
+    pub fn release(&self, archive_release_id: &str) -> Option<&retro_junk_archive::IndexedRelease> {
+        self.positions
+            .get(archive_release_id)
+            .and_then(|position| self.snapshot.releases.get(*position))
+    }
+}
 
 /// Everything an execution needs besides the action itself.
+#[derive(Clone)]
 pub struct ExecContext {
     pub profile: retro_junk_archive::CollectionProfile,
     pub db_path: PathBuf,
@@ -126,19 +173,25 @@ impl ExecContext {
     /// Every caller gets the same snapshot, so asking twice is free and no
     /// action has to thread one down from its caller to avoid a second walk.
     pub fn archive(&self) -> Result<Arc<retro_junk_archive::ArchiveIndexSnapshot>, WorkError> {
+        Ok(Arc::clone(&self.scanned_archive()?.snapshot))
+    }
+
+    /// The same walk, with the release lookup built alongside it.
+    pub fn scanned_archive(&self) -> Result<Arc<ScannedArchive>, WorkError> {
         let mut held = self
             .archive
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(snapshot) = held.as_ref() {
-            return Ok(Arc::clone(snapshot));
+        if let Some(scanned) = held.as_ref() {
+            return Ok(Arc::clone(scanned));
         }
         let snapshot = Arc::new(
             retro_junk_archive::scan_archive(&self.profile.archive_root).map_err(WorkError::msg)?,
         );
-        *held = Some(Arc::clone(&snapshot));
-        Ok(snapshot)
+        let scanned = Arc::new(ScannedArchive::index(snapshot));
+        *held = Some(Arc::clone(&scanned));
+        Ok(scanned)
     }
 
     /// A scan taken now, whatever this run last saw, which then becomes the
@@ -179,7 +232,7 @@ impl ExecContext {
 /// changing the archive until someone decides otherwise. The failure from
 /// guessing the other way — an action reading a tree that has moved on — is
 /// silent, and this one only costs a re-scan.
-const fn changes_the_archive(kind: ActionKind) -> bool {
+pub(crate) const fn changes_the_archive(kind: ActionKind) -> bool {
     !matches!(kind, ActionKind::ProjectAssets | ActionKind::SyncGamelist)
 }
 
@@ -197,6 +250,10 @@ pub enum ActionOutcome {
     ArchiveBusy,
     /// The action arrived blocked (policy/completeness); nothing ran.
     Blocked(String),
+    /// The work ran and did not succeed. Distinct from [`Self::Blocked`],
+    /// which never started: one variant meant both, so the same outcome was
+    /// counted as blocked in one place and failed in another.
+    Failed(String),
     Cancelled,
 }
 
@@ -204,6 +261,11 @@ pub enum ActionOutcome {
 pub enum WorkError {
     #[error("{0}")]
     Message(String),
+    /// Somebody asked for this to stop. Its own variant because classifying
+    /// cancellation by comparing an error's text to a literal turned any
+    /// rewording of that message into a silent reclassification as failure.
+    #[error("operation cancelled")]
+    Cancelled,
     #[error(transparent)]
     Db(#[from] retro_junk_db::operations::OperationError),
     #[error(transparent)]
@@ -222,63 +284,124 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Execute one derived action end-to-end.
 ///
-/// The failure verdict is recorded on the target (`work_errors`) and the
-/// claim released in every path; an `Err` return means the coordination
-/// machinery itself failed, not the work.
-// Claim → lock-etiquette → dispatch → release is one protocol; splitting it
-// would scatter the release-on-every-path guarantee.
-#[allow(clippy::too_many_lines)]
+/// The one-action form of [`execute_actions`]; everything a single action pays
+/// for — a database connection, the whole-archive lock, the walk behind the
+/// shared scan — it pays for alone.
 pub fn execute_action(
     ctx: &ExecContext,
     action: &ProposedAction,
     progress: &PhaseProgressFn<'_>,
     cancelled: &AtomicBool,
 ) -> Result<ActionOutcome, WorkError> {
-    if let Some(reason) = &action.blocked {
-        return Ok(ActionOutcome::Blocked(reason.to_string()));
+    let mut outcomes = execute_actions(ctx, std::slice::from_ref(action), progress, cancelled)?;
+    Ok(outcomes.pop().unwrap_or(ActionOutcome::Cancelled))
+}
+
+/// Execute a batch of derived actions end-to-end, one outcome per input.
+///
+/// A queue of work is [1..N] things done once, not one thing done N times.
+/// Everything the batch can share, it acquires once: the database connection,
+/// the connection the claim heartbeat beats on, the whole-archive lock, and the
+/// walk behind the shared scan. Only the claim is per action, because it is the
+/// claim that says which *item* is being worked on and lets another process
+/// pick up the ones this batch has not reached.
+///
+/// Holding the archive lock for the batch is not only fewer file operations: it
+/// is what makes the shared scan sound. Taking and dropping the lock between
+/// items leaves a gap in which another process can change the archive, and the
+/// cached walk would then describe a tree that has moved on.
+///
+/// A failure or a held claim on one item never ends the batch — the failure
+/// verdict is recorded on that target (`work_errors`), its claim released, and
+/// the next item runs. An `Err` return means the coordination machinery itself
+/// failed, not the work.
+pub fn execute_actions(
+    ctx: &ExecContext,
+    actions: &[ProposedAction],
+    progress: &PhaseProgressFn<'_>,
+    cancelled: &AtomicBool,
+) -> Result<Vec<ActionOutcome>, WorkError> {
+    if actions.is_empty() {
+        return Ok(Vec::new());
     }
     let mut conn = retro_junk_db::open_database(&ctx.db_path).map_err(WorkError::msg)?;
-    let kind = action.kind.as_str();
-    let (target_kind, target_id) = (action.target.kind(), action.target.id());
-    if !retro_junk_db::work::try_claim(&conn, kind, target_kind, target_id, &ctx.owner)? {
-        let held = retro_junk_db::work::held_claim(&conn, kind, target_kind, target_id)?;
-        return Ok(ActionOutcome::ClaimHeld(held.unwrap_or(HeldClaim {
-            owner: "unknown".to_owned(),
-            since: String::new(),
-        })));
-    }
+    // Its own connection because the claim beat happens inside a progress
+    // callback, while the dispatch it is reporting on holds the other one
+    // mutably.
+    let heartbeat = retro_junk_db::open_database(&ctx.db_path).map_err(WorkError::msg)?;
 
-    // Whole-archive lock, held for this one action.
-    let archive_lock = match ctx.lock {
+    let archive_lock = match acquire_for_batch(ctx, progress, cancelled)? {
+        BatchLock::Held(lock) => lock,
+        // The archive belongs to someone else for now, so none of this batch
+        // can run; the caller retries or the daemon picks it up next tick.
+        BatchLock::Busy => return Ok(repeated(actions.len(), || ActionOutcome::ArchiveBusy)),
+        BatchLock::Cancelled => return Ok(repeated(actions.len(), || ActionOutcome::Cancelled)),
+    };
+
+    let mut outcomes = Vec::with_capacity(actions.len());
+    for (position, action) in actions.iter().enumerate() {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            outcomes.push(ActionOutcome::Cancelled);
+            continue;
+        }
+        if let Some(reason) = &action.blocked {
+            outcomes.push(ActionOutcome::Blocked(reason.to_string()));
+            continue;
+        }
+        // Say where in the queue this is. Each action reports progress for its
+        // own single target — an audit says "dump 1 of 1" — so without the
+        // queue position a run over forty discs looks exactly like one disc
+        // being reworked over and over.
+        let placed = |phase: &str, unit: ProgressUnit, current: u64, total: u64| {
+            progress(
+                &format!("[{}/{}] {phase}", position + 1, actions.len()),
+                unit,
+                current,
+                total,
+            );
+        };
+        placed(&action.label, ProgressUnit::Items, 0, 0);
+        outcomes.push(claim_and_dispatch(
+            ctx, action, &mut conn, &heartbeat, &placed, cancelled,
+        )?);
+    }
+    drop(archive_lock);
+    Ok(outcomes)
+}
+
+/// The same verdict for every item, for the cases where nothing in the batch
+/// could run at all.
+fn repeated(count: usize, outcome: impl Fn() -> ActionOutcome) -> Vec<ActionOutcome> {
+    (0..count).map(|_| outcome()).collect()
+}
+
+/// What acquiring the batch's archive lock produced.
+enum BatchLock {
+    Held(retro_junk_archive::ArchiveLock),
+    Busy,
+    Cancelled,
+}
+
+/// Take the whole-archive lock for the batch, honoring the caller's etiquette.
+///
+/// Safe to hold across a batch because nothing a dispatch reaches takes it
+/// again: the one shared implementation that would — publishing scraped media —
+/// is told the executor already holds it (`crate::scrape`, and
+/// `retro_junk_scraper::session`'s `acquire_lock`). The lock is not re-entrant,
+/// so a new nested acquisition would fail fast in the daemon and spin forever
+/// in an interactive run.
+fn acquire_for_batch(
+    ctx: &ExecContext,
+    progress: &PhaseProgressFn<'_>,
+    cancelled: &AtomicBool,
+) -> Result<BatchLock, WorkError> {
+    match ctx.lock {
         LockEtiquette::DaemonFailFast => {
             match retro_junk_archive::ArchiveLock::acquire(&ctx.profile.archive_root) {
-                Ok(lock) => Some(lock),
-                Err(retro_junk_archive::ArchiveLockError::Busy(_)) => {
-                    // Yield to whoever holds it; drop our claim untouched.
-                    retro_junk_db::work::release_claim(
-                        &mut conn,
-                        kind,
-                        target_kind,
-                        target_id,
-                        &ctx.owner,
-                        &ClaimOutcome::Cancelled,
-                    )?;
-                    return Ok(ActionOutcome::ArchiveBusy);
-                }
-                Err(error) => {
-                    let outcome = ClaimOutcome::Failed {
-                        error: error.to_string(),
-                    };
-                    retro_junk_db::work::release_claim(
-                        &mut conn,
-                        kind,
-                        target_kind,
-                        target_id,
-                        &ctx.owner,
-                        &outcome,
-                    )?;
-                    return Err(WorkError::msg(error));
-                }
+                Ok(lock) => Ok(BatchLock::Held(lock)),
+                // Yield to whoever holds it.
+                Err(retro_junk_archive::ArchiveLockError::Busy(_)) => Ok(BatchLock::Busy),
+                Err(error) => Err(WorkError::msg(error)),
             }
         }
         LockEtiquette::InteractiveWait => {
@@ -287,91 +410,71 @@ pub fn execute_action(
                 &ctx.profile.archive_root,
                 cancelled,
             ) {
-                Ok(Some(lock)) => Some(lock),
-                Ok(None) => {
-                    retro_junk_db::work::release_claim(
-                        &mut conn,
-                        kind,
-                        target_kind,
-                        target_id,
-                        &ctx.owner,
-                        &ClaimOutcome::Cancelled,
-                    )?;
-                    return Ok(ActionOutcome::Cancelled);
-                }
-                Err(error) => {
-                    let outcome = ClaimOutcome::Failed {
-                        error: error.to_string(),
-                    };
-                    retro_junk_db::work::release_claim(
-                        &mut conn,
-                        kind,
-                        target_kind,
-                        target_id,
-                        &ctx.owner,
-                        &outcome,
-                    )?;
-                    return Err(WorkError::msg(error));
-                }
+                Ok(Some(lock)) => Ok(BatchLock::Held(lock)),
+                Ok(None) => Ok(BatchLock::Cancelled),
+                Err(error) => Err(WorkError::msg(error)),
             }
         }
-    };
+    }
+}
+
+/// Claim one item, run it, and release the claim with a verdict — on every
+/// path, including the ones that return early.
+fn claim_and_dispatch(
+    ctx: &ExecContext,
+    action: &ProposedAction,
+    conn: &mut retro_junk_db::Connection,
+    heartbeat: &retro_junk_db::Connection,
+    progress: &PhaseProgressFn<'_>,
+    cancelled: &AtomicBool,
+) -> Result<ActionOutcome, WorkError> {
+    let kind = action.kind.as_str();
+    let (target_kind, target_id) = (action.target.kind(), action.target.id());
+    if !retro_junk_db::work::try_claim(conn, kind, target_kind, target_id, &ctx.owner)? {
+        let held = retro_junk_db::work::held_claim(conn, kind, target_kind, target_id)?;
+        return Ok(ActionOutcome::ClaimHeld(held.unwrap_or(HeldClaim {
+            owner: "unknown".to_owned(),
+            since: String::new(),
+        })));
+    }
 
     // Piggy-back the claim heartbeat on progress callbacks: one wrapper, no
-    // per-handler timers. A dedicated connection avoids fighting the
-    // dispatch borrow.
-    let heartbeat_conn = retro_junk_db::open_database(&ctx.db_path).map_err(WorkError::msg)?;
+    // per-handler timers.
     let last_beat = std::cell::Cell::new(Instant::now());
-    let owner = ctx.owner.clone();
-    let (beat_kind, beat_target_kind, beat_target_id) = (
-        kind.to_owned(),
-        target_kind.to_owned(),
-        target_id.to_owned(),
-    );
-    let beating_progress = move |phase: &str, unit: ProgressUnit, current: u64, total: u64| {
+    let beating_progress = |phase: &str, unit: ProgressUnit, current: u64, total: u64| {
         if last_beat.get().elapsed() >= HEARTBEAT_INTERVAL {
             last_beat.set(Instant::now());
             let _ = retro_junk_db::work::refresh_claim(
-                &heartbeat_conn,
-                &beat_kind,
-                &beat_target_kind,
-                &beat_target_id,
-                &owner,
+                heartbeat,
+                kind,
+                target_kind,
+                target_id,
+                &ctx.owner,
             );
         }
         progress(phase, unit, current, total);
     };
 
-    let result = dispatch(ctx, action, &mut conn, &beating_progress, cancelled);
+    let result = dispatch(ctx, action, conn, &beating_progress, cancelled);
     // Whatever the outcome: a kind that writes into the archive may have got
     // partway before failing, so the shared scan is stale either way.
     if changes_the_archive(action.kind) {
         ctx.archive_changed();
     }
-    drop(archive_lock);
 
     let (outcome, verdict) = match result {
         Ok(outputs) => (ActionOutcome::Completed { outputs }, ClaimOutcome::Success),
-        Err(WorkError::Message(message)) if message == "operation cancelled" => {
-            (ActionOutcome::Cancelled, ClaimOutcome::Cancelled)
-        }
+        Err(WorkError::Cancelled) => (ActionOutcome::Cancelled, ClaimOutcome::Cancelled),
         Err(error) => {
             log::warn!("{}: {} failed: {error}", action.label, action.kind.as_str());
             let message = error.to_string();
             (
-                ActionOutcome::Blocked(message.clone()),
+                ActionOutcome::Failed(message.clone()),
                 ClaimOutcome::Failed { error: message },
             )
         }
     };
-    retro_junk_db::work::release_claim(
-        &mut conn,
-        kind,
-        target_kind,
-        target_id,
-        &ctx.owner,
-        &verdict,
-    )?;
+    retro_junk_db::work::release_claim(conn, kind, target_kind, target_id, &ctx.owner, &verdict)?;
     Ok(outcome)
 }
 
@@ -420,7 +523,7 @@ pub fn force_rebuild_playable(
     // fatal to forcing — it means the build step below still has to run.
     let _ = execute_action(ctx, &adopt_action, progress, cancelled);
     if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-        return Err(WorkError::Message("operation cancelled".to_owned()));
+        return Err(WorkError::Cancelled);
     }
 
     // The adopt dispatch only reconciles under `ReconcileMode::PerAction`; a
@@ -453,7 +556,7 @@ pub fn force_rebuild_playable(
     }
     match execute_action(ctx, &action, progress, cancelled)? {
         ActionOutcome::Completed { outputs } => Ok(ForceRebuildOutcome::Built(outputs)),
-        ActionOutcome::Blocked(message) => {
+        ActionOutcome::Blocked(message) | ActionOutcome::Failed(message) => {
             let hint = if message.contains("already exists") {
                 " — a file is already at that path but adoption could not confirm it belongs to \
                  this release (its content doesn't match, or the carrier isn't catalog-verified \
@@ -474,10 +577,7 @@ pub fn force_rebuild_playable(
             "the archive is busy; retry {}",
             action.label
         ))),
-        ActionOutcome::Cancelled => Err(WorkError::Message(format!(
-            "rebuilding {} was cancelled",
-            action.label
-        ))),
+        ActionOutcome::Cancelled => Err(WorkError::Cancelled),
     }
 }
 
@@ -492,7 +592,7 @@ fn dispatch(
     cancelled: &AtomicBool,
 ) -> Result<Vec<PathBuf>, WorkError> {
     let ops_err = |error: ArchiveOpsError| match error {
-        ArchiveOpsError::Cancelled => WorkError::Message("operation cancelled".to_owned()),
+        ArchiveOpsError::Cancelled => WorkError::Cancelled,
         other => WorkError::msg(other),
     };
     match action.kind {
@@ -666,28 +766,49 @@ fn dispatch(
             Ok(Vec::new())
         }
         ActionKind::ProjectAssets => {
-            let snapshot = ctx.archive()?;
-            let release = indexed_release(&snapshot, &action.target)?;
-            let media_directory = ctx.roots.media_root.join(&action.playable_platform_id);
+            let scanned = ctx.scanned_archive()?;
+            let release_id = release_target(&action.target)?;
+            let release = indexed_release(&scanned, release_id)?;
+            // The folder the release's own file is in, which is the folder its
+            // gamelist entry is written to — asking the naming rule instead put
+            // an off-folder release's artwork somewhere its entry never
+            // pointed.
+            let directory = retro_junk_lib::playable_location::release_publish_directory(
+                release,
+                &ctx.roots.playable_root,
+            );
             retro_junk_lib::archive_assets::project_release_assets(
                 release,
-                &media_directory,
+                &ctx.roots.media_root.join(&directory),
                 &retro_junk_lib::archive_assets::release_media_stems(release),
                 cancelled,
             )
             .map_err(WorkError::msg)?;
+            retro_junk_db::projection_state::record_projection(
+                conn,
+                retro_junk_db::projection_state::ProjectionOf::assets(release_id),
+            )?;
             Ok(Vec::new())
         }
         ActionKind::SyncGamelist => {
-            let snapshot = ctx.archive()?;
-            let release = indexed_release(&snapshot, &action.target)?;
-            retro_junk_lib::archive_assets::sync_esde_gamelist_for_release(
-                release,
+            let scanned = ctx.scanned_archive()?;
+            let (profile_id, directory) = console_target(&action.target)?;
+            // Every release the archive holds, filtered inside to the ones that
+            // publish into this folder — one file read, one file written, for
+            // however many games are listed in it.
+            let releases = scanned.snapshot.releases.iter().collect::<Vec<_>>();
+            retro_junk_lib::archive_assets::sync_esde_gamelist_for_console(
+                &releases,
+                directory,
                 &ctx.roots.playable_root,
                 &ctx.roots.metadata_root,
                 &ctx.roots.media_root,
             )
             .map_err(WorkError::msg)?;
+            retro_junk_db::projection_state::record_projection(
+                conn,
+                retro_junk_db::projection_state::ProjectionOf::gamelist(profile_id, directory),
+            )?;
             Ok(Vec::new())
         }
         _ => Err(WorkError::Message(format!(
@@ -717,25 +838,21 @@ fn release_target(target: &WorkTarget) -> Result<&str, WorkError> {
     }
 }
 
+fn console_target(target: &WorkTarget) -> Result<(&str, &str), WorkError> {
+    target.console_parts().ok_or_else(|| {
+        WorkError::Message(format!("expected a console target, got {}", target.kind()))
+    })
+}
+
 fn indexed_release<'a>(
-    snapshot: &'a retro_junk_archive::ArchiveIndexSnapshot,
-    target: &WorkTarget,
+    scanned: &'a ScannedArchive,
+    release_id: &str,
 ) -> Result<&'a retro_junk_archive::IndexedRelease, WorkError> {
-    let WorkTarget::Release(release_id) = target else {
-        return Err(WorkError::Message(format!(
-            "expected a release target, got {}",
-            target.kind()
-        )));
-    };
-    snapshot
-        .releases
-        .iter()
-        .find(|release| release.manifest.archive_release_id.to_string() == *release_id)
-        .ok_or_else(|| {
-            WorkError::Message(format!(
-                "archive release {release_id} is no longer present in the archive"
-            ))
-        })
+    scanned.release(release_id).ok_or_else(|| {
+        WorkError::Message(format!(
+            "archive release {release_id} is no longer present in the archive"
+        ))
+    })
 }
 
 /// Scan + reconcile after evidence-appending actions when the caller wants

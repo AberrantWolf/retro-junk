@@ -243,27 +243,24 @@ fn set_preferred_playable_format(
         );
         return;
     };
-    let op_id = crate::state::next_operation_id();
-    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    app.operations.push(crate::state::BackgroundOperation::new(
-        op_id,
+    crate::backend::worker::spawn_background_op(
+        app,
         format!("Updating {platform_id} playable policy"),
-        cancel,
         crate::state::OperationKind::Other,
         platform_id.clone(),
         crate::state::ProgressDisplay::Count,
-    ));
-    let sender = app.message_tx.clone();
-    let handle = std::thread::spawn(move || {
-        let result = retro_junk_backend::ops::playable_policy::set_preferred_format(
-            &profile,
-            &db_path,
-            &platform_id,
-            format,
-        );
-        let _ = sender.send(crate::state::AppMessage::PlayablePolicyUpdated { op_id, result });
-    });
-    app.op_threads.insert(op_id, handle);
+        move |_op_id, _cancel, sender| {
+            let result = retro_junk_backend::ops::playable_policy::set_preferred_format(
+                &profile,
+                &db_path,
+                &platform_id,
+                format,
+            );
+            crate::backend::worker::deliver_result(&sender, result, |result| {
+                crate::state::AppMessage::PlayablePolicyUpdated { result }
+            })
+        },
+    );
     ctx.request_repaint_after(std::time::Duration::from_millis(20));
 }
 

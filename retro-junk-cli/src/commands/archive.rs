@@ -330,6 +330,10 @@ pub(crate) fn run_archive(
                 platform: None,
                 release: None,
                 only,
+                // A build changes what the projections are derived from, so
+                // the ones this run affects are proposed on their own; the rest
+                // of the library is genuinely current and does not need redoing.
+                force_projections: false,
                 dry_run,
                 limit,
                 chdman,
@@ -1617,9 +1621,16 @@ fn run_shared_single_build(
             &release.manifest.platform_id,
             Some(&release.manifest.region),
         ),
-        expected_disc_count,
-        canonical_output_stem: String::new(),
-        canonical_release_name: String::new(),
+        canonical_name: retro_junk_lib::naming::CanonicalName {
+            dat_name: release.manifest.catalog_binding.dat_name.clone(),
+            title: release.manifest.title.clone(),
+            region: release.manifest.region.clone(),
+            revision: release.manifest.revision.clone(),
+            variant: release.manifest.variant.clone(),
+            disc_number: carrier.manifest.sequence_number,
+            expected_disc_count,
+            ..Default::default()
+        },
     };
     let outcome = retro_junk_lib::playable_build::build_playable(
         &request,

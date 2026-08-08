@@ -132,8 +132,7 @@ fn spawn_hash_work(
                     });
                 }
             }
-
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
+            Ok(())
         },
     );
 }

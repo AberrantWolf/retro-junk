@@ -36,13 +36,15 @@ pub fn organize_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::
                 &folder_path,
                 &OpCtx::new(&cancel, &progress),
             );
-            match outcome {
+            let lifecycle = match outcome {
                 Ok(plan) => {
                     if !cancel.load(std::sync::atomic::Ordering::Relaxed) {
                         let _ = tx.send(AppMessage::OrganizePlanReady { folder_name, plan });
                     }
+                    Ok(())
                 }
                 Err(error) => {
+                    let lifecycle_error = error.clone();
                     let _ = tx.send(AppMessage::OrganizeComplete {
                         folder_name,
                         rescan_target: None,
@@ -51,10 +53,11 @@ pub fn organize_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::
                         unmatched: 0,
                         errors: vec![error],
                     });
+                    Err(lifecycle_error)
                 }
-            }
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
+            };
             ctx.request_repaint();
+            lifecycle
         },
     );
 }
@@ -86,6 +89,11 @@ pub fn execute_organize_plan(
                 &plan,
                 &OpCtx::new(&cancel, &progress),
             );
+            let lifecycle = if outcome.errors.is_empty() {
+                Ok(())
+            } else {
+                Err(outcome.errors.join("; "))
+            };
             let _ = tx.send(AppMessage::OrganizeComplete {
                 folder_name,
                 rescan_target,
@@ -94,8 +102,8 @@ pub fn execute_organize_plan(
                 unmatched: outcome.unmatched,
                 errors: outcome.errors,
             });
-            let _ = tx.send(AppMessage::OperationComplete { op_id });
             ctx.request_repaint();
+            lifecycle
         },
     );
 }

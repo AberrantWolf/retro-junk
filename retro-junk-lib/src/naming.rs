@@ -33,24 +33,24 @@ use std::fmt::Write as _;
 ///
 /// Catalog fields are empty when the carrier is not bound; the archive
 /// manifest fields then decide the name.
-#[derive(Debug, Clone, Default)]
-pub struct NameInputs<'a> {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CanonicalName {
     /// The catalog's name for the game, e.g. `Crash Team Racing (USA)`.
-    pub dat_name: &'a str,
+    pub dat_name: String,
     /// The catalog's filename for the medium (or its largest track).
-    pub rom_name: &'a str,
+    pub rom_name: String,
     /// Whether the catalog stores this medium as separate track files.
     pub medium_has_tracks: bool,
     /// The archive manifest's title, used when the catalog says nothing.
-    pub title: &'a str,
+    pub title: String,
     /// Region slug as the manifest stores it (lowercased).
-    pub region: &'a str,
-    pub revision: &'a str,
-    pub variant: &'a str,
+    pub region: String,
+    pub revision: String,
+    pub variant: String,
     /// This carrier's disc number, or 0 when it is not a numbered disc.
     pub disc_number: u32,
     /// Discs the complete release is expected to have.
-    pub disc_count: u32,
+    pub expected_disc_count: u32,
 }
 
 /// Where a canonical name came from — the caller may want to say so.
@@ -64,15 +64,15 @@ pub enum NameSource {
 
 /// The canonical stem (no extension) for one file, and where it came from.
 #[must_use]
-pub fn canonical_stem(inputs: &NameInputs<'_>) -> (String, NameSource) {
+pub fn canonical_stem(inputs: &CanonicalName) -> (String, NameSource) {
     let (mut name, source) =
         if inputs.dat_name.trim().is_empty() && inputs.rom_name.trim().is_empty() {
             (archive_manifest_name(inputs), NameSource::ArchiveManifest)
         } else {
             (
                 retro_junk_dat::tracks::whole_medium_stem(
-                    inputs.dat_name,
-                    inputs.rom_name,
+                    &inputs.dat_name,
+                    &inputs.rom_name,
                     inputs.medium_has_tracks,
                 ),
                 NameSource::Catalog,
@@ -80,7 +80,7 @@ pub fn canonical_stem(inputs: &NameInputs<'_>) -> (String, NameSource) {
         };
     // A name that already states its disc keeps it: the catalog writes
     // `(Disc N)` itself when the DAT does.
-    if inputs.disc_count > 1 && inputs.disc_number > 0 && !name.contains("(Disc ") {
+    if inputs.expected_disc_count > 1 && inputs.disc_number > 0 && !name.contains("(Disc ") {
         let _ = write!(name, " (Disc {})", inputs.disc_number);
     }
     (retro_junk_archive::safe_file_stem(&name), source)
@@ -92,7 +92,7 @@ pub fn canonical_stem(inputs: &NameInputs<'_>) -> (String, NameSource) {
 /// playable was built in, or on what a scanned file turned out to be — and
 /// naming never overrides it.
 #[must_use]
-pub fn canonical_filename(inputs: &NameInputs<'_>, extension: &str) -> String {
+pub fn canonical_filename(inputs: &CanonicalName, extension: &str) -> String {
     let (stem, _) = canonical_stem(inputs);
     if extension.is_empty() {
         stem
@@ -104,13 +104,17 @@ pub fn canonical_filename(inputs: &NameInputs<'_>, extension: &str) -> String {
 /// The name of a multi-disc set's playlist folder: the release's name with no
 /// disc suffix, since the folder holds every disc.
 #[must_use]
-pub fn canonical_release_stem(inputs: &NameInputs<'_>) -> String {
-    let without_disc = NameInputs {
+pub fn canonical_release_stem(inputs: &CanonicalName) -> String {
+    let without_disc = CanonicalName {
         disc_number: 0,
-        disc_count: 0,
+        expected_disc_count: 0,
         ..inputs.clone()
     };
-    canonical_stem(&without_disc).0
+    // Redump puts `(Disc N)` in the catalog media name itself. Clearing the
+    // numeric fields above prevents us appending a tag, but it cannot remove
+    // one the catalog already supplied. Strip exactly that tag from the
+    // canonical medium stem; region, revision and variant groups survive.
+    retro_junk_core::disc::strip_disc_tag(&canonical_stem(&without_disc).0)
 }
 
 /// The archive's own name for a release, in the shape a catalog would write.
@@ -119,13 +123,15 @@ pub fn canonical_release_stem(inputs: &NameInputs<'_>) -> String {
 /// catalog writes it — `(USA)`, not `(usa)`. An unrecognized region is passed
 /// through rather than dropped: a name the tool does not understand is still
 /// the user's.
-fn archive_manifest_name(inputs: &NameInputs<'_>) -> String {
-    let mut name = inputs.title.to_owned();
-    let region = retro_junk_core::Region::from_slug(inputs.region).map_or_else(
-        || inputs.region.to_owned(),
-        |region| region.name().to_owned(),
-    );
-    for value in [region.as_str(), inputs.revision, inputs.variant] {
+fn archive_manifest_name(inputs: &CanonicalName) -> String {
+    let mut name = inputs.title.clone();
+    let region = retro_junk_core::Region::from_slug(&inputs.region)
+        .map_or_else(|| inputs.region.clone(), |region| region.name().to_owned());
+    for value in [
+        region.as_str(),
+        inputs.revision.as_str(),
+        inputs.variant.as_str(),
+    ] {
         if !value.is_empty() {
             let _ = write!(name, " ({value})");
         }
@@ -139,7 +145,7 @@ fn archive_manifest_name(inputs: &NameInputs<'_>) -> String {
 /// rather than the name: a disc converted from BIN+CUE to CHD is correctly
 /// named even though its extension changed.
 #[must_use]
-pub fn name_conforms(current_file_name: &str, inputs: &NameInputs<'_>) -> bool {
+pub fn name_conforms(current_file_name: &str, inputs: &CanonicalName) -> bool {
     let current_stem = std::path::Path::new(current_file_name)
         .file_stem()
         .and_then(|stem| stem.to_str())
