@@ -125,15 +125,8 @@ pub(crate) struct RenameArgs {
     #[arg(short = 'n', long)]
     pub dry_run: bool,
 
-    /// Force CRC32 hash-based matching (reads full files)
-    #[arg(long)]
-    pub hash: bool,
-
     #[command(flatten)]
     pub roms: ConsoleFilterArgs,
-
-    #[command(flatten)]
-    pub dat: DatDirArg,
 
     /// Directory for media files (default: <root>-media)
     #[arg(long)]
@@ -154,16 +147,9 @@ pub(crate) struct OrganizeArgs {
     #[command(flatten)]
     pub roms: ConsoleFilterArgs,
 
-    #[command(flatten)]
-    pub dat: DatDirArg,
-
     /// Also organize single-disc games into .m3u folders (default: multi-disc only)
     #[arg(long)]
     pub include_single_disc: bool,
-
-    /// Fall back to hashing when serial lookup fails (slower but catches more files)
-    #[arg(long)]
-    pub hash_fallback: bool,
 }
 
 /// Arguments for the `compress` command.
@@ -1100,7 +1086,7 @@ pub(crate) enum CatalogAction {
         #[arg(long, default_value = "catalog")]
         catalog_dir: PathBuf,
 
-        /// Path to the catalog database file (default: ~/.cache/retro-junk/catalog.db)
+        /// Path to the catalog database file (default: the shared application catalog)
         #[arg(long)]
         db: Option<PathBuf>,
 

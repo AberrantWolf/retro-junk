@@ -54,8 +54,10 @@ pub struct LibraryBrowserState {
     pub root_id: Option<retro_junk_db::LibraryRootId>,
     pub active_page: Option<retro_junk_db::LibraryEntryListPage>,
     pub entry_counts: HashMap<retro_junk_db::LibraryConsoleId, u64>,
-    /// Worst effective entry status for each console, retained when pages are evicted.
-    pub console_statuses: HashMap<retro_junk_db::LibraryConsoleId, EntryStatus>,
+    /// Worst status among the console's unified logical rows, retained when
+    /// pages are evicted.
+    pub console_statuses:
+        HashMap<retro_junk_db::LibraryConsoleId, retro_junk_backend::completion::Severity>,
     /// Consoles explicitly marked stale by `SQLite` and requiring a correctness rebuild.
     pub stale_consoles: HashSet<retro_junk_db::LibraryConsoleId>,
     /// Entry IDs with filesystem media discovery currently in flight.
@@ -1882,6 +1884,11 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             app.ui_state.tools_state.needs_refresh = true;
             app.ui_state.tools_state.browse.table_state.needs_query = true;
             app.ui_state.tools_state.data.needs_cache_refresh = true;
+            if let Some(profile) = app.settings.library.active_profile().cloned() {
+                let _ = app
+                    .message_tx
+                    .send(AppMessage::StartArchiveRefresh { profile });
+            }
         }
 
         AppMessage::CacheListsLoaded { dat, gdb } => {

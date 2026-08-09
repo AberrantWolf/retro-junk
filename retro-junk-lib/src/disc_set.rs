@@ -48,7 +48,8 @@ pub struct DiscSetPlan {
     pub cue_target_filename: String,
     /// The DAT game name.
     pub game_name: String,
-    /// How the game was identified (serial from the data track, or track hashes).
+    /// The definitive content method. A serial may narrow the work needed,
+    /// but a plan exists only after every track hash agrees.
     pub matched_by: MatchMethod,
     /// Per-track renames, every one hash-verified against the DAT.
     pub tracks: Vec<TrackRename>,
@@ -277,7 +278,7 @@ pub fn plan_disc_set_from_files(
     if let Some(gi) = serial_game {
         match assign_tracks(&index.games[gi], &files.tracks, &track_hashes) {
             Ok(assignment) => {
-                return build_plan(files, &index.games[gi], &assignment, MatchMethod::Serial);
+                return build_plan(files, &index.games[gi], &assignment, MatchMethod::Crc32);
             }
             Err(serial_issues) => {
                 // Serial game doesn't verify — a hash-identified game is
@@ -434,6 +435,23 @@ fn unique_full_hash_match(
         [only] => Some(only.clone()),
         _ => None, // zero or ambiguous — caller reports
     }
+}
+
+/// Identify a disc only when its complete logical track hash set assigns to
+/// exactly one catalog medium.
+pub fn match_complete_track_hashes(
+    index: &DatIndex,
+    tracks: &[crate::disc_hash::DiscTrackHashes],
+) -> Option<String> {
+    let paths = tracks
+        .iter()
+        .map(|track| PathBuf::from(format!("Track {}", track.track_number)))
+        .collect::<Vec<_>>();
+    let hashes = tracks
+        .iter()
+        .map(|track| track.hashes.clone())
+        .collect::<Vec<_>>();
+    unique_full_hash_match(index, &paths, &hashes).map(|(game, _)| index.games[game].name.clone())
 }
 
 /// Describe per-track DAT matches for diagnostics when no game verifies.

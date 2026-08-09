@@ -8,8 +8,8 @@ use std::thread;
 
 use retro_junk_db::{
     EntryAnalysisUpdate, LibraryChangeSet, LibraryConsoleDescriptor, LibraryConsoleId,
-    LibraryConsoleSummary, LibraryEntryDetail, LibraryEntryId, LibraryEntryListPage,
-    LibraryEntryListQuery, LibraryRootId, ScannedLibraryEntry,
+    LibraryEntryDetail, LibraryEntryId, LibraryEntryListPage, LibraryEntryListQuery, LibraryRootId,
+    ScannedLibraryEntry,
 };
 
 pub type UiSessionGeneration = u64;
@@ -34,10 +34,16 @@ pub struct StoreEnvelope<T> {
 
 #[derive(Debug, Clone)]
 pub enum LibraryStoreRequest {
-    OpenRoot(String),
+    OpenRoot {
+        path: String,
+        expected_assets: retro_junk_frontend::AssetSelection,
+    },
     EnsureConsole(LibraryConsoleDescriptor),
     CommitConsoleScan(CompletedConsoleScan),
-    ConsoleSummaries(LibraryRootId),
+    ConsoleSummaries {
+        root_id: LibraryRootId,
+        expected_assets: retro_junk_frontend::AssetSelection,
+    },
     EntryList(LibraryEntryListQuery),
     EntryDetail(LibraryEntryId),
     EntryDetails(Vec<LibraryEntryId>),
@@ -98,6 +104,15 @@ pub enum LibraryStoreRequest {
     DeleteRootPath(String),
     ClearCache,
     Shutdown,
+}
+
+/// One console row with its status folded from the same logical rows the
+/// Library table displays. The database supplies facts; the backend owns the
+/// meaning of those facts.
+#[derive(Debug, Clone)]
+pub struct LibraryConsoleSummary {
+    pub row: retro_junk_db::LibraryConsoleSummary,
+    pub severity: Option<crate::completion::Severity>,
 }
 
 #[derive(Debug, Clone)]
@@ -246,7 +261,7 @@ impl LibraryStore {
 fn is_read_request(request: &LibraryStoreRequest) -> bool {
     matches!(
         request,
-        LibraryStoreRequest::ConsoleSummaries(_)
+        LibraryStoreRequest::ConsoleSummaries { .. }
             | LibraryStoreRequest::EntryList(_)
             | LibraryStoreRequest::EntryDetail(_)
             | LibraryStoreRequest::EntryDetails(_)
@@ -297,9 +312,12 @@ fn execute(
 ) -> Result<LibraryStoreValue, retro_junk_db::LibraryError> {
     use LibraryStoreRequest as R;
     Ok(match request {
-        R::OpenRoot(path) => {
+        R::OpenRoot {
+            path,
+            expected_assets,
+        } => {
             let root_id = retro_junk_db::upsert_library_root(conn, &path)?;
-            let summaries = retro_junk_db::list_console_summaries(conn, root_id)?;
+            let summaries = console_summaries(conn, root_id, &expected_assets)?;
             LibraryStoreValue::RootOpened { root_id, summaries }
         }
         R::EnsureConsole(descriptor) => {
@@ -335,8 +353,11 @@ fn execute(
                 changes,
             }
         }
-        R::ConsoleSummaries(root) => {
-            LibraryStoreValue::ConsoleSummaries(retro_junk_db::list_console_summaries(conn, root)?)
+        R::ConsoleSummaries {
+            root_id,
+            expected_assets,
+        } => {
+            LibraryStoreValue::ConsoleSummaries(console_summaries(conn, root_id, &expected_assets)?)
         }
         R::EntryList(query) => {
             LibraryStoreValue::EntryList(retro_junk_db::query_entry_list(conn, &query)?)
@@ -475,6 +496,49 @@ fn execute(
     })
 }
 
+fn console_summaries(
+    conn: &retro_junk_db::Connection,
+    root_id: LibraryRootId,
+    expected_assets: &retro_junk_frontend::AssetSelection,
+) -> Result<Vec<LibraryConsoleSummary>, retro_junk_db::LibraryError> {
+    retro_junk_db::list_console_summaries(conn, root_id)?
+        .into_iter()
+        .map(|row| {
+            let archive_severities = row.archived_releases.iter().map(|facts| {
+                crate::completion::Completion::for_release(facts, expected_assets).severity()
+            });
+            let severity = fold_console_severity(&row, archive_severities);
+            Ok(LibraryConsoleSummary { row, severity })
+        })
+        .collect()
+}
+
+fn fold_console_severity(
+    row: &retro_junk_db::LibraryConsoleSummary,
+    archive_severities: impl IntoIterator<Item = crate::completion::Severity>,
+) -> Option<crate::completion::Severity> {
+    let mut severity: Option<crate::completion::Severity> = None;
+    let mut include = |candidate: crate::completion::Severity, count: u64| {
+        if count > 0 {
+            severity = Some(severity.map_or(candidate, |current| current.worst(candidate)));
+        }
+    };
+    include(crate::completion::Severity::Verified, row.matched_count);
+    include(crate::completion::Severity::Asserted, row.tagged_count);
+    include(
+        crate::completion::Severity::Asserted,
+        row.disambiguated_count,
+    );
+    include(crate::completion::Severity::Unmeasured, row.unknown_count);
+    include(crate::completion::Severity::Incomplete, row.likely_count);
+    include(crate::completion::Severity::Incomplete, row.ambiguous_count);
+    include(crate::completion::Severity::Broken, row.unrecognized_count);
+    for candidate in archive_severities {
+        severity = Some(severity.map_or(candidate, |current| current.worst(candidate)));
+    }
+    severity
+}
+
 #[derive(Debug, Clone)]
 pub struct Versioned<T> {
     pub revision: u64,
@@ -553,10 +617,14 @@ impl LibraryProjectionController {
     pub fn schedule_summaries(
         &mut self,
         root: LibraryRootId,
+        expected_assets: retro_junk_frontend::AssetSelection,
     ) -> StoreEnvelope<LibraryStoreRequest> {
         self.schedule(
             ProjectionKey::Consoles(root),
-            LibraryStoreRequest::ConsoleSummaries(root),
+            LibraryStoreRequest::ConsoleSummaries {
+                root_id: root,
+                expected_assets,
+            },
         )
     }
 
@@ -645,6 +713,53 @@ mod tests {
             offset: 0,
             limit: LibraryEntryListQuery::DEFAULT_PAGE_SIZE,
         }
+    }
+
+    fn summary_with_matched_rows(matched_count: u64) -> retro_junk_db::LibraryConsoleSummary {
+        retro_junk_db::LibraryConsoleSummary {
+            id: LibraryConsoleId(1),
+            root_id: LibraryRootId(1),
+            platform: "Nes".to_owned(),
+            folder_name: "nes".to_owned(),
+            folder_path: "/roms/nes".to_owned(),
+            scan_state: retro_junk_db::LibraryScanState::Ready,
+            dat_game_count: 0,
+            entry_count: matched_count,
+            matched_count,
+            unknown_count: 0,
+            unrecognized_count: 0,
+            ambiguous_count: 0,
+            likely_count: 0,
+            disambiguated_count: 0,
+            tagged_count: 0,
+            archived_releases: Vec::new(),
+            revision: 0,
+        }
+    }
+
+    #[test]
+    fn console_status_is_the_worst_visible_logical_row() {
+        use crate::completion::Severity;
+
+        let archive_only = summary_with_matched_rows(0);
+        assert_eq!(
+            fold_console_severity(&archive_only, [Severity::Incomplete]),
+            Some(Severity::Incomplete),
+            "an incomplete archive row cannot inherit green from its hidden playable"
+        );
+
+        let visible_matched = summary_with_matched_rows(4);
+        assert_eq!(
+            fold_console_severity(&visible_matched, [Severity::Verified]),
+            Some(Severity::Verified),
+            "hidden raw warnings are absent; all visible green rows make a green console"
+        );
+
+        assert_eq!(
+            fold_console_severity(&visible_matched, [Severity::Incomplete]),
+            Some(Severity::Incomplete),
+            "one visible incomplete release determines the aggregate"
+        );
     }
 
     fn scanned(name: &str) -> ScannedLibraryEntry {
@@ -794,7 +909,10 @@ mod tests {
             .submit(StoreEnvelope {
                 session_generation: 8,
                 request_id: 42,
-                payload: LibraryStoreRequest::ConsoleSummaries(root),
+                payload: LibraryStoreRequest::ConsoleSummaries {
+                    root_id: root,
+                    expected_assets: retro_junk_frontend::AssetSelection::default(),
+                },
             })
             .unwrap();
         let reply = store

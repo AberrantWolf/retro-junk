@@ -93,10 +93,14 @@ When reading user data from CHD, the correct offset depends on the system.
 Redump DATs store checksums of **raw 2352-byte sectors** (without subchannel data). To verify a CHD against Redump:
 1. Decompress each hunk
 2. Extract 2352-byte raw sector data (strip 96-byte subchannel)
-3. Hash only Track 1 sectors (data track)
-4. Compare CRC32/SHA1/MD5 against Redump DAT entry
+3. Hash every true track span separately, excluding CHD's internal four-frame alignment padding
+4. Compare the complete ordered CRC32/SHA1/MD5 track set against one Redump medium
 
-The `retro-junk-disc` crate's `hash_chd_raw_sectors()` function implements this.
+Hashing only the primary data track may narrow candidates, but it does not
+verify a multi-track disc and must not authorize renaming, organizing, or a
+verified status. The `retro-junk-disc` crate's `hash_chd_tracks()` implements
+complete verification; `hash_chd_raw_sectors()` remains the primary-track
+helper for non-authoritative identification uses.
 
 ### Network-hosted CHDs
 

@@ -164,6 +164,20 @@ pub fn refresh_archive(
     verify: bool,
     ctx: &OpCtx,
 ) -> Result<String, String> {
+    if !verify
+        && let Some(db_path) = db_path
+        && let Ok(connection) = retro_junk_db::open_database(db_path)
+        && let Ok(source_generation) =
+            retro_junk_archive::projection_generation(&profile.archive_root)
+        && retro_junk_db::archive_profile_projection_is_current(
+            &connection,
+            &profile.profile_id.to_string(),
+            source_generation,
+        )
+        .unwrap_or(false)
+    {
+        return Ok("Archive index is already current".to_owned());
+    }
     let _archive_lock = retro_junk_archive::ArchiveLock::acquire(&profile.archive_root)
         .map_err(|error| error.to_string())?;
     retro_junk_archive::upgrade_legacy_regional_physical_platforms(&profile.archive_root)

@@ -658,7 +658,7 @@ pub struct RenamePlan {
     pub already_correct: Vec<PathBuf>,
     pub unmatched: Vec<UnmatchedFile>,
     pub conflicts: Vec<(PathBuf, String)>,
-    /// Files where serial and hash matched different games (--hash mode only)
+    /// Files where diagnostic serial evidence and hashes name different games.
     pub discrepancies: Vec<MatchDiscrepancy>,
     /// Serial-related diagnostics (serial lookup failed, or missing serial)
     pub serial_warnings: Vec<SerialWarning>,
@@ -749,12 +749,12 @@ type Claims = HashMap<PathBuf, Vec<(PathBuf, Claimant)>>;
 
 /// Plan renames for a single console folder.
 ///
-/// Uses the analyzer to extract serial/name from each file, then matches
-/// against the DAT index. Falls back to hashing when serial/name matching
-/// fails (unless `hash_mode` is set, in which case all files are hashed).
+/// Hashes each file against the DAT index. Header serials are diagnostic only:
+/// they may explain a disagreement, but they never authorize a rename.
 // Single planning pass over a folder; stages share loop-local state, so extraction adds noise.
 #[allow(clippy::too_many_lines)]
 pub fn plan_renames(
+    catalog: &retro_junk_db::Connection,
     folder: &Path,
     analyzer: &dyn RomAnalyzer,
     options: &RenameOptions,
@@ -767,7 +767,7 @@ pub fn plan_renames(
         )));
     }
 
-    let index = crate::catalog_match::load_catalog_index(analyzer)?;
+    let index = crate::catalog_match::load_catalog_index(catalog, analyzer)?;
 
     // Collect ROM files (including inside .m3u subdirectories)
     let extensions = crate::scanner::extension_set(analyzer.file_extensions());
@@ -831,7 +831,7 @@ pub fn plan_renames(
     let mut already_correct = Vec::new();
     let mut unmatched = Vec::new();
     let mut discrepancies = Vec::new();
-    let mut serial_warnings = Vec::new();
+    let serial_warnings = Vec::new();
     let mut hash_warnings: Vec<(PathBuf, Vec<String>)> = Vec::new();
     // Track file → (game_name, target_filename) for M3U post-processing
     let mut file_game_names: HashMap<PathBuf, (String, String)> = HashMap::new();
@@ -848,80 +848,25 @@ pub fn plan_renames(
             total: files.len(),
         });
 
-        // Track hash info for diagnostics if the file ends up unmatched
-        let mut last_hash: Option<HashInfo> = None;
-
-        let (match_result, detected_ext) = if options.hash_mode {
-            // Hash mode: hash is authoritative, but also check serial for discrepancies
-            let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
-            last_hash = Some(HashInfo {
-                crc32: hash_outcome.crc32,
-                data_size: hash_outcome.data_size,
+        let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
+        let last_hash = Some(HashInfo {
+            crc32: hash_outcome.crc32.clone(),
+            data_size: hash_outcome.data_size,
+        });
+        if !hash_outcome.warnings.is_empty() {
+            hash_warnings.push((file_path.clone(), hash_outcome.warnings.clone()));
+        }
+        let serial_outcome = serial_lookup(file_path, analyzer, &index);
+        if let (Some(hash), Some(serial)) = (&hash_outcome.result, &serial_outcome.result)
+            && hash.game_index != serial.game_index
+        {
+            discrepancies.push(MatchDiscrepancy {
+                file: file_path.clone(),
+                serial_game: index.games[serial.game_index].name.clone(),
+                hash_game: index.games[hash.game_index].name.clone(),
             });
-            if !hash_outcome.warnings.is_empty() {
-                hash_warnings.push((file_path.clone(), hash_outcome.warnings));
-            }
-            let serial_outcome = serial_lookup(file_path, analyzer, &index);
-
-            // Report discrepancy if both matched but to different games
-            if let (Some(hr), Some(sr)) = (&hash_outcome.result, &serial_outcome.result)
-                && hr.game_index != sr.game_index
-            {
-                discrepancies.push(MatchDiscrepancy {
-                    file: file_path.clone(),
-                    serial_game: index.games[sr.game_index].name.clone(),
-                    hash_game: index.games[hr.game_index].name.clone(),
-                });
-            }
-
-            (hash_outcome.result, serial_outcome.detected_extension)
-        } else {
-            // Default mode: try serial first, then always fall back to hash
-            let serial_outcome = serial_lookup(file_path, analyzer, &index);
-            let det_ext = serial_outcome.detected_extension.clone();
-
-            if serial_outcome.result.is_some() {
-                (serial_outcome.result, det_ext)
-            } else {
-                // Serial failed — try hash, then create serial warning with hash info
-                let hash_outcome = match_by_hash(file_path, &index, analyzer, progress)?;
-                last_hash = Some(HashInfo {
-                    crc32: hash_outcome.crc32.clone(),
-                    data_size: hash_outcome.data_size,
-                });
-                if !hash_outcome.warnings.is_empty() {
-                    hash_warnings.push((file_path.clone(), hash_outcome.warnings.clone()));
-                }
-
-                let warning_kind = if !serial_outcome.ambiguous_candidates.is_empty() {
-                    // Serial matched multiple games — report ambiguity
-                    Some(SerialWarningKind::Ambiguous {
-                        full_serial: serial_outcome.full_serial.clone(),
-                        game_code: serial_outcome.game_code.clone(),
-                        candidates: serial_outcome.ambiguous_candidates.clone(),
-                    })
-                } else if !serial_outcome.full_serial.is_empty() {
-                    Some(SerialWarningKind::NoMatch {
-                        full_serial: serial_outcome.full_serial.clone(),
-                        game_code: serial_outcome.game_code.clone(),
-                    })
-                } else if analyzer.expects_serial() {
-                    Some(SerialWarningKind::Missing)
-                } else {
-                    None
-                };
-                if let Some(kind) = warning_kind {
-                    serial_warnings.push(SerialWarning {
-                        file: file_path.clone(),
-                        kind,
-                        hash_info: last_hash.clone(),
-                        matched_by_hash: hash_outcome.result.is_some(),
-                    });
-                }
-
-                (hash_outcome.result, det_ext)
-            }
-        };
+        }
+        let (match_result, detected_ext) = (hash_outcome.result, serial_outcome.detected_extension);
 
         if let Some(result) = match_result {
             let game = &index.games[result.game_index];

@@ -577,16 +577,20 @@ fn analyze_entry_snapshots(
                 hash_matches
                     .into_iter()
                     .zip(serial_matches)
-                    .map(|(mut hashes, serials)| {
-                        for candidate in serials {
-                            if !hashes
-                                .iter()
-                                .any(|existing| existing.media.id == candidate.media.id)
-                            {
-                                hashes.push(candidate);
-                            }
+                    .zip(&evidence)
+                    .map(|((hashes, serials), query)| {
+                        // Persisted hashes are authoritative. Serials are a
+                        // pre-hash candidate source only and must never be
+                        // unioned with content matches.
+                        if query.hash.file_size != 0
+                            && (!query.hash.crc32.is_empty() || !query.hash.sha1.is_empty())
+                        {
+                            retro_junk_lib::catalog_match::prefer_content_candidates(
+                                hashes, serials,
+                            )
+                        } else {
+                            serials
                         }
-                        hashes
                     })
                     .collect::<Vec<_>>(),
             )

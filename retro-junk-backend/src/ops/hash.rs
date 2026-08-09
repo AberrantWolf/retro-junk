@@ -217,6 +217,15 @@ fn hash_one(
             progress(done, total);
         }
     };
+    if is_chd {
+        let disc = retro_junk_lib::disc_hash::hash_chd_disc(hash_path, &hash_progress)
+            .map_err(|error| error.to_string())?;
+        return Ok(HashOutcome {
+            primary: disc.primary,
+            cue_tracks: Some(disc.tracks),
+            disc_verification: DiscVerification::Incomplete,
+        });
+    }
     let primary = hasher::compute_crc32_sha1_with_progress(
         &mut file,
         analyzer,
@@ -571,7 +580,7 @@ pub fn compute_entry_hashes(
             query_owners.push(owner);
         }
     }
-    let serial_queries: Vec<_> = completed
+    let serial_queries = completed
         .iter()
         .map(|completed| {
             completed
@@ -585,7 +594,7 @@ pub fn compute_entry_hashes(
                 })
                 .unwrap_or_default()
         })
-        .collect();
+        .collect::<Vec<_>>();
     let (matches, tracks_by_media) = db_path
         .and_then(|path| retro_junk_db::open_database(path).ok())
         .and_then(|conn| {
@@ -624,23 +633,18 @@ pub fn compute_entry_hashes(
                     .ok()?,
                 );
             }
-            let merged: Vec<Vec<retro_junk_db::CatalogMediaMatch>> = hash_matches
+            // Once bytes have been hashed, candidates named by those hashes
+            // take precedence. Serial candidates are retained only as
+            // the explicitly weaker fallback when the catalog has no hash
+            // candidate at all; the two sets are never unioned.
+            let matches = hash_matches
                 .into_iter()
                 .zip(serial_matches)
-                .map(|(mut hash_matches, serial_matches)| {
-                    let mut media_ids: HashSet<String> = hash_matches
-                        .iter()
-                        .map(|candidate| candidate.media.id.clone())
-                        .collect();
-                    for candidate in serial_matches {
-                        if media_ids.insert(candidate.media.id.clone()) {
-                            hash_matches.push(candidate);
-                        }
-                    }
-                    hash_matches
+                .map(|(hashes, serials)| {
+                    retro_junk_lib::catalog_match::prefer_content_candidates(hashes, serials)
                 })
-                .collect();
-            let media_ids: Vec<String> = merged
+                .collect::<Vec<_>>();
+            let media_ids: Vec<String> = matches
                 .iter()
                 .flatten()
                 .map(|candidate| candidate.media.id.clone())
@@ -656,7 +660,7 @@ pub fn compute_entry_hashes(
                     .or_default()
                     .push(track);
             }
-            Some((merged, tracks_by_media))
+            Some((matches, tracks_by_media))
         })
         .unwrap_or_else(|| (vec![Vec::new(); completed.len()], HashMap::new()));
 

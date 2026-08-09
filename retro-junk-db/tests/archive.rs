@@ -7,15 +7,16 @@ use std::sync::atomic::AtomicBool;
 #[test]
 fn complete_track_matching_rejects_partial_and_accepts_exact_sets() {
     let conn = open_memory().unwrap();
-    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('psx','PlayStation','PSX','Sony',5,'cd',1994,'','Psx')", []).unwrap();
+    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('ps1','PlayStation','PS1','Sony',5,'cd',1994,'','Ps1')", []).unwrap();
     conn.execute(
         "INSERT INTO works(id,canonical_name) VALUES('work','Game')",
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('release','work','psx','usa','Game')", []).unwrap();
+    conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('release','work','ps1','usa','Game')", []).unwrap();
     conn.execute(
-        "INSERT INTO media(id,release_id,dat_source) VALUES('media','release','redump')",
+        "INSERT INTO media(id,release_id,dat_source,dat_system)
+         VALUES('media','release','redump','Sony - PlayStation')",
         [],
     )
     .unwrap();
@@ -47,16 +48,145 @@ fn complete_track_matching_rejects_partial_and_accepts_exact_sets() {
     assert_eq!(matches[0].media_id, "media");
 }
 
+/// Redumper verification evidence records the ordered size and SHA-1 set. A
+/// DAT may additionally carry CRC-32 and MD5, but evidence that does not repeat
+/// those optional digests still identifies the same complete medium.
+#[test]
+fn complete_track_matching_accepts_sha1_only_archive_evidence() {
+    let conn = open_memory().unwrap();
+    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('saturn','Saturn','Saturn','Sega',5,'cd',1994,'','Saturn')", []).unwrap();
+    conn.execute(
+        "INSERT INTO works(id,canonical_name) VALUES('work','Game')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title) VALUES('release','work','saturn','japan','Game')", []).unwrap();
+    conn.execute(
+        "INSERT INTO media(id,release_id,dat_source,dat_system)
+         VALUES('media','release','redump','Sega - Saturn')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO media_tracks(media_id,track_number,track_name,file_size,crc32,sha1,md5) VALUES('media',1,'Track 1',2352,'aa','1111','bb'),('media',2,'Track 2',4704,'cc','2222','dd')", []).unwrap();
+    conn.execute_batch(
+        "INSERT INTO import_log(source_type,source_name,source_version,imported_at)
+         VALUES('redump','Sony - PlayStation','wrong','2026-02-01'),
+               ('redump','Sega - Saturn','right','2026-01-01');",
+    )
+    .unwrap();
+
+    let evidence = vec![
+        TrackDigest {
+            number: 1,
+            size: 2352,
+            crc32: String::new(),
+            md5: String::new(),
+            sha1: "1111".to_owned(),
+        },
+        TrackDigest {
+            number: 2,
+            size: 4704,
+            crc32: String::new(),
+            md5: String::new(),
+            sha1: "2222".to_owned(),
+        },
+    ];
+    let matches = match_complete_catalog_media(&conn, "saturnjp", &evidence).unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].media_id, "media");
+    assert_eq!(matches[0].source_version, "right");
+
+    let mut contradictory = evidence;
+    contradictory[0].crc32 = "not-aa".to_owned();
+    assert!(
+        match_complete_catalog_media(&conn, "saturnjp", &contradictory)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn unchanged_imports_do_not_invalidate_the_archive_projection() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    let mut conn = open_memory().unwrap();
+
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &temp.path().join("playable"),
+        &temp.path().join("work"),
+    )
+    .unwrap();
+    let initial: u64 = conn
+        .query_row(
+            "SELECT catalog_generation FROM archive_profiles",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    conn.execute(
+        "INSERT INTO import_log(source_type,source_name,source_version,imported_at,records_unchanged)
+         VALUES('redump','Sega - Saturn','1','2026-01-01',2453)",
+        [],
+    )
+    .unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &temp.path().join("playable"),
+        &temp.path().join("work"),
+    )
+    .unwrap();
+    let after_unchanged: u64 = conn
+        .query_row(
+            "SELECT catalog_generation FROM archive_profiles",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(after_unchanged, initial);
+
+    conn.execute(
+        "INSERT INTO import_log(source_type,source_name,source_version,imported_at,records_updated)
+         VALUES('redump','Sega - Saturn','2','2026-01-02',1)",
+        [],
+    )
+    .unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &temp.path().join("playable"),
+        &temp.path().join("work"),
+    )
+    .unwrap();
+    let after_change: u64 = conn
+        .query_row(
+            "SELECT catalog_generation FROM archive_profiles",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_ne!(after_change, initial);
+}
+
 #[test]
 fn complete_track_matching_accepts_primary_hash_only_for_single_track_media() {
     let conn = open_memory().unwrap();
-    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('psx','PlayStation','PSX','Sony',5,'cd',1994,'','Psx')", []).unwrap();
+    conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('ps1','PlayStation','PS1','Sony',5,'cd',1994,'','Ps1')", []).unwrap();
     conn.execute(
         "INSERT INTO works(id,canonical_name) VALUES('work-single','Single Track Game')",
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title,revision) VALUES('release-original','work-single','psx','japan','Single Track Game',''),('release-revision','work-single','psx','japan','Single Track Game','Rev 1')", []).unwrap();
+    conn.execute("INSERT INTO releases(id,work_id,platform_id,region,title,revision) VALUES('release-original','work-single','ps1','japan','Single Track Game',''),('release-revision','work-single','ps1','japan','Single Track Game','Rev 1')", []).unwrap();
     conn.execute("INSERT INTO media(id,release_id,dat_source,file_size,crc32,sha1,md5) VALUES('media-original','release-original','redump',2352,'aa','1111','bb'),('media-revision','release-revision','redump',2352,'cc','2222','dd')", []).unwrap();
     // This medium deliberately repeats the revision's primary digest. Its
     // extra track means a one-track audit must not claim it as complete.
@@ -1240,13 +1370,21 @@ fn an_archived_playable_is_one_row_when_its_carrier_has_no_catalog_medium() {
 
     // The console's own count agrees with the listing: one archived release
     // plus one unarchived file, not one release plus two loose files.
-    let console_entry_count =
+    let console_summary =
         retro_junk_db::list_console_summaries(&conn, retro_junk_db::LibraryRootId(1))
             .unwrap()
             .into_iter()
             .find(|summary| summary.id == retro_junk_db::LibraryConsoleId(1))
-            .map(|summary| summary.entry_count);
-    assert_eq!(console_entry_count, Some(2));
+            .unwrap();
+    assert_eq!(console_summary.entry_count, 2);
+    assert_eq!(
+        console_summary.unrecognized_count, 1,
+        "the hidden archive-bound file must not color the console"
+    );
+    assert_eq!(
+        page.counts.unrecognized, 1,
+        "the table summary must count the same visible playable-only rows"
+    );
 }
 
 /// A multi-disc library row is one entry standing for a directory of disc
@@ -2094,9 +2232,75 @@ fn a_carrier_resolves_to_its_catalog_medium_from_its_recorded_track_digests() {
     );
 }
 
+/// The archive's Redumper record is sufficient to repair a catalog binding:
+/// reconciliation reads the ordered SHA-1/size set already on disk and does
+/// not reproduce, rehash, or rewrite the preservation master.
+#[test]
+fn a_multitrack_carrier_rebinds_from_sha1_only_verification_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("archive");
+    let playable_root = temp.path().join("playable");
+    retro_junk_archive::initialize_archive(
+        &root,
+        &retro_junk_archive::ArchiveRootManifest::new("Collection"),
+    )
+    .unwrap();
+    archive_verified_playable(
+        &root,
+        &playable_root,
+        temp.path(),
+        "Disc Game",
+        "Old Catalog Name",
+        "nes/Disc Game.nes",
+        "nes/Disc Game.nes",
+    );
+    set_catalog_track_set(&root, "Disc Game", &[(1, 2352, "1111"), (2, 4704, "2222")]);
+
+    let mut conn = open_memory().unwrap();
+    conn.execute_batch(
+        "INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform)
+         VALUES('nes','NES','NES','Nintendo',3,'disc',1983,'','Nes');
+         INSERT INTO works(id,canonical_name) VALUES('w','Current Catalog Name');
+         INSERT INTO releases(id,work_id,platform_id,region,title)
+         VALUES('rel','w','nes','usa','Current Catalog Name');
+         INSERT INTO media(id,release_id,dat_source,dat_name)
+         VALUES('med','rel','redump','Current Catalog Name (USA)');
+         INSERT INTO media_tracks(media_id,track_number,track_name,file_size,crc32,sha1,md5)
+         VALUES('med',1,'Track 1',2352,'aaaa','1111','bbbb'),
+               ('med',2,'Track 2',4704,'cccc','2222','dddd');",
+    )
+    .unwrap();
+
+    let snapshot = retro_junk_archive::scan_archive(&root).unwrap();
+    retro_junk_db::reconcile_archive_snapshot(
+        &mut conn,
+        &snapshot,
+        &playable_root,
+        &temp.path().join("work"),
+    )
+    .unwrap();
+
+    let (media, release): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT c.catalog_media_id,ar.catalog_release_id
+             FROM carriers c
+             JOIN physical_copies pc ON pc.id=c.physical_copy_id
+             JOIN archive_releases ar ON ar.id=pc.archive_release_id",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(media.as_deref(), Some("med"));
+    assert_eq!(release.as_deref(), Some("rel"));
+}
+
 /// Rewrite the catalog verification evidence for `title`'s dump so it carries
 /// one matched track digest.
 fn set_catalog_track_digests(root: &std::path::Path, title: &str, size: u64, sha1: &str) {
+    set_catalog_track_set(root, title, &[(1, size, sha1)]);
+}
+
+fn set_catalog_track_set(root: &std::path::Path, title: &str, tracks: &[(u32, u64, &str)]) {
     let snapshot = retro_junk_archive::scan_archive(root).unwrap();
     let dump = snapshot
         .releases
@@ -2109,13 +2313,18 @@ fn set_catalog_track_digests(root: &std::path::Path, title: &str, size: u64, sha
             continue;
         }
         let mut evidence = verification.evidence.clone();
-        evidence.tracks = vec![retro_junk_archive::TrackVerification {
-            number: 1,
-            size,
-            expected_sha1: sha1.to_owned(),
-            actual_sha1: sha1.to_owned(),
-            matched: true,
-        }];
+        evidence.tracks = tracks
+            .iter()
+            .map(
+                |(number, size, sha1)| retro_junk_archive::TrackVerification {
+                    number: *number,
+                    size: *size,
+                    expected_sha1: (*sha1).to_owned(),
+                    actual_sha1: (*sha1).to_owned(),
+                    matched: true,
+                },
+            )
+            .collect();
         std::fs::write(
             &verification.path,
             serde_json::to_vec_pretty(&evidence).unwrap(),
@@ -2256,10 +2465,10 @@ fn a_single_file_match_against_a_multi_track_medium_is_not_a_complete_set() {
     let conn = open_memory().unwrap();
     conn.execute_batch(
         "INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform)
-         VALUES('psx','PlayStation','PSX','Sony',5,'cd',1994,'','Psx');
+         VALUES('ps1','PlayStation','PS1','Sony',5,'cd',1994,'','Ps1');
          INSERT INTO works(id,canonical_name) VALUES('w','Game');
          INSERT INTO releases(id,work_id,platform_id,region,title)
-         VALUES('rel','w','psx','usa','Game');
+         VALUES('rel','w','ps1','usa','Game');
          INSERT INTO media(id,release_id,dat_source,dat_name,file_size,crc32,sha1)
          VALUES('flat','rel','redump','Flat Game (USA)',12,'11111111','aaaa'),
                ('disc','rel','redump','Disc Game (USA)',34,'22222222','bbbb');

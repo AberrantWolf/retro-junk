@@ -83,7 +83,10 @@ retro-junk-scraper = { path = "retro-junk-scraper" }
 retro-junk-frontend = { path = "retro-junk-frontend" }
 chd = "0.3"
 nod = "1.4"
-image = "0.25"
+# Artwork import and miximage generation support these formats. Avoid image's
+# `default-formats` bundle: it also builds heavyweight codecs such as the AVIF
+# encoder even though no product surface accepts those files.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 serde_yml = "0.0.12"
 log = { version = "0.4", features = ["std"] }
 strip-ansi-escapes = "0.2"
@@ -97,3 +100,10 @@ libc = "0.2"
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+# Full variable-level DWARF makes the normal edit/test loop substantially
+# slower, especially when linking the GUI's native dependency graph. Line
+# tables preserve useful source locations in panics and backtraces while
+# keeping development artifacts smaller and faster to produce.
+[profile.dev]
+debug = 1

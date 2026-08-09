@@ -66,6 +66,7 @@ fn disc_candidate() -> retro_junk_db::CatalogMediaMatch {
             dat_name: "Game (USA)".into(),
             rom_name: "Game (USA) (Track 1).bin".into(),
             dat_source: "redump".into(),
+            dat_system: "Sony - PlayStation".into(),
             file_size: 100,
             crc32: "11111111".into(),
             sha1: String::new(),

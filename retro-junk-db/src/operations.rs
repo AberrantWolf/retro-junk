@@ -413,8 +413,9 @@ pub fn unenrich_releases(
 pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationError> {
     conn.execute(
         "INSERT INTO media (id, release_id, media_serial, disc_number, disc_label,
-             revision, status, tag, dat_name, rom_name, dat_source, file_size, crc32, sha1, md5)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             revision, status, tag, dat_name, rom_name, dat_source, dat_system,
+             file_size, crc32, sha1, md5)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
          ON CONFLICT(id) DO UPDATE SET
              release_id = excluded.release_id,
              media_serial = excluded.media_serial,
@@ -426,6 +427,7 @@ pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationErr
              dat_name = excluded.dat_name,
              rom_name = excluded.rom_name,
              dat_source = excluded.dat_source,
+             dat_system = excluded.dat_system,
              file_size = excluded.file_size,
              crc32 = excluded.crc32,
              sha1 = excluded.sha1,
@@ -443,6 +445,7 @@ pub fn upsert_media(conn: &Connection, media: &Media) -> Result<(), OperationErr
             media.dat_name,
             media.rom_name,
             media.dat_source,
+            media.dat_system,
             media.file_size,
             media.crc32,
             media.sha1,

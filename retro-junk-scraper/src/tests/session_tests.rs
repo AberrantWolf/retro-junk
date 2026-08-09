@@ -22,6 +22,18 @@ fn a_partially_scraped_game_still_fetches_what_it_lacks() {
     assert_eq!(wanted.types, vec![AssetType::Cover, AssetType::Cover3D]);
 }
 
+#[test]
+fn a_missing_video_remains_part_of_the_configured_artwork_contract() {
+    let selection = AssetSelection {
+        types: vec![AssetType::Cover, AssetType::Video],
+    };
+    let on_disk = present(&[(AssetType::Cover, "covers/game.png")]);
+
+    let wanted = types_to_fetch(&selection, &on_disk, false);
+
+    assert_eq!(wanted.types, vec![AssetType::Video]);
+}
+
 /// A fully-covered game costs no request at all — the quota saving the old
 /// blanket skip was really providing.
 #[test]

@@ -18,7 +18,7 @@ pub mod track_layout;
 // Re-export primary types for convenience
 pub use cue::{CueFile, CueIndex, CueSheet, CueTrack};
 pub use format::{DiscFormat, detect_disc_format};
-pub use hash::{SectorMode, hash_disc_container};
+pub use hash::{ChdTrackHashes, SectorMode, hash_chd_tracks, hash_disc_container};
 pub use iso9660::{DirectoryRecord, PrimaryVolumeDescriptor, find_file_in_root, read_pvd};
 pub use sector::{
     CD_SYNC_PATTERN, CHD_MAGIC, ISO_SECTOR_SIZE, MODE1_DATA_OFFSET, MODE2_FORM1_DATA_OFFSET,

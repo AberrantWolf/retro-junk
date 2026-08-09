@@ -43,7 +43,7 @@ pub enum RenameProgress {
         file_index: usize,
         total: usize,
     },
-    /// Hashing a file (with --hash).
+    /// Hashing a file for authoritative catalog matching.
     Hashing {
         file_name: String,
         bytes_done: u64,
@@ -56,10 +56,6 @@ pub enum RenameProgress {
 /// Options controlling rename behavior.
 #[derive(Debug, Clone, Default)]
 pub struct RenameOptions {
-    /// Force CRC32-based matching instead of serial/name.
-    pub hash_mode: bool,
-    /// Custom DAT directory (instead of cache).
-    pub dat_dir: Option<PathBuf>,
     /// Maximum number of ROMs to process.
     pub limit: Option<usize>,
 }
@@ -141,7 +137,7 @@ pub struct UnmatchedFile {
     pub hash_info: Option<HashInfo>,
 }
 
-/// A discrepancy between serial-based and hash-based matching (reported in --hash mode).
+/// A discrepancy between diagnostic serial evidence and authoritative hashes.
 #[derive(Debug, Clone)]
 pub struct MatchDiscrepancy {
     pub file: PathBuf,

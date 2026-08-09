@@ -16,6 +16,17 @@ pub enum CatalogMatchResolution<'a> {
     NotFound,
 }
 
+/// Apply catalog evidence precedence without combining candidate domains.
+/// Any content match excludes every weaker serial/header/name candidate;
+/// fallback candidates are considered only when content found none.
+pub fn prefer_content_candidates<T>(content: Vec<T>, fallback: Vec<T>) -> Vec<T> {
+    if content.is_empty() {
+        fallback
+    } else {
+        content
+    }
+}
+
 /// Normalize the serial extracted by an analyzer into the key stored by the
 /// catalog. This is the only serial-normalization path used by catalog queries.
 #[must_use]
@@ -152,7 +163,10 @@ pub fn resolve_catalog_match<'a>(
         return CatalogMatchResolution::Ambiguous { candidates: names };
     }
 
-    let candidate = candidates[0];
+    let Some(candidate) = candidates.first() else {
+        return CatalogMatchResolution::NotFound;
+    };
+
     CatalogMatchResolution::Match {
         candidate,
         method: MatchMethod::Serial,
@@ -167,41 +181,66 @@ fn candidate_revision(candidate: &retro_junk_db::CatalogMediaMatch) -> &str {
     }
 }
 
-/// Build the matcher used by explicit maintenance commands from the `SQLite`
-/// catalog. Raw DATs are import inputs only; maintenance never parses them.
-pub(crate) fn load_catalog_index(analyzer: &dyn RomAnalyzer) -> Result<DatIndex, DatError> {
-    let path = retro_junk_dat::cache::cache_dir()
-        .map_err(|e| DatError::cache(e.to_string()))?
-        .join("catalog.db");
-    if !path.exists() {
-        return Err(DatError::cache(format!(
-            "Catalog database not found at {}. Import DATs into the catalog first.",
-            path.display()
-        )));
-    }
-    let conn = retro_junk_db::open_database(&path)
-        .map_err(|e| DatError::cache(format!("Cannot open catalog: {e}")))?;
-    let releases = retro_junk_db::releases_for_platform(&conn, analyzer.short_name())
+/// Build the matcher used by explicit maintenance commands from their
+/// authoritative `SQLite` connection. Raw DATs are import inputs only, and
+/// this layer deliberately does not guess where the application's database
+/// lives: the backend or CLI owns opening the configured catalog.
+pub(crate) fn load_catalog_index(
+    conn: &retro_junk_db::Connection,
+    analyzer: &dyn RomAnalyzer,
+) -> Result<DatIndex, DatError> {
+    let releases = retro_junk_db::releases_for_platform(conn, analyzer.short_name())
         .map_err(|e| DatError::cache(format!("Cannot query catalog: {e}")))?;
     let mut games = Vec::new();
     for release in releases {
-        let media = retro_junk_db::media_for_release(&conn, &release.id)
+        let media = retro_junk_db::media_for_release(conn, &release.id)
             .map_err(|e| DatError::cache(format!("Cannot query catalog media: {e}")))?;
+        let media_ids = media.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
+        let mut tracks_by_media = std::collections::HashMap::<String, Vec<_>>::new();
+        for track in retro_junk_db::find_media_tracks_for_media_ids(conn, &media_ids)
+            .map_err(|e| DatError::cache(format!("Cannot query catalog tracks: {e}")))?
+        {
+            tracks_by_media
+                .entry(track.media_id.clone())
+                .or_default()
+                .push(track);
+        }
         for item in media {
+            let roms = tracks_by_media.remove(&item.id).map_or_else(
+                || {
+                    vec![DatRom {
+                        name: item.rom_name.clone(),
+                        size: u64::try_from(item.file_size).unwrap_or(0),
+                        crc: item.crc32.clone(),
+                        sha1: (!item.sha1.is_empty()).then_some(item.sha1.clone()),
+                        md5: (!item.md5.is_empty()).then_some(item.md5.clone()),
+                        serial: (!item.media_serial.is_empty())
+                            .then_some(item.media_serial.clone()),
+                    }]
+                },
+                |mut tracks| {
+                    tracks.sort_by_key(|track| track.track_number);
+                    tracks
+                        .into_iter()
+                        .map(|track| DatRom {
+                            name: track.track_name,
+                            size: u64::try_from(track.file_size).unwrap_or(0),
+                            crc: track.crc32,
+                            sha1: (!track.sha1.is_empty()).then_some(track.sha1),
+                            md5: (!track.md5.is_empty()).then_some(track.md5),
+                            serial: (!item.media_serial.is_empty())
+                                .then_some(item.media_serial.clone()),
+                        })
+                        .collect()
+                },
+            );
             games.push(DatGame {
                 name: item.dat_name,
                 region: Some(release.region.clone()),
                 serial: (!item.media_serial.is_empty()).then_some(item.media_serial.clone()),
                 version: (!item.revision.is_empty()).then_some(item.revision),
                 category: None,
-                roms: vec![DatRom {
-                    name: item.rom_name,
-                    size: u64::try_from(item.file_size).unwrap_or(0),
-                    crc: item.crc32,
-                    sha1: (!item.sha1.is_empty()).then_some(item.sha1),
-                    md5: (!item.md5.is_empty()).then_some(item.md5),
-                    serial: (!item.media_serial.is_empty()).then_some(item.media_serial),
-                }],
+                roms,
             });
         }
     }
@@ -215,7 +254,16 @@ pub(crate) fn load_catalog_index(analyzer: &dyn RomAnalyzer) -> Result<DatIndex,
 
 #[cfg(test)]
 mod tests {
-    use super::catalog_serial_key;
+    use super::{catalog_serial_key, load_catalog_index, prefer_content_candidates};
+
+    #[test]
+    fn content_candidates_always_outrank_fallback_evidence() {
+        assert_eq!(prefer_content_candidates(vec![1, 2], vec![3]), vec![1, 2]);
+        assert_eq!(
+            prefer_content_candidates(Vec::<u8>::new(), vec![3]),
+            vec![3]
+        );
+    }
 
     #[test]
     fn serial_key_uses_the_analyzers_dat_code() {
@@ -225,5 +273,48 @@ mod tests {
             catalog_serial_key(&retro_junk_nintendo::DsAnalyzer, &identification).as_deref(),
             Some("ARME")
         );
+    }
+
+    #[test]
+    fn maintenance_index_uses_the_supplied_catalog_connection() {
+        let conn = retro_junk_db::open_memory().unwrap();
+        conn.execute_batch(
+            "INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform)
+             VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes');
+             INSERT INTO works(id,canonical_name) VALUES('work','Game');
+             INSERT INTO releases(id,work_id,platform_id,region,title)
+             VALUES('release','work','nes','usa','Game');
+             INSERT INTO media(id,release_id,media_serial,dat_name,rom_name,dat_source,file_size,crc32,sha1)
+             VALUES('media','release','NES-GAME','Game (USA)','Game (USA).nes','no-intro',4,'11223344','aabb');",
+        )
+        .unwrap();
+
+        let index = load_catalog_index(&conn, &retro_junk_nintendo::NesAnalyzer).unwrap();
+        assert_eq!(index.games.len(), 1);
+        assert_eq!(index.games[0].name, "Game (USA)");
+        assert_eq!(index.games[0].roms[0].crc, "11223344");
+    }
+
+    #[test]
+    fn maintenance_index_retains_the_complete_catalog_track_set() {
+        let conn = retro_junk_db::open_memory().unwrap();
+        conn.execute_batch(
+            "INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform)
+             VALUES('saturn','Saturn','Saturn','Sega',5,'disc',1994,'','Saturn');
+             INSERT INTO works(id,canonical_name) VALUES('work','Disc Game');
+             INSERT INTO releases(id,work_id,platform_id,region,title)
+             VALUES('release','work','saturn','japan','Disc Game');
+             INSERT INTO media(id,release_id,media_serial,dat_name,rom_name,dat_source,file_size,crc32,sha1)
+             VALUES('media','release','GS-0001','Disc Game (Japan)','Disc Game (Japan) (Track 1).bin','redump',2352,'11111111','aaaa');
+             INSERT INTO media_tracks(media_id,track_number,track_name,file_size,crc32,sha1)
+             VALUES('media',1,'Disc Game (Japan) (Track 1).bin',2352,'11111111','aaaa'),
+                   ('media',2,'Disc Game (Japan) (Track 2).bin',4704,'22222222','bbbb');",
+        )
+        .unwrap();
+
+        let index = load_catalog_index(&conn, &retro_junk_sega::SaturnAnalyzer).unwrap();
+        assert_eq!(index.games.len(), 1);
+        assert_eq!(index.games[0].roms.len(), 2);
+        assert_eq!(index.games[0].roms[1].sha1.as_deref(), Some("bbbb"));
     }
 }

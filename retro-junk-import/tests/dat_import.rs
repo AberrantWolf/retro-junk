@@ -138,6 +138,10 @@ fn import_media_has_correct_hashes() {
     assert_eq!(media[0].sha1, "ea343f4e445a9050d4b4fbac2c77d0693b1d0922");
     assert_eq!(media[0].file_size, 40976);
     assert_eq!(media[0].dat_source, "no-intro");
+    assert_eq!(
+        media[0].dat_system,
+        "Nintendo - Nintendo Entertainment System"
+    );
     assert_eq!(media[0].rom_name, "Super Mario Bros. (USA).nes");
 }
 

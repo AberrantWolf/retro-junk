@@ -44,6 +44,7 @@ fn catalog_candidate(rom_name: &str, crc32: &str, sha1: &str) -> retro_junk_db::
             dat_name: "Super Mario 64 (USA)".to_string(),
             rom_name: rom_name.to_string(),
             dat_source: "no-intro".to_string(),
+            dat_system: "Nintendo - Nintendo 64".to_string(),
             file_size: 8_388_608,
             crc32: crc32.to_string(),
             sha1: sha1.to_string(),

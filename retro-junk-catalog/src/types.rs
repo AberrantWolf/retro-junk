@@ -197,6 +197,10 @@ pub struct Media {
     /// Primary ROM filename from the source DAT, including extension.
     pub rom_name: String,
     pub dat_source: String,
+    /// The source DAT's own system name (for example `Sega - Saturn`).
+    /// `dat_source` alone is not enough to recover provenance because one
+    /// source such as Redump publishes many independently versioned DATs.
+    pub dat_system: String,
     /// Size in bytes. 0 = unknown (a real dump is never empty).
     pub file_size: i64,
     pub crc32: String,

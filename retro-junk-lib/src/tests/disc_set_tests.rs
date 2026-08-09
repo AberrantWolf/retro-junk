@@ -141,7 +141,7 @@ fn plans_full_set_by_serial() {
         panic!("expected Planned, got {outcome:?}");
     };
     assert_eq!(plan.game_name, GAME);
-    assert_eq!(plan.matched_by, MatchMethod::Serial);
+    assert_eq!(plan.matched_by, MatchMethod::Crc32);
     assert_eq!(plan.cue_target_filename, format!("{GAME}.cue"));
     assert_eq!(plan.tracks.len(), 2);
     assert_eq!(

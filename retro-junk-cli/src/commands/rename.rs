@@ -18,7 +18,7 @@ use retro_junk_lib::rename::{
 use retro_junk_lib::util::{default_media_dir, default_metadata_dir};
 
 use crate::CliError;
-use crate::cli_types::{ConsoleFilterArgs, DatDirArg, RenameArgs};
+use crate::cli_types::{ConsoleFilterArgs, RenameArgs};
 
 // Linear per-console rename orchestration (plan, confirm, execute, summarize);
 // splitting would scatter tightly coupled totals and progress state.
@@ -31,30 +31,26 @@ pub(crate) fn run_rename(
 ) -> Result<(), CliError> {
     let RenameArgs {
         dry_run,
-        hash: hash_mode,
         roms: ConsoleFilterArgs { consoles, limit },
-        dat: DatDirArg { dat_dir },
         media_dir: media_dir_override,
         no_media,
     } = args;
     let root_path = library_path;
 
-    let rename_options = RenameOptions {
-        hash_mode,
-        dat_dir,
-        limit,
-    };
+    let rename_options = RenameOptions { limit };
+    let db_path = retro_junk_lib::settings::ensure_catalog_database_location()
+        .map_err(|error| CliError::database(error.to_string()))?;
+    let catalog = retro_junk_db::open_database(&db_path).map_err(|error| {
+        CliError::database(format!(
+            "Failed to open catalog database at {}: {error}",
+            db_path.display()
+        ))
+    })?;
 
     log::info!(
         "Scanning ROMs in: {}",
         root_path.display().if_supports_color(Stdout, |t| t.cyan()),
     );
-    if hash_mode {
-        log::info!(
-            "{}",
-            "Hash mode: computing CRC32 for all files".if_supports_color(Stdout, |t| t.dimmed()),
-        );
-    }
     if dry_run {
         log::info!(
             "{}",
@@ -153,6 +149,7 @@ pub(crate) fn run_rename(
         };
 
         match plan_renames(
+            &catalog,
             &cf.path,
             console.analyzer.as_ref(),
             &rename_options,
@@ -554,7 +551,7 @@ pub(crate) fn print_rename_plan(plan: &RenamePlan) {
         );
     }
 
-    // Discrepancies (--hash mode: serial and hash matched different games)
+    // Discrepancies: diagnostic serial evidence and hashes named different games.
     for d in &plan.discrepancies {
         let file_name = d.file.file_name().and_then(|n| n.to_str()).unwrap_or("?");
         log::warn!(

@@ -11,6 +11,81 @@ use std::path::Path;
 use crate::format::{DiscFormat, detect_disc_format};
 use crate::sector::{CD_SYNC_PATTERN, RAW_SECTOR_SIZE, SECTOR_USER_DATA_START};
 
+#[derive(Debug, Clone)]
+pub struct ChdTrackHashes {
+    pub track_number: u32,
+    pub is_data: bool,
+    pub hashes: FileHashes,
+}
+
+/// Hash every true track span in a CD CHD, excluding CHD's internal
+/// four-frame alignment padding and subchannel bytes.
+pub fn hash_chd_tracks(
+    reader: &mut dyn retro_junk_core::ReadSeek,
+    algorithms: HashAlgorithms,
+    on_progress: HashProgressFn<'_>,
+) -> Result<Vec<ChdTrackHashes>, AnalysisError> {
+    reader.seek(SeekFrom::Start(0))?;
+    let mut chd = chd::Chd::open(reader, None)
+        .map_err(|error| AnalysisError::other(format!("Failed to open CHD: {error}")))?;
+    if u64::from(chd.header().unit_bytes()) < RAW_SECTOR_SIZE {
+        return Err(AnalysisError::invalid_format("DVD CHD has no CD track set"));
+    }
+    let tracks = crate::chd::parse_chd_tracks(&mut chd)?;
+    if tracks.is_empty() {
+        return Err(AnalysisError::invalid_format(
+            "CD CHD contains no track metadata",
+        ));
+    }
+    let total = tracks
+        .iter()
+        .map(|track| track.frames as u64 * RAW_SECTOR_SIZE)
+        .sum::<u64>();
+    let mut hashers = tracks
+        .iter()
+        .map(|track| MultiHasher::new(algorithms, track.frames as u64 * RAW_SECTOR_SIZE, None))
+        .collect::<Vec<_>>();
+    let hunk_size = chd.header().hunk_size() as usize;
+    let unit_bytes = chd.header().unit_bytes() as usize;
+    let sectors_per_hunk = hunk_size / unit_bytes;
+    let mut hunk_buf = chd.get_hunksized_buffer();
+    let mut compressed = Vec::new();
+    let mut completed = 0_u64;
+    for hunk_number in 0..chd.header().hunk_count() {
+        let mut hunk = chd.hunk(hunk_number).map_err(|error| {
+            AnalysisError::other(format!("Failed to get CHD hunk {hunk_number}: {error}"))
+        })?;
+        hunk.read_hunk_in(&mut compressed, &mut hunk_buf)
+            .map_err(|error| AnalysisError::other(format!("Failed to decode CHD: {error}")))?;
+        for sector_in_hunk in 0..sectors_per_hunk {
+            let sector = hunk_number as usize * sectors_per_hunk + sector_in_hunk;
+            let Some((index, _)) = tracks.iter().enumerate().find(|(_, track)| {
+                sector >= track.start_sector && sector < track.start_sector + track.frames
+            }) else {
+                continue;
+            };
+            let offset = sector_in_hunk * unit_bytes;
+            hashers[index].update(&hunk_buf[offset..offset + RAW_SECTOR_SIZE as usize]);
+            completed += RAW_SECTOR_SIZE;
+        }
+        if let Some(progress) = on_progress {
+            progress(completed, total);
+        }
+        if completed >= total {
+            break;
+        }
+    }
+    Ok(tracks
+        .into_iter()
+        .zip(hashers)
+        .map(|(track, hasher)| ChdTrackHashes {
+            track_number: track.track_number,
+            is_data: track.is_data(),
+            hashes: hasher.finalize(),
+        })
+        .collect())
+}
+
 /// Sector mode for raw disc images.
 ///
 /// Different disc systems use different CD-ROM sector modes:

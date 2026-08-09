@@ -26,6 +26,7 @@ pub struct OrganizeExecution {
 /// for the frontend to preview; nothing is moved yet.
 pub fn plan(
     context: &AnalysisContext,
+    db_path: &Path,
     platform: Platform,
     folder_path: &Path,
     ctx: &OpCtx,
@@ -33,12 +34,11 @@ pub fn plan(
     let registered = context
         .get_by_platform(platform)
         .ok_or_else(|| "No analyzer registered for platform".to_string())?;
+    let catalog = crate::queries::open_catalog(db_path)?;
 
     let options = OrganizeOptions {
-        dat_dir: None,
         limit: None,
         include_single_disc: false,
-        hash_fallback: false,
     };
 
     let progress_callback = |progress: OrganizeProgress| match &progress {
@@ -57,6 +57,7 @@ pub fn plan(
     };
 
     plan_organize(
+        &catalog,
         folder_path,
         registered.analyzer.as_ref(),
         &options,

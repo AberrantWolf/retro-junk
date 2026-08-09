@@ -79,25 +79,16 @@ pub fn rescrape_media_for_selection(
     console_idx: usize,
     ctx: &egui::Context,
 ) {
-    scrape_media_for_selection(app, console_idx, ctx, true, false, None);
+    scrape_media_for_selection(app, console_idx, ctx, true, None);
 }
 
-/// Scrape only missing media (skip types that already exist on disk).
-pub fn scrape_missing_media_for_selection(
-    app: &mut RetroJunkApp,
-    console_idx: usize,
-    ctx: &egui::Context,
-) {
-    scrape_media_for_selection(app, console_idx, ctx, false, false, None);
-}
-
-/// Scrape only missing image artwork for selected rows, excluding videos.
+/// Scrape every configured artwork type still missing from selected rows.
 pub fn scrape_missing_artwork_for_selection(
     app: &mut RetroJunkApp,
     console_idx: usize,
     ctx: &egui::Context,
 ) {
-    scrape_media_for_selection(app, console_idx, ctx, false, true, None);
+    scrape_media_for_selection(app, console_idx, ctx, false, None);
 }
 
 /// Re-scrape a whole console using unpaginated archive-release details.
@@ -107,10 +98,10 @@ pub fn rescrape_media_for_console(
     ctx: &egui::Context,
     archived_releases: Vec<retro_junk_db::ArchivedLibraryListItem>,
 ) {
-    scrape_media_for_selection(app, console_idx, ctx, true, false, Some(archived_releases));
+    scrape_media_for_selection(app, console_idx, ctx, true, Some(archived_releases));
 }
 
-/// Scrape only missing media for a whole console using unpaginated
+/// Scrape only missing configured artwork for a whole console using unpaginated
 /// archive-release details.
 pub fn scrape_missing_artwork_for_console(
     app: &mut RetroJunkApp,
@@ -118,7 +109,7 @@ pub fn scrape_missing_artwork_for_console(
     ctx: &egui::Context,
     archived_releases: Vec<retro_junk_db::ArchivedLibraryListItem>,
 ) {
-    scrape_media_for_selection(app, console_idx, ctx, false, true, Some(archived_releases));
+    scrape_media_for_selection(app, console_idx, ctx, false, Some(archived_releases));
 }
 
 /// Restore archived originals to the active frontend layout without network
@@ -206,13 +197,12 @@ fn selected_archive_ids(
     }
 }
 
-/// Scrape media from `ScreenScraper` for selected entries.
+/// Scrape artwork from `ScreenScraper` for selected entries.
 fn scrape_media_for_selection(
     app: &mut RetroJunkApp,
     console_idx: usize,
     ctx: &egui::Context,
     force_redownload: bool,
-    artwork_only: bool,
     archive_rows_override: Option<Vec<retro_junk_db::ArchivedLibraryListItem>>,
 ) {
     let console = &app.browser.consoles[console_idx];
@@ -227,6 +217,10 @@ fn scrape_media_for_selection(
     // is not `Send`; everything it produces is plain data.
     let analyzer = app.context.get_by_platform(platform);
     let archive_profile = app.settings.library.active_profile().cloned();
+    // This is the same backend-resolved policy used by Completion. A type
+    // expected for green status must be requested by every missing-artwork
+    // surface; video is artwork here, not an optional side channel.
+    let asset_selection = app.ui_state.expected_assets.clone();
     let whole_console = archive_rows_override.is_some();
     let archive_rows = archive_rows_override.unwrap_or_else(|| {
         app.browser
@@ -365,11 +359,9 @@ fn scrape_media_for_selection(
     let db_path = app.db_path.clone();
     let ui_ctx = ctx.clone();
     let verb = if force_redownload {
-        "Scraping media"
-    } else if artwork_only {
-        "Scraping missing artwork"
+        "Re-scraping artwork"
     } else {
-        "Scraping missing media"
+        "Scraping missing artwork"
     };
     let description = format!("{} ({} entries)", verb, work.len());
 
@@ -390,7 +382,7 @@ fn scrape_media_for_selection(
                     media_dir_setting,
                     work,
                     force_redownload,
-                    artwork_only,
+                    asset_selection,
                     archive_profile,
                     scratch_tag: op_id.to_string(),
                 },

@@ -74,7 +74,7 @@ pub fn import_dat(
     let tx = conn.unchecked_transaction()?;
 
     for (i, game) in dat.games.iter().enumerate() {
-        import_game(&tx, game, platform, dat_source, &mut stats)?;
+        import_game(&tx, game, platform, dat_source, &dat.name, &mut stats)?;
 
         progress.on_game(i + 1, dat.games.len(), &game.name);
     }
@@ -91,6 +91,7 @@ fn import_game(
     game: &retro_junk_dat::DatGame,
     platform: Platform,
     dat_source: &str,
+    dat_system: &str,
     stats: &mut ImportStats,
 ) -> Result<(), ImportError> {
     let platform_id = platform.short_name();
@@ -229,6 +230,7 @@ fn import_game(
         let unchanged = existing_media.release_id == effective_release_id
             && existing_media.rom_name == primary_rom.name
             && existing_media.dat_name == game.name
+            && existing_media.dat_system == dat_system
             && existing_media.revision == media_revision
             && existing_media.status == media_status;
         if unchanged {
@@ -261,6 +263,7 @@ fn import_game(
         dat_name: game.name.clone(),
         rom_name: primary_rom.name.clone(),
         dat_source: dat_source.to_string(),
+        dat_system: dat_system.to_owned(),
         file_size: i64::try_from(primary_rom.size).unwrap_or(0),
         crc32: primary_rom.crc.to_ascii_lowercase(),
         sha1: primary_rom

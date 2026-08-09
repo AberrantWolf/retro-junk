@@ -132,7 +132,7 @@ impl AssetType {
     pub fn discovery_extensions(&self) -> &'static [&'static str] {
         match self {
             AssetType::Video => &["mp4"],
-            _ => &["png", "jpg"],
+            _ => &["png", "jpg", "jpeg", "webp"],
         }
     }
 }

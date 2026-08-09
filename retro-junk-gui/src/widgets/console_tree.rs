@@ -142,7 +142,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         .push_id(i, |ui| {
                             ui.horizontal(|ui| {
                                 if let Some(status) = worst_status {
-                                    status_badge::show(ui, status);
+                                    status_badge::show_severity(ui, status);
                                 }
                                 ui.selectable_label(is_selected, &label)
                             })
@@ -231,7 +231,7 @@ fn show_console_context_menu(
     if ui
         .add_enabled(
             is_scanned && entry_count > 0,
-            egui::Button::new("Re-scrape All Media"),
+            egui::Button::new("Re-scrape All Artwork"),
         )
         .clicked()
     {

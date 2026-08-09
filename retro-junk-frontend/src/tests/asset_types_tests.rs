@@ -19,6 +19,14 @@ fn discovery_finds_a_non_default_extension() {
     );
 }
 
+#[test]
+fn discovery_covers_every_supported_artwork_extension() {
+    assert_eq!(
+        AssetType::Cover.discovery_extensions(),
+        &["png", "jpg", "jpeg", "webp"]
+    );
+}
+
 /// A type with no file on disk must be absent from the map rather than
 /// present-with-a-missing-path: callers treat presence as "have it".
 #[test]

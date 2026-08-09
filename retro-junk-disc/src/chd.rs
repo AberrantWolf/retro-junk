@@ -273,7 +273,10 @@ pub fn parse_chd_tracks<F: std::io::Read + std::io::Seek>(
     let mut offset = 0usize;
     for track in &mut tracks {
         track.start_sector = offset;
-        offset += track.frames;
+        // CD CHDs pad each track to a four-frame boundary internally. FRAMES
+        // is the true track length; the padding belongs to no track and must
+        // not shift the next track's hashes.
+        offset += track.frames.next_multiple_of(4);
     }
 
     Ok(tracks)

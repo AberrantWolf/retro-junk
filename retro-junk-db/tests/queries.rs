@@ -64,6 +64,7 @@ fn test_media(id: &str, release_id: &str) -> Media {
         dat_name: String::new(),
         rom_name: String::new(),
         dat_source: String::new(),
+        dat_system: String::new(),
         file_size: 0,
         crc32: String::new(),
         sha1: String::new(),

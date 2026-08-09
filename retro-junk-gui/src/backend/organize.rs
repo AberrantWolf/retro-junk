@@ -17,6 +17,7 @@ pub fn organize_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::
     let folder_path = console.folder_path.clone();
     let platform = console.platform;
     let context = app.context.clone();
+    let db_path = app.db_path.clone();
 
     let description = format!("Organizing disc files in {folder_name}");
     let ctx = ctx.clone();
@@ -30,11 +31,17 @@ pub fn organize_console(app: &mut RetroJunkApp, console_idx: usize, ctx: &egui::
         ProgressDisplay::Count,
         move |op_id, cancel, tx| {
             let progress = crate::backend::worker::forward_phases(op_id, tx.clone());
-            let outcome = retro_junk_backend::ops::organize::plan(
-                &context,
-                platform,
-                &folder_path,
-                &OpCtx::new(&cancel, &progress),
+            let outcome = db_path.as_deref().map_or_else(
+                || Err("Catalog database is not available".to_owned()),
+                |db_path| {
+                    retro_junk_backend::ops::organize::plan(
+                        &context,
+                        db_path,
+                        platform,
+                        &folder_path,
+                        &OpCtx::new(&cancel, &progress),
+                    )
+                },
             );
             let lifecycle = match outcome {
                 Ok(plan) => {

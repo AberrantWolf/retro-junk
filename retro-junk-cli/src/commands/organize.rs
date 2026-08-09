@@ -10,7 +10,7 @@ use retro_junk_lib::organize::{
 use retro_junk_lib::{AnalysisContext, DatSource};
 
 use crate::CliError;
-use crate::cli_types::{ConsoleFilterArgs, DatDirArg, OrganizeArgs};
+use crate::cli_types::{ConsoleFilterArgs, OrganizeArgs};
 
 // Linear per-console organize orchestration (plan, report, execute, summarize).
 #[allow(clippy::too_many_lines)]
@@ -23,16 +23,20 @@ pub(crate) fn run_organize(
     let OrganizeArgs {
         dry_run,
         roms: ConsoleFilterArgs { consoles, limit },
-        dat: DatDirArg { dat_dir },
         include_single_disc,
-        hash_fallback,
     } = args;
     let options = OrganizeOptions {
-        dat_dir,
         limit,
         include_single_disc,
-        hash_fallback,
     };
+    let db_path = retro_junk_lib::settings::ensure_catalog_database_location()
+        .map_err(|error| CliError::database(error.to_string()))?;
+    let catalog = retro_junk_db::open_database(&db_path).map_err(|error| {
+        CliError::database(format!(
+            "Failed to open catalog database at {}: {error}",
+            db_path.display()
+        ))
+    })?;
 
     log::info!(
         "Organizing disc images in: {}",
@@ -50,12 +54,6 @@ pub(crate) fn run_organize(
         log::info!(
             "{}",
             "Including single-disc games".if_supports_color(Stdout, |t| t.dimmed()),
-        );
-    }
-    if hash_fallback {
-        log::info!(
-            "{}",
-            "Hash fallback enabled for unmatched files".if_supports_color(Stdout, |t| t.dimmed()),
         );
     }
     crate::log_blank();
@@ -134,6 +132,7 @@ pub(crate) fn run_organize(
         };
 
         match plan_organize(
+            &catalog,
             &cf.path,
             console.analyzer.as_ref(),
             &options,

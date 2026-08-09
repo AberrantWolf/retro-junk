@@ -13,12 +13,9 @@ use crate::rename::{
 
 /// Options for the organize operation.
 pub struct OrganizeOptions {
-    pub dat_dir: Option<PathBuf>,
     pub limit: Option<usize>,
     /// Also organize single-disc games into .m3u folders (default: multi-disc only).
     pub include_single_disc: bool,
-    /// Fall back to hashing when serial lookup fails (slower but catches more files).
-    pub hash_fallback: bool,
 }
 
 /// Progress updates during an organize operation.
@@ -150,12 +147,12 @@ pub fn find_loose_disc_files(folder: &Path) -> Vec<PathBuf> {
 
 /// Plan the organization of loose disc image files into .m3u folders.
 ///
-/// Scans for loose entry-point files, extracts serials from disc data via
-/// quick analysis, looks up game names in the Redump DAT, groups multi-disc
-/// games, and builds an organize plan.
+/// Scans loose entry-point files, identifies them from catalog hashes, groups
+/// multi-disc games, and builds an organize plan. Serials are diagnostics only.
 // Single planning pass over a folder; stages share loop-local state, so extraction adds noise.
 #[allow(clippy::too_many_lines)]
 pub fn plan_organize(
+    catalog: &retro_junk_db::Connection,
     folder: &Path,
     analyzer: &dyn RomAnalyzer,
     options: &OrganizeOptions,
@@ -168,7 +165,7 @@ pub fn plan_organize(
         )));
     }
 
-    let index = crate::catalog_match::load_catalog_index(analyzer)?;
+    let index = crate::catalog_match::load_catalog_index(catalog, analyzer)?;
 
     // Find loose entry-point files at the top level
     let loose_files = find_loose_disc_files(folder);
@@ -209,27 +206,13 @@ pub fn plan_organize(
             total,
         });
 
-        // Try serial lookup first
+        // The serial is cheap and useful in an error, but it is never the
+        // identity used for a filesystem move.
         let serial_outcome = serial_lookup(file_path, analyzer, &index);
-
-        if let Some(result) = serial_outcome.result {
-            let game = &index.games[result.game_index];
+        if let Some(dat_game_name) = try_hash_match(file_path, analyzer, &index, &progress) {
             matched.push(MatchedDiscFile {
                 source_path: file_path.clone(),
-                dat_game_name: game.name.clone(),
-                original_filename: file_name,
-            });
-            continue;
-        }
-
-        // Hash fallback if enabled
-        if options.hash_fallback
-            && let Some(match_result) = try_hash_fallback(file_path, analyzer, &index, &progress)
-        {
-            let game = &index.games[match_result.game_index];
-            matched.push(MatchedDiscFile {
-                source_path: file_path.clone(),
-                dat_game_name: game.name.clone(),
+                dat_game_name,
                 original_filename: file_name,
             });
             continue;
@@ -237,11 +220,12 @@ pub fn plan_organize(
 
         // Unmatched
         let reason = if serial_outcome.full_serial.is_empty() {
-            "No serial found in disc data".to_string()
-        } else if !serial_outcome.ambiguous_candidates.is_empty() {
-            format!("Ambiguous serial '{}'", serial_outcome.full_serial)
+            "No unique catalog hash match".to_string()
         } else {
-            format!("Serial '{}' not found in DAT", serial_outcome.full_serial)
+            format!(
+                "No unique catalog hash match (disc serial '{}')",
+                serial_outcome.full_serial
+            )
         };
 
         unmatched.push(UnorganizedFile {
@@ -410,18 +394,55 @@ struct MatchedDiscFile {
     original_filename: String,
 }
 
-/// Try hash-based fallback matching for a file.
-fn try_hash_fallback(
+/// Return a hash match only when the bytes identify one catalog game.
+fn try_hash_match(
     file_path: &Path,
     analyzer: &dyn RomAnalyzer,
     index: &DatIndex,
     progress: &dyn Fn(OrganizeProgress),
-) -> Option<retro_junk_dat::matcher::MatchResult> {
+) -> Option<String> {
     let file_name = file_path
         .file_name()
         .unwrap_or_default()
         .to_string_lossy()
         .to_string();
+
+    if file_path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("cue"))
+    {
+        let report = |path: &Path, done: u64, total: u64| {
+            progress(OrganizeProgress::Hashing {
+                file_name: path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned(),
+                bytes_done: done,
+                bytes_total: total,
+            });
+        };
+        return match crate::disc_set::plan_disc_set(file_path, analyzer, index, &report) {
+            crate::disc_set::DiscSetOutcome::Planned(plan) => Some(plan.game_name),
+            crate::disc_set::DiscSetOutcome::AlreadyCorrect { game_name, .. } => Some(game_name),
+            _ => None,
+        };
+    }
+
+    if file_path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("chd"))
+    {
+        let disc = crate::disc_hash::hash_chd_disc(file_path, &|done, total| {
+            progress(OrganizeProgress::Hashing {
+                file_name: file_name.clone(),
+                bytes_done: done,
+                bytes_total: total,
+            });
+        })
+        .ok()?;
+        return crate::disc_set::match_complete_track_hashes(index, &disc.tracks);
+    }
 
     let mut file = fs::File::open(file_path).ok()?;
     let hashes = crate::hasher::compute_crc32_sha1(&mut file, analyzer, Some(file_path)).ok()?;
@@ -432,10 +453,17 @@ fn try_hash_fallback(
         bytes_total: hashes.data_size,
     });
 
-    index
-        .match_by_hash(hashes.data_size, &hashes)
-        .into_iter()
-        .next()
+    let matches = index.match_by_hash(hashes.data_size, &hashes);
+    let game = matches.first()?.game_index;
+    matches
+        .iter()
+        .all(|matched| matched.game_index == game)
+        // A primary track can narrow a multi-track disc, but cannot verify
+        // it. Until the container supplies all logical track hashes, Organize
+        // must leave it untouched.
+        .then_some(&index.games[game])
+        .filter(|game| game.roms.len() == 1)
+        .map(|game| game.name.clone())
 }
 
 #[cfg(test)]

@@ -51,10 +51,7 @@ fn archive_binding<'a>(
 /// `cover_title` is found, it's set on the `ScrapedGame` so ES-DE can
 /// use it as the `<name>` tag.
 fn enrich_from_catalog(games: &mut [retro_junk_frontend::ScrapedGame]) {
-    let catalog_path = match retro_junk_dat::cache::cache_dir() {
-        Ok(p) => p.join("catalog.db"),
-        Err(_) => return,
-    };
+    let catalog_path = retro_junk_lib::settings::catalog_database_path();
     if !catalog_path.exists() {
         return;
     }

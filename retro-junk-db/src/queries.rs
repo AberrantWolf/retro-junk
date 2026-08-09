@@ -32,11 +32,11 @@ pub struct CatalogHashQuery {
 // ── Column Constants ────────────────────────────────────────────────────────
 
 const MEDIA_COLUMNS: &str = "id, release_id, media_serial, disc_number, disc_label, \
-     revision, status, tag, dat_name, rom_name, dat_source, file_size, \
+     revision, status, tag, dat_name, rom_name, dat_source, dat_system, file_size, \
      crc32, sha1, md5, created_at, updated_at";
 
 const JOINED_MEDIA_COLUMNS: &str = "m.id, m.release_id, m.media_serial, m.disc_number, m.disc_label, \
-     m.revision, m.status, m.tag, m.dat_name, m.rom_name, m.dat_source, m.file_size, \
+     m.revision, m.status, m.tag, m.dat_name, m.rom_name, m.dat_source, m.dat_system, m.file_size, \
      m.crc32, m.sha1, m.md5, m.created_at, m.updated_at";
 
 const RELEASE_COLUMNS: &str = "id, work_id, platform_id, region, revision, variant, \
@@ -103,12 +103,12 @@ pub fn match_media_by_hash(
         |row| {
             Ok(CatalogMediaMatch {
                 media: row_to_media(row)?,
-                platform_id: row.get(17)?,
-                region: row.get(18)?,
-                release_title: row.get(19)?,
-                cover_title: row.get(20)?,
-                screen_title: row.get(21)?,
-                release_revision: row.get(22)?,
+                platform_id: row.get(18)?,
+                region: row.get(19)?,
+                release_title: row.get(20)?,
+                cover_title: row.get(21)?,
+                screen_title: row.get(22)?,
+                release_revision: row.get(23)?,
             })
         },
     )?;
@@ -139,12 +139,12 @@ pub fn match_media_by_serial(
     let rows = stmt.query_map(params![platform_id, serial_key], |row| {
         Ok(CatalogMediaMatch {
             media: row_to_media(row)?,
-            platform_id: row.get(17)?,
-            region: row.get(18)?,
-            release_title: row.get(19)?,
-            cover_title: row.get(20)?,
-            screen_title: row.get(21)?,
-            release_revision: row.get(22)?,
+            platform_id: row.get(18)?,
+            region: row.get(19)?,
+            release_title: row.get(20)?,
+            cover_title: row.get(21)?,
+            screen_title: row.get(22)?,
+            release_revision: row.get(23)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -200,15 +200,15 @@ pub fn match_media_by_serials(
     let mut statement = conn.prepare(&sql)?;
     let rows = statement.query_map(rusqlite::params_from_iter(parameters), |row| {
         Ok((
-            row.get::<_, usize>(23)?,
+            row.get::<_, usize>(24)?,
             CatalogMediaMatch {
                 media: row_to_media(row)?,
-                platform_id: row.get(17)?,
-                region: row.get(18)?,
-                release_title: row.get(19)?,
-                cover_title: row.get(20)?,
-                screen_title: row.get(21)?,
-                release_revision: row.get(22)?,
+                platform_id: row.get(18)?,
+                region: row.get(19)?,
+                release_title: row.get(20)?,
+                cover_title: row.get(21)?,
+                screen_title: row.get(22)?,
+                release_revision: row.get(23)?,
             },
         ))
     })?;
@@ -267,15 +267,15 @@ pub fn match_media_by_hashes(
     let mut statement = conn.prepare(&sql)?;
     let rows = statement.query_map(rusqlite::params_from_iter(parameters), |row| {
         Ok((
-            row.get::<_, usize>(23)?,
+            row.get::<_, usize>(24)?,
             CatalogMediaMatch {
                 media: row_to_media(row)?,
-                platform_id: row.get(17)?,
-                region: row.get(18)?,
-                release_title: row.get(19)?,
-                cover_title: row.get(20)?,
-                screen_title: row.get(21)?,
-                release_revision: row.get(22)?,
+                platform_id: row.get(18)?,
+                region: row.get(19)?,
+                release_title: row.get(20)?,
+                cover_title: row.get(21)?,
+                screen_title: row.get(22)?,
+                release_revision: row.get(23)?,
             },
         ))
     })?;
@@ -1657,12 +1657,13 @@ fn row_to_media(row: &rusqlite::Row<'_>) -> rusqlite::Result<Media> {
         dat_name: row.get(8)?,
         rom_name: row.get(9)?,
         dat_source: row.get(10)?,
-        file_size: row.get(11)?,
-        crc32: row.get(12)?,
-        sha1: row.get(13)?,
-        md5: row.get(14)?,
-        created_at: row.get(15)?,
-        updated_at: row.get(16)?,
+        dat_system: row.get(11)?,
+        file_size: row.get(12)?,
+        crc32: row.get(13)?,
+        sha1: row.get(14)?,
+        md5: row.get(15)?,
+        created_at: row.get(16)?,
+        updated_at: row.get(17)?,
     })
 }
 

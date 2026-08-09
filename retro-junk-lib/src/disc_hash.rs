@@ -117,6 +117,31 @@ pub fn hash_cue_disc(
     Ok(CueDiscHashes { primary, tracks })
 }
 
+/// Hash every logical track stored in a CD CHD.
+pub fn hash_chd_disc(
+    chd_path: &Path,
+    progress: &dyn Fn(u64, u64),
+) -> Result<CueDiscHashes, AnalysisError> {
+    let mut file = std::io::BufReader::with_capacity(8 * 1024 * 1024, File::open(chd_path)?);
+    let tracks = retro_junk_disc::hash_chd_tracks(&mut file, HashAlgorithms::All, Some(progress))?
+        .into_iter()
+        .map(|track| DiscTrackHashes {
+            track_number: u8::try_from(track.track_number).unwrap_or(u8::MAX),
+            is_data: track.is_data,
+            hashes: track.hashes,
+        })
+        .collect::<Vec<_>>();
+    let primary = tracks
+        .iter()
+        .filter(|track| track.is_data)
+        .max_by_key(|track| track.hashes.data_size)
+        .or_else(|| tracks.first())
+        .ok_or_else(|| AnalysisError::invalid_format("CHD describes no hashable tracks"))?
+        .hashes
+        .clone();
+    Ok(CueDiscHashes { primary, tracks })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,5 +216,43 @@ mod tests {
         .unwrap();
 
         assert!(hash_cue_disc(&cue, &|_, _| {}).is_err());
+    }
+
+    #[test]
+    fn chd_hashes_the_same_complete_track_set_as_its_source_cue() {
+        if std::process::Command::new("chdman")
+            .arg("--help")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cue = dir.path().join("game.cue");
+        let chd = dir.path().join("game.chd");
+        std::fs::write(dir.path().join("track1.bin"), vec![0x11_u8; 3 * 2352]).unwrap();
+        std::fs::write(dir.path().join("track2.bin"), vec![0x22_u8; 5 * 2352]).unwrap();
+        std::fs::write(
+            &cue,
+            "FILE \"track1.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\nFILE \"track2.bin\" BINARY\n  TRACK 02 AUDIO\n    INDEX 01 00:00:00\n",
+        )
+        .unwrap();
+        let status = std::process::Command::new("chdman")
+            .args(["createcd", "-i"])
+            .arg(&cue)
+            .arg("-o")
+            .arg(&chd)
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        let source = hash_cue_disc(&cue, &|_, _| {}).unwrap();
+        let compressed = hash_chd_disc(&chd, &|_, _| {}).unwrap();
+        assert_eq!(compressed.tracks.len(), source.tracks.len());
+        for (actual, expected) in compressed.tracks.iter().zip(&source.tracks) {
+            assert_eq!(actual.track_number, expected.track_number);
+            assert_eq!(actual.hashes.data_size, expected.hashes.data_size);
+            assert_eq!(actual.hashes.sha1, expected.hashes.sha1);
+        }
     }
 }

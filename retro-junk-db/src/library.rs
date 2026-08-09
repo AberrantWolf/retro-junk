@@ -449,7 +449,11 @@ pub struct LibraryConsoleSummary {
     pub unrecognized_count: u64,
     pub ambiguous_count: u64,
     pub likely_count: u64,
+    pub disambiguated_count: u64,
     pub tagged_count: u64,
+    /// Archive-backed logical rows assigned to this console. These are raw
+    /// facts; status meaning remains backend-owned.
+    pub archived_releases: Vec<crate::facts::ReleaseFacts>,
     pub revision: u64,
 }
 
@@ -1486,7 +1490,27 @@ pub fn list_console_summaries(
     conn: &Connection,
     root_id: LibraryRootId,
 ) -> Result<Vec<LibraryConsoleSummary>, LibraryError> {
-    let mut stmt=conn.prepare("SELECT c.id,c.platform,c.folder_name,c.folder_path,c.scan_state,c.dat_game_count,c.revision,COUNT(e.id),COALESCE(SUM(CASE WHEN e.status='matched' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='unknown' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='unrecognized' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='ambiguous' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.status='likely' AND e.tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN e.tag<>'' THEN 1 ELSE 0 END),0) FROM library_consoles c LEFT JOIN library_entries e ON e.console_id=c.id WHERE c.root_id=?1 GROUP BY c.id ORDER BY c.folder_name COLLATE NOCASE,c.id")?;
+    // A catalog-bound playable is represented by its archive release in the
+    // unified Library list. Its raw file row must therefore contribute to
+    // neither the logical count nor the console status aggregate; otherwise
+    // the sidebar describes hidden rows instead of the rows a person sees.
+    let unbound = format!("NOT {}", crate::archive::library_entry_is_archived("e"));
+    let mut stmt = conn.prepare(&format!(
+        "SELECT c.id,c.platform,c.folder_name,c.folder_path,c.scan_state,c.dat_game_count,c.revision,
+                COUNT(e.id),
+                COALESCE(SUM(CASE WHEN e.status='matched' AND e.tag='' AND {unbound} THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN e.status='unknown' AND e.tag='' AND {unbound} THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN e.status='unrecognized' AND e.tag='' AND {unbound} THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN e.status='ambiguous' AND e.tag='' AND {unbound} THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN e.status='likely' AND e.tag='' AND {unbound} THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN e.status='disambiguated' AND e.tag='' AND {unbound} THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN e.tag<>'' AND {unbound} THEN 1 ELSE 0 END),0)
+         FROM library_consoles c
+         LEFT JOIN library_entries e ON e.console_id=c.id
+         WHERE c.root_id=?1
+         GROUP BY c.id
+         ORDER BY c.folder_name COLLATE NOCASE,c.id"
+    ))?;
     let rows = stmt.query_map([root_id.0], |r| {
         Ok((
             r.get::<_, u64>(0)?,
@@ -1503,6 +1527,7 @@ pub fn list_console_summaries(
             r.get::<_, u64>(11)?,
             r.get::<_, u64>(12)?,
             r.get::<_, u64>(13)?,
+            r.get::<_, u64>(14)?,
         ))
     })?;
     let mut summaries = rows
@@ -1521,6 +1546,7 @@ pub fn list_console_summaries(
                 unrecognized,
                 ambiguous,
                 likely,
+                disambiguated,
                 tagged,
             ) = r?;
             Ok(LibraryConsoleSummary {
@@ -1537,7 +1563,9 @@ pub fn list_console_summaries(
                 unrecognized_count: unrecognized,
                 ambiguous_count: ambiguous,
                 likely_count: likely,
+                disambiguated_count: disambiguated,
                 tagged_count: tagged,
+                archived_releases: Vec::new(),
                 revision: rev,
             })
         })
@@ -1556,14 +1584,28 @@ pub fn list_console_summaries(
     let Some(profile_id) = profile_id else {
         return Ok(summaries);
     };
-    let archived = crate::archive::list_archive_release_summaries(conn, &profile_id)
+    attach_archive_releases(conn, &profile_id, &mut summaries)?;
+    Ok(summaries)
+}
+
+fn attach_archive_releases(
+    conn: &Connection,
+    profile_id: &str,
+    summaries: &mut [LibraryConsoleSummary],
+) -> Result<(), LibraryError> {
+    let archived = crate::archive::list_archive_release_summaries(conn, profile_id)
         .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?;
-    for summary in &mut summaries {
+    let release_facts =
+        crate::facts::release_facts_by_id(conn, &crate::facts::FactsScope::profile(profile_id))
+            .map_err(|error| LibraryError::CatalogMutation(error.to_string()))?;
+    for summary in summaries {
         let archive_platform = archive_platform_scope(&summary.folder_name, &summary.platform);
-        let archive_count = archived
+        summary.archived_releases = archived
             .iter()
             .filter(|release| platform_ids_match(&release.platform_id, &archive_platform))
-            .count() as u64;
+            .filter_map(|release| release_facts.get(&release.archive_release_id).cloned())
+            .collect();
+        let archive_count = u64::try_from(summary.archived_releases.len()).unwrap_or(u64::MAX);
         let unbound_count: u64 = conn.query_row(
             &format!(
                 "SELECT COUNT(*) FROM library_entries e
@@ -1575,7 +1617,7 @@ pub fn list_console_summaries(
         )?;
         summary.entry_count = unbound_count.saturating_add(archive_count);
     }
-    Ok(summaries)
+    Ok(())
 }
 
 /// Remove a stale console projection only when it contains no entries.
@@ -3251,7 +3293,34 @@ fn entry_counts(
     conn: &Connection,
     cid: LibraryConsoleId,
 ) -> Result<LibraryEntryCounts, LibraryError> {
-    Ok(conn.query_row("SELECT COUNT(*),COALESCE(SUM(CASE WHEN status='matched' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='unknown' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='ambiguous' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='likely' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN status='unrecognized' AND tag='' THEN 1 ELSE 0 END),0),COALESCE(SUM(CASE WHEN tag<>'' THEN 1 ELSE 0 END),0) FROM library_entries WHERE console_id=?1",[cid.0],|r|Ok(LibraryEntryCounts{total:r.get(0)?,matched:r.get(1)?,unknown:r.get(2)?,ambiguous:r.get(3)?,likely:r.get(4)?,unrecognized:r.get(5)?,tagged:r.get(6)?}))?)
+    let unbound = format!(
+        "NOT {}",
+        crate::archive::library_entry_is_archived("library_entries")
+    );
+    Ok(conn.query_row(
+        &format!(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN status='matched' AND tag='' THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN status='unknown' AND tag='' THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN status='ambiguous' AND tag='' THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN status='likely' AND tag='' THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN status='unrecognized' AND tag='' THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN tag<>'' THEN 1 ELSE 0 END),0)
+             FROM library_entries WHERE console_id=?1 AND {unbound}"
+        ),
+        [cid.0],
+        |r| {
+            Ok(LibraryEntryCounts {
+                total: r.get(0)?,
+                matched: r.get(1)?,
+                unknown: r.get(2)?,
+                ambiguous: r.get(3)?,
+                likely: r.get(4)?,
+                unrecognized: r.get(5)?,
+                tagged: r.get(6)?,
+            })
+        },
+    )?)
 }
 
 /// v9 -> v10 library migration. It never touches the ROM filesystem.

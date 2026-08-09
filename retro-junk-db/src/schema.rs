@@ -95,7 +95,7 @@ pub fn ensure_projection_shape(conn: &Connection) -> Result<(), SchemaError> {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 28;
+pub const CURRENT_VERSION: i32 = 29;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -199,6 +199,7 @@ const TABLES: &[(&str, &str)] = &[
           dat_name TEXT NOT NULL DEFAULT '',
           rom_name TEXT NOT NULL DEFAULT '',
           dat_source TEXT NOT NULL DEFAULT '',
+          dat_system TEXT NOT NULL DEFAULT '',
           file_size INTEGER NOT NULL DEFAULT 0,
           crc32 TEXT NOT NULL DEFAULT '',
           sha1 TEXT NOT NULL DEFAULT '',
@@ -693,7 +694,7 @@ const V9_REBUILDS: &[(&str, &str)] = &[
         "media",
         "id, release_id, COALESCE(media_serial, ''), COALESCE(disc_number, 0),
          COALESCE(disc_label, ''), COALESCE(revision, ''), status, tag,
-         COALESCE(dat_name, ''), '', COALESCE(dat_source, ''), COALESCE(file_size, 0),
+         COALESCE(dat_name, ''), '', COALESCE(dat_source, ''), '', COALESCE(file_size, 0),
          COALESCE(crc32, ''), COALESCE(sha1, ''), COALESCE(md5, ''), created_at, updated_at",
     ),
     (
@@ -1181,6 +1182,27 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 {
                     conn.execute_batch(
                         "ALTER TABLE library_entries DROP COLUMN cue_compat_issues_json;",
+                    )?;
+                }
+            }
+            28 => {
+                // Provenance is scoped to one DAT, not merely its publisher:
+                // Redump's Saturn and PlayStation snapshots have independent
+                // versions. Existing rows are backfilled by their next DAT
+                // import; an empty value deliberately yields no claimed
+                // source version in the meantime.
+                let has_media: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='media')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_media
+                    && conn
+                        .prepare("SELECT dat_system FROM media LIMIT 0")
+                        .is_err()
+                {
+                    conn.execute_batch(
+                        "ALTER TABLE media ADD COLUMN dat_system TEXT NOT NULL DEFAULT '';",
                     )?;
                 }
             }

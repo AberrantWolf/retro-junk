@@ -29,7 +29,10 @@ retro-junk-db.workspace = true
 retro-junk-catalog.workspace = true
 retro-junk-import.workspace = true
 retro-junk-io.workspace = true
-eframe = { version = "0.35", features = ["persistence"] }
+# The default eframe feature set includes wgpu and every desktop window-system
+# backend. This native app does not use wgpu-specific APIs; glow provides the
+# same eframe surface with a much smaller compile and link graph.
+eframe = { version = "0.35", default-features = false, features = ["accesskit", "default_fonts", "glow", "persistence"] }
 egui = "0.35"
 egui_extras = { version = "0.35", features = ["file", "image"] }
 rfd = "0.15"

@@ -34,3 +34,14 @@ pub fn projection_source_generation(
     retro_junk_db::archive_profile_source_generation(conn, profile_id)
         .map_err(|error| error.to_string())
 }
+
+/// Answers whether the committed projection reflects both authoritative
+/// archive manifests and the catalog generation used to bind their hashes.
+pub fn projection_is_current(
+    conn: &Connection,
+    profile_id: &str,
+    source_generation: u64,
+) -> Result<bool, String> {
+    retro_junk_db::archive_profile_projection_is_current(conn, profile_id, source_generation)
+        .map_err(|error| error.to_string())
+}

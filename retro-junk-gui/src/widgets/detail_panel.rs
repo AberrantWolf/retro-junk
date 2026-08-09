@@ -868,7 +868,7 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.separator();
         ui.label(egui::RichText::new("Archive").strong());
         detail_row(ui, "State", completion.overall().label());
-        detail_row(ui, "Verified discs", &completion.catalog.describe());
+        detail_row(ui, "Catalog-verified media", &completion.catalog.describe());
         detail_row(ui, "Stored masters", &completion.presence.describe());
         detail_row(ui, "Integrity", &completion.integrity.describe());
         for attention in &completion.attention {
@@ -972,13 +972,13 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             let scrape = ui
                 .add_enabled(
                     release.scrape_identity.is_some(),
-                    egui::Button::new("Scrape Media"),
+                    egui::Button::new("Scrape Missing Artwork"),
                 )
                 .on_disabled_hover_text(
                     "This archive release is not catalog-bound, so it has no reliable scraper identity",
                 );
             if scrape.clicked() {
-                crate::backend::assets::scrape_missing_media_for_selection(
+                crate::backend::assets::scrape_missing_artwork_for_selection(
                     app,
                     console_idx,
                     ui.ctx(),
@@ -1106,10 +1106,14 @@ fn show_file_actions(
     };
     ui.horizontal_wrapped(|ui| {
         let scrape = ui
-            .add_enabled(details_ready, egui::Button::new("Scrape Media"))
+            .add_enabled(details_ready, egui::Button::new("Scrape Missing Artwork"))
             .on_disabled_hover_text(disabled_reason);
         if scrape.clicked() {
-            crate::backend::assets::scrape_missing_media_for_selection(app, console_idx, ui.ctx());
+            crate::backend::assets::scrape_missing_artwork_for_selection(
+                app,
+                console_idx,
+                ui.ctx(),
+            );
         }
         let hashes = ui
             .add_enabled(details_ready, egui::Button::new("Calculate Hashes"))

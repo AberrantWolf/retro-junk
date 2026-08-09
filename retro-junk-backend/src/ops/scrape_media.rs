@@ -20,10 +20,6 @@ use retro_junk_lib::async_util::{cancellable, run_with_events};
 use super::OpCtx;
 use crate::scrape::scrape_derivation;
 
-#[cfg(test)]
-#[path = "scrape_media_tests.rs"]
-mod tests;
-
 /// One file (or archived release) to scrape, collected by the frontend from
 /// its selection.
 pub struct ScrapeWorkItem {
@@ -89,18 +85,6 @@ impl ScrapeWorkItem {
     }
 }
 
-/// The types a scrape asks for: everything by default, images only when the
-/// caller excludes video.
-fn default_asset_selection(artwork_only: bool) -> retro_junk_scraper::AssetSelection {
-    let mut selection = retro_junk_scraper::AssetSelection::default();
-    if artwork_only {
-        selection
-            .types
-            .retain(|asset_type| *asset_type != AssetType::Video);
-    }
-    selection
-}
-
 /// Everything a scrape run needs beyond the work items themselves.
 pub struct ScrapeMediaRequest {
     pub platform: Platform,
@@ -112,8 +96,10 @@ pub struct ScrapeMediaRequest {
     pub work: Vec<ScrapeWorkItem>,
     /// Re-download every selected type instead of only the missing ones.
     pub force_redownload: bool,
-    /// Exclude videos from the selection.
-    pub artwork_only: bool,
+    /// The configured artwork contract. Completion and scraping must receive
+    /// this same selection so the scraper can fetch everything keeping a row
+    /// incomplete, including video.
+    pub asset_selection: retro_junk_scraper::AssetSelection,
     /// Active collection profile; enables publication of downloads into the
     /// archive and provides the scratch workspace.
     pub archive_profile: Option<retro_junk_archive::CollectionProfile>,
@@ -148,7 +134,7 @@ pub struct ScrapeMediaReport {
     pub cancelled: bool,
 }
 
-/// Scrape media from `ScreenScraper` for the requested work items.
+/// Scrape artwork from `ScreenScraper` for the requested work items.
 ///
 /// When `force_redownload` is true, re-downloads all selected media types;
 /// when false, only downloads missing types. The catalog database at
@@ -166,7 +152,7 @@ pub fn scrape_media(
         media_dir_setting,
         mut work,
         force_redownload,
-        artwork_only,
+        asset_selection,
         archive_profile,
         scratch_tag,
     } = request;
@@ -246,7 +232,6 @@ pub fn scrape_media(
             .enumerate()
             .map(|(index, item)| item.to_target(index as u64, &media_dir))
             .collect::<Vec<_>>();
-        let selection = default_asset_selection(artwork_only);
         let session_options = retro_junk_scraper::ScrapeSessionOptions {
             force_redownload,
             miximage: retro_junk_frontend::miximage_layout::MiximageLayout::load_or_create()
@@ -277,7 +262,7 @@ pub fn scrape_media(
             client: &client,
             system_id,
             targets: &targets,
-            selection: &selection,
+            selection: &asset_selection,
             options: &session_options,
             archive: publication.as_ref(),
             max_workers,

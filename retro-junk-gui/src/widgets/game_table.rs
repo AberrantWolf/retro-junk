@@ -554,7 +554,7 @@ fn show_status_cell(ui: &mut egui::Ui, data: &RowData) {
     }
     match data.asset_status {
         AssetStatus::Unknown => {}
-        AssetStatus::None => tip.push_str("\nNo scraped media"),
+        AssetStatus::None => tip.push_str("\nNo scraped artwork"),
         AssetStatus::Partial { found, total } => {
             let _ = write!(tip, "\nPartial media ({found}/{total})");
         }
@@ -656,7 +656,7 @@ fn show_row_context_menu(
         if any_has_media && all_have_all_media {
             // All entries have complete media
             if ui
-                .button(icons::labeled(icons::SCRAPE, "Re-scrape Media"))
+                .button(icons::labeled(icons::SCRAPE, "Re-scrape Artwork"))
                 .clicked()
             {
                 backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
@@ -665,23 +665,23 @@ fn show_row_context_menu(
         } else if any_has_media {
             // Some entries have partial media
             if ui
-                .button(icons::labeled(icons::SCRAPE, "Scrape All Media"))
+                .button(icons::labeled(icons::SCRAPE, "Scrape All Artwork"))
                 .clicked()
             {
                 backend::assets::rescrape_media_for_selection(app, console_idx, ctx);
                 ui.close();
             }
             if ui
-                .button(icons::labeled(icons::SCRAPE, "Scrape Missing Media"))
+                .button(icons::labeled(icons::SCRAPE, "Scrape Missing Artwork"))
                 .clicked()
             {
-                backend::assets::scrape_missing_media_for_selection(app, console_idx, ctx);
+                backend::assets::scrape_missing_artwork_for_selection(app, console_idx, ctx);
                 ui.close();
             }
         } else {
             // No entry has any media
             if ui
-                .button(icons::labeled(icons::SCRAPE, "Scrape Media"))
+                .button(icons::labeled(icons::SCRAPE, "Scrape Artwork"))
                 .clicked()
             {
                 backend::assets::rescrape_media_for_selection(app, console_idx, ctx);

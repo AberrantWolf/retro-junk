@@ -461,7 +461,7 @@ pub fn match_catalog_serial_any_platform(
     let mut statement = conn.prepare(
         "SELECT DISTINCT m.id,m.release_id,r.work_id,r.title,m.dat_source,
                 COALESCE((SELECT il.source_version FROM import_log il
-                          WHERE il.source_type=m.dat_source
+                          WHERE il.source_type=m.dat_source AND il.source_name=m.dat_system
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
                 r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
                 EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),m.dat_name,m.rom_name
@@ -500,7 +500,7 @@ pub fn match_catalog_file(
     platform_id: &str,
     actual: &retro_junk_archive::FileDigests,
 ) -> Result<Vec<CompleteCatalogMediaMatch>, OperationError> {
-    match_catalog_file_inner(conn, platform_id, actual)
+    match_catalog_file_inner(conn, &catalog_platform_id(platform_id), actual)
 }
 
 pub fn match_catalog_file_any_platform(
@@ -518,7 +518,7 @@ fn match_catalog_file_inner(
     let mut statement = conn.prepare(
         "SELECT m.id,m.release_id,r.work_id,r.title,m.dat_source,
                 COALESCE((SELECT il.source_version FROM import_log il
-                          WHERE il.source_type=m.dat_source
+                          WHERE il.source_type=m.dat_source AND il.source_name=m.dat_system
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
                 r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
                 EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),m.dat_name,m.rom_name
@@ -870,7 +870,7 @@ pub fn match_complete_catalog_media(
     platform_id: &str,
     actual: &[TrackDigest],
 ) -> Result<Vec<CompleteCatalogMediaMatch>, OperationError> {
-    match_complete_catalog_media_inner(conn, platform_id, actual)
+    match_complete_catalog_media_inner(conn, &catalog_platform_id(platform_id), actual)
 }
 
 pub fn match_complete_catalog_media_any_platform(
@@ -888,7 +888,7 @@ fn match_single_track_catalog_media(
     let mut statement = conn.prepare(
         "SELECT m.id,m.release_id,r.work_id,r.title,m.dat_source,
                 COALESCE((SELECT il.source_version FROM import_log il
-                          WHERE il.source_type=m.dat_source
+                          WHERE il.source_type=m.dat_source AND il.source_name=m.dat_system
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
                 r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
                 EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),m.dat_name,m.rom_name
@@ -957,7 +957,7 @@ fn match_complete_catalog_media_inner(
     let mut candidates = conn.prepare(
         "SELECT DISTINCT m.id,m.release_id,r.work_id,r.title,m.dat_source,
                 COALESCE((SELECT il.source_version FROM import_log il
-                          WHERE il.source_type=m.dat_source
+                          WHERE il.source_type=m.dat_source AND il.source_name=m.dat_system
                           ORDER BY il.imported_at DESC,il.id DESC LIMIT 1),''),
                 r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
                 EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),m.dat_name,m.rom_name
@@ -1018,8 +1018,11 @@ fn match_complete_catalog_media_inner(
                     && expected.size == actual.size
                     && expected.sha1.eq_ignore_ascii_case(&actual.sha1)
                     && (expected.crc32.is_empty()
+                        || actual.crc32.is_empty()
                         || expected.crc32.eq_ignore_ascii_case(&actual.crc32))
-                    && (expected.md5.is_empty() || expected.md5.eq_ignore_ascii_case(&actual.md5))
+                    && (expected.md5.is_empty()
+                        || actual.md5.is_empty()
+                        || expected.md5.eq_ignore_ascii_case(&actual.md5))
             });
         if complete {
             matches.push(candidate);
@@ -1093,6 +1096,51 @@ fn release_projection_fingerprint(
     format!("{:x}", digest.finalize())
 }
 
+/// Version of the rule that resolves persisted archive hashes to catalog
+/// media. Bumping this revisits every carrier once after a matching bug is
+/// fixed, without pretending the archive manifests themselves changed.
+const CATALOG_RESOLUTION_VERSION: u64 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CatalogProjectionGeneration {
+    import: u64,
+    resolver: u64,
+}
+
+impl CatalogProjectionGeneration {
+    const fn encoded(self) -> u64 {
+        (self.import << 16) | self.resolver
+    }
+}
+
+impl std::fmt::Display for CatalogProjectionGeneration {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "i{}r{}", self.import, self.resolver)
+    }
+}
+
+/// Catalog state that can change archive identity.
+///
+/// Import history is intentionally not the generation: importing an identical
+/// DAT is an audit event, but it changes no catalog identity and must not force
+/// a full archive reprojection. The high bits advance only after an import that
+/// created or updated catalog media; the low bits advance when the resolver's
+/// interpretation of already-persisted hash evidence changes.
+fn catalog_projection_generation(
+    conn: &Connection,
+) -> Result<CatalogProjectionGeneration, OperationError> {
+    let material_import: u64 = conn.query_row(
+        "SELECT COALESCE(MAX(id),0) FROM import_log
+         WHERE records_created<>0 OR records_updated<>0",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(CatalogProjectionGeneration {
+        import: material_import,
+        resolver: CATALOG_RESOLUTION_VERSION,
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn reconcile_archive_snapshot(
     conn: &mut Connection,
@@ -1101,10 +1149,8 @@ pub fn reconcile_archive_snapshot(
     workspace_root: &Path,
 ) -> Result<(), OperationError> {
     let profile_id = snapshot.manifest.profile_id.to_string();
-    let catalog_generation: u64 =
-        conn.query_row("SELECT COALESCE(MAX(rowid),0) FROM import_log", [], |row| {
-            row.get(0)
-        })?;
+    let catalog_generation = catalog_projection_generation(conn)?;
+    log::debug!("Archive catalog projection generation: {catalog_generation}");
     let existing_profile: Option<(String, String, String, String, u64)> = conn
         .query_row(
             "SELECT manifest_sha256,archive_root,playable_root,workspace_root,catalog_generation
@@ -1133,7 +1179,7 @@ pub fn reconcile_archive_snapshot(
                 || projected_archive != snapshot.root.to_string_lossy().as_ref()
                 || projected_playable != playable_root.to_string_lossy().as_ref()
                 || projected_workspace != workspace_root.to_string_lossy().as_ref()
-                || *projected_catalog != catalog_generation
+                || *projected_catalog != catalog_generation.encoded()
         },
     );
     let fingerprints = snapshot
@@ -1210,7 +1256,7 @@ pub fn reconcile_archive_snapshot(
             playable_root.to_string_lossy(),
             workspace_root.to_string_lossy(),
             retro_junk_archive::projection_generation(&snapshot.root).unwrap_or(0),
-            catalog_generation,
+            catalog_generation.encoded(),
         ],
     )?;
 
@@ -2282,6 +2328,30 @@ pub fn archive_profile_source_generation(
     Ok(generation)
 }
 
+/// Whether a profile projection represents both the current archive tree and
+/// the current catalog identity generation.
+///
+/// Archive bytes and catalog rows are independent inputs. Checking only the
+/// archive generation leaves hash-resolvable carriers unbound after a DAT
+/// import until some unrelated archive mutation happens to trigger a rescan.
+pub fn archive_profile_projection_is_current(
+    conn: &Connection,
+    profile_id: &str,
+    source_generation: u64,
+) -> Result<bool, OperationError> {
+    let projected = conn
+        .query_row(
+            "SELECT source_generation,catalog_generation FROM archive_profiles WHERE id=?1",
+            [profile_id],
+            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+        )
+        .optional()?;
+    let catalog_generation = catalog_projection_generation(conn)?;
+    Ok(projected.is_some_and(|(source, catalog)| {
+        source == source_generation && catalog == catalog_generation.encoded()
+    }))
+}
+
 /// Increment the rebuildable policy projection after the authoritative root
 /// manifest changes. Explicit carrier overrides are left untouched; only
 /// carriers inheriting this platform default are updated.
@@ -2749,4 +2819,42 @@ pub fn apply_collection_marks(
         );
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod catalog_generation_tests {
+    use super::*;
+
+    #[test]
+    fn generation_format_is_owned_and_human_readable() {
+        assert_eq!(
+            CatalogProjectionGeneration {
+                import: 100,
+                resolver: 3,
+            }
+            .to_string(),
+            "i100r3"
+        );
+    }
+
+    #[test]
+    fn a_material_catalog_import_invalidates_an_unchanged_archive_projection() {
+        let conn = crate::open_memory().unwrap();
+        let current = catalog_projection_generation(&conn).unwrap().encoded();
+        conn.execute(
+            "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,source_generation,catalog_generation)
+             VALUES('profile','Profile','archive.toml','sha','/archive',7,?1)",
+            [current],
+        )
+        .unwrap();
+        assert!(archive_profile_projection_is_current(&conn, "profile", 7).unwrap());
+
+        conn.execute(
+            "INSERT INTO import_log(source_type,source_name,imported_at,records_updated)
+             VALUES('redump','Sega - Saturn','2026-08-09',1)",
+            [],
+        )
+        .unwrap();
+        assert!(!archive_profile_projection_is_current(&conn, "profile", 7).unwrap());
+    }
 }

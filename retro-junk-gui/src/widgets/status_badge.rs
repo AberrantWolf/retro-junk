@@ -1,12 +1,20 @@
-use crate::state::{AssetStatus, EntryStatus, EntryStatusColor, RowStatus};
+use crate::state::{AssetStatus, RowStatus};
 
-/// Draw a small colored circle indicating the entry's status.
-/// Returns the response for tooltip handling.
-pub fn show(ui: &mut egui::Ui, status: EntryStatus) -> egui::Response {
-    let color = status.color();
+/// Draw the shared status glyph for an already-folded aggregate.
+pub fn show_severity(
+    ui: &mut egui::Ui,
+    severity: retro_junk_backend::completion::Severity,
+) -> egui::Response {
+    let color = crate::theme::severity_color(severity);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
     if ui.is_rect_visible(rect) {
-        ui.painter().circle_filled(rect.center(), 4.0, color);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            crate::theme::severity_icon(severity),
+            egui::FontId::proportional(11.0),
+            color,
+        );
     }
     response
 }

@@ -434,16 +434,16 @@ impl RetroJunkApp {
                     &profile_id,
                 ) {
                     Ok(Some(indexed_at)) => {
-                        let projected =
-                            retro_junk_backend::queries::collection::projection_source_generation(
-                                connection,
-                                &profile_id,
-                            )
-                            .unwrap_or(None);
                         let authoritative =
                             retro_junk_archive::projection_generation(&profile.archive_root)
                                 .unwrap_or(0);
-                        if projected == Some(authoritative) {
+                        if retro_junk_backend::queries::collection::projection_is_current(
+                            connection,
+                            &profile_id,
+                            authoritative,
+                        )
+                        .unwrap_or(false)
+                        {
                             log::info!(
                                 "startup: archive projection committed at {indexed_at}; \
                                  skipping startup refresh"
@@ -451,10 +451,12 @@ impl RetroJunkApp {
                         } else {
                             log::info!(
                                 "startup: archive generation is {authoritative}, projection is {}; refreshing",
-                                projected.map_or_else(
-                                    || "missing".to_owned(),
-                                    |value| value.to_string()
+                                retro_junk_backend::queries::collection::projection_source_generation(
+                                    connection,
+                                    &profile_id,
                                 )
+                                .unwrap_or(None)
+                                .map_or_else(|| "missing".to_owned(), |value| value.to_string())
                             );
                             refresh_profile = Some(profile.clone());
                         }
@@ -741,9 +743,10 @@ impl RetroJunkApp {
 
     pub fn open_browser_root(&mut self, root: &std::path::Path, ctx: &egui::Context) {
         self.submit_store(
-            crate::backend::library_store::LibraryStoreRequest::OpenRoot(
-                root.to_string_lossy().into_owned(),
-            ),
+            crate::backend::library_store::LibraryStoreRequest::OpenRoot {
+                path: root.to_string_lossy().into_owned(),
+                expected_assets: self.ui_state.expected_assets.clone(),
+            },
             ctx,
         );
     }
@@ -1080,30 +1083,16 @@ impl RetroJunkApp {
         }
     }
 
-    fn merge_console_summaries(&mut self, summaries: Vec<retro_junk_db::LibraryConsoleSummary>) {
-        for summary in summaries {
+    fn merge_console_summaries(
+        &mut self,
+        summaries: Vec<crate::backend::library_store::LibraryConsoleSummary>,
+    ) {
+        for projection in summaries {
+            let summary = projection.row;
             self.browser
                 .entry_counts
                 .insert(summary.id, summary.entry_count);
-            let worst_status = if summary.unrecognized_count > 0 {
-                Some(crate::state::EntryStatus::Unrecognized)
-            } else if summary.unknown_count > 0 {
-                Some(crate::state::EntryStatus::Unknown)
-            } else if summary.ambiguous_count > 0 {
-                Some(crate::state::EntryStatus::Ambiguous)
-            } else if summary.likely_count > 0 {
-                Some(crate::state::EntryStatus::LikelyMatched)
-            } else if summary.matched_count > 0 {
-                Some(crate::state::EntryStatus::Matched)
-            } else if summary.tagged_count > 0 {
-                // Tag variants share their console-badge severity and color.
-                Some(crate::state::EntryStatus::Tagged(
-                    retro_junk_catalog::CatalogTag::Homebrew,
-                ))
-            } else {
-                None
-            };
-            if let Some(status) = worst_status {
+            if let Some(status) = projection.severity {
                 self.browser.console_statuses.insert(summary.id, status);
             } else {
                 self.browser.console_statuses.remove(&summary.id);
@@ -1154,7 +1143,10 @@ impl RetroJunkApp {
     pub(crate) fn refresh_console_summaries(&mut self, ctx: &egui::Context) {
         if let Some(root_id) = self.browser.root_id {
             self.submit_store(
-                crate::backend::library_store::LibraryStoreRequest::ConsoleSummaries(root_id),
+                crate::backend::library_store::LibraryStoreRequest::ConsoleSummaries {
+                    root_id,
+                    expected_assets: self.ui_state.expected_assets.clone(),
+                },
                 ctx,
             );
         }
@@ -1737,7 +1729,7 @@ impl eframe::App for RetroJunkApp {
         self.toasts.show(ctx);
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         log::info!("on_exit: stopping background work");
 
         // Cancel every in-flight background operation and join its thread.
