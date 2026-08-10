@@ -419,11 +419,11 @@ impl RetroJunkApp {
                 .and_then(|path| retro_junk_backend::queries::open_catalog(&path));
             log::info!("startup: catalog database ready in {:?}", stage.elapsed());
 
-            // Refresh the archive projection at startup only when it has
-            // never been committed. The archive changes only through this
-            // tool and every mutation reconciles, so an indexed profile
-            // paints from the committed projection immediately; deep rescans
-            // stay behind explicit Refresh/reindex.
+            // Paint from the committed projection when all of its inputs still
+            // agree. Tool mutations advance the generation marker; a content
+            // fingerprint also catches hand-edited authoritative manifests.
+            // Catalog imports carry an independent generation because they can
+            // change hash bindings without changing the archive tree.
             let mut refresh_profile = None;
             if let (Ok(connection), Some(profile)) = (&database, &configured_profile)
                 && retro_junk_archive::root_manifest_path(&profile.archive_root).is_file()
@@ -437,13 +437,18 @@ impl RetroJunkApp {
                         let authoritative =
                             retro_junk_archive::projection_generation(&profile.archive_root)
                                 .unwrap_or(0);
-                        if retro_junk_backend::queries::collection::projection_is_current(
-                            connection,
-                            &profile_id,
-                            authoritative,
-                        )
-                        .unwrap_or(false)
-                        {
+                        let source_fingerprint = retro_junk_archive::projection_source_fingerprint(
+                            &profile.archive_root,
+                        );
+                        if source_fingerprint.is_ok_and(|fingerprint| {
+                            retro_junk_backend::queries::collection::projection_is_current(
+                                connection,
+                                &profile_id,
+                                authoritative,
+                                &fingerprint,
+                            )
+                            .unwrap_or(false)
+                        }) {
                             log::info!(
                                 "startup: archive projection committed at {indexed_at}; \
                                  skipping startup refresh"

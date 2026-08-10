@@ -5,6 +5,57 @@ use retro_junk_db::{
 use std::sync::atomic::AtomicBool;
 
 #[test]
+fn work_bound_disc_expectations_use_canonical_platform_identity() {
+    let conn = open_memory().unwrap();
+    conn.execute_batch(
+        "INSERT INTO platforms(
+             id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform
+         ) VALUES('saturn','Saturn','Saturn','Sega',5,'cd',1994,'','Saturn'),
+                 ('ps1','PlayStation','PS1','Sony',5,'cd',1994,'','Ps1');",
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO works(id,canonical_name) VALUES('work','Mixed Mastering Game')",
+        [],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "INSERT INTO releases(id,work_id,platform_id,region,title,variant)
+         VALUES('saturn-a','work','saturn','japan','Mixed Mastering Game','1M'),
+               ('saturn-b','work','saturn','japan','Mixed Mastering Game','2M'),
+               ('saturn-demo','work','saturn','japan','Mixed Mastering Game','Demo'),
+               ('saturn-us','work','saturn','usa','Mixed Mastering Game','USA'),
+               ('other-port','work','ps1','japan','Mixed Mastering Game','Port');
+         INSERT INTO media(id,release_id,disc_number)
+         VALUES('disc-1','saturn-a',1),
+               ('disc-2','saturn-a',2),
+               ('disc-3','saturn-b',3),
+               ('disc-4','saturn-b',4),
+               ('demo','saturn-demo',0),
+               ('wrong-region-disc','saturn-us',5),
+               ('wrong-platform-disc','other-port',5);
+         INSERT INTO archive_profiles(
+             id,display_name,manifest_path,manifest_sha256,archive_root
+         ) VALUES('profile','Collection','archive.toml','sha','/archive');
+         INSERT INTO archive_releases(
+             id,profile_id,catalog_work_id,platform_id,title,region,
+             manifest_path,manifest_sha256,binding_state
+         ) VALUES(
+             'archive-release','profile','work','saturnjp','Mixed Mastering Game','japan',
+             'release.toml','sha','bound'
+         );",
+    )
+    .unwrap();
+
+    let facts = retro_junk_db::facts::release_completion_facts(&conn, "profile").unwrap();
+    let expected = facts[0]
+        .expected_discs
+        .expect("saturnjp must resolve catalog media stored under saturn");
+    assert_eq!(expected.count, 4);
+    assert!(expected.numbered);
+}
+
+#[test]
 fn complete_track_matching_rejects_partial_and_accepts_exact_sets() {
     let conn = open_memory().unwrap();
     conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('ps1','PlayStation','PS1','Sony',5,'cd',1994,'','Ps1')", []).unwrap();

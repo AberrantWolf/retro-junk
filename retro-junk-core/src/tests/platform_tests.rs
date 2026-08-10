@@ -96,3 +96,16 @@ fn separator_styles_resolve_to_the_same_platform() {
     assert_eq!("sg-1000".parse::<Platform>().unwrap(), Platform::Sg1000);
     assert_eq!("tg-cd".parse::<Platform>().unwrap(), Platform::PceCd);
 }
+
+#[test]
+fn catalog_ids_and_equivalence_share_the_alias_model() {
+    assert_eq!(catalog_platform_id("saturnjp"), "saturn");
+    assert_eq!(catalog_platform_id("super-famicom"), "snes");
+    assert_eq!(catalog_platform_id("psx"), "ps1");
+    assert_eq!(catalog_platform_id("unknown-system"), "unknown-system");
+
+    assert!(platform_ids_match("saturnjp", "saturn"));
+    assert!(platform_ids_match("PSX", "ps1"));
+    assert!(!platform_ids_match("saturn", "dreamcast"));
+    assert!(!platform_ids_match("unknown-a", "unknown-b"));
+}

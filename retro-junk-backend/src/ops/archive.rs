@@ -169,10 +169,13 @@ pub fn refresh_archive(
         && let Ok(connection) = retro_junk_db::open_database(db_path)
         && let Ok(source_generation) =
             retro_junk_archive::projection_generation(&profile.archive_root)
+        && let Ok(source_fingerprint) =
+            retro_junk_archive::projection_source_fingerprint(&profile.archive_root)
         && retro_junk_db::archive_profile_projection_is_current(
             &connection,
             &profile.profile_id.to_string(),
             source_generation,
+            &source_fingerprint,
         )
         .unwrap_or(false)
     {

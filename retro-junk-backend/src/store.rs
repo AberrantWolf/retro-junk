@@ -524,7 +524,12 @@ fn fold_console_severity(
         }
     };
     include(crate::completion::Severity::Verified, row.matched_count);
-    include(crate::completion::Severity::Asserted, row.tagged_count);
+    // A homebrew/mod mark is the final, correct identity for content no
+    // catalog will ever list. Keep the individual row blue so its provenance
+    // remains honest, but do not let an intentional exception downgrade an
+    // otherwise complete console. Console severity answers whether anything
+    // still needs work, not whether every row was catalog-derived.
+    include(crate::completion::Severity::Verified, row.tagged_count);
     include(
         crate::completion::Severity::Asserted,
         row.disambiguated_count,
@@ -759,6 +764,24 @@ mod tests {
             fold_console_severity(&visible_matched, [Severity::Incomplete]),
             Some(Severity::Incomplete),
             "one visible incomplete release determines the aggregate"
+        );
+
+        let mut with_mod = summary_with_matched_rows(4);
+        with_mod.entry_count += 1;
+        with_mod.tagged_count = 1;
+        assert_eq!(
+            fold_console_severity(&with_mod, []),
+            Some(Severity::Verified),
+            "an intentionally marked mod is resolved and must not downgrade the console"
+        );
+
+        let mut only_mods = summary_with_matched_rows(0);
+        only_mods.entry_count = 2;
+        only_mods.tagged_count = 2;
+        assert_eq!(
+            fold_console_severity(&only_mods, []),
+            Some(Severity::Verified),
+            "a console containing only intentionally marked content is complete"
         );
     }
 

@@ -22,6 +22,54 @@ fn cancellable_archive_scan_stops_before_walking_release_trees() {
 }
 
 #[test]
+fn hand_editing_a_release_manifest_invalidates_the_projection_fingerprint() {
+    let temp = tempfile::tempdir().unwrap();
+    let archive = temp.path().join("archive");
+    initialize_archive(&archive, &ArchiveRootManifest::new("Hand edits")).unwrap();
+    let rom = temp.path().join("game.rom");
+    std::fs::write(&rom, b"rom").unwrap();
+    let _ingested = ingest_new_carrier_dump(
+        &archive,
+        &rom,
+        NewCarrierDump {
+            platform_id: "nes".to_owned(),
+            title: "Old title".to_owned(),
+            region: String::new(),
+            revision: String::new(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: String::new(),
+            sequence_number: 0,
+            carrier_label: String::new(),
+            carrier_kind: crate::CarrierKind::Cartridge,
+            format: RepresentationFormat::Rom,
+            catalog_binding: crate::CatalogBinding::default(),
+            join_release: None,
+            source_package: crate::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
+            physical_copy_id: None,
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .unwrap();
+    let generation = crate::projection_generation(&archive).unwrap();
+    let before = crate::projection_source_fingerprint(&archive).unwrap();
+    let manifest_path = scan_archive(&archive).unwrap().releases[0]
+        .directory
+        .join("release.toml");
+    let mut manifest: crate::ReleaseManifest = read_toml(&manifest_path).unwrap();
+    manifest.title = "Corrected by hand".to_owned();
+    crate::write_toml_atomic(&manifest_path, &manifest).unwrap();
+
+    assert_eq!(crate::projection_generation(&archive).unwrap(), generation);
+    let after = crate::projection_source_fingerprint(&archive).unwrap();
+    assert_ne!(after, before);
+    assert_eq!(scan_archive(&archive).unwrap().source_fingerprint, after);
+}
+
+#[test]
 fn rejects_parent_traversal() {
     assert!(normalize_relative_path(std::path::Path::new("../escape")).is_err());
 }

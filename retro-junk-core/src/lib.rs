@@ -16,7 +16,7 @@ pub mod util;
 pub use checksum::{ChecksumAlgorithm, ExpectedChecksum};
 pub use error::AnalysisError;
 pub use hasher::MultiHasher;
-pub use platform::{Platform, PlatformParseError};
+pub use platform::{Platform, PlatformParseError, catalog_platform_id, platform_ids_match};
 pub use progress::AnalysisProgress;
 pub use region::Region;
 

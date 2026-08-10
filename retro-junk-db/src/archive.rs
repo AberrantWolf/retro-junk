@@ -181,25 +181,11 @@ pub struct ArchiveEvidenceIdentity {
 /// Unknown names pass through so an unrecognized platform simply matches
 /// nothing rather than matching everything.
 fn catalog_platform_id(platform_id: &str) -> String {
-    platform_id
-        .parse::<retro_junk_core::Platform>()
-        .map_or_else(
-            |_| platform_id.to_owned(),
-            |platform| platform.short_name().to_owned(),
-        )
+    retro_junk_core::catalog_platform_id(platform_id)
 }
 
 fn same_platform(left: &str, right: &str) -> bool {
-    if left.eq_ignore_ascii_case(right) {
-        return true;
-    }
-    match (
-        left.parse::<retro_junk_core::Platform>(),
-        right.parse::<retro_junk_core::Platform>(),
-    ) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
+    retro_junk_core::platform_ids_match(left, right)
 }
 
 /// Follow a playable from the location its evidence records to the active
@@ -1237,8 +1223,8 @@ pub fn reconcile_archive_snapshot(
         [],
     )?;
     tx.execute(
-        "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,playable_root,workspace_root,source_generation,catalog_generation,indexed_at)
-         VALUES(?1,?2,'retro-junk-archive.toml',?3,?4,?5,?6,?7,?8,datetime('now'))
+        "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,playable_root,workspace_root,source_generation,source_fingerprint,catalog_generation,indexed_at)
+         VALUES(?1,?2,'retro-junk-archive.toml',?3,?4,?5,?6,?7,?8,?9,datetime('now'))
          ON CONFLICT(id) DO UPDATE SET
            display_name=excluded.display_name,
            manifest_sha256=excluded.manifest_sha256,
@@ -1246,6 +1232,7 @@ pub fn reconcile_archive_snapshot(
            playable_root=excluded.playable_root,
            workspace_root=excluded.workspace_root,
            source_generation=excluded.source_generation,
+           source_fingerprint=excluded.source_fingerprint,
            catalog_generation=excluded.catalog_generation,
            indexed_at=excluded.indexed_at",
         params![
@@ -1256,6 +1243,7 @@ pub fn reconcile_archive_snapshot(
             playable_root.to_string_lossy(),
             workspace_root.to_string_lossy(),
             retro_junk_archive::projection_generation(&snapshot.root).unwrap_or(0),
+            snapshot.source_fingerprint,
             catalog_generation.encoded(),
         ],
     )?;
@@ -1634,6 +1622,8 @@ pub fn reconcile_archive_supporting_files(
     archive_root: &Path,
     releases: &[retro_junk_archive::IndexedRelease],
 ) -> Result<(), OperationError> {
+    let source_fingerprint = retro_junk_archive::projection_source_fingerprint(archive_root)
+        .map_err(|error| OperationError::InvalidData(error.to_string()))?;
     let tx = conn.transaction()?;
     for release in releases {
         let release_id = release.manifest.archive_release_id.to_string();
@@ -1708,10 +1698,11 @@ pub fn reconcile_archive_supporting_files(
     if let Some(release) = releases.first() {
         tx.execute(
             "UPDATE archive_profiles
-             SET source_generation=?1,indexed_at=datetime('now')
-             WHERE id=(SELECT profile_id FROM archive_releases WHERE id=?2)",
+             SET source_generation=?1,source_fingerprint=?2,indexed_at=datetime('now')
+             WHERE id=(SELECT profile_id FROM archive_releases WHERE id=?3)",
             params![
                 retro_junk_archive::projection_generation(archive_root).unwrap_or(0),
+                source_fingerprint,
                 release.manifest.archive_release_id.to_string(),
             ],
         )?;
@@ -2338,17 +2329,27 @@ pub fn archive_profile_projection_is_current(
     conn: &Connection,
     profile_id: &str,
     source_generation: u64,
+    source_fingerprint: &str,
 ) -> Result<bool, OperationError> {
     let projected = conn
         .query_row(
-            "SELECT source_generation,catalog_generation FROM archive_profiles WHERE id=?1",
+            "SELECT source_generation,source_fingerprint,catalog_generation
+             FROM archive_profiles WHERE id=?1",
             [profile_id],
-            |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, u64>(2)?,
+                ))
+            },
         )
         .optional()?;
     let catalog_generation = catalog_projection_generation(conn)?;
-    Ok(projected.is_some_and(|(source, catalog)| {
-        source == source_generation && catalog == catalog_generation.encoded()
+    Ok(projected.is_some_and(|(generation, fingerprint, catalog)| {
+        generation == source_generation
+            && fingerprint == source_fingerprint
+            && catalog == catalog_generation.encoded()
     }))
 }
 
@@ -2842,12 +2843,16 @@ mod catalog_generation_tests {
         let conn = crate::open_memory().unwrap();
         let current = catalog_projection_generation(&conn).unwrap().encoded();
         conn.execute(
-            "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,source_generation,catalog_generation)
-             VALUES('profile','Profile','archive.toml','sha','/archive',7,?1)",
+            "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,source_generation,source_fingerprint,catalog_generation)
+             VALUES('profile','Profile','archive.toml','sha','/archive',7,'tree-sha',?1)",
             [current],
         )
         .unwrap();
-        assert!(archive_profile_projection_is_current(&conn, "profile", 7).unwrap());
+        assert!(archive_profile_projection_is_current(&conn, "profile", 7, "tree-sha").unwrap());
+        assert!(
+            !archive_profile_projection_is_current(&conn, "profile", 7, "edited-tree-sha").unwrap(),
+            "a hand-edited manifest must invalidate an unchanged generation"
+        );
 
         conn.execute(
             "INSERT INTO import_log(source_type,source_name,imported_at,records_updated)
@@ -2855,6 +2860,6 @@ mod catalog_generation_tests {
             [],
         )
         .unwrap();
-        assert!(!archive_profile_projection_is_current(&conn, "profile", 7).unwrap());
+        assert!(!archive_profile_projection_is_current(&conn, "profile", 7, "tree-sha").unwrap());
     }
 }

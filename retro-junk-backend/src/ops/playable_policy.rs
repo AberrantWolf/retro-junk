@@ -15,16 +15,7 @@ use retro_junk_archive::{
 /// Profiles and manifests can spell a platform differently (`ps1` vs
 /// `playstation`), so fall back to parsing both before deciding they differ.
 fn same_platform(left: &str, right: &str) -> bool {
-    if left.eq_ignore_ascii_case(right) {
-        return true;
-    }
-    match (
-        left.parse::<retro_junk_core::Platform>(),
-        right.parse::<retro_junk_core::Platform>(),
-    ) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => false,
-    }
+    retro_junk_core::platform_ids_match(left, right)
 }
 
 /// Find a platform's existing default, preferring an exact identifier match

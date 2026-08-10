@@ -359,10 +359,9 @@ pub fn platform_of(relative_path: &str) -> String {
 /// compare with exact SQL equality, so anything headed there must fold onto
 /// the catalog's spelling first. An unrecognized name passes through, so a
 /// stranger still files for review under the name the user can see.
+#[must_use]
 pub fn catalog_platform(name: &str) -> String {
-    name.parse::<retro_junk_core::Platform>()
-        .map(|platform| platform.short_name().to_owned())
-        .unwrap_or_else(|_| name.to_owned())
+    retro_junk_core::catalog_platform_id(name)
 }
 
 /// Stop filing reviews for every file a pattern covers, and close the ones

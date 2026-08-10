@@ -247,6 +247,37 @@ impl Platform {
     }
 }
 
+/// Return the canonical identifier used by catalog rows for a platform name.
+///
+/// Archive and frontend folders may use regional or frontend-specific aliases
+/// such as `saturnjp`, `super-famicom`, or `psx`, while the catalog stores the
+/// corresponding [`Platform::short_name`]. Unknown identifiers pass through
+/// unchanged so callers fail narrowly instead of accidentally broadening a
+/// catalog query.
+#[must_use]
+pub fn catalog_platform_id(value: &str) -> String {
+    value.parse::<Platform>().map_or_else(
+        |_| value.to_owned(),
+        |platform| platform.short_name().to_owned(),
+    )
+}
+
+/// Whether two identifiers are recognized spellings of the same platform.
+///
+/// This is the comparison counterpart to [`catalog_platform_id`]. Keep it in
+/// the platform module so catalog matching, archive projection, and backend
+/// policy cannot grow different alias rules.
+#[must_use]
+pub fn platform_ids_match(left: &str, right: &str) -> bool {
+    if left.eq_ignore_ascii_case(right) {
+        return true;
+    }
+    match (left.parse::<Platform>(), right.parse::<Platform>()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 impl std::fmt::Display for Platform {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.display_name())

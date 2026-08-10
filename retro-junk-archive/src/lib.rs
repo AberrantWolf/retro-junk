@@ -35,8 +35,8 @@ pub use generation::{
 pub use ignore::{IgnoreRule, IgnoreRules, ignore_directory, load_rules, remove_rule, write_rule};
 pub use index::{
     ArchiveIndexSnapshot, IndexedBuild, IndexedCarrier, IndexedDump, IndexedPhysicalCopy,
-    IndexedPhysicalCopyFile, IndexedRelease, IndexedReleaseFile, IndexedVerification, scan_archive,
-    scan_archive_cancellable, scan_archive_release,
+    IndexedPhysicalCopyFile, IndexedRelease, IndexedReleaseFile, IndexedVerification,
+    projection_source_fingerprint, scan_archive, scan_archive_cancellable, scan_archive_release,
 };
 pub use ingest::{
     FileDigests, IngestError, IngestPlan, IngestProgress, IngestRequest, execute_ingest,

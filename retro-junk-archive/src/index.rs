@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
+
 use crate::manifest::{
     ArchiveRootManifest, BuildEvidence, CarrierManifest, DumpManifest, ManifestError,
     PhysicalCopyFileManifest, PhysicalCopyManifest, ReleaseFileManifest, ReleaseManifest,
@@ -26,6 +28,8 @@ pub struct ArchiveIndexSnapshot {
     pub root: PathBuf,
     pub manifest: ArchiveRootManifest,
     pub manifest_sha256: String,
+    /// Digest of every authoritative metadata file represented by this scan.
+    pub source_fingerprint: String,
     pub releases: Vec<IndexedRelease>,
 }
 
@@ -102,6 +106,97 @@ pub fn scan_archive_cancellable(
     scan_archive_inner(root, Some(cancel))
 }
 
+/// Fingerprint the authoritative metadata tree without parsing it or touching
+/// preservation/playable payloads.
+///
+/// The generation marker is a fast hint for mutations made through this
+/// application. It cannot observe a person correcting a TOML file by hand, so
+/// projection freshness also compares this content digest. Relative paths are
+/// included, making additions, removals and renames observable as well as
+/// edits. Hidden maintenance/backup directories are deliberately excluded.
+pub fn projection_source_fingerprint(root: &Path) -> Result<String, IndexError> {
+    let mut paths = Vec::new();
+    collect_projection_sources(root, &mut paths)?;
+    paths.sort();
+
+    let mut tree = Sha256::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    for path in paths {
+        let relative = path.strip_prefix(root).unwrap_or(&path);
+        tree.update(relative.to_string_lossy().as_bytes());
+        tree.update([0]);
+
+        let mut file = std::fs::File::open(&path).map_err(|source| IndexError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let mut contents = Sha256::new();
+        loop {
+            let read =
+                std::io::Read::read(&mut file, &mut buffer).map_err(|source| IndexError::Io {
+                    path: path.display().to_string(),
+                    source,
+                })?;
+            if read == 0 {
+                break;
+            }
+            contents.update(&buffer[..read]);
+        }
+        tree.update(contents.finalize());
+    }
+    Ok(format!("{:x}", tree.finalize()))
+}
+
+fn collect_projection_sources(
+    directory: &Path,
+    output: &mut Vec<PathBuf>,
+) -> Result<(), IndexError> {
+    let entries = std::fs::read_dir(directory).map_err(|source| IndexError::Io {
+        path: directory.display().to_string(),
+        source,
+    })?;
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|source| IndexError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if file_type.is_dir() {
+            if name.starts_with('.') {
+                continue;
+            }
+            collect_projection_sources(&path, output)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let is_manifest = matches!(
+            name.as_ref(),
+            crate::layout::ROOT_MANIFEST_FILE
+                | "release.toml"
+                | "physical-copy.toml"
+                | "carrier.toml"
+                | "dump.toml"
+                | "supporting-file.toml"
+        );
+        let is_evidence = path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|parent| parent == "evidence")
+            && path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+            && (name.starts_with("verification-") || name.starts_with("build-"));
+        if is_manifest || is_evidence {
+            output.push(path);
+        }
+    }
+    Ok(())
+}
+
 fn scan_archive_inner(
     root: &Path,
     cancel: Option<&std::sync::atomic::AtomicBool>,
@@ -133,6 +228,7 @@ fn scan_archive_inner(
         root: root.to_path_buf(),
         manifest,
         manifest_sha256,
+        source_fingerprint: projection_source_fingerprint(root)?,
         releases,
     })
 }

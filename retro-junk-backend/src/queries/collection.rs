@@ -41,7 +41,13 @@ pub fn projection_is_current(
     conn: &Connection,
     profile_id: &str,
     source_generation: u64,
+    source_fingerprint: &str,
 ) -> Result<bool, String> {
-    retro_junk_db::archive_profile_projection_is_current(conn, profile_id, source_generation)
-        .map_err(|error| error.to_string())
+    retro_junk_db::archive_profile_projection_is_current(
+        conn,
+        profile_id,
+        source_generation,
+        source_fingerprint,
+    )
+    .map_err(|error| error.to_string())
 }

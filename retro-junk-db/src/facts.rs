@@ -11,7 +11,7 @@
 //! files — see `retro_junk_archive::evidence` — so this module reads them
 //! rather than re-deriving the rule from `verification_events`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
@@ -178,38 +178,56 @@ pub fn verified_disc_count(facts: &ReleaseFacts) -> u64 {
         .unwrap_or(0)
 }
 
-/// Expected discs per release: direct for release-bound rows, through the
-/// natural key for work-bound ones.
-const EXPECTED_DISCS_SQL: &str = "SELECT ar.id,
-                    CASE WHEN MAX(m.disc_number)>0
-                         THEN COUNT(DISTINCT CASE WHEN m.disc_number>0 THEN m.disc_number END)
-                         ELSE 1 END,
-                    MAX(m.disc_number)>0
+#[derive(Default)]
+struct ExpectedMediaAccumulator {
+    numbered_discs: HashSet<i64>,
+    has_media: bool,
+}
+
+impl ExpectedMediaAccumulator {
+    fn include(&mut self, disc_number: i64) {
+        self.has_media = true;
+        if disc_number > 0 {
+            self.numbered_discs.insert(disc_number);
+        }
+    }
+
+    fn finish(&self) -> Option<ExpectedDiscs> {
+        if !self.has_media {
+            return None;
+        }
+        let numbered = !self.numbered_discs.is_empty();
+        Some(ExpectedDiscs {
+            count: if numbered {
+                u64::try_from(self.numbered_discs.len()).unwrap_or(u64::MAX)
+            } else {
+                1
+            },
+            numbered,
+        })
+    }
+}
+
+const DIRECT_EXPECTED_MEDIA_SQL: &str = "SELECT ar.id,m.disc_number
              FROM archive_releases ar
              JOIN archive_profiles ap ON ap.id=ar.profile_id
              JOIN media m ON m.release_id=ar.catalog_release_id
              WHERE (?1='' OR ar.profile_id=?1)
                AND (?2='' OR ap.playable_root=?2)
-               AND ar.catalog_release_id IS NOT NULL
-             GROUP BY ar.id
-             UNION ALL
-             SELECT ar.id,
-                    CASE WHEN MAX(m.disc_number)>0
-                         THEN COUNT(DISTINCT CASE WHEN m.disc_number>0 THEN m.disc_number END)
-                         ELSE 1 END,
-                    MAX(m.disc_number)>0
+               AND ar.catalog_release_id IS NOT NULL";
+
+const WORK_BOUND_EXPECTED_MEDIA_SQL: &str =
+    "SELECT ar.id,ar.platform_id,r.platform_id,m.disc_number
              FROM archive_releases ar
              JOIN archive_profiles ap ON ap.id=ar.profile_id
              CROSS JOIN releases r INDEXED BY idx_releases_natural
              JOIN media m ON m.release_id=r.id
              WHERE r.work_id=ar.catalog_work_id
-               AND r.platform_id=ar.platform_id
                AND r.region=ar.region
                AND (?1='' OR ar.profile_id=?1)
                AND (?2='' OR ap.playable_root=?2)
                AND ar.catalog_release_id IS NULL
-               AND ar.catalog_work_id IS NOT NULL
-             GROUP BY ar.id";
+               AND ar.catalog_work_id IS NOT NULL";
 
 /// Which archive releases to gather facts for.
 ///
@@ -306,19 +324,45 @@ pub fn release_facts_in_scope(
     }
 
     // Expected discs from the catalog: directly for release-bound rows, via
-    // the natural key for work-bound rows.
+    // the natural key for work-bound rows. Work-level identities may span
+    // several mastering records, so gather their media before folding the
+    // distinct disc numbers.
+    //
+    // Platform aliases cannot be compared with SQL equality: archive folders
+    // intentionally use names such as `saturnjp`, while catalog releases use
+    // the canonical `saturn`. Filter candidate rows through the shared core
+    // platform model instead. This keeps the denominator on the same identity
+    // semantics as hash matching and archive binding.
     {
-        let mut statement = conn.prepare(EXPECTED_DISCS_SQL)?;
-        for row in statement.query_map([profile_id, playable_root], |row| {
+        let mut expected: HashMap<String, ExpectedMediaAccumulator> = HashMap::new();
+        let mut direct = conn.prepare(DIRECT_EXPECTED_MEDIA_SQL)?;
+        for row in direct.query_map([profile_id, playable_root], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })? {
+            let (id, disc_number) = row?;
+            expected.entry(id).or_default().include(disc_number);
+        }
+        drop(direct);
+
+        let mut work_bound = conn.prepare(WORK_BOUND_EXPECTED_MEDIA_SQL)?;
+        for row in work_bound.query_map([profile_id, playable_root], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, u64>(1)?,
-                row.get::<_, bool>(2)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
             ))
         })? {
-            let (id, count, numbered) = row?;
-            if let Some(&index) = index_of.get(&id) {
-                releases[index].expected_discs = Some(ExpectedDiscs { count, numbered });
+            let (id, archive_platform, catalog_platform, disc_number) = row?;
+            if retro_junk_core::platform_ids_match(&archive_platform, &catalog_platform) {
+                expected.entry(id).or_default().include(disc_number);
+            }
+        }
+
+        for (id, accumulator) in expected {
+            if let (Some(&index), Some(expected_discs)) = (index_of.get(&id), accumulator.finish())
+            {
+                releases[index].expected_discs = Some(expected_discs);
             }
         }
     }
@@ -487,7 +531,7 @@ mod query_plan_tests {
     #[test]
     fn work_level_expectation_never_scans_the_catalog_media_table() {
         let connection = crate::schema::open_memory().unwrap();
-        let explain = format!("EXPLAIN QUERY PLAN {EXPECTED_DISCS_SQL}");
+        let explain = format!("EXPLAIN QUERY PLAN {WORK_BOUND_EXPECTED_MEDIA_SQL}");
         let mut statement = connection.prepare(&explain).unwrap();
         let details = statement
             .query_map(rusqlite::params!["profile", ""], |row| {
