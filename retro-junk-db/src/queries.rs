@@ -75,7 +75,11 @@ pub fn find_media_by_md5(conn: &Connection, md5: &str) -> Result<Vec<Media>, Ope
 }
 
 /// Match one ROM using indexed catalog hashes, constrained to its platform.
-/// CRC32 additionally requires the DAT size; SHA1 is used as the fallback.
+///
+/// At least one digest must be shared, and every digest available on both
+/// sides must agree. CRC32 additionally requires the DAT size. This prevents a
+/// CRC collision (or stale mixed digest set) from surviving a contradictory
+/// SHA1 merely because the old query joined candidates with `OR`.
 pub fn match_media_by_hash(
     conn: &Connection,
     platform_id: &str,
@@ -86,10 +90,11 @@ pub fn match_media_by_hash(
     let sql = format!(
         "SELECT {JOINED_MEDIA_COLUMNS}, r.platform_id, r.region, r.title, r.cover_title, r.screen_title, r.revision \
          FROM media m JOIN releases r ON r.id=m.release_id \
-         WHERE r.platform_id=?1 AND (\
-           (?2<>'' AND m.crc32=lower(?2) AND m.file_size=?3) OR \
-           (?4<>'' AND m.sha1=lower(?4))\
-         ) ORDER BY CASE WHEN ?2<>'' AND m.crc32=lower(?2) AND m.file_size=?3 THEN 0 ELSE 1 END, \
+         WHERE r.platform_id=?1
+           AND ((?2<>'' AND m.crc32<>'') OR (?4<>'' AND m.sha1<>''))
+           AND (m.crc32='' OR ?2='' OR (m.crc32=lower(?2) AND m.file_size=?3))
+           AND (m.sha1='' OR ?4='' OR m.sha1=lower(?4))
+         ORDER BY CASE WHEN ?2<>'' AND m.crc32=lower(?2) AND m.file_size=?3 THEN 0 ELSE 1 END, \
                     r.region, m.dat_name"
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -238,14 +243,20 @@ pub fn match_media_by_hashes(
          hits(request_index,media_id) AS ( \
            SELECT input.request_index,m.id FROM input \
            JOIN releases r ON r.platform_id=? \
-           JOIN media m ON m.release_id=r.id AND ( \
-             (input.crc32<>'' AND m.crc32=lower(input.crc32) AND m.file_size=input.file_size) OR \
-             (input.sha1<>'' AND m.sha1=lower(input.sha1))) \
+           JOIN media m ON m.release_id=r.id
+             AND ((input.crc32<>'' AND m.crc32<>'') OR
+                  (input.sha1<>'' AND m.sha1<>''))
+             AND (m.crc32='' OR input.crc32='' OR
+                  (m.crc32=lower(input.crc32) AND m.file_size=input.file_size))
+             AND (m.sha1='' OR input.sha1='' OR m.sha1=lower(input.sha1)) \
            UNION \
            SELECT input.request_index,mt.media_id FROM input \
-           JOIN media_tracks mt ON ( \
-             (input.crc32<>'' AND mt.crc32=lower(input.crc32) AND mt.file_size=input.file_size) OR \
-             (input.sha1<>'' AND mt.sha1=lower(input.sha1))) \
+           JOIN media_tracks mt
+             ON ((input.crc32<>'' AND mt.crc32<>'') OR
+                 (input.sha1<>'' AND mt.sha1<>''))
+             AND (mt.crc32='' OR input.crc32='' OR
+                  (mt.crc32=lower(input.crc32) AND mt.file_size=input.file_size))
+             AND (mt.sha1='' OR input.sha1='' OR mt.sha1=lower(input.sha1)) \
            JOIN media track_media ON track_media.id=mt.media_id \
            JOIN releases track_release ON track_release.id=track_media.release_id \
            WHERE track_release.platform_id=? \
@@ -299,10 +310,12 @@ pub fn match_media_ids_by_track_hash(
     let mut stmt = conn.prepare(
         "SELECT DISTINCT mt.media_id FROM media_tracks mt
          JOIN media m ON m.id=mt.media_id JOIN releases r ON r.id=m.release_id
-         WHERE r.platform_id=?1 AND (
-           (mt.crc32=lower(?2) AND mt.file_size=?3) OR
-           (?4<>'' AND mt.sha1=lower(?4))
-         ) ORDER BY mt.media_id",
+         WHERE r.platform_id=?1
+           AND ((?2<>'' AND mt.crc32<>'') OR (?4<>'' AND mt.sha1<>''))
+           AND (mt.crc32='' OR ?2='' OR
+                (mt.crc32=lower(?2) AND mt.file_size=?3))
+           AND (mt.sha1='' OR ?4='' OR mt.sha1=lower(?4))
+         ORDER BY mt.media_id",
     )?;
     let rows = stmt.query_map(
         params![

@@ -371,7 +371,7 @@ fn multiple_roots_independent() {
 /// publish guesses into the archive unattended or refuse to scrape releases
 /// that are perfectly well identified.
 #[test]
-fn identity_strength_ranks_serial_above_hashes_above_filename() {
+fn identity_strength_ranks_hashes_above_serial_above_filename() {
     use retro_junk_db::library::{ArchivedScrapeIdentity, ScrapeIdentityTier};
 
     let base = ArchivedScrapeIdentity {
@@ -411,8 +411,8 @@ fn identity_strength_ranks_serial_above_hashes_above_filename() {
         .tier(),
         ScrapeIdentityTier::None
     );
-    assert!(ScrapeIdentityTier::Filename < ScrapeIdentityTier::Hashes);
-    assert!(ScrapeIdentityTier::Hashes < ScrapeIdentityTier::Serial);
+    assert!(ScrapeIdentityTier::Filename < ScrapeIdentityTier::Serial);
+    assert!(ScrapeIdentityTier::Serial < ScrapeIdentityTier::Hashes);
 }
 
 /// A partial hash set is not a hash match: `ScreenScraper`'s hash tier needs

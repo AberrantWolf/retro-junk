@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use retro_junk_frontend::{AssetSelection, AssetType};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::library::{
     ArchivedPlayableGap, ArchivedScrapeIdentity, GapScope, LibraryError, ScrapeIdentityTier,
@@ -395,13 +395,10 @@ pub fn releases_for_target(conn: &Connection, target: &WorkTarget) -> Vec<String
 /// which is honest: none of them reached the frontend.
 pub fn errors_by_release(
     conn: &Connection,
+    actions: &[ProposedAction],
 ) -> Result<BTreeMap<String, Vec<(ActionKind, crate::work::WorkError)>>, LibraryError> {
     let mut grouped: BTreeMap<String, Vec<_>> = BTreeMap::new();
-    let errors = crate::work::list_work_errors(conn).map_err(|error| match error {
-        crate::operations::OperationError::Sqlite(error) => LibraryError::Sqlite(error),
-        other => LibraryError::InvalidScanState(other.to_string()),
-    })?;
-    for error in errors {
+    for error in active_work_errors(conn, actions)? {
         let Ok(kind) = error.action_kind.parse::<ActionKind>() else {
             continue;
         };
@@ -415,6 +412,41 @@ pub fn errors_by_release(
         }
     }
     Ok(grouped)
+}
+
+/// Open failures whose exact action/target is still owed by the current
+/// projection. `work_errors` records the latest failed attempt, but the
+/// projection is the authority on whether there remains anything to do: a
+/// later manual fix, adoption, or successful equivalent operation can satisfy
+/// the target without executing the same claim again.
+fn active_work_errors(
+    conn: &Connection,
+    actions: &[ProposedAction],
+) -> Result<Vec<crate::work::WorkError>, LibraryError> {
+    let active = actions
+        .iter()
+        .map(|action| {
+            (
+                action.kind.as_str(),
+                action.target.kind(),
+                action.target.id(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let errors = crate::work::list_work_errors(conn).map_err(|error| match error {
+        crate::operations::OperationError::Sqlite(error) => LibraryError::Sqlite(error),
+        other => LibraryError::InvalidScanState(other.to_string()),
+    })?;
+    Ok(errors
+        .into_iter()
+        .filter(|error| {
+            active.contains(&(
+                error.action_kind.as_str(),
+                error.target_kind.as_str(),
+                error.target_id.as_str(),
+            ))
+        })
+        .collect())
 }
 
 /// Rebuild a work target from the two strings the coordination tables store.
@@ -444,8 +476,17 @@ pub fn blocked_by_release(
     scope: &Scope,
     expected_assets: &AssetSelection,
 ) -> Result<BTreeMap<String, Vec<(ActionKind, BlockedReason)>>, LibraryError> {
+    let actions = derive_convergence(conn, scope, expected_assets)?;
+    blocked_by_release_for_actions(conn, &actions)
+}
+
+/// Group the blocked subset of one already-derived action set.
+pub fn blocked_by_release_for_actions(
+    conn: &Connection,
+    actions: &[ProposedAction],
+) -> Result<BTreeMap<String, Vec<(ActionKind, BlockedReason)>>, LibraryError> {
     let mut grouped: BTreeMap<String, Vec<_>> = BTreeMap::new();
-    for action in derive_convergence(conn, scope, expected_assets)? {
+    for action in actions {
         let Some(reason) = action.blocked.clone() else {
             continue;
         };
@@ -617,13 +658,18 @@ const ORPHANED_PLAYABLE_SQL: &str = "
     JOIN media m ON m.id=c.catalog_media_id
     JOIN library_roots lr ON lr.root_path=ap.playable_root
     JOIN library_consoles lc ON lc.root_id=lr.id
-    JOIN library_entries le ON le.console_id=lc.id AND le.data_size=m.file_size
+    JOIN library_entries le ON le.console_id=lc.id
     WHERE ar.profile_id=?1
       AND NOT EXISTS(
           SELECT 1 FROM representations rep
           WHERE rep.carrier_id=c.id AND rep.role='playable')
-      AND ((le.sha1<>'' AND m.sha1<>'' AND le.sha1=m.sha1)
-           OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))
+      AND ((le.sha1<>'' AND m.sha1<>'')
+           OR (le.md5<>'' AND m.md5<>'')
+           OR (le.crc32<>'' AND m.crc32<>''))
+      AND (le.sha1='' OR m.sha1='' OR le.sha1=m.sha1)
+      AND (le.md5='' OR m.md5='' OR le.md5=m.md5)
+      AND (le.crc32='' OR m.crc32=''
+           OR (le.crc32=m.crc32 AND le.data_size=m.file_size))
       AND NOT EXISTS(
           SELECT 1 FROM library_entry_media_bindings b
           WHERE b.library_entry_id=le.id AND b.carrier_id IS NOT NULL)";
@@ -779,6 +825,7 @@ const PROJECTION_CANDIDATES_SQL: &str = "
     SELECT DISTINCT ar.id, ar.platform_id, ar.region, ar.title,
            EXISTS(SELECT 1 FROM archive_release_files arf
                   WHERE arf.archive_release_id=ar.id
+                    AND arf.presence_state='present'
                     AND arf.category IN ('artwork','video')) AS has_artwork
     FROM archive_releases ar
     JOIN physical_copies pc ON pc.archive_release_id=ar.id
@@ -929,7 +976,8 @@ const RELEASE_ARTWORK_SQL: &str = "
     SELECT ar.id, ar.platform_id, ar.region, ar.title, COALESCE(arf.asset_type,'')
     FROM archive_releases ar
     LEFT JOIN archive_release_files arf
-      ON arf.archive_release_id=ar.id AND arf.category IN ('artwork','video')
+      ON arf.archive_release_id=ar.id AND arf.presence_state='present'
+     AND arf.category IN ('artwork','video')
     WHERE ar.profile_id=?1";
 
 /// One release's artwork position against the expected set.
@@ -1115,8 +1163,21 @@ pub fn summarize_convergence(
     scope: &Scope,
     expected_assets: &AssetSelection,
 ) -> Result<ConvergenceSummary, LibraryError> {
+    let actions = derive_convergence(conn, scope, expected_assets)?;
+    summarize_convergence_for_actions(conn, scope, expected_assets, &actions)
+}
+
+/// Aggregate one already-derived action set. Keeping this beside
+/// [`derive_convergence`] lets compound backend reads derive pending work once
+/// and use that same answer for counts, errors, and blocked reasons.
+pub fn summarize_convergence_for_actions(
+    conn: &Connection,
+    scope: &Scope,
+    expected_assets: &AssetSelection,
+    actions: &[ProposedAction],
+) -> Result<ConvergenceSummary, LibraryError> {
     let mut summary = ConvergenceSummary::default();
-    for action in derive_convergence(conn, scope, expected_assets)? {
+    for action in actions {
         let counts = summary.per_kind.entry(action.kind).or_default();
         if action.blocked.is_some() {
             counts.blocked += 1;
@@ -1124,22 +1185,17 @@ pub fn summarize_convergence(
             counts.pending += 1;
         }
     }
+    let active_errors = active_work_errors(conn, actions)?;
+    let active_claims = active_work_claim_counts(conn, actions)?;
     for kind in ActionKind::all() {
         let counts = summary.per_kind.entry(*kind).or_default();
-        counts.errored = count_rows(
-            conn,
-            "SELECT COUNT(*) FROM work_errors WHERE action_kind=?1",
-            kind.as_str(),
-        )?;
-        counts.running = count_rows(
-            conn,
-            &format!(
-                "SELECT COUNT(*) FROM work_claims WHERE action_kind=?1
-                 AND since >= datetime('now','-{} minutes')",
-                crate::work::CLAIM_TIMEOUT_MINUTES
-            ),
-            kind.as_str(),
-        )?;
+        counts.errored = active_errors
+            .iter()
+            .filter(|error| error.action_kind == kind.as_str())
+            .count()
+            .try_into()
+            .unwrap_or(u64::MAX);
+        counts.running = active_claims.get(kind).copied().unwrap_or(0);
     }
     // Done counts for the verification kinds fall straight out of the
     // projected dump states; builds count satisfied complete releases.
@@ -1216,6 +1272,42 @@ pub fn summarize_convergence(
     Ok(summary)
 }
 
-fn count_rows(conn: &Connection, sql: &str, param: &str) -> Result<u64, LibraryError> {
-    Ok(conn.query_row(sql, params![param], |row| row.get(0))?)
+fn active_work_claim_counts(
+    conn: &Connection,
+    actions: &[ProposedAction],
+) -> Result<BTreeMap<ActionKind, u64>, LibraryError> {
+    let active = actions
+        .iter()
+        .map(|action| {
+            (
+                action.kind.as_str().to_owned(),
+                action.target.kind().to_owned(),
+                action.target.id().to_owned(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let mut statement = conn.prepare(&format!(
+        "SELECT action_kind,target_kind,target_id FROM work_claims
+         WHERE since >= datetime('now','-{} minutes')",
+        crate::work::CLAIM_TIMEOUT_MINUTES
+    ))?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let key = row?;
+        if !active.contains(&key) {
+            continue;
+        }
+        let Ok(kind) = key.0.parse::<ActionKind>() else {
+            continue;
+        };
+        *counts.entry(kind).or_default() += 1;
+    }
+    Ok(counts)
 }

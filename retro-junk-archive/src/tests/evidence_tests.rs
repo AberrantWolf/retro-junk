@@ -3,7 +3,9 @@
 
 use std::path::PathBuf;
 
-use crate::evidence::{dump_catalog_attempted, dump_catalog_verified, dump_has_current_evidence};
+use crate::evidence::{
+    dump_catalog_attempted, dump_catalog_evidence, dump_catalog_verified, dump_has_current_evidence,
+};
 use crate::index::{IndexedDump, IndexedVerification};
 use crate::manifest::{
     CarrierId, CatalogEvidence, DumpManifest, RepresentationFormat, VerificationEvidence,
@@ -73,6 +75,60 @@ fn current_verified_evidence_counts() {
         VerificationKind::Integrity
     ));
     assert!(!dump_has_current_evidence(&dump, VerificationKind::Catalog));
+}
+
+#[test]
+fn complete_catalog_verification_also_proves_integrity() {
+    let dump = dump_with(vec![evidence(
+        VerificationKind::Catalog,
+        VerificationOutcome::Verified,
+        CURRENT_SHA,
+        Some(complete_catalog()),
+    )]);
+    assert!(dump_has_current_evidence(&dump, VerificationKind::Catalog));
+    assert!(dump_has_current_evidence(
+        &dump,
+        VerificationKind::Integrity
+    ));
+
+    let mut partial = complete_catalog();
+    partial.complete_track_set = false;
+    let partial_dump = dump_with(vec![evidence(
+        VerificationKind::Catalog,
+        VerificationOutcome::Verified,
+        CURRENT_SHA,
+        Some(partial),
+    )]);
+    assert!(!dump_has_current_evidence(
+        &partial_dump,
+        VerificationKind::Integrity
+    ));
+}
+
+#[test]
+fn newest_current_catalog_evidence_supplies_the_identity() {
+    let mut older = evidence(
+        VerificationKind::Catalog,
+        VerificationOutcome::Verified,
+        CURRENT_SHA,
+        Some(complete_catalog()),
+    );
+    older.performed_at = "2026-07-01T00:00:00Z".to_owned();
+    older.catalog.as_mut().unwrap().game = "Old catalog identity".to_owned();
+    let mut newer = evidence(
+        VerificationKind::Catalog,
+        VerificationOutcome::Verified,
+        CURRENT_SHA,
+        Some(complete_catalog()),
+    );
+    newer.performed_at = "2026-07-30T00:00:00Z".to_owned();
+    newer.catalog.as_mut().unwrap().game = "Corrected catalog identity".to_owned();
+
+    let dump = dump_with(vec![newer, older]);
+    assert_eq!(
+        dump_catalog_evidence(&dump).unwrap().game,
+        "Corrected catalog identity"
+    );
 }
 
 #[test]

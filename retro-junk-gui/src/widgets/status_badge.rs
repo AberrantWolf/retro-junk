@@ -20,19 +20,21 @@ pub fn show_severity(
 }
 
 /// Draw a status circle with optional orange warning triangles for broken references
-/// and/or hash warnings, and a small colored square indicating media status.
+/// and/or hash warnings, and a small colored square indicating artwork-set
+/// coverage. The square is independent of the archive status glyph.
 pub fn show_with_warning(
     ui: &mut egui::Ui,
     status: RowStatus,
     has_broken_refs: bool,
     has_hash_warnings: bool,
-    media_status: AssetStatus,
+    artwork_status: AssetStatus,
 ) -> egui::Response {
     // Keep the indicator present and gray while filesystem discovery is in
     // flight, avoiding both layout shifts and a false claim about availability.
-    let show_media = true;
+    let show_artwork = true;
     let show_warning = has_broken_refs || has_hash_warnings;
-    let width = 10.0 + if show_warning { 10.0 } else { 0.0 } + if show_media { 10.0 } else { 0.0 };
+    let width =
+        10.0 + if show_warning { 10.0 } else { 0.0 } + if show_artwork { 10.0 } else { 0.0 };
     let color = status.color();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 10.0), egui::Sense::hover());
     if ui.is_rect_visible(rect) {
@@ -58,12 +60,13 @@ pub fn show_with_warning(
             x += 10.0;
         }
 
-        // Media status square
-        if show_media {
+        // Supplemental artwork-set square. This never changes the archive
+        // status glyph painted above.
+        if show_artwork {
             let center = egui::pos2(x, rect.center().y);
             let half = 3.0;
             let sq_rect = egui::Rect::from_center_size(center, egui::vec2(half * 2.0, half * 2.0));
-            match media_status {
+            match artwork_status {
                 AssetStatus::None => {
                     // Hollow dim square
                     let stroke_color = ui.visuals().text_color().linear_multiply(0.25);

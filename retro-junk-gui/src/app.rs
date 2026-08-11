@@ -85,6 +85,13 @@ pub struct UiState {
     pub selected_entries: HashSet<retro_junk_db::LibraryEntryId>,
     /// Durable logical archive-release identities for multi-select.
     pub selected_archive_releases: HashSet<String>,
+    /// Canonical logical Library selection. Archive and playable-only rows use
+    /// one identity space so navigation and ranges never skip a row kind.
+    pub selected_library_rows: HashSet<retro_junk_db::LibraryRowId>,
+    /// Canonical focused logical Library row.
+    pub focused_library_row: Option<retro_junk_db::LibraryRowId>,
+    /// Anchor used by Shift-click and Shift-keyboard range selection.
+    pub library_selection_anchor: Option<retro_junk_db::LibraryRowId>,
     /// Text filter for the game table.
     pub filter_text: String,
     /// Offset of the active 300-row SQL page.
@@ -199,6 +206,9 @@ impl Default for UiState {
             focused_entry: None,
             selected_entries: HashSet::new(),
             selected_archive_releases: HashSet::new(),
+            selected_library_rows: HashSet::new(),
+            focused_library_row: None,
+            library_selection_anchor: None,
             filter_text: String::new(),
             page_offset: 0,
             detail_panel_open: true,
@@ -883,6 +893,32 @@ impl RetroJunkApp {
                     self.browser
                         .entry_counts
                         .insert(page.console_id, page.logical_count);
+                    let logical_ids = page
+                        .logical_rows
+                        .iter()
+                        .map(retro_junk_db::LibraryListRow::id)
+                        .collect::<HashSet<_>>();
+                    self.ui_state
+                        .selected_library_rows
+                        .retain(|id| logical_ids.contains(id));
+                    if self
+                        .ui_state
+                        .focused_library_row
+                        .as_ref()
+                        .is_some_and(|id| !logical_ids.contains(id))
+                    {
+                        self.ui_state.focused_library_row =
+                            self.ui_state.selected_library_rows.iter().next().cloned();
+                    }
+                    if self
+                        .ui_state
+                        .library_selection_anchor
+                        .as_ref()
+                        .is_some_and(|id| !logical_ids.contains(id))
+                    {
+                        self.ui_state.library_selection_anchor =
+                            self.ui_state.focused_library_row.clone();
+                    }
                     let ids: Vec<_> = page.rows.iter().map(|row| row.id).collect();
                     let archive_ids = page
                         .archived_releases
@@ -918,6 +954,7 @@ impl RetroJunkApp {
                         .collect();
                     let page_console_id = page.console_id;
                     self.browser.active_page = Some(page);
+                    self.sync_library_selection_targets();
                     self.browser.asset_statuses.clear();
                     self.browser.entries_with_miximages.clear();
                     let focused = self.ui_state.focused_entry;
@@ -948,6 +985,7 @@ impl RetroJunkApp {
                             self.browser.consoles[console_index].folder_name.clone(),
                             asset_rows,
                             self.settings.general.assets_dir.clone(),
+                            self.ui_state.expected_assets.clone(),
                         );
                     }
                 }
@@ -1245,8 +1283,8 @@ impl RetroJunkApp {
 
     fn queue_console_page(&mut self, console_id: retro_junk_db::LibraryConsoleId) {
         self.pending_page_request = self.queue_store(
-            crate::backend::library_store::LibraryStoreRequest::EntryList(
-                retro_junk_db::LibraryEntryListQuery {
+            crate::backend::library_store::LibraryStoreRequest::EntryList {
+                query: retro_junk_db::LibraryEntryListQuery {
                     console_id,
                     search: self.ui_state.filter_text.clone(),
                     filter: retro_junk_db::LibraryEntryFilter::All,
@@ -1255,7 +1293,8 @@ impl RetroJunkApp {
                     offset: self.ui_state.page_offset,
                     limit: retro_junk_db::LibraryEntryListQuery::DEFAULT_PAGE_SIZE,
                 },
-            ),
+                expected_assets: self.ui_state.expected_assets.clone(),
+            },
         );
         self.pending_details_request = None;
     }
@@ -1329,31 +1368,50 @@ impl RetroJunkApp {
     /// Playable entries grouped under a selected archive release are action
     /// targets for that release, not additional selected rows.
     pub fn selected_library_row_count(&self) -> usize {
-        let grouped_entry_ids = self
-            .browser
-            .active_page
-            .as_ref()
-            .into_iter()
-            .flat_map(|page| &page.archived_releases)
-            .filter(|release| {
-                self.ui_state
-                    .selected_archive_releases
-                    .contains(&release.summary.archive_release_id)
-            })
-            .flat_map(|release| {
-                release
-                    .playable_library_entries
-                    .iter()
-                    .map(|entry| entry.id)
-            })
-            .collect::<HashSet<_>>();
-        self.ui_state.selected_archive_releases.len()
-            + self
-                .ui_state
-                .selected_entries
-                .iter()
-                .filter(|id| !grouped_entry_ids.contains(id))
-                .count()
+        self.ui_state.selected_library_rows.len()
+    }
+
+    /// Project the canonical logical selection into the legacy operation
+    /// target sets. Operations are migrated independently, but there remains
+    /// exactly one interaction source of truth while that work proceeds.
+    pub fn sync_library_selection_targets(&mut self) {
+        self.ui_state.selected_entries.clear();
+        self.ui_state.selected_archive_releases.clear();
+        self.ui_state.focused_entry = None;
+        self.ui_state.focused_archive_release = None;
+
+        let page = self.browser.active_page.as_ref();
+        for row in &self.ui_state.selected_library_rows {
+            match row {
+                retro_junk_db::LibraryRowId::PlayableEntry(id) => {
+                    self.ui_state.selected_entries.insert(*id);
+                }
+                retro_junk_db::LibraryRowId::ArchiveRelease(id) => {
+                    self.ui_state.selected_archive_releases.insert(id.clone());
+                    if let Some(release) = page.and_then(|page| {
+                        page.archived_releases
+                            .iter()
+                            .find(|release| release.summary.archive_release_id == *id)
+                    }) {
+                        self.ui_state.selected_entries.extend(
+                            release
+                                .playable_library_entries
+                                .iter()
+                                .map(|entry| entry.id),
+                        );
+                    }
+                }
+            }
+        }
+        match self.ui_state.focused_library_row.as_ref() {
+            Some(retro_junk_db::LibraryRowId::PlayableEntry(id)) => {
+                self.ui_state.focused_entry = Some(*id);
+            }
+            Some(retro_junk_db::LibraryRowId::ArchiveRelease(id)) => {
+                self.ui_state.focused_archive_release = Some(id.clone());
+            }
+            None => {}
+        }
     }
 
     /// Cancel every in-flight background operation and join its thread (D2).
@@ -1569,6 +1627,9 @@ impl RetroJunkApp {
         self.ui_state.focused_entry = None;
         self.ui_state.selected_entries.clear();
         self.ui_state.selected_archive_releases.clear();
+        self.ui_state.selected_library_rows.clear();
+        self.ui_state.focused_library_row = None;
+        self.ui_state.library_selection_anchor = None;
         self.ui_state.page_offset = 0;
         self.ui_state.loading_library = true;
         self.open_browser_root(&root, ctx);

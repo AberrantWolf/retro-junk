@@ -247,11 +247,15 @@ fn replace_component_total(operation_total: u64, old_total: u64, new_total: u64)
 }
 
 fn hashes_match_catalog_track(local: &FileHashes, file_size: i64, crc32: &str, sha1: &str) -> bool {
-    let crc_matches = u64::try_from(file_size).ok() == Some(local.data_size)
-        && !local.crc32.is_empty()
-        && local.crc32.eq_ignore_ascii_case(crc32);
-    let local_sha1 = local.sha1.as_deref().unwrap_or_default();
-    crc_matches || (!local_sha1.is_empty() && local_sha1.eq_ignore_ascii_case(sha1))
+    retro_junk_core::matching::content_hash_match(
+        local.data_size,
+        &local.crc32,
+        local.sha1.as_deref().unwrap_or_default(),
+        u64::try_from(file_size).unwrap_or(u64::MAX),
+        crc32,
+        sha1,
+    )
+    .is_some()
 }
 
 fn disc_matches_candidate(

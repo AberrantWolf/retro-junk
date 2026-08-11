@@ -298,66 +298,73 @@ fn archive_detail_owns_grouped_playable_assets() {
     let console = crate::test_support::test_console("psx", vec![entry]);
     let console_id = console.id.unwrap();
     app.browser.consoles.push(console);
-    app.browser.active_page = Some(LibraryEntryListPage {
-        console_id,
-        console_revision: 0,
-        total_count: 1,
-        logical_count: 1,
-        counts: LibraryEntryCounts::default(),
-        availability_counts: LibraryAvailabilityCounts::default(),
-        archived_playable_gaps: Vec::new(),
-        archived_releases: vec![ArchivedLibraryListItem {
-            summary: ArchiveReleaseSummary {
-                archive_release_id: "archive-release".to_owned(),
-                catalog_release_id: None,
-                platform_id: "psx".to_owned(),
-                title: "Game".to_owned(),
-                region: "usa".to_owned(),
-                revision: String::new(),
-                physical_copy_count: 1,
-                carrier_count: 1,
-                dump_count: 1,
-                preservation_count: 1,
-                preservation_present_count: 1,
-                playable_count: 1,
-                playable_present_count: 1,
-                playable_missing_count: 0,
-                desired_playable_count: 1,
-                satisfied_playable_count: 1,
-                integrity_verified_count: 1,
-                reproduction_verified_count: 1,
-                catalog_verified_count: 1,
-                round_trip_verified_count: 0,
-            },
-            action: None,
-            playable_representations: Vec::new(),
-            playable_library_entries: vec![ArchivedPlayableLibraryEntry {
-                id: entry_id,
-                display_name: "game.chd".to_owned(),
-                playable_format: "chd".to_owned(),
-            }],
-            archived_assets: Vec::new(),
-            scrape_identity: None,
-            facts: retro_junk_db::facts::ReleaseFacts {
-                archive_release_id: "archive-release".to_owned(),
-                platform_id: "psx".to_owned(),
-                title: "Game".to_owned(),
-                region: "usa".to_owned(),
-                revision: String::new(),
-                catalog_release_id: None,
-                catalog_work_id: None,
-                expected_discs: None,
-                carriers: Vec::new(),
-                desired_playables: 1,
-                satisfied_playables: 1,
-                missing_playables: 0,
-                archived_asset_types: Vec::new(),
-                playable_names: Vec::new(),
-            },
+    let archived_release = ArchivedLibraryListItem {
+        summary: ArchiveReleaseSummary {
+            archive_release_id: "archive-release".to_owned(),
+            catalog_release_id: None,
+            platform_id: "psx".to_owned(),
+            title: "Game".to_owned(),
+            region: "usa".to_owned(),
+            revision: String::new(),
+            physical_copy_count: 1,
+            carrier_count: 1,
+            dump_count: 1,
+            preservation_count: 1,
+            preservation_present_count: 1,
+            playable_count: 1,
+            playable_present_count: 1,
+            playable_missing_count: 0,
+            desired_playable_count: 1,
+            satisfied_playable_count: 1,
+            integrity_verified_count: 1,
+            reproduction_verified_count: 1,
+            catalog_verified_count: 1,
+            round_trip_verified_count: 0,
+        },
+        action: None,
+        playable_representations: Vec::new(),
+        playable_library_entries: vec![ArchivedPlayableLibraryEntry {
+            id: entry_id,
+            display_name: "game.chd".to_owned(),
+            playable_format: "chd".to_owned(),
         }],
-        offset: 0,
-        rows: Vec::new(),
-    });
+        archived_assets: Vec::new(),
+        scrape_identity: None,
+        facts: retro_junk_db::facts::ReleaseFacts {
+            archive_release_id: "archive-release".to_owned(),
+            platform_id: "psx".to_owned(),
+            title: "Game".to_owned(),
+            region: "usa".to_owned(),
+            revision: String::new(),
+            catalog_release_id: None,
+            catalog_work_id: None,
+            expected_discs: None,
+            carriers: Vec::new(),
+            desired_playables: 1,
+            satisfied_playables: 1,
+            missing_playables: 0,
+            archived_asset_types: Vec::new(),
+            playable_names: Vec::new(),
+        },
+    };
+    app.browser.active_page = Some(
+        LibraryEntryListPage {
+            console_id,
+            console_revision: 0,
+            total_count: 1,
+            logical_count: 1,
+            counts: LibraryEntryCounts::default(),
+            availability_counts: LibraryAvailabilityCounts::default(),
+            archived_playable_gaps: Vec::new(),
+            archived_releases: vec![archived_release.clone()],
+            logical_rows: vec![retro_junk_db::LibraryListRow::Archive(Box::new(
+                archived_release,
+            ))],
+            offset: 0,
+            rows: Vec::new(),
+        }
+        .into(),
+    );
     app.ui_state.current_view = View::Library;
     app.ui_state.detail_panel_open = true;
     app.ui_state.selected_console = Some(console_id);
@@ -367,6 +374,11 @@ fn archive_detail_owns_grouped_playable_assets() {
         .selected_archive_releases
         .insert("archive-release".to_owned());
     app.ui_state.selected_entries.insert(entry_id);
+    app.ui_state
+        .selected_library_rows
+        .insert(retro_junk_db::LibraryRowId::ArchiveRelease(
+            "archive-release".to_owned(),
+        ));
 
     app.reconcile_detail_assets(&ctx);
 
@@ -376,6 +388,11 @@ fn archive_detail_owns_grouped_playable_assets() {
     app.ui_state
         .selected_entries
         .insert(retro_junk_db::LibraryEntryId(999));
+    app.ui_state
+        .selected_library_rows
+        .insert(retro_junk_db::LibraryRowId::PlayableEntry(
+            retro_junk_db::LibraryEntryId(999),
+        ));
     app.reconcile_detail_assets(&ctx);
     assert_eq!(app.selected_library_row_count(), 2);
     assert_eq!(app.browser.detail_asset_entry, None);

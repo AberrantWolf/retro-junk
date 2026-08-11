@@ -258,7 +258,7 @@ fn complete_track_matching_accepts_primary_hash_only_for_single_track_media() {
 }
 
 #[test]
-fn flat_file_matching_requires_size_and_every_available_catalog_digest() {
+fn flat_file_matching_trusts_strong_hashes_and_rejects_digest_contradictions() {
     let conn = open_memory().unwrap();
     conn.execute("INSERT INTO platforms(id,display_name,short_name,manufacturer,generation,media_type,release_year,description,core_platform) VALUES('nes','NES','NES','Nintendo',3,'cartridge',1983,'','Nes')", []).unwrap();
     conn.execute(
@@ -305,6 +305,11 @@ fn flat_file_matching_requires_size_and_every_available_catalog_digest() {
         )
         .unwrap();
     assert_eq!(binding, (None, "media-flat".to_owned(), None));
+    // A strong digest names the bytes even when an ancillary recorded size is
+    // stale. Size participates only in the collision-prone CRC tier.
+    actual.size = 99;
+    actual.crc32.clear();
+    assert_eq!(match_catalog_file(&conn, "nes", &actual).unwrap().len(), 1);
     actual.md5 = "different".to_owned();
     assert!(
         match_catalog_file(&conn, "nes", &actual)
@@ -839,14 +844,22 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         &temp.path().join("work"),
     )
     .unwrap();
-    let release_binding: String = conn
+    let release_association: String = conn
         .query_row(
-            "SELECT match_method FROM library_entry_media_bindings WHERE library_entry_id=2",
+            "SELECT basis FROM library_entry_release_associations WHERE library_entry_id=2",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(release_binding, "archive_release_projection");
+    assert_eq!(release_association, "catalog_name");
+    let weak_ownership: u64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM library_entry_media_bindings WHERE library_entry_id=2",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(weak_ownership, 0);
     conn.execute(
         "UPDATE library_entries SET dat_game_name='Different Game' WHERE id=2",
         [],
@@ -859,15 +872,15 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
         &temp.path().join("work"),
     )
     .unwrap();
-    let stale_release_bindings: u64 = conn
+    let stale_release_associations: u64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM library_entry_media_bindings
-             WHERE library_entry_id=2 AND match_method='archive_release_projection'",
+            "SELECT COUNT(*) FROM library_entry_release_associations
+             WHERE library_entry_id=2",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(stale_release_bindings, 0);
+    assert_eq!(stale_release_associations, 0);
 
     // A generated container is not expected to reproduce the raw catalog
     // hashes. Its exact evidence path is sufficient provenance to collapse the
@@ -953,6 +966,12 @@ fn archive_projection_is_rebuildable_from_portable_manifests() {
             .iter()
             .any(|entry| entry.id == retro_junk_db::LibraryEntryId(3))
     );
+    assert_eq!(playable_page.logical_rows.len(), 2);
+    assert!(playable_page.logical_rows.iter().any(|row| matches!(
+        row,
+        retro_junk_db::LibraryListRow::Archive(release)
+            if release.playable_library_entries.iter().any(|entry| entry.id == retro_junk_db::LibraryEntryId(3))
+    )));
 
     conn.execute(
         "DELETE FROM playable_policies WHERE scope_type='carrier_override'",

@@ -335,7 +335,7 @@ fn a_multi_track_disc_is_asked_about_as_the_disc_not_a_track() {
     // digests are real digests of a real file, and the serial names the disc.
     assert_eq!(parent.serial, "SLUS-00067");
     assert_eq!(parent.crc32, "11223344");
-    assert_eq!(parent.tier(), ScrapeIdentityTier::Serial);
+    assert_eq!(parent.tier(), ScrapeIdentityTier::Hashes);
 }
 
 /// The rule must not reach single-file media, whose ROM name legitimately

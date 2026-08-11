@@ -18,6 +18,7 @@ fn all_complete() -> Completion {
         catalog: Fraction::known(2, 2),
         playable: Fraction::known(1, 1),
         artwork: Fraction::known(3, 3),
+        missing_artwork: Vec::new(),
         attention: Vec::new(),
     }
 }
@@ -47,6 +48,27 @@ fn extra_evidence_beyond_what_is_expected_still_reads_complete() {
     // A second physical copy verified is not an error state.
     assert_eq!(Fraction::known(3, 2).level(), FractionLevel::Complete);
     assert!(Fraction::known(3, 2).is_complete());
+}
+
+#[test]
+fn missing_artwork_is_reported_without_demoting_the_archive() {
+    let mut completion = all_complete();
+    completion.artwork = Fraction::known(1, 3);
+    completion.missing_artwork = vec![
+        retro_junk_frontend::AssetType::Video,
+        retro_junk_frontend::AssetType::PhysicalMedia,
+    ];
+    assert_eq!(completion.artwork.level(), FractionLevel::Partial);
+    assert_eq!(
+        completion.missing_artwork,
+        vec![
+            retro_junk_frontend::AssetType::Video,
+            retro_junk_frontend::AssetType::PhysicalMedia,
+        ]
+    );
+    assert!(completion.incomplete_reasons().is_empty());
+    assert_eq!(completion.overall(), Overall::Complete);
+    assert_eq!(completion.severity(), Severity::Verified);
 }
 
 #[test]
@@ -190,10 +212,16 @@ mod fold {
     }
 
     #[test]
-    fn fully_verified_single_disc_release_is_complete() {
-        let completion = Completion::for_release(&facts(), &no_assets());
+    fn fully_verified_single_disc_release_is_complete_without_artwork() {
+        let expected_artwork = retro_junk_frontend::AssetSelection::default();
+        let completion = Completion::for_release(&facts(), &expected_artwork);
         assert_eq!(completion.catalog, Fraction::known(1, 1));
+        assert_eq!(
+            completion.artwork,
+            Fraction::known(0, expected_artwork.types.len() as u64)
+        );
         assert_eq!(completion.overall(), Overall::Complete);
+        assert_eq!(completion.severity(), Severity::Verified);
     }
 
     #[test]
@@ -241,14 +269,15 @@ fn incomplete_requires_a_real_measured_gap() {
     assert_eq!(completion.playable.level(), FractionLevel::Partial);
 }
 
-/// The general status column and the evidence badges must be incapable of
-/// disagreeing.
+/// The general status column and completion-bearing evidence badges must be
+/// incapable of disagreeing.
 ///
 /// They can only disagree if the summary is computed *beside* the evidence
 /// instead of *from* it. Folding with `worst` makes the summary unable to be
 /// greener than its greenest part, so this is a property, not a spot check:
 /// no combination of fractions can produce a summary better than the worst
-/// badge shown next to it.
+/// archive/playable badge shown next to it. Artwork is intentionally excluded
+/// because it is supplemental coverage, not archive completeness.
 #[test]
 fn a_summary_can_never_read_better_than_the_worst_evidence_beside_it() {
     use crate::completion::{Fraction, Identity, UnknownReason};
@@ -273,10 +302,11 @@ fn a_summary_can_never_read_better_than_the_worst_evidence_beside_it() {
                     catalog,
                     playable: Fraction::known(1, 1),
                     artwork: Fraction::known(1, 1),
+                    missing_artwork: Vec::new(),
                     attention: Vec::new(),
                 };
                 let worst_badge = completion
-                    .evidence()
+                    .completion_evidence()
                     .iter()
                     .map(|fraction| fraction.level().severity())
                     .max()
@@ -307,6 +337,7 @@ fn incomplete_evidence_is_never_painted_as_good() {
         catalog: Fraction::known(1, 1),
         playable: Fraction::known(1, 1),
         artwork: Fraction::known(1, 1),
+        missing_artwork: Vec::new(),
         attention: Vec::new(),
     };
     let severity = completion.severity();

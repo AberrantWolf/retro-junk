@@ -184,6 +184,31 @@ fn runtime_hash_match_is_platform_scoped_size_checked_and_case_insensitive() {
     .unwrap();
     assert_eq!(clustered[0].len(), 1);
     assert!(clustered[1].is_empty());
+
+    // A weak digest must never admit a candidate contradicted by a stronger
+    // digest supplied for the same bytes.
+    assert!(
+        match_media_by_hash(
+            &conn,
+            "nes",
+            40976,
+            Some("d445f698"),
+            Some("0000000000000000000000000000000000000000"),
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let contradictory = match_media_by_hashes(
+        &conn,
+        "nes",
+        &[CatalogHashQuery {
+            file_size: 40976,
+            crc32: "d445f698".into(),
+            sha1: "0000000000000000000000000000000000000000".into(),
+        }],
+    )
+    .unwrap();
+    assert!(contradictory[0].is_empty());
 }
 
 #[test]
@@ -215,6 +240,18 @@ fn clustered_hash_lookup_includes_per_track_disc_fingerprints() {
     .unwrap();
     assert_eq!(matches[0].len(), 1);
     assert_eq!(matches[0][0].media.id, "smb1-nes-usa-v1");
+
+    let contradicted = match_media_by_hashes(
+        &conn,
+        "nes",
+        &[CatalogHashQuery {
+            file_size: 2352,
+            crc32: "1234abcd".into(),
+            sha1: "cccccccccccccccccccccccccccccccccccccccc".into(),
+        }],
+    )
+    .unwrap();
+    assert!(contradicted[0].is_empty());
 
     let tracks = find_media_tracks_for_media_ids(&conn, &["smb1-nes-usa-v1".to_string()]).unwrap();
     assert_eq!(tracks.len(), 1);

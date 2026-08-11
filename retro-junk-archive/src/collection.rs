@@ -623,10 +623,11 @@ pub fn ingest_new_carrier_dump(
     // complete ordered track set — the bytes, not a row id. Failing that, the
     // serial and disc number are what an unidentified import has to go on.
     let matching_carrier = existing_carriers.into_iter().find(|candidate| {
-        (!spec.catalog_binding.expected_tracks.is_empty()
-            && candidate.manifest.catalog_binding.expected_tracks
-                == spec.catalog_binding.expected_tracks)
-            || (!spec.serial.is_empty()
+        let incoming_tracks = &spec.catalog_binding.expected_tracks;
+        let existing_tracks = &candidate.manifest.catalog_binding.expected_tracks;
+        (!incoming_tracks.is_empty() && existing_tracks == incoming_tracks)
+            || ((incoming_tracks.is_empty() || existing_tracks.is_empty())
+                && !spec.serial.is_empty()
                 && candidate.manifest.serial.eq_ignore_ascii_case(&spec.serial)
                 && candidate.manifest.sequence_number == spec.sequence_number)
     });

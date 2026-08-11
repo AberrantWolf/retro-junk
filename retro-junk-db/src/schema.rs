@@ -31,6 +31,7 @@ pub enum SchemaError {
 pub const PROJECTION_TABLES: &[&str] = &[
     "projected_assets",
     "projected_gamelists",
+    "library_entry_release_associations",
     "library_entry_media_bindings",
     "playable_policies",
     "derivations",
@@ -48,7 +49,7 @@ pub const PROJECTION_TABLES: &[&str] = &[
 
 /// Bumped whenever a projection table's shape changes. Unlike
 /// [`CURRENT_VERSION`], this never needs a migration arm.
-pub const PROJECTION_VERSION: i32 = 5;
+pub const PROJECTION_VERSION: i32 = 7;
 
 /// Drop and rebuild the projection when its recorded shape is not the one
 /// this build expects.
@@ -484,13 +485,15 @@ const TABLES: &[(&str, &str)] = &[
         "(archive_release_id TEXT PRIMARY KEY
               REFERENCES archive_releases(id) ON DELETE CASCADE,
           profile_id TEXT NOT NULL,
-          fingerprint TEXT NOT NULL)",
+          fingerprint TEXT NOT NULL,
+          outputs_json TEXT NOT NULL DEFAULT '[]')",
     ),
     (
         "projected_gamelists",
         "(profile_id TEXT NOT NULL,
           console TEXT NOT NULL,
           fingerprint TEXT NOT NULL,
+          outputs_json TEXT NOT NULL DEFAULT '[]',
           PRIMARY KEY(profile_id, console))",
     ),
     (
@@ -517,6 +520,18 @@ const TABLES: &[(&str, &str)] = &[
           match_method TEXT NOT NULL DEFAULT '',
           CHECK(carrier_id IS NOT NULL OR catalog_media_id IS NOT NULL))",
     ),
+    // A fallback name/serial inference can explain that a playable entry is
+    // probably related to an archive release, but it is not ownership proof.
+    // Keeping it out of library_entry_media_bindings prevents likely evidence
+    // from affecting archive availability, completion, or logical-row merging.
+    (
+        "library_entry_release_associations",
+        "(library_entry_id INTEGER NOT NULL REFERENCES library_entries(id) ON DELETE CASCADE,
+          archive_release_id TEXT NOT NULL REFERENCES archive_releases(id) ON DELETE CASCADE,
+          basis TEXT NOT NULL,
+          confidence TEXT NOT NULL CHECK(confidence IN ('asserted','likely')),
+          PRIMARY KEY(library_entry_id, archive_release_id))",
+    ),
     (
         "catalog_source_snapshots",
         "(id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -534,7 +549,9 @@ const TABLES: &[(&str, &str)] = &[
           category TEXT NOT NULL,
           asset_type TEXT NOT NULL,
           relative_path TEXT NOT NULL,
+          file_size INTEGER NOT NULL,
           sha256 TEXT NOT NULL DEFAULT '',
+          presence_state TEXT NOT NULL DEFAULT 'missing',
           caption TEXT NOT NULL DEFAULT '',
           source TEXT NOT NULL DEFAULT '',
           UNIQUE(physical_copy_id, relative_path))",
@@ -548,6 +565,7 @@ const TABLES: &[(&str, &str)] = &[
           relative_path TEXT NOT NULL,
           file_size INTEGER NOT NULL,
           sha256 TEXT NOT NULL,
+          presence_state TEXT NOT NULL DEFAULT 'missing',
           source TEXT NOT NULL DEFAULT '',
           source_url TEXT NOT NULL DEFAULT '',
           caption TEXT NOT NULL DEFAULT '',
@@ -655,6 +673,7 @@ CREATE INDEX IF NOT EXISTS idx_library_binding_media ON library_entry_media_bind
 CREATE INDEX IF NOT EXISTS idx_library_binding_entry ON library_entry_media_bindings(library_entry_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_library_binding_carrier ON library_entry_media_bindings(library_entry_id, carrier_id) WHERE carrier_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_library_binding_catalog_only ON library_entry_media_bindings(library_entry_id, catalog_media_id) WHERE carrier_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_library_release_association_entry ON library_entry_release_associations(library_entry_id);
 CREATE INDEX IF NOT EXISTS idx_archive_release_files_release ON archive_release_files(archive_release_id, category, asset_type);
 ";
 

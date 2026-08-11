@@ -212,6 +212,16 @@ fn projected_playable_path(
     )
 }
 
+fn projected_regular_file_presence(path: &Path, expected_size: u64) -> &'static str {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() && metadata.len() == expected_size => {
+            "present"
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "missing",
+        Ok(_) | Err(_) => "modified",
+    }
+}
+
 /// The frontend system directory a release's playable outputs belong to.
 ///
 /// One definition, shared with the archive-side orphan scan through
@@ -509,17 +519,19 @@ fn match_catalog_file_inner(
                 r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
                 EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),m.dat_name,m.rom_name
          FROM media m JOIN releases r ON r.id=m.release_id
-         WHERE (?1='' OR r.platform_id=?1) AND m.file_size=?2
-           AND (m.sha1<>'' OR m.md5<>'' OR m.crc32<>'')
+         WHERE (?1='' OR r.platform_id=?1)
+           AND ((m.sha1<>'' AND ?3<>'')
+                OR (m.md5<>'' AND ?4<>'')
+                OR (m.crc32<>'' AND ?5<>''))
            -- An empty digest on *either* side means \"not available to
            -- compare\", never \"mismatch\", and both sides must bring at
            -- least one. The archive's own track evidence records SHA-1 only,
            -- so demanding the CRC-32 the catalog happens to hold made every
            -- such medium permanently unmatchable.
-           AND (?3<>'' OR ?4<>'' OR ?5<>'')
            AND (m.sha1='' OR ?3='' OR m.sha1=lower(?3))
            AND (m.md5='' OR ?4='' OR m.md5=lower(?4))
-           AND (m.crc32='' OR ?5='' OR m.crc32=lower(?5))
+           AND (m.crc32='' OR ?5=''
+                OR (m.crc32=lower(?5) AND m.file_size=?2))
          ORDER BY m.id",
     )?;
     let rows = statement.query_map(
@@ -620,14 +632,17 @@ pub fn bind_library_entries_by_hash(
         return Ok(0);
     }
     conn.execute(
-        "INSERT OR REPLACE INTO library_entry_media_bindings(library_entry_id,carrier_id,catalog_media_id,representation_id,match_method)
+        "INSERT OR IGNORE INTO library_entry_media_bindings(library_entry_id,carrier_id,catalog_media_id,representation_id,match_method)
          SELECT e.id,?4,?5,?6,?7
          FROM library_entries e JOIN library_consoles c ON c.id=e.console_id
          WHERE (lower(c.folder_name)=lower(?1) OR lower(c.platform)=lower(?1))
-           AND e.data_size=?2
-           AND ((e.sha1<>'' AND e.sha1=lower(?3))
-                OR (e.md5<>'' AND e.md5=lower(?8))
-                OR (e.crc32<>'' AND e.crc32=lower(?9)))",
+           AND ((e.sha1<>'' AND ?3<>'') OR
+                (e.md5<>'' AND ?8<>'') OR
+                (e.crc32<>'' AND ?9<>''))
+           AND (e.sha1='' OR ?3='' OR e.sha1=lower(?3))
+           AND (e.md5='' OR ?8='' OR e.md5=lower(?8))
+           AND (e.crc32='' OR ?9=''
+                OR (e.crc32=lower(?9) AND e.data_size=?2))",
         params![
             platform_id,
             i64::try_from(actual.size).unwrap_or(i64::MAX),
@@ -671,7 +686,7 @@ pub fn unbound_playable_rows(
          JOIN library_consoles lc ON lc.id=le.console_id
          JOIN library_roots lr ON lr.id=lc.root_id
          WHERE lr.root_path=?1
-           AND (le.sha1<>'' OR le.crc32<>'')
+           AND (le.sha1<>'' OR le.md5<>'' OR le.crc32<>'')
            AND NOT EXISTS(
                SELECT 1 FROM library_entry_media_bindings b
                WHERE b.library_entry_id=le.id AND b.carrier_id IS NOT NULL)"
@@ -698,9 +713,9 @@ pub fn unbound_playable_rows(
 /// do not move, so they are asked instead, in order of how directly they answer
 /// the question:
 ///
-/// 1. The track set the carrier's own binding recorded, which is what the
-///    catalog agreed to when it was identified.
-/// 2. The track set a catalog verification recorded against a current dump.
+/// 1. The track set measured by a catalog verification against a current dump.
+/// 2. The expected track set recorded when the carrier was first identified,
+///    used only when no current measured evidence resolves.
 /// 3. The digests of a dump's single archived file — a cartridge, where the one
 ///    file *is* the whole medium and there are no tracks to compare.
 ///
@@ -715,13 +730,7 @@ fn resolved_catalog_media(
 ) -> Result<Option<String>, OperationError> {
     let platform = catalog_platform_id(platform_id);
 
-    let recorded = &carrier.manifest.catalog_binding.expected_tracks;
-    if !recorded.is_empty()
-        && let Some(id) = matched_track_set(conn, &platform, recorded, carrier, chosen)?
-    {
-        return Ok(Some(id));
-    }
-
+    let mut has_current_measured_tracks = false;
     for dump in &carrier.dumps {
         // One definition of "the archive calls this dump catalog-verified",
         // shared with every other consumer — including the shape rule that
@@ -755,10 +764,25 @@ fn resolved_catalog_media(
             if tracks.len() != evidence.tracks.len() {
                 continue;
             }
+            has_current_measured_tracks = true;
             if let Some(id) = matched_track_set(conn, &platform, &tracks, carrier, chosen)? {
                 return Ok(Some(id));
             }
         }
+    }
+
+    // Current measured evidence is the carrier's strongest statement. If it
+    // cannot resolve, an older catalog expectation must not silently replace
+    // it with a different answer.
+    if has_current_measured_tracks {
+        return Ok(None);
+    }
+
+    let recorded = &carrier.manifest.catalog_binding.expected_tracks;
+    if !recorded.is_empty()
+        && let Some(id) = matched_track_set(conn, &platform, recorded, carrier, chosen)?
+    {
+        return Ok(Some(id));
     }
 
     // A cartridge has no tracks: its one archived file is the whole medium, and
@@ -879,18 +903,20 @@ fn match_single_track_catalog_media(
                 r.platform_id,r.region,r.revision,r.variant,m.media_serial,m.disc_number,
                 EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id),m.dat_name,m.rom_name
          FROM media m JOIN releases r ON r.id=m.release_id
-         WHERE (?1='' OR r.platform_id=?1) AND m.file_size=?2
+         WHERE (?1='' OR r.platform_id=?1)
            AND NOT EXISTS(SELECT 1 FROM media_tracks mt WHERE mt.media_id=m.id)
-           AND (m.sha1<>'' OR m.md5<>'' OR m.crc32<>'')
+           AND ((m.sha1<>'' AND ?3<>'')
+                OR (m.md5<>'' AND ?4<>'')
+                OR (m.crc32<>'' AND ?5<>''))
            -- An empty digest on *either* side means \"not available to
            -- compare\", never \"mismatch\", and both sides must bring at
            -- least one. The archive's own track evidence records SHA-1 only,
            -- so demanding the CRC-32 the catalog happens to hold made every
            -- such medium permanently unmatchable.
-           AND (?3<>'' OR ?4<>'' OR ?5<>'')
            AND (m.sha1='' OR ?3='' OR m.sha1=lower(?3))
            AND (m.md5='' OR ?4='' OR m.md5=lower(?4))
-           AND (m.crc32='' OR ?5='' OR m.crc32=lower(?5))
+           AND (m.crc32='' OR ?5=''
+                OR (m.crc32=lower(?5) AND m.file_size=?2))
          ORDER BY m.id",
     )?;
     let rows = statement.query_map(
@@ -950,7 +976,7 @@ fn match_complete_catalog_media_inner(
          FROM media_tracks mt
          JOIN media m ON m.id=mt.media_id
          JOIN releases r ON r.id=m.release_id
-         WHERE (?1='' OR r.platform_id=?1) AND mt.file_size=?2 AND mt.sha1=lower(?3)
+         WHERE (?1='' OR r.platform_id=?1) AND mt.sha1=lower(?3)
          ORDER BY m.id",
     )?;
     let first = &actual[0];
@@ -1001,7 +1027,6 @@ fn match_complete_catalog_media_inner(
         let complete = expected.len() == actual.len()
             && expected.iter().zip(actual).all(|(expected, actual)| {
                 expected.number == actual.number
-                    && expected.size == actual.size
                     && expected.sha1.eq_ignore_ascii_case(&actual.sha1)
                     && (expected.crc32.is_empty()
                         || actual.crc32.is_empty()
@@ -1085,7 +1110,12 @@ fn release_projection_fingerprint(
 /// Version of the rule that resolves persisted archive hashes to catalog
 /// media. Bumping this revisits every carrier once after a matching bug is
 /// fixed, without pretending the archive manifests themselves changed.
-const CATALOG_RESOLUTION_VERSION: u64 = 3;
+// Complete, current catalog verification now also satisfies archive integrity:
+// the catalog match proves that every recorded track still has its expected
+// bytes. Bump the resolver generation so unchanged manifests recorded under
+// the older interpretation are projected again instead of retaining a stale
+// `integrity_state = 'unknown'`.
+const CATALOG_RESOLUTION_VERSION: u64 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CatalogProjectionGeneration {
@@ -1275,17 +1305,19 @@ pub fn reconcile_archive_snapshot(
             ],
         )?;
         for file in &release.supporting_files {
+            let payload = file.directory.join(&file.manifest.file.path);
             tx.execute(
-                "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,source,source_url,caption,captured_at,manifest_path,manifest_sha256)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,presence_state,source,source_url,caption,captured_at,manifest_path,manifest_sha256)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                 params![
                     file.manifest.supporting_file_id.to_string(),
                     release.manifest.archive_release_id.to_string(),
                     release_file_category_key(file.manifest.category),
                     file.manifest.asset_type,
-                    relative(&snapshot.root, &file.directory.join(&file.manifest.file.path)),
+                    relative(&snapshot.root, &payload),
                     file.manifest.file.size,
                     file.manifest.file.sha256,
+                    projected_regular_file_presence(&payload, file.manifest.file.size),
                     file.manifest.source,
                     file.manifest.source_url,
                     file.manifest.caption,
@@ -1314,19 +1346,19 @@ pub fn reconcile_archive_snapshot(
                 ],
             )?;
             for file in &physical_copy.supporting_files {
+                let payload = file.directory.join(&file.manifest.file.path);
                 tx.execute(
-                    "INSERT INTO physical_copy_files(id,physical_copy_id,category,asset_type,relative_path,sha256,caption,source)
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                    "INSERT INTO physical_copy_files(id,physical_copy_id,category,asset_type,relative_path,file_size,sha256,presence_state,caption,source)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                     params![
                         file.manifest.supporting_file_id.to_string(),
                         physical_copy.manifest.physical_copy_id.to_string(),
                         physical_copy_file_category_key(file.manifest.category),
                         file.manifest.asset_type,
-                        relative(
-                            &snapshot.root,
-                            &file.directory.join(&file.manifest.file.path),
-                        ),
+                        relative(&snapshot.root, &payload),
+                        file.manifest.file.size,
                         file.manifest.file.sha256,
+                        projected_regular_file_presence(&payload, file.manifest.file.size),
                         file.manifest.caption,
                         file.manifest.source,
                     ],
@@ -1646,17 +1678,19 @@ pub fn reconcile_archive_supporting_files(
             [&release_id],
         )?;
         for file in &release.supporting_files {
+            let payload = file.directory.join(&file.manifest.file.path);
             tx.execute(
-                "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,source,source_url,caption,captured_at,manifest_path,manifest_sha256)
-                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+                "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,presence_state,source,source_url,caption,captured_at,manifest_path,manifest_sha256)
+                 VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                 params![
                     file.manifest.supporting_file_id.to_string(),
                     release_id,
                     release_file_category_key(file.manifest.category),
                     file.manifest.asset_type,
-                    relative(archive_root, &file.directory.join(&file.manifest.file.path)),
+                    relative(archive_root, &payload),
                     file.manifest.file.size,
                     file.manifest.file.sha256,
+                    projected_regular_file_presence(&payload, file.manifest.file.size),
                     file.manifest.source,
                     file.manifest.source_url,
                     file.manifest.caption,
@@ -1668,19 +1702,19 @@ pub fn reconcile_archive_supporting_files(
         }
         for physical_copy in &release.physical_copies {
             for file in &physical_copy.supporting_files {
+                let payload = file.directory.join(&file.manifest.file.path);
                 tx.execute(
-                    "INSERT INTO physical_copy_files(id,physical_copy_id,category,asset_type,relative_path,sha256,caption,source)
-                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
+                    "INSERT INTO physical_copy_files(id,physical_copy_id,category,asset_type,relative_path,file_size,sha256,presence_state,caption,source)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                     params![
                         file.manifest.supporting_file_id.to_string(),
                         physical_copy.manifest.physical_copy_id.to_string(),
                         physical_copy_file_category_key(file.manifest.category),
                         file.manifest.asset_type,
-                        relative(
-                            archive_root,
-                            &file.directory.join(&file.manifest.file.path),
-                        ),
+                        relative(archive_root, &payload),
+                        file.manifest.file.size,
                         file.manifest.file.sha256,
+                        projected_regular_file_presence(&payload, file.manifest.file.size),
                         file.manifest.caption,
                         file.manifest.source,
                     ],
@@ -1825,6 +1859,13 @@ fn rebuild_library_entry_bindings_scoped(
         ),
         [],
     )?;
+    conn.execute(
+        &format!(
+            "DELETE FROM library_entry_release_associations
+             WHERE 1=1{binding_filter}"
+        ),
+        [],
+    )?;
     // A playable build is already provenance evidence: its manifest records
     // the exact output path below the profile's playable root. Bind a scanned
     // library row that holds that path directly instead of asking CHD (or
@@ -1850,7 +1891,7 @@ fn rebuild_library_entry_bindings_scoped(
     // catalog does; comparing archive-file sizes here would miss them.
     conn.execute(
         &format!(
-            "INSERT OR REPLACE INTO library_entry_media_bindings(library_entry_id,carrier_id,catalog_media_id,representation_id,match_method)
+            "INSERT OR IGNORE INTO library_entry_media_bindings(library_entry_id,carrier_id,catalog_media_id,representation_id,match_method)
          SELECT DISTINCT le.id,c.id,c.catalog_media_id,
                 (SELECT rep.id FROM representations rep
                  WHERE rep.carrier_id=c.id AND rep.role='playable'
@@ -1865,22 +1906,25 @@ fn rebuild_library_entry_bindings_scoped(
          JOIN library_consoles lc
            ON lower(lc.folder_name)=lower(cr.platform_id)
               OR lower(lc.platform)=lower(cr.platform_id)
-         JOIN library_entries le ON le.console_id=lc.id AND le.data_size=m.file_size
+         JOIN library_entries le ON le.console_id=lc.id
          WHERE c.catalog_media_id IS NOT NULL
-           AND ((le.sha1<>'' AND m.sha1<>'' AND le.sha1=m.sha1)
-                OR (le.md5<>'' AND m.md5<>'' AND le.md5=m.md5)
-                OR (le.crc32<>'' AND m.crc32<>'' AND le.crc32=m.crc32))
+           AND ((le.sha1<>'' AND m.sha1<>'')
+                OR (le.md5<>'' AND m.md5<>'')
+                OR (le.crc32<>'' AND m.crc32<>''))
+           AND (le.sha1='' OR m.sha1='' OR le.sha1=m.sha1)
+           AND (le.md5='' OR m.md5='' OR le.md5=m.md5)
+           AND (le.crc32='' OR m.crc32=''
+                OR (le.crc32=m.crc32 AND le.data_size=m.file_size))
            {entry_filter}",
             holds_playable = playable_path_is_within_library_entry()
         ),
         [],
     )?;
     // Disc containers and M3U sets often cannot expose Redump's raw per-track
-    // hashes cheaply (or at all), but analysis can still identify their exact
-    // DAT game names from serials. Bind the logical library entry to every
-    // archived carrier in that catalog release. This makes a multi-disc set
-    // one archived/playable game without pretending that one matched disc is
-    // evidence that the other archive carriers are verified.
+    // hashes cheaply. A DAT name inferred from serials can explain a likely
+    // relationship, but it cannot prove that the playable belongs to this
+    // archive. Keep that hint separate from carrier ownership so it cannot
+    // collapse rows, contribute to completion, or overwrite path/hash proof.
     conn.execute(
         &format!(
             "WITH entry_releases(library_entry_id,release_id) AS (
@@ -1917,10 +1961,9 @@ fn rebuild_library_entry_bindings_scoped(
                       AND (lower(lc.folder_name)=lower(unique_release.platform_id)
                            OR lower(lc.platform)=lower(unique_release.platform_id)))=1
          )
-         INSERT OR REPLACE INTO library_entry_media_bindings(
-             library_entry_id,carrier_id,catalog_media_id,representation_id,match_method)
-         SELECT DISTINCT er.library_entry_id,c.id,c.catalog_media_id,NULL,
-                'archive_release_projection'
+         INSERT OR REPLACE INTO library_entry_release_associations(
+             library_entry_id,archive_release_id,basis,confidence)
+         SELECT DISTINCT er.library_entry_id,ar.id,'catalog_name','likely'
          FROM entry_releases er
          JOIN media m ON m.release_id=er.release_id
          JOIN carriers c ON c.catalog_media_id=m.id
@@ -1982,10 +2025,10 @@ pub fn archive_evidence_identities(
 
 /// Name library rows the catalog could not, from archive evidence.
 ///
-/// Only rows analysis left unidentified are touched: a live catalog hash
-/// comparison is stronger evidence about the bytes on disk than a recorded
-/// verification, so a catalog verdict always wins, and user tags are never
-/// overwritten. Returns the rows this pass named.
+/// Current content matches and user decisions are retained. A serial-derived
+/// or otherwise unidentified name is only a fallback, so current complete
+/// archive verification replaces it rather than allowing a likely name to
+/// outrank recorded bytes. Returns the rows this pass named.
 pub fn apply_archive_evidence_identities(
     conn: &Connection,
     scope: ArchiveEvidenceScope,
@@ -1998,8 +2041,9 @@ pub fn apply_archive_evidence_identities(
         "UPDATE library_entries
          SET status='matched',dat_game_name=?2,dat_match_method='archive_evidence',
              revision=revision+1
-         WHERE id=?1 AND tag='' AND dat_game_name=''
-           AND status IN ('unknown','unrecognized')",
+         WHERE id=?1 AND tag=''
+           AND (dat_game_name='' OR dat_match_method IN ('','serial'))
+           AND status IN ('unknown','unrecognized','likely','ambiguous')",
     )?;
     let mut updated = Vec::new();
     for identity in &identities {
@@ -2129,7 +2173,7 @@ pub fn adopt_archive_hashes(
     let mut statement = conn.prepare(
         "UPDATE library_entries
          SET crc32=?2,sha1=?3,md5=?4,data_size=?5,hash_source='archive_evidence',
-             status='matched',dat_game_name=?6,dat_rom_name=?7,dat_match_method='crc32',
+             status='matched',dat_game_name=?6,dat_rom_name=?7,dat_match_method='archive_evidence',
              ambiguous_candidates_json=NULL,revision=revision+1
          WHERE id=?1 AND tag='' AND crc32='' AND sha1='' AND md5=''",
     )?;
@@ -2236,7 +2280,9 @@ pub fn existing_playable_disc_paths(
          JOIN physical_copies pc ON pc.archive_release_id=ar.id
          JOIN carriers c ON c.physical_copy_id=pc.id
          JOIN media m ON m.id=c.catalog_media_id AND m.disc_number>0
-         JOIN library_entries e ON e.dat_game_name=m.dat_name
+         JOIN library_entry_media_bindings binding
+           ON binding.carrier_id=c.id
+         JOIN library_entries e ON e.id=binding.library_entry_id
          JOIN library_consoles lc ON lc.id=e.console_id
          JOIN library_roots lr ON lr.id=lc.root_id
          WHERE ar.id=?1 AND lr.root_path=?2
@@ -2350,7 +2396,170 @@ pub fn archive_profile_projection_is_current(
         generation == source_generation
             && fingerprint == source_fingerprint
             && catalog == catalog_generation.encoded()
-    }))
+    }) && projected_playable_presence_is_current(conn, profile_id)?
+        && projected_archive_representation_presence_is_current(conn, profile_id)?
+        && projected_supporting_file_presence_is_current(conn, profile_id)?)
+}
+
+/// Whether the cheap presence facts in the projection still describe the
+/// playable filesystem.
+///
+/// Playable payloads deliberately are not part of the authoritative manifest
+/// fingerprint: hashing or even walking a large frontend tree would defeat the
+/// refresh fast path. The projection already owns the exact expected paths and
+/// sizes, though, so checking only those files is both cheap and sufficient to
+/// notice a manual deletion, restoration, or replacement. A mismatch makes
+/// the normal archive reconcile run, where the archive-owned resolver remains
+/// the sole authority for the new presence state.
+fn projected_playable_presence_is_current(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<bool, OperationError> {
+    let playable_root = conn
+        .query_row(
+            "SELECT playable_root FROM archive_profiles WHERE id=?1",
+            [profile_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(playable_root) = playable_root else {
+        return Ok(true);
+    };
+    let playable_root = Path::new(&playable_root);
+    let mut statement = conn.prepare(
+        "SELECT rep.relative_path,rep.presence_state,rep.content_size
+         FROM representations rep
+         JOIN carriers c ON c.id=rep.carrier_id
+         JOIN physical_copies pc ON pc.id=c.physical_copy_id
+         JOIN archive_releases ar ON ar.id=pc.archive_release_id
+         WHERE ar.profile_id=?1
+           AND rep.role='playable'
+           AND rep.location_role='playable'",
+    )?;
+    let rows = statement.query_map([profile_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, u64>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (relative_path, projected_presence, expected_size) = row?;
+        // `stale` describes the build's relationship to its parent manifest,
+        // not the output file. A metadata fingerprint change is what revisits
+        // it; filesystem state cannot make that statement newer or older.
+        if projected_presence == "stale" {
+            continue;
+        }
+        let observed_presence =
+            projected_regular_file_presence(&playable_root.join(relative_path), expected_size);
+        if observed_presence != projected_presence {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn projected_supporting_file_presence_is_current(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<bool, OperationError> {
+    let mut statement = conn.prepare(
+        "SELECT ap.archive_root,f.relative_path,f.file_size,f.presence_state
+         FROM archive_release_files f
+         JOIN archive_releases ar ON ar.id=f.archive_release_id
+         JOIN archive_profiles ap ON ap.id=ar.profile_id
+         WHERE ar.profile_id=?1
+         UNION ALL
+         SELECT ap.archive_root,f.relative_path,f.file_size,f.presence_state
+         FROM physical_copy_files f
+         JOIN physical_copies pc ON pc.id=f.physical_copy_id
+         JOIN archive_releases ar ON ar.id=pc.archive_release_id
+         JOIN archive_profiles ap ON ap.id=ar.profile_id
+         WHERE ar.profile_id=?1",
+    )?;
+    let rows = statement.query_map([profile_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, u64>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (archive_root, relative_path, expected_size, projected_presence) = row?;
+        let observed = projected_regular_file_presence(
+            &Path::new(&archive_root).join(relative_path),
+            expected_size,
+        );
+        if observed != projected_presence {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn projected_archive_representation_presence_is_current(
+    conn: &Connection,
+    profile_id: &str,
+) -> Result<bool, OperationError> {
+    type RepresentationKey = (String, String, String, String);
+    type ProjectedFile = (String, u64);
+    let mut statement = conn.prepare(
+        "SELECT ap.archive_root,rep.id,rep.relative_path,rep.presence_state,
+                rf.relative_path,rf.file_size
+         FROM representations rep
+         JOIN representation_files rf ON rf.representation_id=rep.id
+         JOIN carriers c ON c.id=rep.carrier_id
+         JOIN physical_copies pc ON pc.id=c.physical_copy_id
+         JOIN archive_releases ar ON ar.id=pc.archive_release_id
+         JOIN archive_profiles ap ON ap.id=ar.profile_id
+         WHERE ar.profile_id=?1 AND rep.location_role='archive'
+         ORDER BY rep.id,rf.relative_path",
+    )?;
+    let rows = statement.query_map([profile_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, u64>(5)?,
+        ))
+    })?;
+    let mut representations: HashMap<RepresentationKey, Vec<ProjectedFile>> = HashMap::new();
+    for row in rows {
+        let (root, id, representation_path, presence, file_path, size) = row?;
+        representations
+            .entry((root, id, representation_path, presence))
+            .or_default()
+            .push((file_path, size));
+    }
+    for ((root, _id, representation_path, projected_presence), files) in representations {
+        let raw = Path::new(&root).join(representation_path).join("raw");
+        let mut present = 0_usize;
+        let mut modified = false;
+        for (relative_path, expected_size) in &files {
+            match projected_regular_file_presence(&raw.join(relative_path), *expected_size) {
+                "present" => present += 1,
+                "missing" => {}
+                _ => modified = true,
+            }
+        }
+        let observed = if modified {
+            "modified"
+        } else if present == 0 {
+            "missing"
+        } else if present == files.len() {
+            "present"
+        } else {
+            "partial"
+        };
+        if observed != projected_presence {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Increment the rebuildable policy projection after the authoritative root
@@ -2763,8 +2972,11 @@ pub fn apply_collection_marks(
             report.applied += 1;
             conn.execute(
                 "UPDATE library_entries SET region_override=?1,revision=revision+1
-                 WHERE region_override<>?1 AND data_size=?2
-                   AND ((sha1<>'' AND sha1=?3) OR (crc32<>'' AND crc32=?4))",
+                 WHERE region_override<>?1
+                   AND ((sha1<>'' AND ?3<>'') OR (crc32<>'' AND ?4<>''))
+                   AND (sha1='' OR ?3='' OR sha1=?3)
+                   AND (crc32='' OR ?4=''
+                        OR (crc32=?4 AND data_size=?2))",
                 params![
                     mark.region,
                     i64::try_from(mark.content.size).unwrap_or(0),
@@ -2801,8 +3013,11 @@ pub fn apply_collection_marks(
         )?;
         conn.execute(
             "UPDATE library_entries SET tag=?1,revision=revision+1
-             WHERE tag<>?1 AND data_size=?2
-               AND ((sha1<>'' AND sha1=?3) OR (crc32<>'' AND crc32=?4))",
+             WHERE tag<>?1
+               AND ((sha1<>'' AND ?3<>'') OR (crc32<>'' AND ?4<>''))
+               AND (sha1='' OR ?3='' OR sha1=?3)
+               AND (crc32='' OR ?4=''
+                    OR (crc32=?4 AND data_size=?2))",
             params![
                 applied.tag,
                 i64::try_from(mark.content.size).unwrap_or(0),
@@ -2826,15 +3041,75 @@ pub fn apply_collection_marks(
 mod catalog_generation_tests {
     use super::*;
 
+    fn insert_projected_playable(
+        conn: &Connection,
+        playable_root: &Path,
+        relative_path: &str,
+        size: u64,
+    ) {
+        let current = catalog_projection_generation(conn).unwrap().encoded();
+        conn.execute(
+            "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,playable_root,source_generation,source_fingerprint,catalog_generation)
+             VALUES('profile','Profile','archive.toml','sha','/archive',?1,7,'tree-sha',?2)",
+            params![playable_root.to_string_lossy(), current],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO archive_releases(id,profile_id,platform_id,title,region,revision,variant,manifest_path,manifest_sha256)
+             VALUES('release','profile','ps1','Game','USA','','','release.toml','release-sha')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO physical_copies(id,archive_release_id,copy_number,manifest_path,manifest_sha256)
+             VALUES('copy','release',1,'physical-copy.toml','copy-sha')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO carriers(id,physical_copy_id,manifest_path,manifest_sha256)
+             VALUES('carrier','copy','carrier.toml','carrier-sha')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO representations(id,carrier_id,role,format,location_role,relative_path,presence_state,content_size)
+             VALUES('playable','carrier','playable','chd','playable',?1,'present',?2)",
+            params![relative_path, size],
+        )
+        .unwrap();
+    }
+
     #[test]
     fn generation_format_is_owned_and_human_readable() {
         assert_eq!(
             CatalogProjectionGeneration {
                 import: 100,
-                resolver: 3,
+                resolver: 4,
             }
             .to_string(),
-            "i100r3"
+            "i100r4"
+        );
+    }
+
+    #[test]
+    fn a_resolver_rule_change_invalidates_an_unchanged_archive_projection() {
+        let conn = crate::open_memory().unwrap();
+        let previous = CatalogProjectionGeneration {
+            import: 0,
+            resolver: CATALOG_RESOLUTION_VERSION - 1,
+        }
+        .encoded();
+        conn.execute(
+            "INSERT INTO archive_profiles(id,display_name,manifest_path,manifest_sha256,archive_root,source_generation,source_fingerprint,catalog_generation)
+             VALUES('profile','Profile','archive.toml','sha','/archive',7,'tree-sha',?1)",
+            [previous],
+        )
+        .unwrap();
+
+        assert!(
+            !archive_profile_projection_is_current(&conn, "profile", 7, "tree-sha").unwrap(),
+            "changed hash-evidence semantics must revisit unchanged manifests"
         );
     }
 
@@ -2860,6 +3135,83 @@ mod catalog_generation_tests {
             [],
         )
         .unwrap();
+        assert!(!archive_profile_projection_is_current(&conn, "profile", 7, "tree-sha").unwrap());
+    }
+
+    #[test]
+    fn deleting_a_projected_playable_invalidates_unchanged_archive_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let relative_path = "psx/Game.chd";
+        let path = directory.path().join(relative_path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"playable").unwrap();
+
+        let conn = crate::open_memory().unwrap();
+        insert_projected_playable(
+            &conn,
+            directory.path(),
+            relative_path,
+            b"playable".len() as u64,
+        );
+        assert!(archive_profile_projection_is_current(&conn, "profile", 7, "tree-sha").unwrap());
+
+        std::fs::remove_file(path).unwrap();
+        assert!(
+            !archive_profile_projection_is_current(&conn, "profile", 7, "tree-sha").unwrap(),
+            "the fast path must not preserve a stale `present` fact"
+        );
+    }
+
+    #[test]
+    fn deleting_projected_archive_payloads_invalidates_the_fast_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let playable = directory.path().join("playable/psx/Game.chd");
+        std::fs::create_dir_all(playable.parent().unwrap()).unwrap();
+        std::fs::write(&playable, b"playable").unwrap();
+        let archive = directory.path().join("archive");
+        let track = archive.join("release/dump/raw/track.bin");
+        let artwork = archive.join("release/artwork/cover.png");
+        std::fs::create_dir_all(track.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(artwork.parent().unwrap()).unwrap();
+        std::fs::write(&track, b"track").unwrap();
+        std::fs::write(&artwork, b"cover").unwrap();
+
+        let conn = crate::open_memory().unwrap();
+        insert_projected_playable(
+            &conn,
+            &directory.path().join("playable"),
+            "psx/Game.chd",
+            b"playable".len() as u64,
+        );
+        conn.execute(
+            "UPDATE archive_profiles SET archive_root=?1 WHERE id='profile'",
+            [archive.to_string_lossy()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO representations(id,carrier_id,role,format,location_role,relative_path,presence_state)
+             VALUES('master','carrier','preservation_master','file_set','archive','release/dump','present')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO representation_files(representation_id,relative_path,file_size,sha256)
+             VALUES('master','track.bin',5,'sha')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,presence_state,captured_at,manifest_path,manifest_sha256)
+             VALUES('art','release','artwork','box-front','release/artwork/cover.png',5,'sha','present','2026-01-01','supporting.toml','manifest-sha')",
+            [],
+        )
+        .unwrap();
+        assert!(archive_profile_projection_is_current(&conn, "profile", 7, "tree-sha").unwrap());
+
+        std::fs::remove_file(&track).unwrap();
+        assert!(!archive_profile_projection_is_current(&conn, "profile", 7, "tree-sha").unwrap());
+        std::fs::write(&track, b"track").unwrap();
+        std::fs::remove_file(artwork).unwrap();
         assert!(!archive_profile_projection_is_current(&conn, "profile", 7, "tree-sha").unwrap());
     }
 }

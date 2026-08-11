@@ -52,7 +52,7 @@ pub enum FocusedPanel {
 pub struct LibraryBrowserState {
     pub consoles: Vec<ConsoleState>,
     pub root_id: Option<retro_junk_db::LibraryRootId>,
-    pub active_page: Option<retro_junk_db::LibraryEntryListPage>,
+    pub active_page: Option<retro_junk_backend::store::LibraryPageProjection>,
     pub entry_counts: HashMap<retro_junk_db::LibraryConsoleId, u64>,
     /// Worst status among the console's unified logical rows, retained when
     /// pages are evicted.
@@ -210,26 +210,13 @@ impl RowStatus {
     }
 
     pub fn tooltip(&self) -> String {
-        use retro_junk_backend::completion::Overall;
         // The severity line comes first and is the same sentence everywhere
         // this state appears; the specific wording below adds detail without
         // being free to contradict it.
         let scale = crate::theme::severity_tooltip(self.severity());
         let detail = match self {
             Self::Entry(status) => status.tooltip().to_owned(),
-            Self::Archive(Overall::Complete) => {
-                "Every expected disc is stored and catalog-verified".to_owned()
-            }
-            Self::Archive(Overall::Incomplete) => {
-                "Identified, but something expected is still missing".to_owned()
-            }
-            Self::Archive(Overall::NeedsAttention) => {
-                "Something needs a decision or a repair — open the release for details".to_owned()
-            }
-            Self::Archive(Overall::Unidentified) => {
-                "Nothing hash-verified says what this is — identify it against the catalog"
-                    .to_owned()
-            }
+            Self::Archive(overall) => overall.description().to_owned(),
         };
         format!("{scale}\n{detail}")
     }
@@ -1581,7 +1568,7 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
             entry_id,
             assets,
         } => {
-            let (status, has_miximage) = asset_availability(&assets);
+            let (status, has_miximage) = asset_availability(&assets, &app.ui_state.expected_assets);
             app.browser.asset_statuses.insert(entry_id, status);
             if has_miximage {
                 app.browser.entries_with_miximages.insert(entry_id);
@@ -2005,7 +1992,9 @@ pub fn handle_message(app: &mut RetroJunkApp, msg: AppMessage, ctx: &egui::Conte
 
 fn refresh_library_availability(app: &mut RetroJunkApp, ctx: &egui::Context) {
     app.library_controller.invalidate_lists();
-    app.browser.active_page = None;
+    // Keep the last committed logical page visible while its replacement is
+    // loading. Clearing it here made proven archive/playable rows disappear or
+    // split transiently during every scan and archive refresh.
     app.refresh_console_summaries(ctx);
     if let Some(console_id) = app.ui_state.selected_console {
         app.request_console_page(console_id, ctx);

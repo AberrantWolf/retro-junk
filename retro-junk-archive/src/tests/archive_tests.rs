@@ -891,6 +891,60 @@ fn archive_with_one_bound_disc(
     (archive, imported, release_path, carrier_path)
 }
 
+/// A serial is useful discovery metadata, but two complete and contradictory
+/// track sets prove that the dumps are not the same carrier/mastering.
+#[test]
+fn matching_serial_does_not_merge_contradictory_complete_track_sets() {
+    let temp = tempfile::tempdir().unwrap();
+    let (archive, first, _release_path, _carrier_path) = archive_with_one_bound_disc(temp.path());
+    let second_disc = temp.path().join("different.bin");
+    std::fs::write(&second_disc, b"different mastering").unwrap();
+
+    ingest_new_carrier_dump(
+        &archive,
+        &second_disc,
+        NewCarrierDump {
+            platform_id: "saturn".to_owned(),
+            title: "Game".to_owned(),
+            region: "japan".to_owned(),
+            revision: "mastering-a".to_owned(),
+            variant: String::new(),
+            owner_id: "default".to_owned(),
+            physical_copy_label: String::new(),
+            serial: "GS-0000".to_owned(),
+            sequence_number: 1,
+            carrier_label: String::new(),
+            carrier_kind: crate::CarrierKind::OpticalDisc,
+            format: RepresentationFormat::Rom,
+            catalog_binding: crate::CatalogBinding {
+                dat_name: "Game (Japan) (Rev B)".to_owned(),
+                source: "redump".to_owned(),
+                expected_tracks: vec![track("bb", 19)],
+                ..Default::default()
+            },
+            join_release: None,
+            source_package: crate::SourcePackageRecord::default(),
+            expected_files: Vec::new(),
+            physical_copy_id: Some(first.physical_copy.physical_copy_id),
+        },
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .expect_err("contradictory bytes must not be added to the existing carrier");
+
+    let snapshot = scan_archive(&archive).unwrap();
+    assert_eq!(snapshot.releases.len(), 1);
+    assert_eq!(
+        snapshot
+            .releases
+            .iter()
+            .flat_map(|release| &release.physical_copies)
+            .map(|copy| copy.carriers.len())
+            .sum::<usize>(),
+        1
+    );
+}
+
 /// Re-identifying a carrier against a corrected catalog entry replaces what it
 /// records, and leaves the release still describing one specific thing.
 #[test]

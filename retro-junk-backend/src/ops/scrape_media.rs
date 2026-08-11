@@ -9,7 +9,7 @@
 //! frontend only schedules the call and delivers what comes back.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use retro_junk_core::Platform;
@@ -47,6 +47,143 @@ pub struct ScrapeWorkItem {
     pub platform: Platform,
     pub archive_release_id: Option<retro_junk_archive::ArchiveReleaseId>,
     pub archived_assets: HashMap<AssetType, PathBuf>,
+}
+
+/// Domain inputs for selecting and constructing artwork work. Frontends
+/// provide user intent and loaded records; the backend decides identity,
+/// archive ownership, lookup precedence, and the exact work set.
+pub struct ScrapeWorkPlan<'a> {
+    pub platform: Platform,
+    pub analyzer: Option<&'a dyn retro_junk_lib::RomAnalyzer>,
+    pub entries: &'a [crate::library::LibraryEntry],
+    pub selected_entry_ids: &'a HashSet<retro_junk_db::LibraryEntryId>,
+    pub archive_releases: &'a [retro_junk_db::ArchivedLibraryListItem],
+    pub selected_archive_release_ids: &'a HashSet<String>,
+    pub focused_archive_release_id: Option<&'a str>,
+    pub whole_console: bool,
+}
+
+/// Build one de-duplicated scrape plan from logical Library-row selection.
+/// Hashes and catalog derivations remain attached to the backend domain
+/// records; the UI never recreates lookup identity or archive relationships.
+#[must_use]
+#[allow(clippy::too_many_lines)]
+pub fn plan_scrape_work(request: &ScrapeWorkPlan<'_>) -> Vec<ScrapeWorkItem> {
+    let mut work = request
+        .selected_entry_ids
+        .iter()
+        .filter_map(|entry_id| {
+            let entry = request
+                .entries
+                .iter()
+                .find(|entry| entry.id == Some(*entry_id))?;
+            let analysis_path = entry.game_entry.analysis_path();
+            let filename = analysis_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("unknown")
+                .to_owned();
+            let serial = entry
+                .identification
+                .as_ref()
+                .map(|identity| identity.serial_number.clone())
+                .unwrap_or_default();
+            let scraper_serial = (!serial.is_empty())
+                .then(|| {
+                    request
+                        .analyzer
+                        .and_then(|analyzer| analyzer.extract_scraper_serial(&serial))
+                })
+                .flatten()
+                .unwrap_or_default();
+            let preferred_region = entry.effective_regions().first().map_or_else(
+                || "us".to_owned(),
+                |region| retro_junk_scraper::region_to_ss_code(region).to_owned(),
+            );
+            let archived_release = request.archive_releases.iter().find(|release| {
+                release
+                    .playable_library_entries
+                    .iter()
+                    .any(|playable| playable.id == *entry_id)
+            });
+            Some(ScrapeWorkItem {
+                entry_id: Some(*entry_id),
+                entry_name: entry.game_entry.display_name().to_owned(),
+                rom_stem: entry.game_entry.rom_stem().to_owned(),
+                filename,
+                analysis_path: analysis_path.to_path_buf(),
+                file_size: 0,
+                serial,
+                scraper_serial,
+                hashes: entry.hashes.as_ref().and_then(|hashes| {
+                    retro_junk_scraper::lookup::RomHashes::complete(
+                        &hashes.crc32,
+                        hashes.md5.as_deref().unwrap_or_default(),
+                        hashes.sha1.as_deref().unwrap_or_default(),
+                    )
+                }),
+                derivation: retro_junk_scraper::Derivation::Own,
+                preferred_region,
+                platform: request.platform,
+                archive_release_id: archived_release
+                    .and_then(|release| release.summary.archive_release_id.parse().ok()),
+                archived_assets: archived_release
+                    .map(crate::assets::archived_asset_paths)
+                    .unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let represented = work
+        .iter()
+        .filter_map(|item| item.archive_release_id.map(|id| id.to_string()))
+        .collect::<HashSet<_>>();
+    for release in request.archive_releases.iter().filter(|release| {
+        (request.whole_console
+            || request
+                .selected_archive_release_ids
+                .contains(&release.summary.archive_release_id)
+            || (request.selected_archive_release_ids.is_empty()
+                && request.focused_archive_release_id
+                    == Some(release.summary.archive_release_id.as_str())))
+            && !represented.contains(&release.summary.archive_release_id)
+    }) {
+        let Some(identity) = release.scrape_identity.as_ref() else {
+            continue;
+        };
+        let Ok(archive_release_id) = release.summary.archive_release_id.parse() else {
+            continue;
+        };
+        let serial = identity.serial.clone();
+        let scraper_serial = request
+            .analyzer
+            .and_then(|analyzer| analyzer.extract_scraper_serial(&serial))
+            .unwrap_or_default();
+        work.push(ScrapeWorkItem {
+            entry_id: None,
+            entry_name: release.summary.title.clone(),
+            rom_stem: format!("archive-{archive_release_id}"),
+            filename: identity.filename.clone(),
+            analysis_path: PathBuf::new(),
+            file_size: identity.file_size,
+            serial,
+            scraper_serial,
+            hashes: retro_junk_scraper::lookup::RomHashes::complete(
+                &identity.crc32,
+                &identity.md5,
+                &identity.sha1,
+            ),
+            derivation: scrape_derivation(&identity.derivation),
+            preferred_region: retro_junk_scraper::systems::region_slug_to_ss_code(
+                &release.summary.region,
+            )
+            .to_owned(),
+            platform: request.platform,
+            archive_release_id: Some(archive_release_id),
+            archived_assets: crate::assets::archived_asset_paths(release),
+        });
+    }
+    work
 }
 
 impl ScrapeWorkItem {

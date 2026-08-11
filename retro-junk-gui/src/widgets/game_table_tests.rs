@@ -44,18 +44,27 @@ fn library_harness<'a>(row_count: u64) -> Harness<'a, RetroJunkApp> {
     let console = crate::test_support::test_console("psx", Vec::new());
     let console_id = console.id.unwrap();
     harness.state_mut().browser.consoles = vec![console];
-    harness.state_mut().browser.active_page = Some(retro_junk_db::LibraryEntryListPage {
-        console_id,
-        console_revision: 0,
-        total_count: row_count,
-        logical_count: row_count,
-        counts: retro_junk_db::LibraryEntryCounts::default(),
-        availability_counts: retro_junk_db::LibraryAvailabilityCounts::default(),
-        archived_playable_gaps: Vec::new(),
-        archived_releases: Vec::new(),
-        offset: 0,
-        rows: projected_rows(row_count),
-    });
+    let rows = projected_rows(row_count);
+    harness.state_mut().browser.active_page = Some(
+        retro_junk_db::LibraryEntryListPage {
+            console_id,
+            console_revision: 0,
+            total_count: row_count,
+            logical_count: row_count,
+            counts: retro_junk_db::LibraryEntryCounts::default(),
+            availability_counts: retro_junk_db::LibraryAvailabilityCounts::default(),
+            archived_playable_gaps: Vec::new(),
+            archived_releases: Vec::new(),
+            logical_rows: rows
+                .iter()
+                .cloned()
+                .map(|entry| retro_junk_db::LibraryListRow::Playable(Box::new(entry)))
+                .collect(),
+            offset: 0,
+            rows,
+        }
+        .into(),
+    );
     harness.state_mut().ui_state.current_view = View::Library;
     harness.state_mut().ui_state.selected_console = Some(console_id);
     harness.state_mut().ui_state.detail_panel_open = false;

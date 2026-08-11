@@ -3,6 +3,50 @@
 
 use crate::Region;
 
+/// Strong digest that proved two byte sequences equivalent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentHashMatch {
+    Crc32,
+    Sha1,
+}
+
+/// Compare the strong digests shared by measured bytes and catalog metadata.
+///
+/// At least one digest must be available on both sides, and every shared
+/// digest must agree. CRC32 also includes the recorded byte length. This is
+/// intentionally contradiction-safe: a collision or stale digest cannot win
+/// merely because another caller happened to check it first.
+#[must_use]
+pub fn content_hash_match(
+    actual_size: u64,
+    actual_crc32: &str,
+    actual_sha1: &str,
+    expected_size: u64,
+    expected_crc32: &str,
+    expected_sha1: &str,
+) -> Option<ContentHashMatch> {
+    let shares_crc = !actual_crc32.is_empty() && !expected_crc32.is_empty();
+    let shares_sha1 = !actual_sha1.is_empty() && !expected_sha1.is_empty();
+    if !shares_crc && !shares_sha1 {
+        return None;
+    }
+    if shares_crc
+        && (actual_size != expected_size || !actual_crc32.eq_ignore_ascii_case(expected_crc32))
+    {
+        return None;
+    }
+    if shares_sha1 && !actual_sha1.eq_ignore_ascii_case(expected_sha1) {
+        return None;
+    }
+    // Preserve the established persisted method label when both agree. SHA-1
+    // still participated in (and was required by) the contradiction check.
+    if shares_crc {
+        Some(ContentHashMatch::Crc32)
+    } else {
+        Some(ContentHashMatch::Sha1)
+    }
+}
+
 /// Compare a version extracted from a ROM header with a DAT release revision.
 ///
 /// Returns `None` when the two formats cannot be compared safely. Numeric
@@ -149,8 +193,23 @@ mod tests {
     use crate::Region;
 
     use super::{
-        header_candidate_indices, header_regions_match_catalog, header_version_matches_revision,
+        ContentHashMatch, content_hash_match, header_candidate_indices,
+        header_regions_match_catalog, header_version_matches_revision,
     };
+
+    #[test]
+    fn content_hashes_require_every_shared_digest_to_agree() {
+        assert_eq!(
+            content_hash_match(4, "aa", "bb", 4, "aa", "bb"),
+            Some(ContentHashMatch::Crc32)
+        );
+        assert_eq!(content_hash_match(4, "aa", "bb", 4, "aa", "cc"), None);
+        assert_eq!(content_hash_match(4, "aa", "", 5, "aa", ""), None);
+        assert_eq!(
+            content_hash_match(4, "", "bb", 99, "", "bb"),
+            Some(ContentHashMatch::Sha1)
+        );
+    }
 
     struct Candidate {
         revision: &'static str,

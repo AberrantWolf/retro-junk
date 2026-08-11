@@ -688,13 +688,12 @@ fn show_multi_selection(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
 
     let archive_states = selected_releases
         .iter()
-        .map(|release| {
-            retro_junk_backend::completion::Completion::for_release(
-                &release.facts,
-                &app.ui_state.expected_assets,
-            )
-            .overall()
-            .short_label()
+        .filter_map(|release| {
+            app.browser
+                .active_page
+                .as_ref()?
+                .completion_for(&release.summary.archive_release_id)
+                .map(|completion| completion.overall().short_label())
         })
         .collect::<Vec<_>>();
     if archive_states.len() == count
@@ -831,6 +830,13 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         ui.label("This archival release is no longer in the active Library view.");
         return;
     };
+    let completion = app
+        .browser
+        .active_page
+        .as_ref()
+        .and_then(|page| page.completion_for(release_id))
+        .cloned()
+        .expect("backend completion for focused archive row");
     let grouped_entry_id = release
         .playable_library_entries
         .first()
@@ -846,10 +852,6 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
             .clone()
     });
     let summary = &release.summary;
-    let completion = retro_junk_backend::completion::Completion::for_release(
-        &release.facts,
-        &app.ui_state.expected_assets,
-    );
     let mut requested_build = None;
     let mut requested_rename = None;
     egui::ScrollArea::vertical().show(ui, |ui| {
@@ -871,6 +873,19 @@ fn show_archive_release(ui: &mut egui::Ui, app: &mut RetroJunkApp) {
         detail_row(ui, "Catalog-verified media", &completion.catalog.describe());
         detail_row(ui, "Stored masters", &completion.presence.describe());
         detail_row(ui, "Integrity", &completion.integrity.describe());
+        detail_row(ui, "Artwork", &completion.artwork.describe());
+        if !completion.missing_artwork.is_empty() {
+            detail_row(
+                ui,
+                "Missing artwork",
+                &completion
+                    .missing_artwork
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
         for attention in &completion.attention {
             detail_row(ui, "Needs", &describe_attention(attention));
         }

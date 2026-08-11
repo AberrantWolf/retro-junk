@@ -12,6 +12,7 @@ pub mod icons;
 pub mod keyboard_nav;
 pub mod log_viewer;
 pub mod modal;
+pub mod region_flag;
 pub mod results_dialog;
 pub mod startup_dialog;
 pub mod status_badge;

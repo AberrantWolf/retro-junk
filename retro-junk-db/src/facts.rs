@@ -504,6 +504,7 @@ pub fn release_facts_in_scope(
              JOIN archive_profiles ap ON ap.id=ar.profile_id
              WHERE (?1='' OR ar.profile_id=?1)
                AND (?2='' OR ap.playable_root=?2)
+               AND f.presence_state='present'
                AND f.category IN ('artwork','video')
              ORDER BY f.archive_release_id,f.asset_type",
         )?;

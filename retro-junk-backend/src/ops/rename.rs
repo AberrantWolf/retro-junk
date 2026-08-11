@@ -683,9 +683,9 @@ fn describe_set_failure(cue: &Path, outcome: &DiscSetOutcome) -> String {
 /// Try to determine the target (game name, ROM filename) for an entry.
 ///
 /// Priority:
-/// 1. Cached names the frontend already resolved
-/// 2. Hash lookup against the `SQLite` catalog
-/// 3. Serial lookup against the `SQLite` catalog
+/// 1. Hash lookup against the current `SQLite` catalog
+/// 2. Serial lookup against the current `SQLite` catalog
+/// 3. Cached names as a compatibility fallback
 fn get_target_names(
     conn: Option<&retro_junk_db::Connection>,
     context: &AnalysisContext,
@@ -694,12 +694,9 @@ fn get_target_names(
     hashes: Option<&FileHashes>,
     identification: Option<&RomIdentification>,
 ) -> Option<(String, String)> {
-    // 1. Use the cached names when the frontend already resolved a match.
-    if let Some((game_name, rom_name)) = cached_names {
-        return Some((game_name.clone(), rom_name.clone()));
-    }
-
-    let conn = conn?;
+    let Some(conn) = conn else {
+        return cached_names.cloned();
+    };
     let platform_id = platform.short_name();
     let mut candidates = Vec::new();
     if let Some(hashes) = hashes
@@ -737,7 +734,7 @@ fn get_target_names(
         ));
     }
 
-    None
+    cached_names.cloned()
 }
 
 /// Quick-analyze a file to detect its format extension.

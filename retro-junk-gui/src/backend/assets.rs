@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use retro_junk_backend::ops::OpCtx;
-use retro_junk_backend::ops::miximage::{MiximageRequest, MiximageWorkItem};
-use retro_junk_backend::ops::scrape_media::{ScrapeMediaRequest, ScrapeWorkItem};
+use retro_junk_backend::ops::miximage::{MiximageRequest, plan_miximage_work};
+use retro_junk_backend::ops::scrape_media::{ScrapeMediaRequest, ScrapeWorkPlan, plan_scrape_work};
 use retro_junk_frontend::AssetType;
 
 use crate::app::RetroJunkApp;
@@ -57,6 +57,7 @@ pub fn load_asset_statuses_for_page(
     folder_name: String,
     entries: Vec<(retro_junk_db::LibraryEntryId, String)>,
     media_dir_setting: String,
+    expected_assets: retro_junk_frontend::AssetSelection,
 ) {
     std::thread::spawn(move || {
         let statuses = retro_junk_backend::ops::assets::load_page_asset_statuses(
@@ -64,6 +65,7 @@ pub fn load_asset_statuses_for_page(
             &folder_name,
             &media_dir_setting,
             entries,
+            &expected_assets,
         );
         let _ = tx.send(AppMessage::AssetStatusesLoaded {
             console_id,
@@ -157,46 +159,6 @@ pub fn restore_archived_media_for_release(
     );
 }
 
-/// Collect the archived artwork a release already holds, keyed by type.
-fn archived_asset_paths(
-    release: &retro_junk_db::ArchivedLibraryListItem,
-) -> HashMap<AssetType, PathBuf> {
-    release
-        .archived_assets
-        .iter()
-        .filter_map(|asset| {
-            AssetType::from_archive_name(&asset.asset_type)
-                .map(|asset_type| (asset_type, PathBuf::from(&asset.absolute_path)))
-        })
-        .collect()
-}
-
-/// The archive releases the user is acting on: an explicit selection, the
-/// focused row, or every row when the caller asked for the whole console.
-fn selected_archive_ids(
-    app: &RetroJunkApp,
-    whole_console: bool,
-    rows: &[retro_junk_db::ArchivedLibraryListItem],
-) -> Vec<String> {
-    if whole_console {
-        rows.iter()
-            .map(|release| release.summary.archive_release_id.clone())
-            .collect()
-    } else if app.ui_state.selected_archive_releases.is_empty() {
-        app.ui_state
-            .focused_archive_release
-            .iter()
-            .cloned()
-            .collect()
-    } else {
-        app.ui_state
-            .selected_archive_releases
-            .iter()
-            .cloned()
-            .collect()
-    }
-}
-
 /// Scrape artwork from `ScreenScraper` for selected entries.
 fn scrape_media_for_selection(
     app: &mut RetroJunkApp,
@@ -230,114 +192,16 @@ fn scrape_media_for_selection(
             .unwrap_or_default()
     });
 
-    let mut work: Vec<ScrapeWorkItem> = app
-        .ui_state
-        .selected_entries
-        .iter()
-        .copied()
-        .filter_map(|i| {
-            let entry = console.entry_by_id(i)?;
-            let analysis_path = entry.game_entry.analysis_path();
-            let filename = analysis_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-
-            let serial = entry
-                .identification
-                .as_ref()
-                .map(|id| id.serial_number.clone())
-                .unwrap_or_default();
-            let scraper_serial = (!serial.is_empty())
-                .then(|| analyzer.and_then(|a| a.analyzer.extract_scraper_serial(&serial)))
-                .flatten()
-                .unwrap_or_default();
-
-            let regions = entry.effective_regions();
-            let preferred_region = regions.first().map_or_else(
-                || "us".to_string(),
-                |r| retro_junk_scraper::region_to_ss_code(r).to_string(),
-            );
-            let archived_release = archive_rows.iter().find(|release| {
-                release
-                    .playable_library_entries
-                    .iter()
-                    .any(|playable| playable.id == i)
-            });
-
-            Some(ScrapeWorkItem {
-                entry_id: Some(i),
-                entry_name: entry.game_entry.display_name().to_string(),
-                rom_stem: entry.game_entry.rom_stem().to_string(),
-                filename,
-                analysis_path: analysis_path.to_path_buf(),
-                file_size: 0,
-                serial,
-                scraper_serial,
-                hashes: entry.hashes.as_ref().and_then(|h| {
-                    retro_junk_scraper::lookup::RomHashes::complete(
-                        &h.crc32,
-                        h.md5.as_deref().unwrap_or_default(),
-                        h.sha1.as_deref().unwrap_or_default(),
-                    )
-                }),
-                // Resolved from the catalog once the op is off the UI thread.
-                derivation: retro_junk_scraper::Derivation::Own,
-                preferred_region,
-                platform,
-                archive_release_id: archived_release
-                    .and_then(|release| release.summary.archive_release_id.parse().ok()),
-                archived_assets: archived_release.map_or_else(HashMap::new, archived_asset_paths),
-            })
-        })
-        .collect();
-
-    let selected_ids = selected_archive_ids(app, whole_console, &archive_rows);
-    let represented_archive_ids = work
-        .iter()
-        .filter_map(|item| item.archive_release_id.map(|id| id.to_string()))
-        .collect::<std::collections::HashSet<_>>();
-    for release in archive_rows.iter().filter(|release| {
-        selected_ids.contains(&release.summary.archive_release_id)
-            && !represented_archive_ids.contains(&release.summary.archive_release_id)
-    }) {
-        let Some(identity) = release.scrape_identity.as_ref() else {
-            continue;
-        };
-        let Ok(archive_release_id) = release.summary.archive_release_id.parse() else {
-            continue;
-        };
-        let serial = identity.serial.clone();
-        let scraper_serial = analyzer
-            .and_then(|analyzer| analyzer.analyzer.extract_scraper_serial(&serial))
-            .unwrap_or_default();
-        work.push(ScrapeWorkItem {
-            entry_id: None,
-            entry_name: release.summary.title.clone(),
-            rom_stem: format!("archive-{archive_release_id}"),
-            filename: identity.filename.clone(),
-            analysis_path: PathBuf::new(),
-            file_size: identity.file_size,
-            serial,
-            scraper_serial,
-            hashes: retro_junk_scraper::lookup::RomHashes::complete(
-                &identity.crc32,
-                &identity.md5,
-                &identity.sha1,
-            ),
-            // The projection already resolved this release's derivation; an
-            // archive-only row has no library entry to look it up from.
-            derivation: retro_junk_backend::scrape::scrape_derivation(&identity.derivation),
-            preferred_region: retro_junk_scraper::systems::region_slug_to_ss_code(
-                &release.summary.region,
-            )
-            .to_owned(),
-            platform,
-            archive_release_id: Some(archive_release_id),
-            archived_assets: archived_asset_paths(release),
-        });
-    }
+    let work = plan_scrape_work(&ScrapeWorkPlan {
+        platform,
+        analyzer: analyzer.map(|registered| registered.analyzer.as_ref()),
+        entries: &console.entries,
+        selected_entry_ids: &app.ui_state.selected_entries,
+        archive_releases: &archive_rows,
+        selected_archive_release_ids: &app.ui_state.selected_archive_releases,
+        focused_archive_release_id: app.ui_state.focused_archive_release.as_deref(),
+        whole_console,
+    });
 
     if work.is_empty() {
         return;
@@ -437,50 +301,13 @@ pub fn regenerate_miximages_for_selection(
         .map(|page| page.archived_releases.clone())
         .unwrap_or_default();
 
-    let mut work: Vec<MiximageWorkItem> = app
-        .ui_state
-        .selected_entries
-        .iter()
-        .copied()
-        .filter_map(|i| {
-            let entry = console.entry_by_id(i)?;
-            let archived_release = archive_rows.iter().find(|release| {
-                release
-                    .playable_library_entries
-                    .iter()
-                    .any(|playable| playable.id == i)
-            });
-            Some(MiximageWorkItem {
-                entry_id: Some(i),
-                entry_name: entry.game_entry.display_name().to_string(),
-                rom_stem: entry.game_entry.rom_stem().to_string(),
-                archive_release_id: archived_release
-                    .and_then(|release| release.summary.archive_release_id.parse().ok()),
-                archived_assets: archived_release.map_or_else(HashMap::new, archived_asset_paths),
-            })
-        })
-        .collect();
-
-    let selected_ids = selected_archive_ids(app, false, &archive_rows);
-    let represented_archive_ids = work
-        .iter()
-        .filter_map(|item| item.archive_release_id.map(|id| id.to_string()))
-        .collect::<std::collections::HashSet<_>>();
-    for release in archive_rows.iter().filter(|release| {
-        selected_ids.contains(&release.summary.archive_release_id)
-            && !represented_archive_ids.contains(&release.summary.archive_release_id)
-    }) {
-        let Ok(archive_release_id) = release.summary.archive_release_id.parse() else {
-            continue;
-        };
-        work.push(MiximageWorkItem {
-            entry_id: None,
-            entry_name: release.summary.title.clone(),
-            rom_stem: format!("archive-{archive_release_id}"),
-            archive_release_id: Some(archive_release_id),
-            archived_assets: archived_asset_paths(release),
-        });
-    }
+    let work = plan_miximage_work(
+        &console.entries,
+        &app.ui_state.selected_entries,
+        &archive_rows,
+        &app.ui_state.selected_archive_releases,
+        app.ui_state.focused_archive_release.as_deref(),
+    );
 
     if work.is_empty() {
         app.push_error(

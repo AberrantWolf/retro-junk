@@ -39,6 +39,7 @@ pub fn load_page_asset_statuses(
     folder_name: &str,
     media_dir_setting: &str,
     entries: Vec<(retro_junk_db::LibraryEntryId, String)>,
+    expected_assets: &retro_junk_frontend::AssetSelection,
 ) -> Vec<(retro_junk_db::LibraryEntryId, AssetStatus, bool)> {
     let media_dir =
         retro_junk_lib::util::asset_dir_for_console(root_path, folder_name, media_dir_setting);
@@ -48,7 +49,7 @@ pub fn load_page_asset_statuses(
             if let Some(media_dir) = media_dir.as_ref() {
                 let rom_stem = media_stem_for_display_name(display_name);
                 let found = collect_existing_assets(media_dir, &rom_stem);
-                let (status, has_miximage) = asset_availability(&found);
+                let (status, has_miximage) = asset_availability(&found, expected_assets);
                 (entry_id, status, has_miximage)
             } else {
                 (entry_id, AssetStatus::None, false)

@@ -137,7 +137,7 @@ fn panel_toggles_do_not_reassign_widget_ids() {
     // ── Library: virtualized rows must not flash red when the viewport moves ──
     let console = crate::test_support::test_console("psx", Vec::new());
     let console_id = console.id.unwrap();
-    let rows = (0..300)
+    let rows: Vec<_> = (0..300)
         .map(|index| retro_junk_db::LibraryEntryListItem {
             id: retro_junk_db::LibraryEntryId(index + 1),
             display_name: format!("Game {index:03}.bin"),
@@ -160,18 +160,26 @@ fn panel_toggles_do_not_reassign_widget_ids() {
         })
         .collect();
     harness.state_mut().browser.consoles = vec![console];
-    harness.state_mut().browser.active_page = Some(retro_junk_db::LibraryEntryListPage {
-        console_id,
-        console_revision: 0,
-        total_count: 300,
-        logical_count: 300,
-        counts: Default::default(),
-        availability_counts: Default::default(),
-        archived_playable_gaps: Vec::new(),
-        archived_releases: Vec::new(),
-        offset: 0,
-        rows,
-    });
+    harness.state_mut().browser.active_page = Some(
+        retro_junk_db::LibraryEntryListPage {
+            console_id,
+            console_revision: 0,
+            total_count: 300,
+            logical_count: 300,
+            counts: Default::default(),
+            availability_counts: Default::default(),
+            archived_playable_gaps: Vec::new(),
+            archived_releases: Vec::new(),
+            logical_rows: rows
+                .iter()
+                .cloned()
+                .map(|entry| retro_junk_db::LibraryListRow::Playable(Box::new(entry)))
+                .collect(),
+            offset: 0,
+            rows,
+        }
+        .into(),
+    );
     harness.state_mut().ui_state.selected_console = Some(console_id);
     harness.state_mut().ui_state.focused_entry = Some(retro_junk_db::LibraryEntryId(1));
     harness.state_mut().ui_state.focused_panel = FocusedPanel::GameTable;

@@ -1,11 +1,11 @@
 //! Per-row convergence badges: one dot per evidence class.
 //!
 //! Present · integrity · catalog · playable · artwork, read straight off the
-//! `ArchiveReleaseSummary` the Library page already loads — the same counts
-//! the Collection roll-up shows, so a row can never disagree with the
-//! summary above it. Clicking a dot opens a popover naming what the class
-//! means, the last error recorded against it, and a re-run that goes through
-//! the shared executor.
+//! backend `Completion` the Library page already loads. The first four
+//! determine archive completion; artwork is deliberately supplemental and
+//! may be partial beside a green archive status. Clicking a dot opens a
+//! popover naming what the class means, the last error recorded against it,
+//! and a re-run that goes through the shared executor.
 
 use retro_junk_backend::completion::{Completion, Fraction, FractionLevel};
 use retro_junk_db::convergence::{ActionKind, BlockedReason};
@@ -18,9 +18,8 @@ const DOT_RADIUS: f32 = 3.5;
 /// Colors for the fold's levels.
 ///
 /// The widget decides nothing about status: it asks the level for its severity
-/// and the theme for that severity's colour, which is the same pair of calls
-/// the row's general status dot makes. A badge therefore cannot contradict the
-/// summary beside it.
+/// and the theme for that severity's colour. Artwork coverage is the declared
+/// exception: it remains independently visible without demoting the archive.
 ///
 /// `NotApplicable` is the one place appearance departs from severity: nothing
 /// is expected of this aspect, so it is severity-`Verified` but drawn dim
@@ -116,9 +115,9 @@ pub fn show(
     ui: &mut egui::Ui,
     app: &RetroJunkApp,
     release: &retro_junk_db::ArchivedLibraryListItem,
+    completion: &Completion,
 ) -> Option<RerunRequest> {
-    let completion = Completion::for_release(&release.facts, &app.ui_state.expected_assets);
-    let classes = classes(&completion, release.facts.missing_playables);
+    let classes = classes(completion, release.facts.missing_playables);
     let errors = app
         .ui_state
         .backlog
@@ -150,8 +149,12 @@ pub fn show(
             };
             ui.painter().circle_filled(rect.center(), DOT_RADIUS, color);
         }
-        let response =
-            response.on_hover_text(summary_line(class, error.is_some(), blocked.is_some()));
+        let response = response.on_hover_text(summary_line(
+            class,
+            completion,
+            error.is_some(),
+            blocked.is_some(),
+        ));
 
         // A distinct id per release keeps two rows' popovers independent
         // even as virtualization recycles row slots.
@@ -162,7 +165,7 @@ pub fn show(
         ));
         if let Some(inner) = egui::Popup::menu(&response)
             .id(popup_id)
-            .show(|ui| popup_body(ui, release, class, error, blocked))
+            .show(|ui| popup_body(ui, release, completion, class, error, blocked))
             && inner.inner
             && let Some(kind) = class.action
         {
@@ -176,8 +179,19 @@ pub fn show(
     request
 }
 
-fn summary_line(class: &Class, errored: bool, blocked: bool) -> String {
+fn summary_line(class: &Class, completion: &Completion, errored: bool, blocked: bool) -> String {
     let mut line = format!("{}: {}", class.label, class.fraction.describe());
+    if class.label == "artwork" && !completion.missing_artwork.is_empty() {
+        line.push_str("\nMissing: ");
+        line.push_str(
+            &completion
+                .missing_artwork
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+    }
     if errored {
         line.push_str("\nLast run failed — click for details");
     } else if blocked {
@@ -190,6 +204,7 @@ fn summary_line(class: &Class, errored: bool, blocked: bool) -> String {
 fn popup_body(
     ui: &mut egui::Ui,
     release: &retro_junk_db::ArchivedLibraryListItem,
+    completion: &Completion,
     class: &Class,
     error: Option<&(ActionKind, retro_junk_db::work::WorkError)>,
     blocked: Option<&(ActionKind, BlockedReason)>,
@@ -197,7 +212,7 @@ fn popup_body(
     ui.set_max_width(340.0);
     ui.strong(format!("{} — {}", release.summary.title, class.label));
     ui.label(class.meaning);
-    ui.label(summary_line(class, false, false));
+    ui.label(summary_line(class, completion, false, false));
     if let Some((_, error)) = error {
         ui.add_space(4.0);
         ui.colored_label(

@@ -921,14 +921,20 @@ pub fn row_to_entry(row: LibraryEntryRow) -> Option<LibraryEntry> {
 
     let dat_match = if row.dat_game_name.is_empty() {
         None
-    } else {
+    } else if let Some(method) = str_to_match_method(&row.dat_match_method) {
         Some(DatMatchInfo {
             game_name: row.dat_game_name,
             rom_name: row.dat_rom_name,
-            method: str_to_match_method(&row.dat_match_method),
+            method,
             region: String::new(),
             cross_region: false,
         })
+    } else {
+        log::error!(
+            "Ignoring catalog identity with unknown match method {:?}",
+            row.dat_match_method
+        );
+        None
     };
 
     let region_override = Region::ALL
@@ -1040,13 +1046,13 @@ fn match_method_to_str(m: &MatchMethod) -> &'static str {
     }
 }
 
-fn str_to_match_method(s: &str) -> MatchMethod {
+fn str_to_match_method(s: &str) -> Option<MatchMethod> {
     match s {
-        "serial" => MatchMethod::Serial,
-        "sha1" => MatchMethod::Sha1,
-        "archive_evidence" => MatchMethod::ArchiveEvidence,
-        // "crc32" and anything else default to CRC32
-        _ => MatchMethod::Crc32,
+        "serial" => Some(MatchMethod::Serial),
+        "crc32" => Some(MatchMethod::Crc32),
+        "sha1" => Some(MatchMethod::Sha1),
+        "archive_evidence" => Some(MatchMethod::ArchiveEvidence),
+        _ => None,
     }
 }
 
@@ -1061,9 +1067,13 @@ fn disc_verification_to_str(verification: DiscVerification) -> &'static str {
 
 fn str_to_disc_verification(value: &str) -> DiscVerification {
     match value {
+        "" | "not_applicable" => DiscVerification::NotApplicable,
         "complete" => DiscVerification::Complete,
         "incomplete" => DiscVerification::Incomplete,
         "invalid_layout" => DiscVerification::InvalidLayout,
-        _ => DiscVerification::NotApplicable,
+        unknown => {
+            log::error!("Unknown persisted disc verification state {unknown:?}");
+            DiscVerification::InvalidLayout
+        }
     }
 }

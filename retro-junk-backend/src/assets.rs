@@ -7,18 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use retro_junk_frontend::{AssetType, DISPLAY_ASSET_TYPES};
-
-/// The 5 scrapeable asset types that a media re-scrape downloads
-/// (matches `AssetSelection::default()` minus Video, which
-/// [`collect_existing_assets`] skips).
-pub const SCRAPEABLE_ASSET_TYPES: &[AssetType] = &[
-    AssetType::Cover,
-    AssetType::Cover3D,
-    AssetType::Screenshot,
-    AssetType::Marquee,
-    AssetType::PhysicalMedia,
-];
+use retro_junk_frontend::{AssetSelection, AssetType, DISPLAY_ASSET_TYPES};
 
 /// How much of an entry's scrapeable artwork is present on disk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,13 +41,18 @@ pub fn asset_status_from_completion(fraction: crate::completion::Fraction) -> As
     }
 }
 
-fn asset_status_from_paths(media: &HashMap<AssetType, PathBuf>) -> AssetStatus {
-    let total = SCRAPEABLE_ASSET_TYPES.len() as u8;
-    let found = SCRAPEABLE_ASSET_TYPES
+fn asset_status_from_paths<S: std::hash::BuildHasher>(
+    media: &HashMap<AssetType, PathBuf, S>,
+    expected: &AssetSelection,
+) -> AssetStatus {
+    let total = u8::try_from(expected.types.len()).unwrap_or(u8::MAX);
+    let found = expected
+        .types
         .iter()
         .filter(|mt| media.contains_key(mt))
         .count() as u8;
     match found {
+        _ if total == 0 => AssetStatus::Complete,
         0 => AssetStatus::None,
         n if n == total => AssetStatus::Complete,
         n => AssetStatus::Partial { found: n, total },
@@ -66,14 +60,19 @@ fn asset_status_from_paths(media: &HashMap<AssetType, PathBuf>) -> AssetStatus {
 }
 
 /// Summarize discovered media as (completeness, has a miximage).
-pub fn asset_availability(media: &HashMap<AssetType, PathBuf>) -> (AssetStatus, bool) {
+#[must_use]
+pub fn asset_availability<S: std::hash::BuildHasher>(
+    media: &HashMap<AssetType, PathBuf, S>,
+    expected: &AssetSelection,
+) -> (AssetStatus, bool) {
     (
-        asset_status_from_paths(media),
+        asset_status_from_paths(media, expected),
         media.contains_key(&AssetType::Miximage),
     )
 }
 
 /// Discover media files on disk for a given ROM entry, in display order.
+#[must_use]
 pub fn collect_existing_assets(media_dir: &Path, rom_stem: &str) -> HashMap<AssetType, PathBuf> {
     retro_junk_frontend::collect_existing_assets(DISPLAY_ASSET_TYPES, media_dir, rom_stem)
 }
@@ -81,6 +80,7 @@ pub fn collect_existing_assets(media_dir: &Path, rom_stem: &str) -> HashMap<Asse
 /// Absolute paths of a release's archived artwork, keyed by asset type.
 /// Archive rows record asset names as strings; this drops any name the
 /// frontend does not recognize.
+#[must_use]
 pub fn archived_asset_paths(
     release: &retro_junk_db::ArchivedLibraryListItem,
 ) -> HashMap<AssetType, PathBuf> {
@@ -92,4 +92,36 @@ pub fn archived_asset_paths(
                 .map(|asset_type| (asset_type, PathBuf::from(&asset.absolute_path)))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_empty_policy_is_complete() {
+        let expected = AssetSelection { types: Vec::new() };
+        assert_eq!(
+            asset_availability(&HashMap::new(), &expected).0,
+            AssetStatus::Complete
+        );
+    }
+
+    #[test]
+    fn configured_video_participates_in_completion() {
+        let expected = AssetSelection {
+            types: vec![AssetType::Cover, AssetType::Video],
+        };
+        let mut media = HashMap::new();
+        media.insert(AssetType::Cover, PathBuf::from("cover.png"));
+        assert_eq!(
+            asset_availability(&media, &expected).0,
+            AssetStatus::Partial { found: 1, total: 2 }
+        );
+        media.insert(AssetType::Video, PathBuf::from("preview.mp4"));
+        assert_eq!(
+            asset_availability(&media, &expected).0,
+            AssetStatus::Complete
+        );
+    }
 }

@@ -83,6 +83,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                 app.ui_state.focused_archive_release = None;
                 app.ui_state.selected_entries.clear();
                 app.ui_state.selected_archive_releases.clear();
+                app.ui_state.selected_library_rows.clear();
+                app.ui_state.focused_library_row = None;
+                app.ui_state.library_selection_anchor = None;
                 app.ui_state.filter_text.clear();
                 app.ui_state.page_offset = 0;
 
@@ -159,6 +162,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut RetroJunkApp, ctx: &egui::Context) {
                         app.ui_state.focused_archive_release = None;
                         app.ui_state.selected_entries.clear();
                         app.ui_state.selected_archive_releases.clear();
+                        app.ui_state.selected_library_rows.clear();
+                        app.ui_state.focused_library_row = None;
+                        app.ui_state.library_selection_anchor = None;
                         app.ui_state.filter_text.clear();
                         app.ui_state.page_offset = 0;
                         app.ui_state.focused_panel = FocusedPanel::ConsoleTree;

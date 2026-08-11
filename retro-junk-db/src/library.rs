@@ -656,10 +656,11 @@ pub enum ScrapeIdentityTier {
     None,
     /// Only the ROM filename.
     Filename,
-    /// A complete CRC32+MD5+SHA-1 triple, which the scraper matches exactly.
-    Hashes,
     /// A serial read from the medium.
     Serial,
+    /// A complete CRC32+MD5+SHA-1 triple, which proves the content even when a
+    /// scraper happens to prefer a serial as its query strategy.
+    Hashes,
 }
 
 impl ArchivedScrapeIdentity {
@@ -685,10 +686,10 @@ impl ArchivedScrapeIdentity {
     }
 
     fn own_tier(&self, serial_counts: bool) -> ScrapeIdentityTier {
-        if serial_counts && !self.serial.trim().is_empty() {
-            ScrapeIdentityTier::Serial
-        } else if !self.crc32.is_empty() && !self.md5.is_empty() && !self.sha1.is_empty() {
+        if !self.crc32.is_empty() && !self.md5.is_empty() && !self.sha1.is_empty() {
             ScrapeIdentityTier::Hashes
+        } else if serial_counts && !self.serial.trim().is_empty() {
+            ScrapeIdentityTier::Serial
         } else if !self.filename.trim().is_empty() {
             ScrapeIdentityTier::Filename
         } else {
@@ -745,6 +746,37 @@ pub struct LibraryEntryListPage {
     pub archived_releases: Vec<ArchivedLibraryListItem>,
     pub offset: u64,
     pub rows: Vec<LibraryEntryListItem>,
+    /// The authoritative merged row order. Frontends render and navigate this
+    /// vector directly instead of concatenating archive and playable rows.
+    pub logical_rows: Vec<LibraryListRow>,
+}
+
+/// Durable identity of one logical Library row.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum LibraryRowId {
+    ArchiveRelease(String),
+    PlayableEntry(LibraryEntryId),
+}
+
+/// One merged Library row. An archive release carries any proven playable
+/// entries inside `ArchivedLibraryListItem`; unbound playable entries remain
+/// independent rows.
+#[derive(Debug, Clone)]
+pub enum LibraryListRow {
+    Archive(Box<ArchivedLibraryListItem>),
+    Playable(Box<LibraryEntryListItem>),
+}
+
+impl LibraryListRow {
+    #[must_use]
+    pub fn id(&self) -> LibraryRowId {
+        match self {
+            Self::Archive(release) => {
+                LibraryRowId::ArchiveRelease(release.summary.archive_release_id.clone())
+            }
+            Self::Playable(entry) => LibraryRowId::PlayableEntry(entry.id),
+        }
+    }
 }
 #[derive(Debug, Clone)]
 pub struct LibraryEntryDetail {
@@ -1404,6 +1436,7 @@ pub fn apply_entry_analysis_batch(
             affected.push(id);
         }
     }
+    crate::archive::rebuild_library_entry_bindings_for_entries(&tx, &affected)?;
     tx.execute(
         "UPDATE library_consoles SET revision=revision+1 WHERE id=?1",
         [console_id],
@@ -1814,7 +1847,7 @@ pub fn query_entry_list(
             archive_release_id: r.get(18)?,
         })
     };
-    let mut rows = if let Some(selected) = logical_selection {
+    let mut rows = if let Some(selected) = logical_selection.as_ref() {
         let entry_ids = selected
             .iter()
             .filter_map(|identity| match identity {
@@ -1843,6 +1876,32 @@ pub fn query_entry_list(
             .as_ref()
             .is_some_and(|release_id| completeness.contains(release_id));
     }
+    let logical_rows = if let Some(selection) = logical_selection {
+        let archives = archived_releases
+            .iter()
+            .map(|release| (release.summary.archive_release_id.as_str(), release))
+            .collect::<std::collections::HashMap<_, _>>();
+        let playables = rows
+            .iter()
+            .map(|entry| (entry.id, entry))
+            .collect::<std::collections::HashMap<_, _>>();
+        selection
+            .into_iter()
+            .filter_map(|identity| match identity {
+                LogicalPageIdentity::Archive(id) => archives
+                    .get(id.as_str())
+                    .map(|release| LibraryListRow::Archive(Box::new((*release).clone()))),
+                LogicalPageIdentity::Playable(id) => playables
+                    .get(&id)
+                    .map(|entry| LibraryListRow::Playable(Box::new((*entry).clone()))),
+            })
+            .collect()
+    } else {
+        rows.iter()
+            .cloned()
+            .map(|entry| LibraryListRow::Playable(Box::new(entry)))
+            .collect()
+    };
     Ok(LibraryEntryListPage {
         console_id: q.console_id,
         console_revision: revision,
@@ -1854,6 +1913,7 @@ pub fn query_entry_list(
         archived_releases,
         offset: q.offset,
         rows,
+        logical_rows,
     })
 }
 
@@ -1879,7 +1939,7 @@ fn select_logical_page(
     limit: u64,
     sort: LibraryEntrySortField,
     direction: SortDirection,
-) -> HashSet<LogicalPageIdentity> {
+) -> Vec<LogicalPageIdentity> {
     candidates.extend(archived.iter().map(|release| LogicalPageCandidate {
         identity: LogicalPageIdentity::Archive(release.summary.archive_release_id.clone()),
         display_name: release.summary.title.to_ascii_lowercase(),
@@ -2146,6 +2206,7 @@ fn query_archived_release_assets(
          JOIN archive_releases ar ON ar.id=f.archive_release_id
          JOIN archive_profiles ap ON ap.id=ar.profile_id
          WHERE ar.profile_id=?1
+           AND f.presence_state='present'
            AND f.category IN ('artwork','video')
          ORDER BY f.archive_release_id,f.asset_type,f.id",
     )?;
@@ -2219,9 +2280,6 @@ pub fn query_archived_scrape_identities(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     for (release_id, mut identity, tag, (work_id, platform_id, region)) in rows {
-        if output.contains_key(&release_id) {
-            continue;
-        }
         // Resolved per release rather than in the join above: a mod's parent
         // is another row of the same table, and only a handful of releases are
         // ever tagged, so the cost is one extra query per mod rather than a
@@ -2235,7 +2293,17 @@ pub fn query_archived_scrape_identities(
                 region: &region,
             },
         )?;
-        output.insert(release_id, identity);
+        match output.entry(release_id) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(identity);
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry)
+                if identity.tier() > entry.get().tier() =>
+            {
+                entry.insert(identity);
+            }
+            std::collections::hash_map::Entry::Occupied(_) => {}
+        }
     }
     Ok(output)
 }
@@ -3191,6 +3259,10 @@ where
     let tx = conn.transaction()?;
     let(cid,rid):(u64,u64)=tx.query_row("SELECT console_id,(SELECT root_id FROM library_consoles WHERE id=console_id) FROM library_entries WHERE id=?1",[id.0],|r|Ok((r.get(0)?,r.get(1)?))).optional()?.ok_or(LibraryError::NotFound)?;
     f(&tx)?;
+    // Hashes, paths, and catalog identity may all have changed. Repair the
+    // archive bridge before publishing the new revision so a merged logical
+    // row never transiently splits until some later full reconcile.
+    crate::archive::rebuild_library_entry_bindings_for_entries(&tx, &[id])?;
     tx.execute(
         "UPDATE library_consoles SET revision=revision+1 WHERE id=?1",
         [cid],

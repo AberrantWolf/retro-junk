@@ -19,6 +19,7 @@ pub enum CatalogMatchResolution<'a> {
 /// Apply catalog evidence precedence without combining candidate domains.
 /// Any content match excludes every weaker serial/header/name candidate;
 /// fallback candidates are considered only when content found none.
+#[must_use]
 pub fn prefer_content_candidates<T>(content: Vec<T>, fallback: Vec<T>) -> Vec<T> {
     if content.is_empty() {
         fallback
@@ -56,15 +57,18 @@ fn catalog_hash_method(
     candidate: &retro_junk_db::CatalogMediaMatch,
     hashes: &FileHashes,
 ) -> Option<MatchMethod> {
-    let crc_match = !hashes.crc32.is_empty()
-        && u64::try_from(candidate.media.file_size).ok() == Some(hashes.data_size)
-        && candidate.media.crc32.eq_ignore_ascii_case(&hashes.crc32);
-    if crc_match {
-        return Some(MatchMethod::Crc32);
-    }
-    let sha1 = hashes.sha1.as_deref().unwrap_or_default();
-    (!sha1.is_empty() && candidate.media.sha1.eq_ignore_ascii_case(sha1))
-        .then_some(MatchMethod::Sha1)
+    retro_junk_core::matching::content_hash_match(
+        hashes.data_size,
+        &hashes.crc32,
+        hashes.sha1.as_deref().unwrap_or_default(),
+        u64::try_from(candidate.media.file_size).unwrap_or(u64::MAX),
+        &candidate.media.crc32,
+        &candidate.media.sha1,
+    )
+    .map(|matched| match matched {
+        retro_junk_core::matching::ContentHashMatch::Crc32 => MatchMethod::Crc32,
+        retro_junk_core::matching::ContentHashMatch::Sha1 => MatchMethod::Sha1,
+    })
 }
 
 /// Select among definitive hash matches, preferring a header-compatible region.

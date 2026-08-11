@@ -73,18 +73,7 @@ pub fn severity_icon(severity: retro_junk_backend::completion::Severity) -> &'st
 /// than inventing their own wording.
 #[must_use]
 pub fn severity_tooltip(severity: retro_junk_backend::completion::Severity) -> &'static str {
-    use retro_junk_backend::completion::Severity;
-    match severity {
-        Severity::Verified => "Complete and checked against the catalog",
-        Severity::Asserted => {
-            "Identified by hand, or content no catalog lists — correct, but not machine-verified"
-        }
-        Severity::Incomplete => "Usable, but something is missing or unverified",
-        Severity::Broken => {
-            "Not usable: nothing identifies this, or a hash contradicts what it claims to be"
-        }
-        Severity::Unmeasured => "Nothing can be measured yet — usually a missing catalog import",
-    }
+    severity.description()
 }
 
 /// Dimmed indicator for states that carry no measurement.

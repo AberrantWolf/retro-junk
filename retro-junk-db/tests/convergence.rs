@@ -242,8 +242,8 @@ impl Fixture {
         let file = self.id("art");
         self.conn
             .execute(
-                "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,captured_at,manifest_path,manifest_sha256)
-                 VALUES(?1,?2,'artwork','box-front','artwork/box.png',10,'s','2026-01-01','f.toml','h')",
+                "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,presence_state,captured_at,manifest_path,manifest_sha256)
+                 VALUES(?1,?2,'artwork','box-front','artwork/box.png',10,'s','present','2026-01-01','f.toml','h')",
                 (&file, release),
             )
             .unwrap();
@@ -254,8 +254,8 @@ impl Fixture {
         let file = self.id("art");
         self.conn
             .execute(
-                "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,captured_at,manifest_path,manifest_sha256)
-                 VALUES(?1,?2,'artwork',?3,'artwork/'||?3||'.png',11,'s2','2026-01-01','f.toml','h')",
+                "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,presence_state,captured_at,manifest_path,manifest_sha256)
+                 VALUES(?1,?2,'artwork',?3,'artwork/'||?3||'.png',11,'s2','present','2026-01-01','f.toml','h')",
                 (&file, release, asset_type),
             )
             .unwrap();
@@ -722,7 +722,8 @@ fn dump_errors_group_under_the_release_that_owns_them() {
     )
     .unwrap();
 
-    let grouped = retro_junk_db::convergence::errors_by_release(&fixture.conn).unwrap();
+    let actions = fixture.derive();
+    let grouped = retro_junk_db::convergence::errors_by_release(&fixture.conn, &actions).unwrap();
     let errors = grouped.get(&release).expect("error grouped under release");
     assert_eq!(errors.len(), 1);
     assert_eq!(errors[0].0, ActionKind::VerifyIntegrity);
@@ -747,10 +748,63 @@ fn path_targeted_errors_belong_to_no_release() {
     .unwrap();
 
     assert!(
-        retro_junk_db::convergence::errors_by_release(&fixture.conn)
+        retro_junk_db::convergence::errors_by_release(&fixture.conn, &fixture.derive())
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn a_failed_build_stops_being_open_once_the_projection_is_satisfied() {
+    let mut fixture = Fixture::new();
+    fixture.media("m1", 0);
+    let (release, copy) = fixture.release("Game");
+    fixture.bind_release(&release);
+    let (carrier, dump) =
+        fixture.carrier_with_dump(&copy, Some("m1"), 0, "iso", "verified", "verified", 1);
+    fixture.catalog_verify(&dump);
+    fixture.policy(&carrier, "chd");
+
+    retro_junk_db::work::release_claim(
+        &mut fixture.conn,
+        ActionKind::BuildPlayable.as_str(),
+        "release",
+        &release,
+        "test",
+        &retro_junk_db::work::ClaimOutcome::Failed {
+            error: "old build attempt failed".to_owned(),
+        },
+    )
+    .unwrap();
+    let pending = fixture.derive();
+    assert!(
+        retro_junk_db::convergence::errors_by_release(&fixture.conn, &pending)
+            .unwrap()
+            .contains_key(&release)
+    );
+
+    fixture.playable_present(&carrier, "chd");
+    let satisfied = fixture.derive();
+    assert!(!satisfied.iter().any(|action| {
+        action.kind == ActionKind::BuildPlayable && action.target.id() == release
+    }));
+    assert!(
+        !retro_junk_db::convergence::errors_by_release(&fixture.conn, &satisfied)
+            .unwrap()
+            .contains_key(&release),
+        "attempt history must not masquerade as an open failure after the end state is reached"
+    );
+    assert!(
+        retro_junk_db::work::try_claim(&fixture.conn, "build", "release", &release, "stale-worker")
+            .unwrap()
+    );
+    let summary = summarize_convergence(
+        &fixture.conn,
+        &Scope::Profile("prof".to_owned()),
+        &expected_assets(),
+    )
+    .unwrap();
+    assert_eq!(summary.per_kind[&ActionKind::BuildPlayable].running, 0);
 }
 
 // ── Scrape derivation ──────────────────────────────────────────────────────

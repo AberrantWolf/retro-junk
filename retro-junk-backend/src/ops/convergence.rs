@@ -58,11 +58,18 @@ impl Backlog {
 pub fn load_backlog(db_path: &Path, scope: &Scope) -> Result<Backlog, String> {
     let expected = AutomationPolicy::load().scrape_selection();
     let connection = retro_junk_db::open_database(db_path).map_err(|error| error.to_string())?;
-    let summary = retro_junk_db::convergence::summarize_convergence(&connection, scope, &expected)
+    let actions = retro_junk_db::convergence::derive_convergence(&connection, scope, &expected)
         .map_err(|error| error.to_string())?;
-    let errors = retro_junk_db::convergence::errors_by_release(&connection)
+    let summary = retro_junk_db::convergence::summarize_convergence_for_actions(
+        &connection,
+        scope,
+        &expected,
+        &actions,
+    )
+    .map_err(|error| error.to_string())?;
+    let errors = retro_junk_db::convergence::errors_by_release(&connection, &actions)
         .map_err(|error| error.to_string())?;
-    let blocked = retro_junk_db::convergence::blocked_by_release(&connection, scope, &expected)
+    let blocked = retro_junk_db::convergence::blocked_by_release_for_actions(&connection, &actions)
         .map_err(|error| error.to_string())?;
     Ok(Backlog {
         summary,

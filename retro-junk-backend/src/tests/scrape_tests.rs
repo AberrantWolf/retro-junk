@@ -206,8 +206,8 @@ fn fixture(serial: &str, hashes: bool, artwork: &[&str]) -> retro_junk_db::Conne
     .unwrap();
     for (index, asset_type) in artwork.iter().enumerate() {
         conn.execute(
-            "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,captured_at,manifest_path,manifest_sha256)
-             VALUES(?1,'rel','artwork',?2,?3,10,'s','2026-01-01','f.toml','h')",
+            "INSERT INTO archive_release_files(id,archive_release_id,category,asset_type,relative_path,file_size,sha256,presence_state,captured_at,manifest_path,manifest_sha256)
+             VALUES(?1,'rel','artwork',?2,?3,10,'s','present','2026-01-01','f.toml','h')",
             (format!("af{index}"), asset_type, format!("artwork/{index}.png")),
         )
         .unwrap();
@@ -346,11 +346,11 @@ fn a_modded_release_is_looked_up_as_the_work_it_derives_from() {
     assert_eq!(asked.filename, "Test Game (USA).iso");
     assert_ne!(asked.hashes, own.hashes);
 
-    // And it is as identifiable as its parent — here, by serial, which is
-    // strong enough to publish unattended.
+    // And it is as identifiable as its parent. Complete hashes outrank the
+    // serial because they identify these exact bytes.
     assert_eq!(
         identity.tier(),
-        retro_junk_db::library::ScrapeIdentityTier::Serial
+        retro_junk_db::library::ScrapeIdentityTier::Hashes
     );
 }
 

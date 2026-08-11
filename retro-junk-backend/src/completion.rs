@@ -207,9 +207,10 @@ pub enum Attention {
     MasterMissing { carrier_id: String },
 }
 
-/// The complete status of one release: identity plus one fraction per
-/// aspect, plus every actionable problem. Computed in exactly one place
-/// (the backend projection); rendered everywhere.
+/// The complete status of one release: identity plus the archive/playable
+/// fractions that determine completion, supplemental artwork coverage, and
+/// every actionable problem. Computed in exactly one place (the backend
+/// projection); rendered everywhere.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Completion {
     pub identity: Identity,
@@ -222,8 +223,14 @@ pub struct Completion {
     pub catalog: Fraction,
     /// Playables built and present vs. what the policy asks for.
     pub playable: Fraction,
-    /// Artwork types archived vs. the expected set.
+    /// Artwork types archived vs. the configured set. Supplemental: this is
+    /// displayed and drives scrape gaps, but never determines archive
+    /// completion or severity.
     pub artwork: Fraction,
+    /// The exact expected asset types not present in the archive. The
+    /// fraction answers how much is missing; this names what to fetch, so
+    /// frontends never have to reconstruct policy or compare asset lists.
+    pub missing_artwork: Vec<retro_junk_frontend::AssetType>,
     pub attention: Vec<Attention>,
 }
 
@@ -240,17 +247,17 @@ pub enum Overall {
     NeedsAttention,
     /// Identified, no problems, but at least one aspect is not complete.
     Incomplete,
-    /// Identified, no problems, every aspect complete.
+    /// Identified, no problems, every archive/playable aspect complete.
     Complete,
 }
 
 /// How bad a state is, on the one scale every indicator renders through.
 ///
-/// The general status column and the per-aspect evidence badges both map
+/// The general status column and completion-bearing evidence badges both map
 /// through this, and an overall severity is the *worst* of the severities it
 /// is made of ([`Completion::severity`]) rather than a second judgement made
-/// beside them. That is what makes it impossible for the two columns to
-/// disagree: the summary cannot be greener than its greenest part.
+/// beside them. Artwork coverage uses the same colors for its independent
+/// indicator but is not an input to overall severity.
 ///
 /// Ordered worst-last so `max` folds them. See `IDENTIFICATION.md` for the
 /// colour and icon each one carries, and why there are five.
@@ -287,6 +294,26 @@ impl Severity {
             Self::Unmeasured => "Unmeasured",
             Self::Incomplete => "Incomplete",
             Self::Broken => "Broken",
+        }
+    }
+
+    /// Stable explanation shared by every frontend. `Verified` deliberately
+    /// does not claim every green state was catalog-checked: not-applicable
+    /// facets and resolved collection exceptions can also fold to green.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Verified => {
+                "Archive complete or resolved; supplemental artwork may still be missing"
+            }
+            Self::Asserted => {
+                "Identified by hand, or content no catalog lists; correct but not machine-verified"
+            }
+            Self::Unmeasured => "Not measured yet; open the row to see what evidence is needed",
+            Self::Incomplete => "Usable, but something expected is missing or unverified",
+            Self::Broken => {
+                "Not usable: nothing identifies this, or content contradicts its claimed identity"
+            }
         }
     }
 }
@@ -358,20 +385,54 @@ impl Overall {
             Self::Unidentified => "Unidentified",
         }
     }
+
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        match self {
+            Self::Complete => "Every expected carrier is stored and catalog-verified",
+            Self::Incomplete => "Identified, but something expected is still missing",
+            Self::NeedsAttention => {
+                "The evidence contains a conflict or another issue requiring attention"
+            }
+            Self::Unidentified => "No content-verified evidence identifies this release",
+        }
+    }
 }
 
 impl Completion {
+    /// Backend-owned reasons this release is not complete.
+    ///
+    /// This is intentionally presentation-ready. The Library tooltip,
+    /// details panel, CLI, and any future frontend should not each reverse
+    /// engineer a fraction into a different explanation.
+    #[must_use]
+    pub fn incomplete_reasons(&self) -> Vec<String> {
+        let mut reasons = Vec::new();
+        for (label, fraction) in [
+            ("Stored masters", self.presence),
+            ("Integrity", self.integrity),
+            ("Catalog-verified carriers", self.catalog),
+            ("Playable representations", self.playable),
+        ] {
+            if !fraction.is_complete() {
+                reasons.push(format!("{label}: {}", fraction.describe()));
+            }
+        }
+        reasons
+    }
+
     /// The one severity for this release, folded from the same evidence the
     /// badges render.
     ///
-    /// The summary is the worst of its parts, so a release cannot show a green
-    /// dot beside an amber badge. Anything a person must decide about lands on
-    /// [`Severity::Broken`] through `attention`, because an unresolved
-    /// decision is the tool declining to act.
+    /// The summary is the worst of its completion-bearing parts. Artwork is
+    /// deliberately supplemental: its separate square/badge may be empty or
+    /// partial beside a green, complete archive status. Anything a person
+    /// must decide about lands on [`Severity::Broken`] through `attention`,
+    /// because an unresolved decision is the tool declining to act.
     #[must_use]
     pub fn severity(&self) -> Severity {
         let mut severity = self.identity.severity();
-        for fraction in self.evidence() {
+        for fraction in self.completion_evidence() {
             severity = severity.worst(fraction.level().severity());
         }
         if !self.attention.is_empty() {
@@ -380,19 +441,11 @@ impl Completion {
         severity
     }
 
-    /// Every aspect that carries evidence, in the order frontends show them.
-    ///
-    /// One list, so a new aspect cannot be added to the badges and forgotten
-    /// in the fold — which is how a summary drifts away from its parts.
+    /// Evidence that determines archive completion, excluding supplemental
+    /// artwork coverage.
     #[must_use]
-    pub const fn evidence(&self) -> [Fraction; 5] {
-        [
-            self.presence,
-            self.integrity,
-            self.catalog,
-            self.playable,
-            self.artwork,
-        ]
+    pub const fn completion_evidence(&self) -> [Fraction; 4] {
+        [self.presence, self.integrity, self.catalog, self.playable]
     }
 
     #[must_use]
@@ -405,7 +458,7 @@ impl Completion {
         if !self.attention.is_empty() {
             return Overall::NeedsAttention;
         }
-        let all = self.evidence();
+        let all = self.completion_evidence();
         if all.iter().all(|fraction| fraction.is_complete()) {
             Overall::Complete
         } else {
@@ -415,8 +468,9 @@ impl Completion {
 
     /// The one place a release's facts become a status.
     ///
-    /// `expected_assets` is the artwork policy: which asset types a complete
-    /// release archives. Everything else comes from the projection's facts.
+    /// `expected_assets` is the artwork policy used by the independent
+    /// artwork coverage badge and scrape planner. It does not participate in
+    /// archive completion. Everything else comes from the projection's facts.
     #[must_use]
     #[allow(clippy::too_many_lines)]
     pub fn for_release(
@@ -484,11 +538,16 @@ impl Completion {
             .iter()
             .filter_map(|name| retro_junk_frontend::AssetType::from_archive_name(name))
             .collect();
-        let artwork_have = expected_assets
+        let missing_artwork = expected_assets
             .types
             .iter()
-            .filter(|asset_type| held.contains(asset_type))
-            .count() as u64;
+            .filter(|asset_type| !held.contains(asset_type))
+            .copied()
+            .collect::<Vec<_>>();
+        let artwork_have = expected_assets
+            .types
+            .len()
+            .saturating_sub(missing_artwork.len()) as u64;
         let artwork = Fraction::known(artwork_have, expected_assets.types.len() as u64);
 
         let mut attention = Vec::new();
@@ -518,6 +577,7 @@ impl Completion {
             catalog,
             playable,
             artwork,
+            missing_artwork,
             attention,
         }
     }

@@ -96,7 +96,8 @@ impl Region {
     pub fn from_slug(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "japan" | "jp" | "jpn" => Some(Self::Japan),
-            "usa" | "us" | "canada" | "north america" | "north-america" => Some(Self::Usa),
+            "usa" | "us" | "united states" | "united_states" | "canada" | "north america"
+            | "north-america" => Some(Self::Usa),
             "europe" | "eur" | "eu" | "pal" => Some(Self::Europe),
             "australia" | "aus" => Some(Self::Australia),
             "korea" | "kor" => Some(Self::Korea),
@@ -104,7 +105,9 @@ impl Region {
             "taiwan" | "twn" => Some(Self::Taiwan),
             "asia" | "asi" => Some(Self::Asia),
             "brazil" | "bra" => Some(Self::Brazil),
-            "latin america" | "latin-america" | "lat" => Some(Self::LatinAmerica),
+            "latin america" | "latin-america" | "latinamerica" | "latin_america" | "lat" => {
+                Some(Self::LatinAmerica)
+            }
             "world" | "wld" => Some(Self::World),
             _ => None,
         }

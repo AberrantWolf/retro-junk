@@ -44,7 +44,10 @@ pub enum LibraryStoreRequest {
         root_id: LibraryRootId,
         expected_assets: retro_junk_frontend::AssetSelection,
     },
-    EntryList(LibraryEntryListQuery),
+    EntryList {
+        query: LibraryEntryListQuery,
+        expected_assets: retro_junk_frontend::AssetSelection,
+    },
     EntryDetail(LibraryEntryId),
     EntryDetails(Vec<LibraryEntryId>),
     ConsoleEntryDetails(LibraryConsoleId),
@@ -115,6 +118,219 @@ pub struct LibraryConsoleSummary {
     pub severity: Option<crate::completion::Severity>,
 }
 
+/// Backend-owned merged Library page. The database supplies ordered logical
+/// rows and facts; completion is folded here once for every frontend surface.
+#[derive(Debug, Clone)]
+pub struct LibraryPageProjection {
+    pub page: LibraryEntryListPage,
+    pub archive_completion: HashMap<String, crate::completion::Completion>,
+    pub playable_status: HashMap<LibraryEntryId, crate::library::EntryStatus>,
+    pub availability: HashMap<retro_junk_db::LibraryRowId, LibraryRowAvailability>,
+    pub regions: HashMap<retro_junk_db::LibraryRowId, LibraryRegionPresentation>,
+}
+
+/// Normalized region data for a logical Library row.
+///
+/// Archive manifests and analyzer payloads persist different textual forms;
+/// they are parsed once here at the backend boundary. Frontends receive the
+/// same typed regions for archive and playable-only rows, plus the original
+/// text only when the core model does not recognize it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LibraryRegionPresentation {
+    pub regions: Vec<retro_junk_core::Region>,
+    pub fallback: String,
+    pub overridden: bool,
+}
+
+impl LibraryRegionPresentation {
+    fn from_values<'a>(values: impl IntoIterator<Item = &'a str>, overridden: bool) -> Self {
+        let raw = values
+            .into_iter()
+            .flat_map(|value| value.split([',', '/', ';']))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .collect::<Vec<_>>();
+        let mut regions = Vec::new();
+        let mut unknown = Vec::new();
+        for value in raw {
+            if let Some(region) = retro_junk_core::Region::from_slug(value) {
+                if !regions.contains(&region) {
+                    regions.push(region);
+                }
+            } else if !unknown.contains(&value) {
+                unknown.push(value);
+            }
+        }
+        Self {
+            regions,
+            fallback: unknown.join(", "),
+            overridden,
+        }
+    }
+
+    fn archive(value: &str) -> Self {
+        Self::from_values([value], false)
+    }
+
+    fn playable(entry: &retro_junk_db::LibraryEntryListItem) -> Self {
+        if entry.region_override.is_empty() {
+            Self::from_values(entry.detected_regions.iter().map(String::as_str), false)
+        } else {
+            Self::from_values([entry.region_override.as_str()], true)
+        }
+    }
+
+    /// Compact textual part shown beside the flag icons.
+    #[must_use]
+    pub fn label(&self) -> String {
+        let mut label = self
+            .regions
+            .iter()
+            .map(retro_junk_core::Region::code)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !self.fallback.is_empty() {
+            if !label.is_empty() {
+                label.push_str(", ");
+            }
+            label.push_str(&self.fallback);
+        }
+        if self.overridden {
+            label.push('*');
+        }
+        label
+    }
+}
+
+/// Backend-owned availability of one merged logical row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LibraryRowAvailability {
+    ArchivedOnly,
+    IncompleteArchive,
+    PlayableOnly {
+        formats: Vec<String>,
+    },
+    ArchivedAndPlayable {
+        formats: Vec<String>,
+    },
+    IncompleteArchiveAndPlayable {
+        formats: Vec<String>,
+    },
+    PreferredFormatMismatch {
+        actual: Vec<String>,
+        preferred: String,
+    },
+}
+
+impl std::ops::Deref for LibraryPageProjection {
+    type Target = LibraryEntryListPage;
+
+    fn deref(&self) -> &Self::Target {
+        &self.page
+    }
+}
+
+impl LibraryPageProjection {
+    #[must_use]
+    pub fn new(
+        page: LibraryEntryListPage,
+        expected_assets: &retro_junk_frontend::AssetSelection,
+    ) -> Self {
+        let archive_completion = page
+            .archived_releases
+            .iter()
+            .map(|release| {
+                (
+                    release.summary.archive_release_id.clone(),
+                    crate::completion::Completion::for_release(&release.facts, expected_assets),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let playable_status = page
+            .rows
+            .iter()
+            .map(|entry| {
+                (
+                    entry.id,
+                    crate::library::projected_entry_status(&entry.status, &entry.tag),
+                )
+            })
+            .collect();
+        let availability: HashMap<retro_junk_db::LibraryRowId, LibraryRowAvailability> = page
+            .logical_rows
+            .iter()
+            .map(|row| {
+                let row_id = row.id();
+                let state = match row {
+                    retro_junk_db::LibraryListRow::Archive(release) => archive_availability(
+                        release,
+                        archive_completion
+                            .get(&release.summary.archive_release_id)
+                            .expect("completion constructed above"),
+                    ),
+                    retro_junk_db::LibraryListRow::Playable(entry) => playable_availability(entry),
+                };
+                (row_id, state)
+            })
+            .collect();
+        let regions = page
+            .logical_rows
+            .iter()
+            .map(|row| match row {
+                retro_junk_db::LibraryListRow::Archive(release) => (
+                    row.id(),
+                    LibraryRegionPresentation::archive(&release.summary.region),
+                ),
+                retro_junk_db::LibraryListRow::Playable(entry) => {
+                    (row.id(), LibraryRegionPresentation::playable(entry))
+                }
+            })
+            .collect();
+        Self {
+            page,
+            archive_completion,
+            playable_status,
+            availability,
+            regions,
+        }
+    }
+
+    #[must_use]
+    pub fn completion_for(
+        &self,
+        archive_release_id: &str,
+    ) -> Option<&crate::completion::Completion> {
+        self.archive_completion.get(archive_release_id)
+    }
+
+    #[must_use]
+    pub fn status_for(&self, entry_id: LibraryEntryId) -> Option<crate::library::EntryStatus> {
+        self.playable_status.get(&entry_id).copied()
+    }
+
+    #[must_use]
+    pub fn availability_for(
+        &self,
+        row_id: &retro_junk_db::LibraryRowId,
+    ) -> Option<&LibraryRowAvailability> {
+        self.availability.get(row_id)
+    }
+
+    #[must_use]
+    pub fn region_for(
+        &self,
+        row_id: &retro_junk_db::LibraryRowId,
+    ) -> Option<&LibraryRegionPresentation> {
+        self.regions.get(row_id)
+    }
+}
+
+impl From<LibraryEntryListPage> for LibraryPageProjection {
+    fn from(page: LibraryEntryListPage) -> Self {
+        Self::new(page, &retro_junk_frontend::AssetSelection::default())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum LibraryStoreValue {
     RootOpened {
@@ -132,7 +348,7 @@ pub enum LibraryStoreValue {
         changes: LibraryChangeSet,
     },
     ConsoleSummaries(Vec<LibraryConsoleSummary>),
-    EntryList(LibraryEntryListPage),
+    EntryList(LibraryPageProjection),
     EntryDetail(Option<LibraryEntryDetail>),
     EntryDetails(Vec<LibraryEntryDetail>),
     ConsoleDetails {
@@ -262,11 +478,95 @@ fn is_read_request(request: &LibraryStoreRequest) -> bool {
     matches!(
         request,
         LibraryStoreRequest::ConsoleSummaries { .. }
-            | LibraryStoreRequest::EntryList(_)
+            | LibraryStoreRequest::EntryList { .. }
             | LibraryStoreRequest::EntryDetail(_)
             | LibraryStoreRequest::EntryDetails(_)
             | LibraryStoreRequest::ConsoleEntryDetails(_)
     )
+}
+
+fn archive_availability(
+    release: &retro_junk_db::ArchivedLibraryListItem,
+    completion: &crate::completion::Completion,
+) -> LibraryRowAvailability {
+    let playable =
+        release.summary.playable_present_count > 0 || !release.playable_library_entries.is_empty();
+    let mut formats = release
+        .playable_representations
+        .iter()
+        .map(|representation| representation.format.clone())
+        .chain(
+            release
+                .playable_library_entries
+                .iter()
+                .map(|entry| entry.playable_format.clone()),
+        )
+        .filter(|format| !format.is_empty())
+        .collect::<Vec<_>>();
+    formats.sort();
+    formats.dedup();
+    if completion.catalog.is_complete() {
+        if release
+            .action
+            .as_ref()
+            .is_some_and(|action| action.needs_playable)
+            && playable
+        {
+            LibraryRowAvailability::PreferredFormatMismatch {
+                actual: formats,
+                preferred: release
+                    .action
+                    .as_ref()
+                    .and_then(|action| action.preferred_format.clone())
+                    .unwrap_or_default(),
+            }
+        } else if playable {
+            LibraryRowAvailability::ArchivedAndPlayable { formats }
+        } else {
+            LibraryRowAvailability::ArchivedOnly
+        }
+    } else if playable {
+        LibraryRowAvailability::IncompleteArchiveAndPlayable { formats }
+    } else {
+        LibraryRowAvailability::IncompleteArchive
+    }
+}
+
+fn playable_availability(entry: &retro_junk_db::LibraryEntryListItem) -> LibraryRowAvailability {
+    let formats = if entry.playable_format.is_empty() {
+        Vec::new()
+    } else {
+        vec![entry.playable_format.clone()]
+    };
+    if !entry.archived {
+        return LibraryRowAvailability::PlayableOnly { formats };
+    }
+    if !entry.archive_complete {
+        return LibraryRowAvailability::IncompleteArchiveAndPlayable { formats };
+    }
+    if let Some(preferred) = entry.preferred_format.as_deref()
+        && !formats_satisfy_policy(&entry.playable_format, preferred)
+    {
+        return LibraryRowAvailability::PreferredFormatMismatch {
+            actual: formats,
+            preferred: preferred.to_owned(),
+        };
+    }
+    LibraryRowAvailability::ArchivedAndPlayable { formats }
+}
+
+fn formats_satisfy_policy(actual: &str, preferred: &str) -> bool {
+    let actual = actual.to_ascii_lowercase().replace('-', "_");
+    let preferred = preferred.to_ascii_lowercase().replace('-', "_");
+    actual == preferred
+        || match preferred.as_str() {
+            "cue_bin" => matches!(actual.as_str(), "cue" | "bin"),
+            "rom" => !matches!(
+                actual.as_str(),
+                "chd" | "rvz" | "iso" | "cue" | "bin" | "gdi" | "cso" | "dax"
+            ),
+            _ => false,
+        }
 }
 
 impl Drop for LibraryStore {
@@ -359,8 +659,12 @@ fn execute(
         } => {
             LibraryStoreValue::ConsoleSummaries(console_summaries(conn, root_id, &expected_assets)?)
         }
-        R::EntryList(query) => {
-            LibraryStoreValue::EntryList(retro_junk_db::query_entry_list(conn, &query)?)
+        R::EntryList {
+            query,
+            expected_assets,
+        } => {
+            let page = retro_junk_db::query_entry_list(conn, &query)?;
+            LibraryStoreValue::EntryList(LibraryPageProjection::new(page, &expected_assets))
         }
         R::EntryDetail(id) => {
             LibraryStoreValue::EntryDetail(retro_junk_db::load_entry_detail(conn, id)?)
@@ -616,7 +920,13 @@ impl LibraryProjectionController {
         if self.latest.contains_key(&key) {
             return None;
         }
-        Some(self.schedule(key, LibraryStoreRequest::EntryList(query)))
+        Some(self.schedule(
+            key,
+            LibraryStoreRequest::EntryList {
+                query,
+                expected_assets: retro_junk_frontend::AssetSelection::default(),
+            },
+        ))
     }
 
     pub fn schedule_summaries(
@@ -707,6 +1017,31 @@ impl LibraryProjectionController {
 mod tests {
     use super::*;
     use retro_junk_db::{LibraryEntryFilter, LibraryEntrySortField, SortDirection};
+
+    #[test]
+    fn playable_format_policy_is_owned_by_backend_projection() {
+        assert!(formats_satisfy_policy("nes", "rom"));
+        assert!(formats_satisfy_policy("sfc", "rom"));
+        assert!(!formats_satisfy_policy("chd", "rom"));
+        assert!(formats_satisfy_policy("cue", "cue_bin"));
+    }
+
+    #[test]
+    fn region_projection_normalizes_multi_region_text_once() {
+        let region = LibraryRegionPresentation::archive("Europe, Australia");
+        assert_eq!(
+            region.regions,
+            vec![
+                retro_junk_core::Region::Europe,
+                retro_junk_core::Region::Australia
+            ]
+        );
+        assert_eq!(region.label(), "EUR, AUS");
+
+        let unknown = LibraryRegionPresentation::archive("Moon");
+        assert!(unknown.regions.is_empty());
+        assert_eq!(unknown.label(), "Moon");
+    }
 
     fn query() -> LibraryEntryListQuery {
         LibraryEntryListQuery {
@@ -821,18 +1156,22 @@ mod tests {
         let reply = StoreEnvelope {
             session_generation: 0,
             request_id: request.request_id,
-            payload: Ok(LibraryStoreValue::EntryList(LibraryEntryListPage {
-                console_id: LibraryConsoleId(7),
-                console_revision: 4,
-                total_count: 0,
-                logical_count: 0,
-                counts: Default::default(),
-                availability_counts: Default::default(),
-                archived_playable_gaps: Vec::new(),
-                archived_releases: Vec::new(),
-                offset: 0,
-                rows: Vec::new(),
-            })),
+            payload: Ok(LibraryStoreValue::EntryList(
+                LibraryEntryListPage {
+                    console_id: LibraryConsoleId(7),
+                    console_revision: 4,
+                    total_count: 0,
+                    logical_count: 0,
+                    counts: Default::default(),
+                    availability_counts: Default::default(),
+                    archived_playable_gaps: Vec::new(),
+                    archived_releases: Vec::new(),
+                    logical_rows: Vec::new(),
+                    offset: 0,
+                    rows: Vec::new(),
+                }
+                .into(),
+            )),
         };
         assert!(controller.accept_list_reply(&reply, &query()));
         assert!(controller.schedule_list(query(), 4).is_none());
@@ -849,18 +1188,22 @@ mod tests {
         let stale = StoreEnvelope {
             session_generation: 0,
             request_id: request.request_id,
-            payload: Ok(LibraryStoreValue::EntryList(LibraryEntryListPage {
-                console_id: LibraryConsoleId(7),
-                console_revision: 2,
-                total_count: 0,
-                logical_count: 0,
-                counts: Default::default(),
-                availability_counts: Default::default(),
-                archived_playable_gaps: Vec::new(),
-                archived_releases: Vec::new(),
-                offset: 0,
-                rows: Vec::new(),
-            })),
+            payload: Ok(LibraryStoreValue::EntryList(
+                LibraryEntryListPage {
+                    console_id: LibraryConsoleId(7),
+                    console_revision: 2,
+                    total_count: 0,
+                    logical_count: 0,
+                    counts: Default::default(),
+                    availability_counts: Default::default(),
+                    archived_playable_gaps: Vec::new(),
+                    archived_releases: Vec::new(),
+                    logical_rows: Vec::new(),
+                    offset: 0,
+                    rows: Vec::new(),
+                }
+                .into(),
+            )),
         };
         assert!(!controller.accept_list_reply(&stale, &query()));
         controller.switch_root();
@@ -896,18 +1239,22 @@ mod tests {
             let reply = StoreEnvelope {
                 session_generation: 0,
                 request_id: request.request_id,
-                payload: Ok(LibraryStoreValue::EntryList(LibraryEntryListPage {
-                    console_id: query.console_id,
-                    console_revision: 1,
-                    total_count: 0,
-                    logical_count: 0,
-                    counts: Default::default(),
-                    availability_counts: Default::default(),
-                    archived_playable_gaps: Vec::new(),
-                    archived_releases: Vec::new(),
-                    offset: 0,
-                    rows: Vec::new(),
-                })),
+                payload: Ok(LibraryStoreValue::EntryList(
+                    LibraryEntryListPage {
+                        console_id: query.console_id,
+                        console_revision: 1,
+                        total_count: 0,
+                        logical_count: 0,
+                        counts: Default::default(),
+                        availability_counts: Default::default(),
+                        archived_playable_gaps: Vec::new(),
+                        archived_releases: Vec::new(),
+                        logical_rows: Vec::new(),
+                        offset: 0,
+                        rows: Vec::new(),
+                    }
+                    .into(),
+                )),
             };
             assert!(controller.accept_list_reply(&reply, query));
         }

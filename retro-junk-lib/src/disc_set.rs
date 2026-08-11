@@ -439,6 +439,7 @@ fn unique_full_hash_match(
 
 /// Identify a disc only when its complete logical track hash set assigns to
 /// exactly one catalog medium.
+#[must_use]
 pub fn match_complete_track_hashes(
     index: &DatIndex,
     tracks: &[crate::disc_hash::DiscTrackHashes],

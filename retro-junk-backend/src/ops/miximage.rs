@@ -6,7 +6,7 @@
 //! miximage for an archived release is published back into the archive under
 //! its own lock. Runs synchronously — no async runtime is needed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use retro_junk_frontend::AssetType;
@@ -29,6 +29,62 @@ pub struct MiximageWorkItem {
     pub archive_release_id: Option<retro_junk_archive::ArchiveReleaseId>,
     /// Archived component images restored into the target before composing.
     pub archived_assets: HashMap<AssetType, PathBuf>,
+}
+
+/// Build miximage work from the same logical selection and archive ownership
+/// used by artwork scraping.
+#[must_use]
+pub fn plan_miximage_work<S1: std::hash::BuildHasher, S2: std::hash::BuildHasher>(
+    entries: &[crate::library::LibraryEntry],
+    selected_entry_ids: &HashSet<retro_junk_db::LibraryEntryId, S1>,
+    archive_releases: &[retro_junk_db::ArchivedLibraryListItem],
+    selected_archive_release_ids: &HashSet<String, S2>,
+    focused_archive_release_id: Option<&str>,
+) -> Vec<MiximageWorkItem> {
+    let mut work = selected_entry_ids
+        .iter()
+        .filter_map(|entry_id| {
+            let entry = entries.iter().find(|entry| entry.id == Some(*entry_id))?;
+            let release = archive_releases.iter().find(|release| {
+                release
+                    .playable_library_entries
+                    .iter()
+                    .any(|playable| playable.id == *entry_id)
+            });
+            Some(MiximageWorkItem {
+                entry_id: Some(*entry_id),
+                entry_name: entry.game_entry.display_name().to_owned(),
+                rom_stem: entry.game_entry.rom_stem().to_owned(),
+                archive_release_id: release
+                    .and_then(|release| release.summary.archive_release_id.parse().ok()),
+                archived_assets: release
+                    .map(crate::assets::archived_asset_paths)
+                    .unwrap_or_default(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let represented = work
+        .iter()
+        .filter_map(|item| item.archive_release_id.map(|id| id.to_string()))
+        .collect::<HashSet<_>>();
+    for release in archive_releases.iter().filter(|release| {
+        (selected_archive_release_ids.contains(&release.summary.archive_release_id)
+            || (selected_archive_release_ids.is_empty()
+                && focused_archive_release_id == Some(release.summary.archive_release_id.as_str())))
+            && !represented.contains(&release.summary.archive_release_id)
+    }) {
+        let Ok(archive_release_id) = release.summary.archive_release_id.parse() else {
+            continue;
+        };
+        work.push(MiximageWorkItem {
+            entry_id: None,
+            entry_name: release.summary.title.clone(),
+            rom_stem: format!("archive-{archive_release_id}"),
+            archive_release_id: Some(archive_release_id),
+            archived_assets: crate::assets::archived_asset_paths(release),
+        });
+    }
+    work
 }
 
 /// Everything a miximage run needs beyond the work items themselves.

@@ -14,11 +14,22 @@ use crate::manifest::{CatalogEvidence, VerificationKind, VerificationOutcome};
 /// exists now. Stale evidence is history, not a claim about present bytes.
 #[must_use]
 pub fn dump_has_current_evidence(dump: &IndexedDump, kind: VerificationKind) -> bool {
-    dump.verifications.iter().any(|verification| {
+    let directly_verified = dump.verifications.iter().any(|verification| {
         verification.evidence.kind == kind
             && verification.evidence.outcome == VerificationOutcome::Verified
             && verification.evidence.input_manifest_sha256 == dump.manifest_sha256
-    })
+    });
+    if directly_verified {
+        return true;
+    }
+
+    // Complete catalog verification is also an integrity verification. It
+    // reads the stored dump, hashes every logical track/file, and proves that
+    // those hashes equal the catalog's expected hashes. Requiring a second
+    // integrity-only event after that stronger operation made otherwise
+    // verified imports permanently amber depending only on which verifier
+    // happened to run first.
+    kind == VerificationKind::Integrity && dump_catalog_verified(dump)
 }
 
 /// The current catalog evidence that makes this dump catalog-verified, if any.
@@ -34,17 +45,35 @@ pub fn dump_has_current_evidence(dump: &IndexedDump, kind: VerificationKind) -> 
 /// the returned evidence rather than re-deriving the rule.
 #[must_use]
 pub fn dump_catalog_evidence(dump: &IndexedDump) -> Option<&CatalogEvidence> {
-    dump.verifications.iter().find_map(|verification| {
-        if verification.evidence.kind != VerificationKind::Catalog
-            || verification.evidence.outcome != VerificationOutcome::Verified
-            || verification.evidence.input_manifest_sha256 != dump.manifest_sha256
-        {
-            return None;
-        }
-        verification.evidence.catalog.as_ref().filter(|catalog| {
-            catalog.complete_track_set || cartridge_set_is_trivially_complete(dump)
+    dump.verifications
+        .iter()
+        .filter_map(|verification| {
+            if verification.evidence.kind != VerificationKind::Catalog
+                || verification.evidence.outcome != VerificationOutcome::Verified
+                || verification.evidence.input_manifest_sha256 != dump.manifest_sha256
+            {
+                return None;
+            }
+            verification.evidence.catalog.as_ref().and_then(|catalog| {
+                (catalog.complete_track_set || cartridge_set_is_trivially_complete(dump))
+                    .then_some((verification, catalog))
+            })
         })
-    })
+        // Evidence is append-only history. Presentation and portable fallback
+        // identity use the newest successful statement about these exact
+        // bytes, not whichever filename sorts first on this filesystem.
+        .max_by(|(left, _), (right, _)| {
+            left.evidence
+                .performed_at
+                .cmp(&right.evidence.performed_at)
+                .then_with(|| {
+                    left.evidence
+                        .verification_id
+                        .to_string()
+                        .cmp(&right.evidence.verification_id.to_string())
+                })
+        })
+        .map(|(_, catalog)| catalog)
 }
 
 /// Whether this dump has no track set that a match could be incomplete about.

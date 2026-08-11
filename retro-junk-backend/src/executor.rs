@@ -804,16 +804,17 @@ fn dispatch(
                 release,
                 &ctx.roots.playable_root,
             );
-            retro_junk_lib::archive_assets::project_release_assets(
+            let report = retro_junk_lib::archive_assets::project_release_assets(
                 release,
                 &ctx.roots.media_root.join(&directory),
                 &retro_junk_lib::archive_assets::release_media_stems(release),
                 cancelled,
             )
             .map_err(WorkError::msg)?;
-            retro_junk_db::projection_state::record_projection(
+            retro_junk_db::projection_state::record_projection_outputs(
                 conn,
                 retro_junk_db::projection_state::ProjectionOf::assets(release_id),
+                &report.destinations,
             )?;
             Ok(Vec::new())
         }
@@ -824,7 +825,7 @@ fn dispatch(
             // publish into this folder — one file read, one file written, for
             // however many games are listed in it.
             let releases = scanned.snapshot.releases.iter().collect::<Vec<_>>();
-            retro_junk_lib::archive_assets::sync_esde_gamelist_for_console(
+            let gamelist = retro_junk_lib::archive_assets::sync_esde_gamelist_for_console(
                 &releases,
                 directory,
                 &ctx.roots.playable_root,
@@ -832,9 +833,10 @@ fn dispatch(
                 &ctx.roots.media_root,
             )
             .map_err(WorkError::msg)?;
-            retro_junk_db::projection_state::record_projection(
+            retro_junk_db::projection_state::record_projection_outputs(
                 conn,
                 retro_junk_db::projection_state::ProjectionOf::gamelist(profile_id, directory),
+                &gamelist.into_iter().collect::<Vec<_>>(),
             )?;
             Ok(Vec::new())
         }
