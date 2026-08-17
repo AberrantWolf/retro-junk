@@ -2022,6 +2022,7 @@ fn empty_facts(summary: &crate::archive::ArchiveReleaseSummary) -> crate::facts:
         title: summary.title.clone(),
         region: summary.region.clone(),
         revision: summary.revision.clone(),
+        variant: String::new(),
         catalog_release_id: summary.catalog_release_id.clone(),
         catalog_work_id: None,
         expected_discs: None,

@@ -12,9 +12,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use retro_junk_backend::{
-    AutomationPolicy, ExecContext, LockEtiquette, ReconcileMode, RunMode, ToolPaths, run_once,
+    AutomationPolicy, ExecContext, LockEtiquette, ReconcileMode, RunMode, ToolPaths,
+    derive_convergence_actions, run_once,
 };
-use retro_junk_db::convergence::{ActionKind, Scope, derive_convergence, summarize_convergence};
+use retro_junk_db::convergence::{ActionKind, Scope, summarize_convergence_for_actions};
 
 use crate::CliError;
 use crate::cli_types::{RebuildPlayableArgs, RenamePlayablesArgs, StatusArgs, SyncArgs};
@@ -139,7 +140,7 @@ pub(crate) fn run_sync(args: SyncArgs) -> Result<(), CliError> {
     }
 
     if args.dry_run {
-        let actions = derive_convergence(&conn, &scope, &exec.scrape.expected_assets)
+        let actions = derive_convergence_actions(&conn, &scope, &exec.scrape.expected_assets)
             .map_err(|error| CliError::database(error.to_string()))?;
         let mut blocked = 0_usize;
         for action in &actions {
@@ -158,7 +159,30 @@ pub(crate) fn run_sync(args: SyncArgs) -> Result<(), CliError> {
                         action.label
                     );
                 }
-                None => log::info!("{:<16} {}", action.kind.as_str(), action.label),
+                None => {
+                    log::info!("{:<16} {}", action.kind.as_str(), action.label);
+                    if action.kind == ActionKind::NormalizePlayableSet {
+                        match retro_junk_backend::plan_normalize_action(&exec, action, &conn) {
+                            Ok(plan) => {
+                                for movement in &plan.moves {
+                                    log::info!(
+                                        "  move {} -> {}",
+                                        movement.from.display(),
+                                        movement.to.display()
+                                    );
+                                }
+                                log::info!("  write {}", plan.playlist.display());
+                                for line in plan.playlist_contents.lines() {
+                                    log::info!("    {line}");
+                                }
+                            }
+                            Err(error) => {
+                                blocked += 1;
+                                log::warn!("  cannot safely repair: {error}");
+                            }
+                        }
+                    }
+                }
             }
         }
         if blocked > 0 {
@@ -359,7 +383,9 @@ pub(crate) fn run_status(args: StatusArgs) -> Result<(), CliError> {
         .map_err(|error| CliError::database(error.to_string()))?;
     let scope = Scope::Profile(profile.profile_id.to_string());
     let expected = AutomationPolicy::load().scrape_selection();
-    let summary = summarize_convergence(&conn, &scope, &expected)
+    let actions = derive_convergence_actions(&conn, &scope, &expected)
+        .map_err(|error| CliError::database(error.to_string()))?;
+    let summary = summarize_convergence_for_actions(&conn, &scope, &expected, &actions)
         .map_err(|error| CliError::database(error.to_string()))?;
     log::info!("Profile: {} ({})", profile.display_name, profile.profile_id);
     for (kind, counts) in &summary.per_kind {

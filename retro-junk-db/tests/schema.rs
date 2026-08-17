@@ -475,6 +475,37 @@ fn overrides_unique_key_includes_pattern_selectors() {
 
 // ── Migration Tests ─────────────────────────────────────────────────────────
 
+#[test]
+fn v29_migration_preserves_legacy_disc_numbers_as_designators() {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("v29.db");
+    {
+        let conn = open_database(&db_path).unwrap();
+        conn.execute_batch(
+            "INSERT INTO platforms(id,display_name,short_name,manufacturer,media_type)
+             VALUES('saturn','Saturn','Saturn','Sega','disc');
+             INSERT INTO works(id,canonical_name) VALUES('w','Game');
+             INSERT INTO releases(id,work_id,platform_id,region,title)
+             VALUES('r','w','saturn','japan','Game');
+             INSERT INTO media(id,release_id,disc_number) VALUES('m','r',2);
+             ALTER TABLE media DROP COLUMN disc_designator;
+             DELETE FROM schema_version;
+             INSERT INTO schema_version(version) VALUES(29);",
+        )
+        .unwrap();
+    }
+
+    let conn = open_database(&db_path).unwrap();
+    let designator: String = conn
+        .query_row(
+            "SELECT disc_designator FROM media WHERE id='m'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(designator, "2");
+}
+
 /// Create a legacy (pre-v9) database by hand at the given schema version.
 ///
 /// Column layouts mirror the historical nullable schema. Every table the

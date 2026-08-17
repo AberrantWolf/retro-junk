@@ -15,6 +15,7 @@ pub mod display;
 pub mod fs_txn;
 pub mod hasher;
 pub mod naming;
+pub mod normalize_playable;
 pub mod organize;
 pub mod playable_build;
 pub mod playable_location;

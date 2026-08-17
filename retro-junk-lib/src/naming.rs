@@ -110,6 +110,15 @@ pub fn canonical_release_stem(inputs: &CanonicalName) -> String {
         expected_disc_count: 0,
         ..inputs.clone()
     };
+    // A release name belongs to the logical edition, not whichever physical
+    // disc supplied the first catalog name. Redump names carriers and may put
+    // a Saturn mastering group such as `(1M)` on only that disc. The archive
+    // fields are already the shared release identity selected by the catalog,
+    // so prefer them for the set folder while retaining the catalog name for
+    // each disc file below it.
+    if !without_disc.title.trim().is_empty() {
+        return retro_junk_archive::safe_file_stem(&archive_manifest_name(&without_disc));
+    }
     // Redump puts `(Disc N)` in the catalog media name itself. Clearing the
     // numeric fields above prevents us appending a tag, but it cannot remove
     // one the catalog already supplied. Strip exactly that tag from the

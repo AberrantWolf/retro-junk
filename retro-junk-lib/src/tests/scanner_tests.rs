@@ -53,6 +53,46 @@ fn playlist_claims_top_level_discs_as_one_logical_game() {
     assert_eq!(entries[0].all_files().len(), 2);
 }
 
+#[test]
+fn partially_broken_playlist_is_not_accepted_as_a_smaller_set() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Disc 1.chd"), "one").unwrap();
+    let set = dir.path().join("Game.m3u");
+    fs::create_dir(&set).unwrap();
+    fs::write(set.join("Disc 2.chd"), "two").unwrap();
+    fs::write(set.join("Game.m3u"), "../missing-disc-1.chd\nDisc 2.chd\n").unwrap();
+
+    let entries = scan_game_entries(dir.path(), &extension_set(&["chd"])).unwrap();
+
+    assert_eq!(
+        entries.len(),
+        1,
+        "the loose disc remains visible: {entries:?}"
+    );
+    assert_eq!(entries[0].display_name(), "Disc 1.chd");
+}
+
+#[test]
+fn misnamed_or_duplicate_playlists_do_not_describe_a_valid_set() {
+    for playlists in [vec!["Wrong.m3u"], vec!["Game.m3u", "Duplicate.m3u"]] {
+        let dir = TempDir::new().unwrap();
+        let set = dir.path().join("Game.m3u");
+        fs::create_dir(&set).unwrap();
+        fs::write(set.join("Disc 1.chd"), "one").unwrap();
+        fs::write(set.join("Disc 2.chd"), "two").unwrap();
+        for playlist in playlists {
+            fs::write(set.join(playlist), "Disc 1.chd\nDisc 2.chd\n").unwrap();
+        }
+
+        let entries = scan_game_entries(dir.path(), &extension_set(&["chd"])).unwrap();
+
+        assert!(
+            entries.is_empty(),
+            "ambiguous playlist was accepted: {entries:?}"
+        );
+    }
+}
+
 /// Copying a library onto exFAT or an SMB share leaves macOS `AppleDouble`
 /// sidecars beside every file. They carry the shadowed file's extension, so
 /// scanning must reject them by name or each real game gains a phantom twin.

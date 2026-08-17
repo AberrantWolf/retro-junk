@@ -439,6 +439,36 @@ fn incomplete_multi_disc_release_is_blocked_with_honest_counts() {
 }
 
 #[test]
+fn complete_split_multidisc_playable_owes_layout_normalization() {
+    let mut fixture = Fixture::new();
+    fixture.media("m1", 1);
+    fixture.media("m2", 2);
+    let (release, copy) = fixture.release("Game");
+    fixture.bind_release(&release);
+    let (carrier1, dump1) =
+        fixture.carrier_with_dump(&copy, Some("m1"), 1, "cue_bin", "verified", "verified", 1);
+    let (carrier2, dump2) =
+        fixture.carrier_with_dump(&copy, Some("m2"), 2, "cue_bin", "verified", "verified", 1);
+    fixture.catalog_verify(&dump1);
+    fixture.catalog_verify(&dump2);
+    fixture.policy(&carrier1, "chd");
+    fixture.policy(&carrier2, "chd");
+    fixture.playable_in(&carrier1, "chd", "psx");
+    fixture.playable_in(&carrier2, "chd", "psx/Game.m3u");
+
+    let actions = fixture.derive();
+
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|action| action.kind == ActionKind::NormalizePlayableSet)
+            .count(),
+        1,
+        "{actions:?}"
+    );
+}
+
+#[test]
 fn satisfied_release_owes_only_projections() {
     let mut fixture = Fixture::new();
     fixture.media("m1", 0);

@@ -418,10 +418,20 @@ fn release_playlist_writes_relative_ordered_entries_once() {
         write_release_playlist(&playable, "psx", "Game", "usa", "Game (USA)", &files).unwrap();
     let contents = std::fs::read_to_string(&playlist).unwrap();
     assert_eq!(contents, "../Game (Disc 1).chd\n../Game (Disc 2).chd\n");
-    // Idempotent: a second call is current, not an overwrite.
+    // A second descriptor would create another frontend entry. Repair keeps
+    // it recoverable while restoring the one canonical playlist.
+    let extra = playlist.parent().unwrap().join("Old Name.m3u");
+    std::fs::write(&extra, &contents).unwrap();
     let again =
         write_release_playlist(&playable, "psx", "Game", "usa", "Game (USA)", &files).unwrap();
     assert_eq!(again, playlist);
+    assert!(!extra.exists());
+    assert!(playable.join(".retro-junk-backups").is_dir());
+
+    // Idempotent once the directory has exactly one current descriptor.
+    let third =
+        write_release_playlist(&playable, "psx", "Game", "usa", "Game (USA)", &files).unwrap();
+    assert_eq!(third, playlist);
 }
 
 /// `evidence/` is append-only, so a release rebuilt or re-adopted under a

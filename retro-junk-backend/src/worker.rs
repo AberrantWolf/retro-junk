@@ -8,7 +8,7 @@
 
 use std::sync::atomic::AtomicBool;
 
-use retro_junk_db::convergence::{ActionKind, Scope, derive_convergence};
+use retro_junk_db::convergence::{ActionKind, ProposedAction, Scope, WorkTarget};
 use retro_junk_io::{PhaseProgressFn, ProgressUnit};
 
 use crate::executor::{ActionOutcome, ExecContext, WorkError, execute_actions};
@@ -59,6 +59,8 @@ const STAGES: &[&[ActionKind]] = &[
     // so the build stage never rebuilds a file the library already holds.
     &[ActionKind::AdoptPlayable],
     &[ActionKind::BuildPlayable],
+    &[ActionKind::NormalizePlayableSet],
+    &[ActionKind::RenamePlayable],
     &[ActionKind::Scrape],
     // Two stages, not one: a gamelist entry names the artwork files it found in
     // the media tree, so every asset has to be projected before any gamelist is
@@ -101,9 +103,11 @@ pub fn daemon_may_run(kind: ActionKind, policy: &AutomationPolicy) -> bool {
             policy.auto_verify
         }
         ActionKind::AdoptPlayable => true,
-        ActionKind::BuildPlayable | ActionKind::ProjectAssets | ActionKind::SyncGamelist => {
-            policy.auto_build
-        }
+        ActionKind::BuildPlayable
+        | ActionKind::NormalizePlayableSet
+        | ActionKind::ProjectAssets
+        | ActionKind::SyncGamelist
+        | ActionKind::RenamePlayable => policy.auto_build,
         ActionKind::Scrape => policy.auto_scrape,
         _ => false,
     }
@@ -171,7 +175,7 @@ pub fn run_once(
         // `--only gamelist` reported "[3/600]" — and made the daemon pay a
         // claim and a lock cycle to discover it was not allowed to proceed.
         let mut queue = Vec::new();
-        for action in derive_convergence(&conn, scope, &ctx.scrape.expected_assets)? {
+        for action in derive_convergence_actions(&conn, scope, &ctx.scrape.expected_assets)? {
             if !stage.contains(&action.kind) {
                 continue;
             }
@@ -243,6 +247,95 @@ pub fn run_once(
     Ok(stats)
 }
 
+/// Derive semantic maintenance actions in the layer that owns naming and
+/// completion rules, then combine them with the SQL projection's actions.
+/// This keeps every frontend and the daemon on one queue without making the
+/// database crate duplicate canonical-name policy.
+pub fn derive_convergence_actions(
+    conn: &retro_junk_db::Connection,
+    scope: &Scope,
+    expected_assets: &retro_junk_frontend::AssetSelection,
+) -> Result<Vec<ProposedAction>, retro_junk_db::library::LibraryError> {
+    let mut actions = retro_junk_db::convergence::derive_convergence(conn, scope, expected_assets)?;
+    for profile_id in retro_junk_db::convergence::profiles_for_scope(conn, scope)? {
+        for facts in retro_junk_db::facts::release_completion_facts(conn, &profile_id)? {
+            if !release_is_in_scope(scope, &profile_id, &facts) {
+                continue;
+            }
+            let completion = crate::completion::Completion::for_release(&facts, expected_assets);
+            let stale_name = completion.attention.iter().any(|attention| {
+                matches!(attention, crate::completion::Attention::StaleName { .. })
+            });
+            let malformed_set = completion.attention.iter().any(|attention| {
+                matches!(
+                    attention,
+                    crate::completion::Attention::MalformedPlayableLayout { .. }
+                )
+            });
+            let complete_multi_disc = facts.expected_discs.is_some_and(|expected| {
+                expected.count > 1 && facts.playable_names.len() == expected.count as usize
+            });
+            let kind = maintenance_kind(stale_name, malformed_set, complete_multi_disc);
+            let Some(kind) = kind else { continue };
+            if actions.iter().any(|action| {
+                action.kind == kind
+                    && matches!(&action.target, WorkTarget::Release(id) if id == &facts.archive_release_id)
+            }) {
+                continue;
+            }
+            actions.push(ProposedAction {
+                kind,
+                target: WorkTarget::Release(facts.archive_release_id),
+                profile_id: profile_id.clone(),
+                platform_id: facts.platform_id.clone(),
+                playable_platform_id: retro_junk_frontend::esde::system_directory(
+                    &facts.platform_id,
+                    Some(&facts.region),
+                ),
+                label: format!("{} ({})", facts.title, facts.region),
+                blocked: None,
+                build: None,
+            });
+        }
+    }
+    actions.sort_by_key(|action| action.kind);
+    Ok(actions)
+}
+
+fn maintenance_kind(
+    stale_name: bool,
+    malformed_set: bool,
+    complete_multi_disc: bool,
+) -> Option<ActionKind> {
+    if malformed_set || (stale_name && complete_multi_disc) {
+        Some(ActionKind::NormalizePlayableSet)
+    } else if stale_name {
+        Some(ActionKind::RenamePlayable)
+    } else {
+        None
+    }
+}
+
+fn release_is_in_scope(
+    scope: &Scope,
+    profile_id: &str,
+    facts: &retro_junk_db::facts::ReleaseFacts,
+) -> bool {
+    match scope {
+        Scope::AllProfiles => true,
+        Scope::Profile(wanted) => wanted == profile_id,
+        Scope::Platform {
+            profile_id: wanted_profile,
+            platform_id,
+        } => {
+            wanted_profile == profile_id
+                && retro_junk_core::platform_ids_match(platform_id, &facts.platform_id)
+        }
+        Scope::Release { archive_release_id } => archive_release_id == &facts.archive_release_id,
+        Scope::Releases(ids) => ids.contains(&facts.archive_release_id),
+    }
+}
+
 fn reconcile(
     ctx: &ExecContext,
     conn: &mut retro_junk_db::Connection,
@@ -265,4 +358,50 @@ fn reconcile(
     )
     .map_err(|error| WorkError::Message(error.to_string()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maintenance_actions_have_executable_stages_in_dependency_order() {
+        let ordered = STAGES
+            .iter()
+            .flat_map(|stage| stage.iter())
+            .collect::<Vec<_>>();
+        let build = ordered
+            .iter()
+            .position(|kind| **kind == ActionKind::BuildPlayable)
+            .unwrap();
+        let normalize = ordered
+            .iter()
+            .position(|kind| **kind == ActionKind::NormalizePlayableSet)
+            .unwrap();
+        let rename = ordered
+            .iter()
+            .position(|kind| **kind == ActionKind::RenamePlayable)
+            .unwrap();
+        let project = ordered
+            .iter()
+            .position(|kind| **kind == ActionKind::ProjectAssets)
+            .unwrap();
+        assert!(build < normalize && normalize < rename && rename < project);
+    }
+
+    #[test]
+    fn complete_multidisc_names_are_repaired_as_one_atomic_set() {
+        assert_eq!(
+            maintenance_kind(true, false, true),
+            Some(ActionKind::NormalizePlayableSet)
+        );
+        assert_eq!(
+            maintenance_kind(true, false, false),
+            Some(ActionKind::RenamePlayable)
+        );
+        assert_eq!(
+            maintenance_kind(false, true, true),
+            Some(ActionKind::NormalizePlayableSet)
+        );
+    }
 }

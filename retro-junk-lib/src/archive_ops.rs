@@ -1215,7 +1215,7 @@ fn playable_format(relative_path: &str) -> RepresentationFormat {
 }
 
 /// Write an ordered `.m3u` playlist over already-present disc files.
-/// Idempotent: an existing playlist is current, not an error.
+/// Idempotent by content: an existing stale or malformed playlist is repaired.
 pub fn write_release_playlist(
     playable_root: &Path,
     playable_platform_id: &str,
@@ -1239,9 +1239,6 @@ pub fn write_release_playlist(
         .join(format!("{stem}.m3u"));
     std::fs::create_dir_all(&directory)?;
     let playlist = directory.join(format!("{stem}.m3u"));
-    if playlist.is_file() {
-        return Ok(playlist);
-    }
     let contents = files
         .iter()
         .map(|file| {
@@ -1253,16 +1250,41 @@ pub fn write_release_playlist(
         .collect::<Vec<_>>()
         .join("\n")
         + "\n";
-    let temporary = directory.join(format!(
-        ".playlist-{}.tmp",
-        retro_junk_archive::BuildId::new()
-    ));
-    if let Err(error) =
-        std::fs::write(&temporary, contents).and_then(|()| std::fs::rename(&temporary, &playlist))
+    let extra_playlists = std::fs::read_dir(&directory)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path != &playlist
+                && path.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("m3u"))
+        })
+        .collect::<Vec<_>>();
+    if extra_playlists.is_empty()
+        && std::fs::read_to_string(&playlist).is_ok_and(|current| current == contents)
     {
-        let _ = std::fs::remove_file(&temporary);
-        return Err(error.into());
+        return Ok(playlist);
     }
+    let mut transaction = crate::fs_txn::FsTransaction::new();
+    if !extra_playlists.is_empty() {
+        let backup_root = playable_root
+            .join(".retro-junk-backups")
+            .join(chrono::Utc::now().format("%Y%m%dT%H%M%S%.fZ").to_string());
+        for extra in extra_playlists {
+            let relative = extra
+                .strip_prefix(playable_root)
+                .map_err(ArchiveOpsError::msg)?;
+            let backup = backup_root.join(relative);
+            if let Some(parent) = backup.parent() {
+                transaction.create_dir(parent);
+            }
+            transaction.rename(extra, backup);
+        }
+    }
+    transaction.write_file(&playlist, contents);
+    transaction.commit().map_err(ArchiveOpsError::msg)?;
     Ok(playlist)
 }
 

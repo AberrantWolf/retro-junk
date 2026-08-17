@@ -43,6 +43,9 @@ pub enum ActionKind {
     /// Build the preferred playable representation for a release (includes
     /// the playlist when the set completes, plus asset/gamelist projection).
     BuildPlayable,
+    /// Move a complete verified disc set into one canonical ES-DE `.m3u`
+    /// directory and repair its ordered playlist.
+    NormalizePlayableSet,
     /// Rename a built playable whose name is no longer what the catalog
     /// calls it — the usual cause is a playable built before the naming
     /// rule was corrected, or a DAT that has since renamed the game.
@@ -66,6 +69,7 @@ impl ActionKind {
             Self::AuditRedumper => "audit_redumper",
             Self::AdoptPlayable => "adopt_playable",
             Self::BuildPlayable => "build",
+            Self::NormalizePlayableSet => "normalize_playable",
             Self::RenamePlayable => "rename_playable",
             Self::Scrape => "scrape",
             Self::ProjectAssets => "project_assets",
@@ -83,6 +87,7 @@ impl ActionKind {
             Self::AuditRedumper,
             Self::AdoptPlayable,
             Self::BuildPlayable,
+            Self::NormalizePlayableSet,
             Self::RenamePlayable,
             Self::Scrape,
             Self::ProjectAssets,
@@ -106,6 +111,11 @@ impl ActionKind {
             Self::AuditRedumper => &["audit_redumper", "audit-redumper", "audit"],
             Self::AdoptPlayable => &["adopt_playable", "adopt-playable", "adopt"],
             Self::BuildPlayable => &["build", "build_playable"],
+            Self::NormalizePlayableSet => &[
+                "normalize_playable",
+                "normalize-playable",
+                "repair-playable-layout",
+            ],
             Self::RenamePlayable => &["rename_playable", "rename-playable", "rename"],
             Self::Scrape => &["scrape", "artwork"],
             Self::ProjectAssets => &["project_assets", "project"],
@@ -258,6 +268,7 @@ pub fn derive_convergence(
         derive_dump_actions(conn, &profile_id, &mut actions)?;
         derive_adoption_actions(conn, &profile_id, &mut actions)?;
         derive_build_actions(conn, &profile_id, &mut actions)?;
+        derive_normalize_actions(conn, &profile_id, &mut actions)?;
         derive_scrape_actions(conn, &profile_id, expected_assets, &mut actions)?;
         derive_projection_actions(conn, &profile_id, &mut actions)?;
         derive_gamelist_actions(conn, &profile_id, &mut actions)?;
@@ -750,6 +761,53 @@ fn derive_build_actions(
             label: dump_label(&gap.title, &gap.region, 0),
             blocked,
             build: Some(gap),
+        });
+    }
+    Ok(())
+}
+
+/// Complete multi-disc releases whose current playable files do not share one
+/// `.m3u` parent. The executor performs the digest and collision preflight;
+/// this cheap SQL-backed pass only identifies candidates.
+fn derive_normalize_actions(
+    conn: &Connection,
+    profile_id: &str,
+    actions: &mut Vec<ProposedAction>,
+) -> Result<(), LibraryError> {
+    for facts in crate::facts::release_completion_facts(conn, profile_id)? {
+        let Some(expected) = facts.expected_discs.filter(|expected| expected.count > 1) else {
+            continue;
+        };
+        if facts.playable_names.len() != expected.count as usize {
+            continue;
+        }
+        let parents = facts
+            .playable_names
+            .iter()
+            .filter_map(|playable| std::path::Path::new(&playable.relative_path).parent())
+            .collect::<BTreeSet<_>>();
+        let canonical_shape = parents.len() == 1
+            && parents.iter().next().is_some_and(|parent| {
+                parent
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.to_ascii_lowercase().ends_with(".m3u"))
+            });
+        if canonical_shape {
+            continue;
+        }
+        actions.push(ProposedAction {
+            kind: ActionKind::NormalizePlayableSet,
+            target: WorkTarget::Release(facts.archive_release_id),
+            profile_id: profile_id.to_owned(),
+            platform_id: facts.platform_id.clone(),
+            playable_platform_id: retro_junk_frontend::esde::system_directory(
+                &facts.platform_id,
+                Some(&facts.region),
+            ),
+            label: dump_label(&facts.title, &facts.region, 0),
+            blocked: None,
+            build: None,
         });
     }
     Ok(())

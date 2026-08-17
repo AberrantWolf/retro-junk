@@ -189,6 +189,9 @@ fn unmatched_carriers(facts: &retro_junk_db::facts::ReleaseFacts) -> u64 {
 /// as data, so frontends offer the action instead of describing the state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Attention {
+    /// A complete, verified playable set exists but its files are not grouped
+    /// under one ES-DE `.m3u` directory. Fix: set-level normalization.
+    MalformedPlayableLayout { repairable: bool, detail: String },
     /// A built playable's on-disk name is not what the current catalog
     /// would call it. Fix: the atomic rename repair.
     StaleName {
@@ -569,6 +572,45 @@ impl Completion {
             });
         }
         attention.extend(stale_names(facts));
+        if let Some(expected) = facts.expected_discs.filter(|expected| expected.count > 1)
+            && facts.playable_names.len() == expected.count as usize
+        {
+            let parents = facts
+                .playable_names
+                .iter()
+                .filter_map(|playable| {
+                    std::path::Path::new(&playable.relative_path)
+                        .parent()
+                        .map(std::path::Path::to_path_buf)
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            let canonical_directory = format!(
+                "{}.m3u",
+                retro_junk_lib::naming::canonical_release_stem(
+                    &retro_junk_lib::naming::CanonicalName {
+                        title: facts.title.clone(),
+                        region: facts.region.clone(),
+                        revision: facts.revision.clone(),
+                        variant: facts.variant.clone(),
+                        ..Default::default()
+                    }
+                )
+            );
+            let canonical_shape = parents.len() == 1
+                && parents.iter().next().is_some_and(|parent| {
+                    parent
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name == canonical_directory)
+                });
+            if !canonical_shape {
+                attention.push(Attention::MalformedPlayableLayout {
+                    repairable: true,
+                    detail: "complete disc set is split or its playlist directory is misnamed"
+                        .to_owned(),
+                });
+            }
+        }
 
         Self {
             identity,
@@ -607,7 +649,7 @@ fn stale_names(facts: &retro_junk_db::facts::ReleaseFacts) -> Vec<Attention> {
                 title: facts.title.clone(),
                 region: facts.region.clone(),
                 revision: facts.revision.clone(),
-                variant: String::new(),
+                variant: facts.variant.clone(),
                 disc_number: playable.disc_number,
                 expected_disc_count: disc_count,
             };

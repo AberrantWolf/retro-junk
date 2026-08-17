@@ -336,6 +336,7 @@ fn archive_detail_owns_grouped_playable_assets() {
             title: "Game".to_owned(),
             region: "usa".to_owned(),
             revision: String::new(),
+            variant: String::new(),
             catalog_release_id: None,
             catalog_work_id: None,
             expected_discs: None,

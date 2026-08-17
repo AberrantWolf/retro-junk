@@ -122,7 +122,7 @@ fn attention_outranks_complete_fractions() {
 
 mod fold {
     use super::*;
-    use retro_junk_db::facts::{CarrierFacts, ExpectedDiscs, ReleaseFacts};
+    use retro_junk_db::facts::{CarrierFacts, ExpectedDiscs, PlayableNameFacts, ReleaseFacts};
 
     fn carrier(id: &str, copy: &str) -> CarrierFacts {
         CarrierFacts {
@@ -130,6 +130,7 @@ mod fold {
             physical_copy_id: copy.into(),
             catalog_media_id: Some(format!("media-{id}")),
             disc_number: None,
+            disc_designator: String::new(),
             masters_recorded: 1,
             masters_present: 1,
             integrity_verified: true,
@@ -144,6 +145,7 @@ mod fold {
             title: "Crash Team Racing (USA)".into(),
             region: "usa".into(),
             revision: String::new(),
+            variant: String::new(),
             catalog_release_id: Some("psx:crash-team-racing:psx:usa".into()),
             catalog_work_id: Some("psx:crash-team-racing".into()),
             expected_discs: Some(ExpectedDiscs {
@@ -222,6 +224,40 @@ mod fold {
         );
         assert_eq!(completion.overall(), Overall::Complete);
         assert_eq!(completion.severity(), Severity::Verified);
+    }
+
+    #[test]
+    fn a_complete_set_in_the_wrong_playlist_directory_is_malformed() {
+        let mut set = facts();
+        set.title = "Game".to_owned();
+        set.variant = "Greatest".to_owned();
+        set.expected_discs = Some(ExpectedDiscs {
+            count: 2,
+            numbered: true,
+        });
+        set.playable_names = [1, 2]
+            .into_iter()
+            .map(|disc_number| PlayableNameFacts {
+                representation_id: format!("playable-{disc_number}"),
+                relative_path: format!(
+                    "psx/Wrong Name.m3u/Game (USA) (Greatest) (Disc {disc_number}).chd"
+                ),
+                dat_name: format!("Game (USA) (Greatest) (Disc {disc_number})"),
+                rom_name: String::new(),
+                medium_has_tracks: true,
+                disc_number,
+            })
+            .collect();
+
+        let completion = Completion::for_release(&set, &no_assets());
+
+        assert!(completion.attention.iter().any(|attention| matches!(
+            attention,
+            Attention::MalformedPlayableLayout {
+                repairable: true,
+                ..
+            }
+        )));
     }
 
     #[test]

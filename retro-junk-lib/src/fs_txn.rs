@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 /// A single filesystem operation in a transaction.
 #[derive(Debug, Clone)]
 pub enum FsOp {
+    /// Create a directory and any missing parents.
+    CreateDir { path: PathBuf },
     /// Rename a file (or directory) to a new path.
     Rename { source: PathBuf, target: PathBuf },
     /// Overwrite (or create) a text file with new content.
@@ -61,6 +63,8 @@ impl std::error::Error for TxnError {}
 
 /// Journal entry describing how to undo one completed step.
 enum UndoStep {
+    /// Directories created by one operation, deepest first.
+    CreateDirs { paths: Vec<PathBuf> },
     /// A rename was performed from `from` to `to`; undo renames `to` back to `from`.
     Rename { from: PathBuf, to: PathBuf },
     /// A file was written at `path`; undo restores `original` (or deletes
@@ -101,6 +105,11 @@ impl FsTransaction {
         }
     }
 
+    /// Queue a directory creation. Existing directories are a no-op.
+    pub fn create_dir(&mut self, path: impl Into<PathBuf>) {
+        self.ops.push(FsOp::CreateDir { path: path.into() });
+    }
+
     /// Queue a file write (create or overwrite).
     pub fn write_file(&mut self, path: impl Into<PathBuf>, content: impl Into<String>) {
         self.ops.push(FsOp::WriteFile {
@@ -134,9 +143,17 @@ impl FsTransaction {
             .iter()
             .filter_map(|op| match op {
                 FsOp::Rename { source, .. } => Some(source.as_path()),
-                FsOp::WriteFile { .. } => None,
+                FsOp::CreateDir { .. } | FsOp::WriteFile { .. } => None,
             })
             .collect();
+        let directories = self
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                FsOp::CreateDir { path } => Some(path.as_path()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
 
         let mut targets: HashSet<&Path> = HashSet::new();
         for op in &self.ops {
@@ -165,6 +182,7 @@ impl FsTransaction {
                     if let Some(parent) = path.parent()
                         && !parent.as_os_str().is_empty()
                         && !parent.is_dir()
+                        && !directories.iter().any(|dir| parent.starts_with(dir))
                     {
                         return Err(TxnError::preflight(format!(
                             "Parent directory does not exist for write: {}",
@@ -172,6 +190,13 @@ impl FsTransaction {
                         )));
                     }
                 }
+                FsOp::CreateDir { path } if path.exists() && !path.is_dir() => {
+                    return Err(TxnError::preflight(format!(
+                        "Directory target is not a directory: {}",
+                        path.display()
+                    )));
+                }
+                FsOp::CreateDir { .. } => {}
             }
         }
         Ok(())
@@ -182,8 +207,11 @@ impl FsTransaction {
     pub fn commit(self) -> Result<TxnSummary, TxnError> {
         self.preflight()?;
 
-        let (renames, writes): (Vec<_>, Vec<_>) = self
+        let (directories, remainder): (Vec<_>, Vec<_>) = self
             .ops
+            .into_iter()
+            .partition(|op| matches!(op, FsOp::CreateDir { .. }));
+        let (renames, writes): (Vec<_>, Vec<_>) = remainder
             .into_iter()
             .partition(|op| matches!(op, FsOp::Rename { .. }));
 
@@ -193,18 +221,35 @@ impl FsTransaction {
             .iter()
             .filter_map(|op| match op {
                 FsOp::Rename { source, .. } => Some(source.clone()),
-                FsOp::WriteFile { .. } => None,
+                FsOp::CreateDir { .. } | FsOp::WriteFile { .. } => None,
             })
             .collect();
         let two_phase = renames.iter().any(|op| match op {
             FsOp::Rename { target, .. } => sources.contains(target),
-            FsOp::WriteFile { .. } => false,
+            FsOp::CreateDir { .. } | FsOp::WriteFile { .. } => false,
         });
 
         let mut journal: Vec<UndoStep> = Vec::new();
         let mut summary = TxnSummary::default();
 
         let result = (|| -> Result<(), String> {
+            for op in &directories {
+                let FsOp::CreateDir { path } = op else {
+                    continue;
+                };
+                let mut missing = Vec::new();
+                let mut cursor = path.as_path();
+                while !cursor.exists() {
+                    missing.push(cursor.to_path_buf());
+                    let Some(parent) = cursor.parent() else { break };
+                    cursor = parent;
+                }
+                fs::create_dir_all(path)
+                    .map_err(|e| format!("Failed to create {}: {e}", path.display()))?;
+                if !missing.is_empty() {
+                    journal.push(UndoStep::CreateDirs { paths: missing });
+                }
+            }
             if two_phase {
                 // Phase 1: move every source aside to a unique temp name.
                 let mut temps: Vec<(PathBuf, PathBuf)> = Vec::new(); // (temp, final target)
@@ -298,6 +343,15 @@ fn rollback(journal: Vec<UndoStep>) -> Vec<String> {
                         from.display(),
                         e
                     ));
+                }
+            }
+            UndoStep::CreateDirs { paths } => {
+                for path in paths {
+                    if let Err(e) = fs::remove_dir(&path)
+                        && e.kind() != std::io::ErrorKind::NotFound
+                    {
+                        errors.push(format!("Failed to remove {}: {}", path.display(), e));
+                    }
                 }
             }
             UndoStep::Write { path, original } => {

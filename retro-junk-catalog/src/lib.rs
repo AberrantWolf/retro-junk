@@ -11,7 +11,8 @@ pub mod yaml;
 
 pub use content_id::{ContentIdError, ContentPart};
 pub use name_parser::{
-    DumpStatus, ParsedDatName, parse_dat_name, region_slug_to_display, region_to_slug,
+    DumpStatus, ParsedDatName, is_carrier_only_flag, parse_dat_name, region_slug_to_display,
+    region_to_slug,
 };
 pub use types::*;
 pub use yaml::{load_catalog, load_companies, load_overrides, load_platforms};

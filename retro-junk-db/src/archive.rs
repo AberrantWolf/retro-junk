@@ -437,7 +437,10 @@ pub struct CompleteCatalogMediaMatch {
 /// multi-disc sets.
 pub fn release_disc_count(conn: &Connection, release_id: &str) -> Result<u32, OperationError> {
     let count: u32 = conn.query_row(
-        "SELECT COUNT(DISTINCT CASE WHEN disc_number>0 THEN disc_number END)
+        "SELECT COUNT(DISTINCT CASE
+                    WHEN disc_designator<>'' THEN disc_designator
+                    WHEN disc_number>0 THEN CAST(disc_number AS TEXT)
+                  END)
          FROM media WHERE release_id = ?1",
         params![release_id],
         |row| row.get(0),

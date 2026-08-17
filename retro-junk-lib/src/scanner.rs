@@ -214,23 +214,49 @@ pub fn collect_m3u_disc_files<S: BuildHasher>(
         let console_root = dir
             .parent()
             .and_then(|parent| std::fs::canonicalize(parent).ok());
-        let files: Vec<PathBuf> = contents
+        let mut files = Vec::new();
+        let mut seen = HashSet::new();
+        let mut malformed = false;
+        for line in contents
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
-            .map(|line| dir.join(line))
-            .filter_map(|path| std::fs::canonicalize(path).ok())
-            .filter(|path| {
+        {
+            let resolved = std::fs::canonicalize(dir.join(line)).ok();
+            let valid = resolved.as_ref().is_some_and(|path| {
                 path.is_file()
                     && console_root
                         .as_ref()
                         .is_some_and(|root| path.starts_with(root))
                     && has_matching_extension(path, extensions)
-            })
-            .collect();
-        if !files.is_empty() {
+            });
+            if !valid
+                || !resolved
+                    .as_ref()
+                    .is_some_and(|path| seen.insert(path.clone()))
+            {
+                malformed = true;
+                continue;
+            }
+            if let Some(path) = resolved {
+                files.push(path);
+            }
+        }
+        // A partially valid playlist is still malformed. Returning its valid
+        // suffix made it satisfy the multi-disc projection while leaving the
+        // missing first disc visible as a second ES-DE game.
+        if !malformed && !files.is_empty() {
             return files;
         }
+        return Vec::new();
+    }
+
+    // A playlist-bearing set with the wrong basename or more than one
+    // playlist is malformed, not a playlist-less directory. Falling back to
+    // its disc images would make ES-DE see the ambiguous set as valid and
+    // prevent convergence from repairing the descriptors.
+    if m3u_playlists(dir).next().is_some() {
+        return Vec::new();
     }
 
     // Fallback: no playlist found — collect all matching files with CUE dedup
@@ -250,13 +276,28 @@ pub fn collect_m3u_disc_files<S: BuildHasher>(
 /// The `.m3u` playlist inside a multi-disc directory, if one is there.
 #[must_use]
 pub fn find_m3u_playlist(dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    entries.flatten().map(|e| e.path()).find(|p| {
-        p.is_file()
-            && p.extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e.eq_ignore_ascii_case("m3u"))
-    })
+    let expected_name = dir.file_name()?;
+    let mut playlists = m3u_playlists(dir);
+    let playlist = playlists.next()?;
+    if playlists.next().is_some() || playlist.file_name()? != expected_name {
+        return None;
+    }
+    Some(playlist)
+}
+
+fn m3u_playlists(dir: &Path) -> impl Iterator<Item = PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("m3u"))
+        })
 }
 
 /// Collect all files with matching extensions from a directory (sorted).

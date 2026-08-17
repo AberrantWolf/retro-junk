@@ -1257,6 +1257,13 @@ fn show_archived_media(ui: &mut egui::Ui, assets: &[retro_junk_db::ArchivedRelea
 fn describe_attention(attention: &retro_junk_backend::completion::Attention) -> String {
     use retro_junk_backend::completion::Attention;
     match attention {
+        Attention::MalformedPlayableLayout { repairable, detail } => {
+            if *repairable {
+                format!("{detail} — the next sync can repair the ES-DE layout safely")
+            } else {
+                format!("{detail} — manual review is required")
+            }
+        }
         Attention::StaleName {
             current, canonical, ..
         } => format!(

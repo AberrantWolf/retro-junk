@@ -96,7 +96,7 @@ pub fn ensure_projection_shape(conn: &Connection) -> Result<(), SchemaError> {
 }
 
 /// Current schema version. Increment when adding migrations.
-pub const CURRENT_VERSION: i32 = 29;
+pub const CURRENT_VERSION: i32 = 30;
 
 /// Canonical table definitions: `(name, column body)`.
 ///
@@ -193,6 +193,7 @@ const TABLES: &[(&str, &str)] = &[
           release_id TEXT NOT NULL REFERENCES releases(id),
           media_serial TEXT NOT NULL DEFAULT '',
           disc_number INTEGER NOT NULL DEFAULT 0,
+          disc_designator TEXT NOT NULL DEFAULT '',
           disc_label TEXT NOT NULL DEFAULT '',
           revision TEXT NOT NULL DEFAULT '',
           status TEXT NOT NULL DEFAULT 'verified',
@@ -713,7 +714,7 @@ const V9_REBUILDS: &[(&str, &str)] = &[
     (
         "media",
         "id, release_id, COALESCE(media_serial, ''), COALESCE(disc_number, 0),
-         COALESCE(disc_label, ''), COALESCE(revision, ''), status, tag,
+         '', COALESCE(disc_label, ''), COALESCE(revision, ''), status, tag,
          COALESCE(dat_name, ''), '', COALESCE(dat_source, ''), '', COALESCE(file_size, 0),
          COALESCE(crc32, ''), COALESCE(sha1, ''), COALESCE(md5, ''), created_at, updated_at",
     ),
@@ -1223,6 +1224,28 @@ fn migrate(conn: &Connection, from_version: i32) -> Result<(), SchemaError> {
                 {
                     conn.execute_batch(
                         "ALTER TABLE media ADD COLUMN dat_system TEXT NOT NULL DEFAULT '';",
+                    )?;
+                }
+            }
+            29 => {
+                // A numeric zero used to mean both "not numbered" and the
+                // legitimate Redump position "Disc 0". Keep the display
+                // designator separately; DAT re-import fills it precisely.
+                let has_media: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='media')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                if has_media
+                    && conn
+                        .prepare("SELECT disc_designator FROM media LIMIT 0")
+                        .is_err()
+                {
+                    conn.execute_batch(
+                        "ALTER TABLE media ADD COLUMN disc_designator TEXT NOT NULL DEFAULT '';
+                         UPDATE media
+                            SET disc_designator=CAST(disc_number AS TEXT)
+                          WHERE disc_number>0;",
                     )?;
                 }
             }

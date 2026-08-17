@@ -442,9 +442,13 @@ fn find_entry_by_file_mut_returns_none_for_unknown_file() {
 #[test]
 fn refresh_multidisc_files_remaps_via_playlist_with_claim_tracking() {
     let dir = tempfile::TempDir::new().unwrap();
+    let game_dir = dir.path().join("Game.m3u");
+    std::fs::create_dir(&game_dir).unwrap();
     // Canonicalize so expectations match the resolved paths the refresh
     // produces (macOS tempdirs live behind the /var → /private/var symlink).
-    let canonical = dir.path().canonicalize().unwrap();
+    // The folder and playlist basenames intentionally agree: mismatched
+    // descriptors are now rejected as malformed and repaired by convergence.
+    let canonical = game_dir.canonicalize().unwrap();
     let folder = canonical.as_path();
 
     // Two discs, remapped by the playlist to new .chd names.

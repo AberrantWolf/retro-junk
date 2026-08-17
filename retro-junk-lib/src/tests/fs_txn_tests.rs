@@ -39,6 +39,24 @@ fn commit_renames_and_writes() {
 }
 
 #[test]
+fn transaction_creates_destination_directory_before_moving_set() {
+    let dir = TempDir::new().unwrap();
+    let source = write(&dir, "Disc 1.chd", "disc");
+    let set = dir.path().join("Game.m3u");
+    let target = set.join("Disc 1.chd");
+
+    let mut txn = FsTransaction::new();
+    txn.create_dir(&set);
+    txn.rename(&source, &target);
+    txn.write_file(set.join("Game.m3u"), "Disc 1.chd\n");
+    txn.commit().unwrap();
+
+    assert!(!source.exists());
+    assert_eq!(read(&target), "disc");
+    assert_eq!(read(&set.join("Game.m3u")), "Disc 1.chd\n");
+}
+
+#[test]
 fn noop_renames_are_skipped() {
     let dir = TempDir::new().unwrap();
     let a = write(&dir, "a.bin", "aaa");

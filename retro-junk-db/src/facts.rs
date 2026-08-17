@@ -36,6 +36,8 @@ pub struct CarrierFacts {
     pub catalog_media_id: Option<String>,
     /// The bound medium's disc number (0 when the catalog doesn't number it).
     pub disc_number: Option<i64>,
+    /// Explicit catalog position (`0`, `1`, `A`, ...), empty when unnumbered.
+    pub disc_designator: String,
     /// Preservation-master representations recorded for this carrier.
     pub masters_recorded: u64,
     /// Of those, how many are present on disk right now (per the last
@@ -75,6 +77,9 @@ pub struct ReleaseFacts {
     pub title: String,
     pub region: String,
     pub revision: String,
+    /// Effective logical edition label: catalog authority when bound,
+    /// otherwise the archive manifest's provisional variant.
+    pub variant: String,
     /// Resolved catalog identity, when the local catalog has the row.
     pub catalog_release_id: Option<String>,
     pub catalog_work_id: Option<String>,
@@ -123,27 +128,28 @@ pub fn copy_disc_coverage(facts: &ReleaseFacts) -> Vec<CopyDiscCoverage> {
     };
     // Ordered so the result is stable for callers that compare or display it.
     let mut order: Vec<&str> = Vec::new();
-    let mut archived: HashMap<&str, std::collections::HashSet<i64>> = HashMap::new();
-    let mut verified: HashMap<&str, std::collections::HashSet<i64>> = HashMap::new();
+    let mut archived: HashMap<&str, std::collections::HashSet<String>> = HashMap::new();
+    let mut verified: HashMap<&str, std::collections::HashSet<String>> = HashMap::new();
     for carrier in &facts.carriers {
         if carrier.masters_present == 0 {
             continue;
         }
         let disc_key = if expected.numbered {
-            match carrier.disc_number {
-                Some(number) if number > 0 => number,
+            match (&*carrier.disc_designator, carrier.disc_number) {
+                (designator, _) if !designator.is_empty() => designator.to_owned(),
+                (_, Some(number)) if number > 0 => number.to_string(),
                 // A carrier bound to an unnumbered medium in a numbered set
                 // cannot say which disc it is.
                 _ => continue,
             }
         } else {
-            0
+            String::new()
         };
         let copy = carrier.physical_copy_id.as_str();
         if !archived.contains_key(copy) {
             order.push(copy);
         }
-        archived.entry(copy).or_default().insert(disc_key);
+        archived.entry(copy).or_default().insert(disc_key.clone());
         if carrier.catalog_verified {
             verified.entry(copy).or_default().insert(disc_key);
         }
@@ -180,15 +186,17 @@ pub fn verified_disc_count(facts: &ReleaseFacts) -> u64 {
 
 #[derive(Default)]
 struct ExpectedMediaAccumulator {
-    numbered_discs: HashSet<i64>,
+    numbered_discs: HashSet<String>,
     has_media: bool,
 }
 
 impl ExpectedMediaAccumulator {
-    fn include(&mut self, disc_number: i64) {
+    fn include(&mut self, disc_number: i64, disc_designator: &str) {
         self.has_media = true;
-        if disc_number > 0 {
-            self.numbered_discs.insert(disc_number);
+        if !disc_designator.is_empty() {
+            self.numbered_discs.insert(disc_designator.to_owned());
+        } else if disc_number > 0 {
+            self.numbered_discs.insert(disc_number.to_string());
         }
     }
 
@@ -208,7 +216,7 @@ impl ExpectedMediaAccumulator {
     }
 }
 
-const DIRECT_EXPECTED_MEDIA_SQL: &str = "SELECT ar.id,m.disc_number
+const DIRECT_EXPECTED_MEDIA_SQL: &str = "SELECT ar.id,m.disc_number,m.disc_designator
              FROM archive_releases ar
              JOIN archive_profiles ap ON ap.id=ar.profile_id
              JOIN media m ON m.release_id=ar.catalog_release_id
@@ -217,7 +225,7 @@ const DIRECT_EXPECTED_MEDIA_SQL: &str = "SELECT ar.id,m.disc_number
                AND ar.catalog_release_id IS NOT NULL";
 
 const WORK_BOUND_EXPECTED_MEDIA_SQL: &str =
-    "SELECT ar.id,ar.platform_id,r.platform_id,m.disc_number
+    "SELECT ar.id,ar.platform_id,r.platform_id,m.disc_number,m.disc_designator
              FROM archive_releases ar
              JOIN archive_profiles ap ON ap.id=ar.profile_id
              CROSS JOIN releases r INDEXED BY idx_releases_natural
@@ -292,9 +300,11 @@ pub fn release_facts_in_scope(
     {
         let mut statement = conn.prepare(
             "SELECT ar.id,ar.platform_id,ar.title,ar.region,ar.revision,
+                    COALESCE(r.variant,ar.variant,''),
                     ar.catalog_release_id,ar.catalog_work_id
              FROM archive_releases ar
              JOIN archive_profiles ap ON ap.id=ar.profile_id
+             LEFT JOIN releases r ON r.id=ar.catalog_release_id
              WHERE (?1='' OR ar.profile_id=?1)
                AND (?2='' OR ap.playable_root=?2)
              ORDER BY ar.platform_id,ar.title COLLATE NOCASE,ar.id",
@@ -306,8 +316,9 @@ pub fn release_facts_in_scope(
                 title: row.get(2)?,
                 region: row.get(3)?,
                 revision: row.get(4)?,
-                catalog_release_id: row.get(5)?,
-                catalog_work_id: row.get(6)?,
+                variant: row.get(5)?,
+                catalog_release_id: row.get(6)?,
+                catalog_work_id: row.get(7)?,
                 expected_discs: None,
                 carriers: Vec::new(),
                 desired_playables: 0,
@@ -337,10 +348,17 @@ pub fn release_facts_in_scope(
         let mut expected: HashMap<String, ExpectedMediaAccumulator> = HashMap::new();
         let mut direct = conn.prepare(DIRECT_EXPECTED_MEDIA_SQL)?;
         for row in direct.query_map([profile_id, playable_root], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })? {
-            let (id, disc_number) = row?;
-            expected.entry(id).or_default().include(disc_number);
+            let (id, disc_number, designator) = row?;
+            expected
+                .entry(id)
+                .or_default()
+                .include(disc_number, &designator);
         }
         drop(direct);
 
@@ -351,11 +369,15 @@ pub fn release_facts_in_scope(
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, i64>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })? {
-            let (id, archive_platform, catalog_platform, disc_number) = row?;
+            let (id, archive_platform, catalog_platform, disc_number, designator) = row?;
             if retro_junk_core::platform_ids_match(&archive_platform, &catalog_platform) {
-                expected.entry(id).or_default().include(disc_number);
+                expected
+                    .entry(id)
+                    .or_default()
+                    .include(disc_number, &designator);
             }
         }
 
@@ -371,7 +393,7 @@ pub fn release_facts_in_scope(
     {
         let mut statement = conn.prepare(
             "SELECT pc.archive_release_id,c.id,pc.id,
-                    c.catalog_media_id,m.disc_number,
+                    c.catalog_media_id,m.disc_number,COALESCE(m.disc_designator,''),
                     (SELECT COUNT(*) FROM representations rep
                      WHERE rep.carrier_id=c.id AND rep.role='preservation_master'),
                     (SELECT COUNT(*) FROM representations rep
@@ -398,10 +420,11 @@ pub fn release_facts_in_scope(
                     physical_copy_id: row.get(2)?,
                     catalog_media_id: row.get(3)?,
                     disc_number: row.get(4)?,
-                    masters_recorded: row.get(5)?,
-                    masters_present: row.get(6)?,
-                    integrity_verified: row.get(7)?,
-                    catalog_verified: row.get(8)?,
+                    disc_designator: row.get(5)?,
+                    masters_recorded: row.get(6)?,
+                    masters_present: row.get(7)?,
+                    integrity_verified: row.get(8)?,
+                    catalog_verified: row.get(9)?,
                 },
             ))
         })? {

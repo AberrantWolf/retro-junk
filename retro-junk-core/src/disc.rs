@@ -5,6 +5,35 @@
 
 use std::collections::HashMap;
 
+/// An explicit position printed on a disc. Numeric zero is legitimate and
+/// alphabetic sets retain their designator instead of being coerced to an
+/// "unnumbered" sentinel.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DiscPosition {
+    Numeric(u32),
+    Alphabetic(char),
+}
+
+impl DiscPosition {
+    /// Stable playlist ordering. Numeric and alphabetic schemes should not be
+    /// mixed within one release; the leading rank keeps the fallback total.
+    #[must_use]
+    pub fn sort_key(&self) -> (u8, u32) {
+        match self {
+            Self::Numeric(number) => (0, *number),
+            Self::Alphabetic(letter) => (1, u32::from(*letter) - u32::from('A')),
+        }
+    }
+
+    #[must_use]
+    pub fn designator(&self) -> String {
+        match self {
+            Self::Numeric(number) => number.to_string(),
+            Self::Alphabetic(letter) => letter.to_string(),
+        }
+    }
+}
+
 /// Remove " (Disc N)" from a game name, preserving other parenthesized tags.
 ///
 /// Examples:
@@ -18,7 +47,7 @@ pub fn strip_disc_tag(name: &str) -> String {
         // Find closing ')' after the digits
         if let Some(close) = after.find(')') {
             let digits = &after[..close];
-            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+            if parse_disc_position_token(digits).is_some() {
                 let mut result = String::with_capacity(name.len());
                 result.push_str(&name[..start]);
                 result.push_str(&after[close + 1..]);
@@ -36,11 +65,34 @@ pub fn strip_disc_tag(name: &str) -> String {
 /// - `"Crash Bandicoot (USA).chd"` → `None`
 #[must_use]
 pub fn extract_disc_number(name: &str) -> Option<u32> {
+    match extract_disc_position(name)? {
+        DiscPosition::Numeric(number) => Some(number),
+        DiscPosition::Alphabetic(letter) => Some(u32::from(letter) - u32::from('A') + 1),
+    }
+}
+
+/// Extract a numeric or alphabetic `(Disc X)` position.
+#[must_use]
+pub fn extract_disc_position(name: &str) -> Option<DiscPosition> {
     const PREFIX: &str = "(Disc ";
     let start = name.find(PREFIX)?;
     let after = &name[start + PREFIX.len()..];
     let close = after.find(')')?;
-    after[..close].parse().ok()
+    let token = after[..close].split(" - ").next()?.trim();
+    parse_disc_position_token(token)
+}
+
+fn parse_disc_position_token(token: &str) -> Option<DiscPosition> {
+    if let Ok(number) = token.parse::<u32>() {
+        return Some(DiscPosition::Numeric(number));
+    }
+    if token.len() == 1 {
+        let letter = token.chars().next()?.to_ascii_uppercase();
+        if letter.is_ascii_alphabetic() {
+            return Some(DiscPosition::Alphabetic(letter));
+        }
+    }
+    None
 }
 
 /// Info about a group of entries belonging to the same multi-disc game.

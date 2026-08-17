@@ -594,6 +594,85 @@ pub fn force_rebuild_playable(
 
 // The per-kind dispatch table is deliberately one function: it is the
 // single map from derived action kinds to shared implementations.
+/// Fully preflight one derived layout repair without changing the filesystem.
+/// Used by both `sync --dry-run` and the executor, so preview and execution
+/// cannot disagree about targets or safety checks.
+pub fn plan_normalize_action(
+    ctx: &ExecContext,
+    action: &ProposedAction,
+    conn: &retro_junk_db::Connection,
+) -> Result<retro_junk_lib::normalize_playable::NormalizePlayablePlan, WorkError> {
+    let release_id = release_target(&action.target)?;
+    let facts = retro_junk_db::facts::release_completion_facts(conn, &action.profile_id)
+        .map_err(WorkError::msg)?
+        .into_iter()
+        .find(|facts| facts.archive_release_id == release_id)
+        .ok_or_else(|| WorkError::Message(format!("unknown release {release_id}")))?;
+    let expected = facts
+        .expected_discs
+        .filter(|expected| expected.count > 1)
+        .ok_or_else(|| WorkError::Message("release is not a known multi-disc set".into()))?;
+    let variant = facts.variant.clone();
+    let mut items = Vec::new();
+    for playable in &facts.playable_names {
+        let position = retro_junk_core::disc::extract_disc_position(&playable.dat_name)
+            .or_else(|| retro_junk_core::disc::extract_disc_position(&playable.relative_path))
+            .or_else(|| {
+                (playable.disc_number > 0).then_some(retro_junk_core::disc::DiscPosition::Numeric(
+                    playable.disc_number,
+                ))
+            })
+            .ok_or_else(|| {
+                WorkError::Message(format!(
+                    "cannot determine disc position for {}",
+                    playable.relative_path
+                ))
+            })?;
+        let extension = std::path::Path::new(&playable.relative_path)
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        let inputs = retro_junk_lib::naming::CanonicalName {
+            dat_name: playable.dat_name.clone(),
+            rom_name: playable.rom_name.clone(),
+            medium_has_tracks: playable.medium_has_tracks,
+            title: facts.title.clone(),
+            region: facts.region.clone(),
+            revision: facts.revision.clone(),
+            variant: variant.clone(),
+            disc_number: playable.disc_number,
+            expected_disc_count: u32::try_from(expected.count).unwrap_or(u32::MAX),
+        };
+        items.push(retro_junk_lib::normalize_playable::NormalizeItem {
+            representation_id: playable.representation_id.clone(),
+            position,
+            canonical_file_name: retro_junk_lib::naming::canonical_filename(&inputs, extension),
+        });
+    }
+    let release_name =
+        retro_junk_lib::naming::canonical_release_stem(&retro_junk_lib::naming::CanonicalName {
+            title: facts.title,
+            region: facts.region,
+            revision: facts.revision,
+            variant,
+            expected_disc_count: u32::try_from(expected.count).unwrap_or(u32::MAX),
+            ..Default::default()
+        });
+    let snapshot = ctx.archive()?;
+    retro_junk_lib::normalize_playable::plan_normalize_playable(
+        &retro_junk_lib::normalize_playable::NormalizePlayableRequest {
+            snapshot: &snapshot,
+            playable_root: &ctx.profile.playable_root,
+            archive_release_id: release_id,
+            playable_platform_id: &action.playable_platform_id,
+            canonical_release_name: &release_name,
+            expected_disc_count: expected.count as usize,
+            items: &items,
+        },
+    )
+    .map_err(WorkError::msg)
+}
+
 #[allow(clippy::too_many_lines)]
 fn dispatch(
     ctx: &ExecContext,
@@ -753,6 +832,57 @@ fn dispatch(
             let mut outputs = outcome.built;
             if let Some(playlist) = outcome.playlist {
                 outputs.push(playlist);
+            }
+            Ok(outputs)
+        }
+        ActionKind::NormalizePlayableSet => {
+            let plan = plan_normalize_action(ctx, action, conn)?;
+            let playlist = plan.playlist.clone();
+            plan.commit().map_err(WorkError::msg)?;
+            ctx.archive_changed();
+            reconcile_if_per_action(ctx, conn)?;
+            Ok(vec![playlist])
+        }
+        ActionKind::RenamePlayable => {
+            let release_id = release_target(&action.target)?;
+            let facts = retro_junk_db::facts::release_completion_facts(conn, &action.profile_id)
+                .map_err(WorkError::msg)?
+                .into_iter()
+                .find(|facts| facts.archive_release_id == release_id)
+                .ok_or_else(|| WorkError::Message(format!("unknown release {release_id}")))?;
+            let completion =
+                crate::completion::Completion::for_release(&facts, &ctx.scrape.expected_assets);
+            let stale = completion
+                .attention
+                .into_iter()
+                .filter_map(|attention| match attention {
+                    crate::completion::Attention::StaleName {
+                        representation_id,
+                        canonical,
+                        ..
+                    } => Some((representation_id, canonical)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let mut outputs = Vec::new();
+            for (representation_id, canonical) in stale {
+                let snapshot = retro_junk_archive::scan_archive(&ctx.profile.archive_root)
+                    .map_err(WorkError::msg)?;
+                let report = retro_junk_lib::rename_playable::rename_playable(
+                    &retro_junk_lib::rename_playable::RenamePlayableRequest {
+                        snapshot: &snapshot,
+                        playable_root: &ctx.profile.playable_root,
+                        representation_id: &representation_id,
+                        canonical_file_name: &canonical,
+                        media_root: Some(&ctx.roots.media_root),
+                    },
+                )
+                .map_err(WorkError::msg)?;
+                outputs.push(ctx.profile.playable_root.join(report.to));
+            }
+            if !outputs.is_empty() {
+                ctx.archive_changed();
+                reconcile_if_per_action(ctx, conn)?;
             }
             Ok(outputs)
         }

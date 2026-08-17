@@ -34,6 +34,7 @@ pub use adoption::{
 pub use executor::{
     ActionOutcome, ArchiveScan, ExecContext, ForceRebuildOutcome, LockEtiquette, ReconcileMode,
     ScrapeSettings, ToolPaths, WorkError, execute_action, force_rebuild_playable,
+    plan_normalize_action,
 };
 pub use policy::{AutoImportMode, AutomationPolicy, BindConfidence};
 pub use suggestions::{
@@ -41,4 +42,4 @@ pub use suggestions::{
     apply_suggestion_choice, is_applicable, offered_actions,
 };
 pub use watch::{DirectoryWatcher, WatchEvent};
-pub use worker::{ProjectionPass, RunMode, RunStats, run_once};
+pub use worker::{ProjectionPass, RunMode, RunStats, derive_convergence_actions, run_once};

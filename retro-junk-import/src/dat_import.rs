@@ -72,9 +72,18 @@ pub fn import_dat(
     };
 
     let tx = conn.unchecked_transaction()?;
+    let inferred_disc_roles = infer_position_specific_disc_roles(dat);
 
     for (i, game) in dat.games.iter().enumerate() {
-        import_game(&tx, game, platform, dat_source, &dat.name, &mut stats)?;
+        import_game(
+            &tx,
+            game,
+            platform,
+            dat_source,
+            &dat.name,
+            &inferred_disc_roles,
+            &mut stats,
+        )?;
 
         progress.on_game(i + 1, dat.games.len(), &game.name);
     }
@@ -92,6 +101,7 @@ fn import_game(
     platform: Platform,
     dat_source: &str,
     dat_system: &str,
+    inferred_disc_roles: &std::collections::HashSet<DiscRoleKey>,
     stats: &mut ImportStats,
 ) -> Result<(), ImportError> {
     let platform_id = platform.short_name();
@@ -158,7 +168,7 @@ fn import_game(
     } else {
         revision.clone()
     };
-    let variant = compute_release_variant(&parsed);
+    let variant = compute_release_variant(&parsed, dat_source, inferred_disc_roles);
 
     // Separate track ROMs from the primary data track.
     // Full Redump DATs include CUE files and per-track BIN entries.
@@ -227,12 +237,18 @@ fn import_game(
     if let Some(ref existing_media) = existing {
         // The digests already agree — that is what found this row. What is
         // left to notice is a changed label or classification.
+        let existing_disc_designator: String = conn.query_row(
+            "SELECT disc_designator FROM media WHERE id=?1",
+            [&media_id],
+            |row| row.get(0),
+        )?;
         let unchanged = existing_media.release_id == effective_release_id
             && existing_media.rom_name == primary_rom.name
             && existing_media.dat_name == game.name
             && existing_media.dat_system == dat_system
             && existing_media.revision == media_revision
-            && existing_media.status == media_status;
+            && existing_media.status == media_status
+            && existing_disc_designator == parsed.disc_designator.as_deref().unwrap_or_default();
         if unchanged {
             stats.media_unchanged += 1;
             return Ok(());
@@ -280,6 +296,16 @@ fn import_game(
         updated_at: String::new(),
     };
     operations::upsert_media(conn, &media)?;
+    // `disc_number = 0` historically meant both "unnumbered" and "Disc 0".
+    // Preserve the explicit DAT designator separately so completeness can
+    // distinguish those cases and alphabetic disc sets remain lossless.
+    conn.execute(
+        "UPDATE media SET disc_designator=?2 WHERE id=?1",
+        rusqlite::params![
+            media_id,
+            parsed.disc_designator.as_deref().unwrap_or_default()
+        ],
+    )?;
 
     // Insert per-track entries for multi-track games
     for rom in &track_roms {
@@ -345,12 +371,167 @@ fn compute_release_revision(parsed: &name_parser::ParsedDatName) -> String {
 ///
 /// Flags like "Greatest Hits", "Player's Choice", "Virtual Console", "Proto",
 /// "Beta", etc. all become variant identifiers that distinguish releases.
-fn compute_release_variant(parsed: &name_parser::ParsedDatName) -> String {
-    if parsed.flags.is_empty() {
+fn compute_release_variant(
+    parsed: &name_parser::ParsedDatName,
+    dat_source: &str,
+    inferred_disc_roles: &std::collections::HashSet<DiscRoleKey>,
+) -> String {
+    let scope = EditionScope::from_parsed(parsed);
+    let flags = parsed
+        .flags
+        .iter()
+        .filter(|flag| {
+            !dat_source.eq_ignore_ascii_case("redump")
+                || (!name_parser::is_carrier_only_flag(flag)
+                    && !inferred_disc_roles.contains(&DiscRoleKey {
+                        edition: scope.clone(),
+                        flag: (*flag).clone(),
+                    }))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if flags.is_empty() {
         String::new()
     } else {
-        parsed.flags.join(", ")
+        flags.join(", ")
     }
+}
+
+/// The parts of a DAT name that identify an edition before its free-form
+/// parentheticals are interpreted. Disc-role inference must never cross this
+/// boundary: the same word can be a role in one regional/revised set and a
+/// real edition label in another.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct EditionScope {
+    title: String,
+    regions: Vec<String>,
+    revision: String,
+}
+
+impl EditionScope {
+    fn from_parsed(parsed: &name_parser::ParsedDatName) -> Self {
+        Self {
+            title: parsed.title.clone(),
+            regions: parsed.regions.clone(),
+            revision: compute_release_revision(parsed),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DiscRoleKey {
+    edition: EditionScope,
+    flag: String,
+}
+
+/// Redump sometimes labels scenario/character discs with a separate unknown
+/// parenthetical instead of `Disc N - Label`. Infer those labels only when a
+/// work has multiple explicit positions and position-unique labels cover the
+/// complete set. This handles `(Disc 1) (Leon)` / `(Disc 2) (Claire)` without
+/// teaching arbitrary unknown tags that they are safe to merge.
+fn infer_position_specific_disc_roles(dat: &DatFile) -> std::collections::HashSet<DiscRoleKey> {
+    use std::collections::{HashMap, HashSet};
+
+    #[derive(Default)]
+    struct Group {
+        positions: HashSet<String>,
+        flags: HashMap<String, HashSet<String>>,
+    }
+    let mut groups: HashMap<EditionScope, Group> = HashMap::new();
+    for game in &dat.games {
+        let parsed = name_parser::parse_dat_name(&game.name);
+        let Some(position) = parsed.disc_designator.clone() else {
+            continue;
+        };
+        let key = EditionScope::from_parsed(&parsed);
+        let group = groups.entry(key).or_default();
+        group.positions.insert(position.clone());
+        for flag in parsed
+            .flags
+            .iter()
+            .filter(|flag| !name_parser::is_carrier_only_flag(flag))
+        {
+            group
+                .flags
+                .entry(flag.clone())
+                .or_default()
+                .insert(position.clone());
+        }
+    }
+    let mut inferred = HashSet::new();
+    for (edition, group) in groups {
+        if !positions_form_complete_set(&group.positions) {
+            continue;
+        }
+        let mut candidates_by_position: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (flag, positions) in &group.flags {
+            if positions.len() == 1 {
+                let position = positions.iter().next().expect("one position");
+                candidates_by_position
+                    .entry(position)
+                    .or_default()
+                    .push(flag);
+            }
+        }
+        // Only infer a role when every disc has exactly one position-specific
+        // unknown label. If there are zero or several candidates anywhere,
+        // preserving them as edition metadata is safer than merging releases.
+        if group.positions.iter().any(|position| {
+            candidates_by_position
+                .get(position.as_str())
+                .is_none_or(|flags| flags.len() != 1)
+        }) {
+            continue;
+        }
+        for flags in candidates_by_position.values() {
+            inferred.insert(DiscRoleKey {
+                edition: edition.clone(),
+                flag: flags[0].to_owned(),
+            });
+        }
+    }
+    inferred
+}
+
+/// Require a credible complete disc sequence before interpreting unknown
+/// labels structurally. Observed `Disc 1` and `Disc 3` alone are not evidence
+/// of a complete two-disc set. Numeric sets may intentionally start at zero;
+/// alphabetic sets must start at A.
+fn positions_form_complete_set(positions: &std::collections::HashSet<String>) -> bool {
+    if positions.len() < 2 {
+        return false;
+    }
+    let mut numeric = positions
+        .iter()
+        .map(|position| position.parse::<u32>())
+        .collect::<Result<Vec<_>, _>>();
+    if let Ok(ref mut numeric) = numeric {
+        numeric.sort_unstable();
+        let first = numeric[0];
+        return (first == 0 || first == 1)
+            && numeric.iter().enumerate().all(|(offset, position)| {
+                u32::try_from(offset)
+                    .ok()
+                    .and_then(|offset| first.checked_add(offset))
+                    == Some(*position)
+            });
+    }
+    let mut alphabetic = positions
+        .iter()
+        .filter_map(|position| {
+            let bytes = position.as_bytes();
+            (bytes.len() == 1 && bytes[0].is_ascii_alphabetic())
+                .then_some(bytes[0].to_ascii_uppercase())
+        })
+        .collect::<Vec<_>>();
+    if alphabetic.len() != positions.len() {
+        return false;
+    }
+    alphabetic.sort_unstable();
+    alphabetic
+        .iter()
+        .copied()
+        .eq((b'A'..=u8::MAX).take(alphabetic.len()))
 }
 
 // ── Identity ────────────────────────────────────────────────────────────────

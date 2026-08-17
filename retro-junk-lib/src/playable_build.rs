@@ -851,7 +851,7 @@ fn playable_output_stem(
 fn playable_output_directory(
     request: &PlayableBuildRequest,
     release: &IndexedRelease,
-    carrier: &IndexedCarrier,
+    _carrier: &IndexedCarrier,
 ) -> PathBuf {
     let platform = if request.playable_platform_id.trim().is_empty() {
         &release.manifest.platform_id
@@ -861,7 +861,7 @@ fn playable_output_directory(
     let base = request
         .playable_root
         .join(retro_junk_archive::slugify(platform));
-    if request.canonical_name.expected_disc_count > 1 && carrier.manifest.sequence_number > 0 {
+    if request.canonical_name.expected_disc_count > 1 {
         base.join(format!("{}.m3u", canonical_release_name(request, release)))
     } else {
         base
@@ -907,10 +907,6 @@ fn project_selected_playlist(
     };
     let mut discs = Vec::new();
     for carrier in &copy.carriers {
-        let sequence = carrier.manifest.sequence_number;
-        if sequence == 0 || sequence > request.canonical_name.expected_disc_count {
-            continue;
-        }
         // Each disc is listed at the location it is actually in. A disc whose
         // evidence names the archive's platform folder was invisible here, so
         // the set failed its own "every disc present" check and no playlist
@@ -933,17 +929,23 @@ fn project_selected_playlist(
                     .then_some(relative)
             });
         if let Some(relative) = disc {
-            discs.push((sequence, relative));
+            let position = retro_junk_core::disc::extract_disc_position(&relative).or_else(|| {
+                (carrier.manifest.sequence_number > 0).then_some(
+                    retro_junk_core::disc::DiscPosition::Numeric(carrier.manifest.sequence_number),
+                )
+            });
+            if let Some(position) = position {
+                discs.push((position, relative));
+            }
         }
     }
-    discs.sort_by_key(|(sequence, _)| *sequence);
-    discs.dedup_by_key(|(sequence, _)| *sequence);
-    if discs.len() != request.canonical_name.expected_disc_count as usize
-        || discs
-            .iter()
-            .enumerate()
-            .any(|(index, (sequence, _))| *sequence != index as u32 + 1)
-    {
+    discs.sort_by_key(|(position, _)| position.sort_key());
+    discs.dedup_by(|left, right| left.0 == right.0);
+    let schemes = discs
+        .iter()
+        .map(|(position, _)| matches!(position, retro_junk_core::disc::DiscPosition::Alphabetic(_)))
+        .collect::<std::collections::BTreeSet<_>>();
+    if discs.len() != request.canonical_name.expected_disc_count as usize || schemes.len() > 1 {
         return Ok(None);
     }
     let platform = if request.playable_platform_id.trim().is_empty() {

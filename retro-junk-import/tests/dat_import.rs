@@ -453,6 +453,255 @@ fn disc_number_extracted() {
     assert_eq!(disc1[0].release_id, disc2[0].release_id);
 }
 
+#[test]
+fn saturn_masterings_share_an_edition_but_named_editions_do_not() {
+    let conn = setup_db();
+    upsert_platform(
+        &conn,
+        &CatalogPlatform {
+            id: "saturn".to_owned(),
+            display_name: "Sega Saturn".to_owned(),
+            short_name: "Saturn".to_owned(),
+            manufacturer: "Sega".to_owned(),
+            generation: 5,
+            media_type: MediaType::Disc,
+            release_year: 1994,
+            description: String::new(),
+            core_platform: "Saturn".to_owned(),
+            regions: vec![],
+            relationships: vec![],
+        },
+    )
+    .unwrap();
+    let game = |name: &str, crc: &str, sha1: &str| DatGame {
+        name: name.to_owned(),
+        region: None,
+        serial: None,
+        version: None,
+        category: Some("Games".to_owned()),
+        roms: vec![DatRom {
+            name: format!("{name}.bin"),
+            size: 700_000_000,
+            crc: crc.to_owned(),
+            sha1: Some(sha1.to_owned()),
+            md5: None,
+            serial: None,
+        }],
+    };
+    let dat = DatFile {
+        name: "Sega - Saturn".to_owned(),
+        description: "Sega - Saturn".to_owned(),
+        version: "1".to_owned(),
+        games: vec![
+            game(
+                "Sakura Taisen (Japan) (Disc 1) (Sakura) (7M)",
+                "10000001",
+                "1000000000000000000000000000000000000001",
+            ),
+            game(
+                "Sakura Taisen (Japan) (Disc 2) (Sumire) (8M)",
+                "10000002",
+                "1000000000000000000000000000000000000002",
+            ),
+            game(
+                "Sakura Taisen (Japan) (Disc 1) (Satakore) (9M)",
+                "10000003",
+                "1000000000000000000000000000000000000003",
+            ),
+            game(
+                "Sakura Taisen (Japan) (Disc 2) (Satakore) (10M)",
+                "10000004",
+                "1000000000000000000000000000000000000004",
+            ),
+        ],
+    };
+
+    import_dat(&conn, &dat, Platform::Saturn, "redump", &SilentProgress).unwrap();
+
+    let releases: Vec<(String, String, i64)> = conn
+        .prepare(
+            "SELECT r.variant,group_concat(m.disc_designator),count(*)
+             FROM releases r JOIN media m ON m.release_id=r.id
+             WHERE r.platform_id='saturn'
+             GROUP BY r.id ORDER BY r.variant",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(releases.len(), 2, "{releases:?}");
+    assert_eq!(releases[0], (String::new(), "1,2".to_owned(), 2));
+    assert_eq!(releases[1], ("Satakore".to_owned(), "1,2".to_owned(), 2));
+
+    // A catalog upgraded from the legacy integer-only column can otherwise
+    // look unchanged and return before restoring the exact DAT designator.
+    conn.execute(
+        "UPDATE media SET disc_designator='' WHERE crc32='10000001'",
+        [],
+    )
+    .unwrap();
+    let stats = import_dat(&conn, &dat, Platform::Saturn, "redump", &SilentProgress).unwrap();
+    assert_eq!(stats.media_updated, 1);
+    let repaired: String = conn
+        .query_row(
+            "SELECT disc_designator FROM media WHERE crc32='10000001'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(repaired, "1");
+}
+
+#[test]
+fn disc_role_inference_is_platform_generic_and_edition_scoped() {
+    let conn = setup_db();
+    upsert_platform(
+        &conn,
+        &CatalogPlatform {
+            id: "ps1".to_owned(),
+            display_name: "Sony PlayStation".to_owned(),
+            short_name: "PS1".to_owned(),
+            manufacturer: "Sony".to_owned(),
+            generation: 5,
+            media_type: MediaType::Disc,
+            release_year: 1994,
+            description: String::new(),
+            core_platform: "Ps1".to_owned(),
+            regions: vec![],
+            relationships: vec![],
+        },
+    )
+    .unwrap();
+    let game = |name: &str, crc: &str, sha1: &str| DatGame {
+        name: name.to_owned(),
+        region: None,
+        serial: None,
+        version: None,
+        category: Some("Games".to_owned()),
+        roms: vec![DatRom {
+            name: format!("{name}.bin"),
+            size: 600_000_000,
+            crc: crc.to_owned(),
+            sha1: Some(sha1.to_owned()),
+            md5: None,
+            serial: None,
+        }],
+    };
+    let dat = DatFile {
+        name: "Sony - PlayStation".to_owned(),
+        description: "Sony - PlayStation".to_owned(),
+        version: "1".to_owned(),
+        games: vec![
+            game(
+                "Scenario Game (Japan) (Disc 1) (Leon)",
+                "20000001",
+                "2000000000000000000000000000000000000001",
+            ),
+            game(
+                "Scenario Game (Japan) (Disc 2) (Claire)",
+                "20000002",
+                "2000000000000000000000000000000000000002",
+            ),
+            game(
+                "Scenario Game (USA) (Disc 1) (Leon)",
+                "20000003",
+                "2000000000000000000000000000000000000003",
+            ),
+            game(
+                "Scenario Game (USA) (Disc 2) (Leon)",
+                "20000004",
+                "2000000000000000000000000000000000000004",
+            ),
+        ],
+    };
+
+    import_dat(&conn, &dat, Platform::Ps1, "REDUMP", &SilentProgress).unwrap();
+
+    let releases: Vec<(String, String, i64)> = conn
+        .prepare(
+            "SELECT r.region,r.variant,count(*)
+             FROM releases r JOIN media m ON m.release_id=r.id
+             WHERE r.platform_id='ps1'
+             GROUP BY r.id ORDER BY r.region",
+        )
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        releases,
+        vec![
+            ("japan".to_owned(), String::new(), 2),
+            ("usa".to_owned(), "Leon".to_owned(), 2),
+        ]
+    );
+}
+
+#[test]
+fn ambiguous_or_incomplete_disc_roles_do_not_merge_releases() {
+    let conn = setup_db();
+    upsert_platform(
+        &conn,
+        &CatalogPlatform {
+            id: "ps1".to_owned(),
+            display_name: "Sony PlayStation".to_owned(),
+            short_name: "PS1".to_owned(),
+            manufacturer: "Sony".to_owned(),
+            generation: 5,
+            media_type: MediaType::Disc,
+            release_year: 1994,
+            description: String::new(),
+            core_platform: "Ps1".to_owned(),
+            regions: vec![],
+            relationships: vec![],
+        },
+    )
+    .unwrap();
+    let game = |name: &str, suffix: u8| DatGame {
+        name: name.to_owned(),
+        region: None,
+        serial: None,
+        version: None,
+        category: Some("Games".to_owned()),
+        roms: vec![DatRom {
+            name: format!("{name}.bin"),
+            size: 600_000_000,
+            crc: format!("3000000{suffix}"),
+            sha1: Some(format!("300000000000000000000000000000000000000{suffix}")),
+            md5: None,
+            serial: None,
+        }],
+    };
+    let dat = DatFile {
+        name: "Sony - PlayStation".to_owned(),
+        description: "Sony - PlayStation".to_owned(),
+        version: "1".to_owned(),
+        games: vec![
+            game("Ambiguous Game (Japan) (Disc 1) (Limited) (Leon)", 1),
+            game("Ambiguous Game (Japan) (Disc 2) (Claire)", 2),
+            game("Incomplete Game (Japan) (Disc 1) (Install)", 3),
+            game("Incomplete Game (Japan) (Disc 3) (Play)", 4),
+        ],
+    };
+
+    import_dat(&conn, &dat, Platform::Ps1, "redump", &SilentProgress).unwrap();
+
+    for title in ["Ambiguous Game", "Incomplete Game"] {
+        let releases: i64 = conn
+            .query_row(
+                "SELECT count(DISTINCT r.id)
+                 FROM releases r JOIN media m ON m.release_id=r.id
+                 WHERE r.platform_id='ps1' AND r.title=?1",
+                [title],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(releases, 2, "{title} was merged despite ambiguous evidence");
+    }
+}
+
 /// A corrected DAT name must keep the entry it already had, not grow a twin.
 ///
 /// The title is part of the work, release and media ids, so a renamed game

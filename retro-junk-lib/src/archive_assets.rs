@@ -42,16 +42,15 @@ pub fn release_media_stems(release: &IndexedRelease) -> BTreeSet<String> {
     let mut stems = BTreeSet::new();
     for evidence in retro_junk_archive::current_release_builds(release) {
         let output = Path::new(&evidence.relative_output_path);
-        if let Some(stem) = output.file_stem().and_then(|value| value.to_str()) {
-            stems.insert(stem.to_owned());
-        }
-        if let Some(directory) = output
+        let multidisc = output
             .parent()
             .and_then(Path::file_name)
             .and_then(|value| value.to_str())
-            .filter(|name| name.to_ascii_lowercase().ends_with(".m3u"))
-        {
+            .filter(|name| name.to_ascii_lowercase().ends_with(".m3u"));
+        if let Some(directory) = multidisc {
             stems.insert(directory.to_owned());
+        } else if let Some(stem) = output.file_stem().and_then(|value| value.to_str()) {
+            stems.insert(stem.to_owned());
         }
     }
     if stems.is_empty() {
@@ -201,6 +200,44 @@ struct GamelistPlacement {
     entry: Option<retro_junk_frontend::ScrapedGame>,
 }
 
+/// A playlist is a release projection, not a carrier representation, so it
+/// has no build-evidence row of its own. Validate the derived file against the
+/// current carrier outputs before publishing it to ES-DE.
+fn playlist_members_match(
+    playlist: &Path,
+    outputs: &BTreeSet<PathBuf>,
+    playable_root: &Path,
+) -> bool {
+    let absolute = playable_root.join(playlist);
+    let Some(directory) = absolute.parent() else {
+        return false;
+    };
+    let Ok(contents) = std::fs::read_to_string(&absolute) else {
+        return false;
+    };
+    let expected = outputs
+        .iter()
+        .filter_map(|output| std::fs::canonicalize(playable_root.join(output)).ok())
+        .collect::<BTreeSet<_>>();
+    let Ok(canonical_root) = std::fs::canonicalize(playable_root) else {
+        return false;
+    };
+    let mut actual = BTreeSet::new();
+    for line in contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+    {
+        let Ok(path) = std::fs::canonicalize(directory.join(line)) else {
+            return false;
+        };
+        if !path.starts_with(&canonical_root) || !actual.insert(path) {
+            return false;
+        }
+    }
+    !actual.is_empty() && actual == expected
+}
+
 /// Work out where a release publishes and what its gamelist entry should say.
 ///
 /// Multi-disc releases produce an entry only when a generated M3U is present;
@@ -224,7 +261,7 @@ fn release_gamelist_placement(
         })
         .filter(|relative| playable_root.join(relative).is_file())
         .collect::<BTreeSet<_>>();
-    let playlist = outputs
+    let recorded_playlist = outputs
         .iter()
         .find(|relative| {
             relative
@@ -233,6 +270,26 @@ fn release_gamelist_placement(
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("m3u"))
         })
         .cloned();
+    let derived_playlist = if recorded_playlist.is_none() {
+        let parents = outputs
+            .iter()
+            .filter_map(|output| output.parent().map(Path::to_path_buf))
+            .collect::<BTreeSet<_>>();
+        parents
+            .iter()
+            .next()
+            .filter(|_| parents.len() == 1)
+            .and_then(|parent| {
+                let name = parent.file_name()?.to_str()?;
+                name.to_ascii_lowercase()
+                    .ends_with(".m3u")
+                    .then(|| parent.join(name))
+            })
+            .filter(|playlist| playlist_members_match(playlist, &outputs, playable_root))
+    } else {
+        None
+    };
+    let playlist = recorded_playlist.or(derived_playlist);
     let carrier_count = release
         .physical_copies
         .iter()
@@ -433,20 +490,19 @@ pub fn release_media_stems_by_platform(
             .unwrap_or(&release.manifest.platform_id)
             .to_owned();
         let stems = grouped.entry(platform).or_default();
-        if let Some(stem) = output
+        let multidisc = output
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|value| value.to_str())
+            .filter(|name| name.to_ascii_lowercase().ends_with(".m3u"));
+        if let Some(directory) = multidisc {
+            stems.insert(directory.to_owned());
+        } else if let Some(stem) = output
             .file_stem()
             .and_then(|value| value.to_str())
             .map(str::to_owned)
         {
             stems.insert(stem);
-        }
-        if let Some(directory) = output
-            .parent()
-            .and_then(Path::file_name)
-            .and_then(|value| value.to_str())
-            .filter(|name| name.to_ascii_lowercase().ends_with(".m3u"))
-        {
-            stems.insert(directory.to_owned());
         }
     }
     if grouped.is_empty() {

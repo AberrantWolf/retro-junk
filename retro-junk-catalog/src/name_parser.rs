@@ -23,6 +23,10 @@ pub struct ParsedDatName {
     pub flags: Vec<String>,
     /// Disc number for multi-disc games.
     pub disc_number: Option<u32>,
+    /// Disc designator exactly as catalogued (for example `0`, `2`, or `A`).
+    /// Unlike `disc_number`, this distinguishes Disc 0 from unnumbered media
+    /// and preserves alphabetic Redump positions.
+    pub disc_designator: Option<String>,
     /// Disc label (e.g., "Disc 1 - The Beginning").
     pub disc_label: Option<String>,
     /// Status from bracketed tags: verified, bad dump, overdump.
@@ -71,6 +75,7 @@ pub fn parse_dat_name(name: &str) -> ParsedDatName {
         languages: Vec::new(),
         flags: Vec::new(),
         disc_number: None,
+        disc_designator: None,
         disc_label: None,
         status: DumpStatus::Verified,
         version: None,
@@ -230,12 +235,25 @@ fn classify_paren_tag(content: &str, result: &mut ParsedDatName) {
         return;
     }
 
-    // Disc: "Disc 1", "Disc 2", "Disc 1 - The Beginning"
+    // Disc: "Disc 0", "Disc 2", "Disc A", "Disc 1 - The Beginning"
     if let Some(disc_rest) = trimmed.strip_prefix("Disc ") {
-        // Parse "Disc N" or "Disc N - Label"
+        // Parse "Disc N" / "Disc A" and an optional role label.
         let parts: Vec<&str> = disc_rest.splitn(2, " - ").collect();
-        if let Ok(n) = parts[0].trim().parse::<u32>() {
+        let designator = parts[0].trim();
+        if let Ok(n) = designator.parse::<u32>() {
             result.disc_number = Some(n);
+            result.disc_designator = Some(designator.to_owned());
+            if parts.len() > 1 {
+                result.disc_label = Some(parts[1].trim().to_string());
+            }
+        } else if designator.len() == 1
+            && designator
+                .chars()
+                .all(|character| character.is_ascii_alphabetic())
+        {
+            let letter = designator.to_ascii_uppercase();
+            result.disc_number = letter.bytes().next().map(|byte| u32::from(byte - b'A') + 1);
+            result.disc_designator = Some(letter);
             if parts.len() > 1 {
                 result.disc_label = Some(parts[1].trim().to_string());
             }
@@ -265,6 +283,40 @@ fn classify_paren_tag(content: &str, result: &mut ParsedDatName) {
 
     // Anything else is also stored as a flag (e.g., alt version labels, compilation names)
     result.flags.push(trimmed.to_string());
+}
+
+/// Whether a Redump parenthetical describes one physical carrier rather than
+/// a retail/software edition. Such tags must not split a logical multi-disc
+/// release merely because different discs were pressed from different masters.
+#[must_use]
+pub fn is_carrier_only_flag(flag: &str) -> bool {
+    let value = flag.trim();
+    let upper = value.to_ascii_uppercase();
+
+    // Saturn mastering/ring-code groups used by Redump: 1M, 2MB1, 32B, etc.
+    let mastering = if let Some(first_non_digit) = upper.find(|c: char| !c.is_ascii_digit()) {
+        first_non_digit > 0
+            && upper[first_non_digit..]
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric())
+            && (upper[first_non_digit..].starts_with('M')
+                || (upper[first_non_digit..].len() == 1
+                    && upper[first_non_digit..]
+                        .chars()
+                        .all(|c| c.is_ascii_alphabetic())))
+    } else {
+        false
+    };
+    if mastering {
+        return true;
+    }
+
+    let lower = value.to_ascii_lowercase();
+    matches!(lower.as_str(), "gdi" | "nod")
+        || lower.ends_with(" disc")
+        || lower.ends_with(" disk")
+        || lower.ends_with(" cd")
+        || lower.ends_with(" cd-rom")
 }
 
 /// Check if a string looks like a language list (comma-separated 2-3 letter codes).
@@ -381,5 +433,31 @@ pub fn region_to_slug(region: &str) -> &'static str {
         "scandinavia" => "scandinavia",
         "latin america" => "latin-america",
         _ => "unknown",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn disc_zero_and_alphabetic_positions_are_explicit() {
+        let zero = parse_dat_name("Enemy Zero (Japan) (Disc 0) (Opening Disc)");
+        assert_eq!(zero.disc_number, Some(0));
+        assert_eq!(zero.disc_designator.as_deref(), Some("0"));
+
+        let alpha = parse_dat_name("Game (Japan) (Disc B)");
+        assert_eq!(alpha.disc_number, Some(2));
+        assert_eq!(alpha.disc_designator.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn saturn_mastering_and_disc_roles_are_carrier_metadata() {
+        for flag in ["1M", "2MB1", "32B", "Opening Disc", "GDI", "NOD"] {
+            assert!(is_carrier_only_flag(flag), "{flag}");
+        }
+        for flag in ["Satakore", "Beta", "Shokai Tokutenban"] {
+            assert!(!is_carrier_only_flag(flag), "{flag}");
+        }
     }
 }

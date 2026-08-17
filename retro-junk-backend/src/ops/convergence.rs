@@ -58,7 +58,7 @@ impl Backlog {
 pub fn load_backlog(db_path: &Path, scope: &Scope) -> Result<Backlog, String> {
     let expected = AutomationPolicy::load().scrape_selection();
     let connection = retro_junk_db::open_database(db_path).map_err(|error| error.to_string())?;
-    let actions = retro_junk_db::convergence::derive_convergence(&connection, scope, &expected)
+    let actions = crate::derive_convergence_actions(&connection, scope, &expected)
         .map_err(|error| error.to_string())?;
     let summary = retro_junk_db::convergence::summarize_convergence_for_actions(
         &connection,
@@ -221,6 +221,8 @@ pub fn kind_label(kind: ActionKind) -> &'static str {
         ActionKind::AuditRedumper => "raw audit",
         ActionKind::AdoptPlayable => "moved",
         ActionKind::BuildPlayable => "playable",
+        ActionKind::NormalizePlayableSet => "layout repair",
+        ActionKind::RenamePlayable => "rename",
         ActionKind::Scrape => "scrape",
         ActionKind::ProjectAssets => "artwork",
         ActionKind::SyncGamelist => "gamelist",
